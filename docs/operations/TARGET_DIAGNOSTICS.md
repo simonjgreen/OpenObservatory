@@ -99,7 +99,7 @@ Sustained running as a systemd service:
 | Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero) |
 | Gaps / overruns | 0 |
 | Device clock offset from nominal | **−43 ppm** |
-| Per-block hot-path CPU | **9.5 %** of one core, for capture + resample + both spectrograms + level telemetry |
+| Per-block hot-path CPU | **10.9 %** of one core, for capture + resample + both spectrograms + level telemetry. Was 9.5 % before the ultrasonic channel began max-combining four sub-windows per column; that 1.4 % buys full coverage of the audio instead of 45 %. |
 | Whole-process CPU | ~29 % of the 4-core machine with all three detectors running |
 | Native ring memory | 120 s at 384 kHz float32 ≈ 184 MB resident |
 
@@ -176,6 +176,26 @@ missed delivery deadline in any observed run.
 BirdNET produced real identifications on this station within minutes of starting,
 including *Columba palumbus* (Common Woodpigeon).
 
+## Live channel delivery, measured from a real browser over Wi-Fi
+
+| Property | Value |
+|---|---|
+| Columns delivered | 1246 per channel per 30 s wall = 29.9 s of audio — exactly real time |
+| Gaps / out-of-order / overlaps / malformed | 0 / 0 / 0 / 0 |
+| Inter-arrival | p50 100 ms (one capture block), p95 154 ms, worst 818 ms |
+| Client queue depth | 0, with 0 dropped |
+| Backfill on connect | ~1190 columns per channel (30 s), down from 2400 |
+| Live audio latency | 131–173 ms jitter buffer + 42 ms browser device ≈ 180 ms |
+
+Measuring this **in the browser** rather than from the Pi was essential. A probe on
+loopback reported a flawless 100 ms cadence with zero gaps while the real client was
+receiving one frame in thirty seconds, because the underlying bug — concurrent writes
+to one WebSocket — only manifests when a send actually takes time.
+
+The worst-case 818 ms inter-arrival is Wi-Fi jitter, not a pipeline stall. The client
+interpolates scroll position between bursts and clamps that interpolation to about
+one burst, so a stall parks the display rather than letting it drift out of step.
+
 ## Known limitations recorded honestly
 
 - **Range model is off.** The station's latitude/longitude are not configured, so
@@ -188,4 +208,6 @@ including *Columba palumbus* (Common Woodpigeon).
   Peak frequency yields a coarse group hint only.
 - **72-hour soak test not run.** The acceptance criteria require it before the
   system may be described as complete.
+- **The ultrasonic detector runs day and night.** No civil-dusk scheduler exists yet,
+  so it is doing ultrasonic work at noon when nothing is flying.
 - **No authentication.** The API binds LAN-only with anonymous read enabled.

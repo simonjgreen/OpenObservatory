@@ -115,6 +115,8 @@ export function Spectrogram({
   const totalColumnsRef = useRef(0)
   /** UTC seconds of the newest column written. */
   const newestUtcRef = useRef<number | null>(null)
+  /** When the most recent batch arrived, for sub-column scroll interpolation. */
+  const lastBatchRef = useRef<{ at: number; columns: number } | null>(null)
   const [ready, setReady] = useState(false)
   const [hover, setHover] = useState<{ hz: number; secondsAgo: number } | null>(null)
 
@@ -150,6 +152,7 @@ export function Spectrogram({
     writeXRef.current = 0
     totalColumnsRef.current = 0
     newestUtcRef.current = null
+    lastBatchRef.current = null
     setReady(true)
   }, [ringColumns, spec.bins, palette])
 
@@ -182,6 +185,11 @@ export function Spectrogram({
         totalColumnsRef.current += 1
       }
       newestUtcRef.current = batch.firstUtcS + (batch.columns - 1) * spec.hop_s
+      // Note when this batch landed, so the draw loop can interpolate between
+      // batches instead of jumping. Columns arrive four at a time every 100 ms
+      // (one capture block), which without this reads as a visible lurch ten
+      // times a second rather than a smooth scroll.
+      lastBatchRef.current = { at: performance.now(), columns: totalColumnsRef.current }
     }
     return register(spec.channel, sink)
   }, [register, spec.channel, spec.bins, spec.hop_s, paletteTable])
@@ -216,12 +224,28 @@ export function Spectrogram({
       context.fillStyle = palette === 'merlin' ? '#f7f7f5' : '#05060a'
       context.fillRect(0, 0, canvas.width, canvas.height)
 
-      // Two blits at most: the ring may wrap between `start` and the write head.
+      // Sub-column interpolation. Columns arrive in bursts of ~4 every 100 ms, so
+      // drawing them flush to the right edge makes the whole image lurch ten times
+      // a second. Instead the viewport is nudged left by however much of a column
+      // has elapsed since the last burst, which turns the lurch into a glide.
+      // Clamped to one burst so a stalled feed parks rather than drifting away.
       const scaleX = canvas.width / columnsWanted
+      let shift = 0
+      const batch = lastBatchRef.current
+      if (batch) {
+        const elapsedColumns = ((performance.now() - batch.at) / 1000) / spec.hop_s
+        shift = Math.min(elapsedColumns, 6) * scaleX
+      }
+      context.save()
+      context.translate(-shift, 0)
+
+      // Two blits at most: the ring may wrap between `start` and the write head.
+      // Drawn one column wider than needed so the shift cannot expose the edge.
+      const width = canvas.width + scaleX * 8
       if (start + columnsWanted <= ring.width) {
         context.drawImage(
           ring, start, 0, columnsWanted, ring.height,
-          0, 0, canvas.width, canvas.height,
+          0, 0, width, canvas.height,
         )
       } else {
         const firstRun = ring.width - start
@@ -232,9 +256,10 @@ export function Spectrogram({
         )
         context.drawImage(
           ring, 0, 0, columnsWanted - firstRun, ring.height,
-          firstWidth, 0, canvas.width - firstWidth, canvas.height,
+          firstWidth, 0, width - firstWidth, canvas.height,
         )
       }
+      context.restore()
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)

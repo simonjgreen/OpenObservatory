@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import dataclasses
 import time
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -49,8 +50,73 @@ log = structlog.get_logger(__name__)
 API_PREFIX = "/api/v1"
 
 
+class LiveClient:
+    """One connected browser, with a single task owning the socket.
+
+    Every frame — control JSON and binary spectrogram alike — is queued here and
+    written by one writer. That is not tidiness, it is a correctness requirement: a
+    Starlette WebSocket cannot take concurrent sends, and the previous design had
+    two writers (a task per broadcast frame, plus the event pump writing JSON).
+    On loopback the sends completed too fast to ever overlap, so it looked perfect;
+    over Wi-Fi they did overlap, the send raised, and the socket was dropped from
+    the fan-out — leaving JSON flowing while the spectrogram silently died after a
+    frame or two. That is what "pausing and stuttering" was.
+    """
+
+    def __init__(self, socket: WebSocket, *, maxsize: int = 96) -> None:
+        self.socket = socket
+        self._pending: deque[tuple[bool, Any]] = deque()
+        self._maxsize = maxsize
+        self._wake = asyncio.Event()
+        self.closed = False
+        self.sent = 0
+        self.dropped = 0
+
+    def offer(self, payload: Any, *, binary: bool) -> None:
+        """Queue a frame. Never blocks, never raises, never awaits."""
+        if self.closed:
+            return
+        if len(self._pending) >= self._maxsize:
+            # Shed the oldest *binary* frame: a viewer who cannot keep up should
+            # lose spectrogram history, not the status and detection frames that
+            # tell them what is going on.
+            for index, (is_binary, _) in enumerate(self._pending):
+                if is_binary:
+                    del self._pending[index]
+                    self.dropped += 1
+                    break
+            else:
+                self.dropped += 1
+                return
+        self._pending.append((binary, payload))
+        self._wake.set()
+
+    async def run(self) -> None:
+        """The only place this socket is ever written."""
+        while not self.closed:
+            if not self._pending:
+                self._wake.clear()
+                await self._wake.wait()
+                continue
+            is_binary, payload = self._pending.popleft()
+            if is_binary:
+                await self.socket.send_bytes(payload)
+            else:
+                await self.socket.send_json(payload)
+            self.sent += 1
+
+    @property
+    def queue_depth(self) -> int:
+        return len(self._pending)
+
+    def close(self) -> None:
+        self.closed = True
+        self._pending.clear()
+        self._wake.set()
+
+
 class LiveHub:
-    """Fan-out of binary spectrogram frames to connected browsers.
+    """Fan-out of live frames to connected browsers.
 
     Snapshot-on-connect matters here: a viewer opening the page mid-flight would
     otherwise stare at an empty canvas for a minute, which looks exactly like a
@@ -58,34 +124,39 @@ class LiveHub:
     """
 
     def __init__(self) -> None:
-        self._sockets: set[WebSocket] = set()
+        self._clients: set[LiveClient] = set()
         self.frames_sent = 0
-        self.send_failures = 0
+        self.dropped = 0
 
-    def add(self, socket: WebSocket) -> None:
-        self._sockets.add(socket)
+    def add(self, client: LiveClient) -> None:
+        self._clients.add(client)
 
-    def discard(self, socket: WebSocket) -> None:
-        self._sockets.discard(socket)
+    def discard(self, client: LiveClient) -> None:
+        self._clients.discard(client)
+        client.close()
 
     @property
     def count(self) -> int:
-        return len(self._sockets)
+        return len(self._clients)
 
     def broadcast_binary(self, payload: bytes) -> None:
-        """Schedule a send to every client without blocking the capture path."""
-        if not self._sockets:
-            return
-        for socket in list(self._sockets):
-            asyncio.get_running_loop().create_task(self._send(socket, payload))
+        """Hand a frame to every client. Synchronous, so the capture path is not
+        charged for a task creation per frame per viewer."""
+        for client in self._clients:
+            client.offer(payload, binary=True)
+        self.frames_sent += len(self._clients)
 
-    async def _send(self, socket: WebSocket, payload: bytes) -> None:
-        try:
-            await socket.send_bytes(payload)
-            self.frames_sent += 1
-        except Exception:
-            self.send_failures += 1
-            self._sockets.discard(socket)
+    def broadcast_json(self, payload: dict[str, Any]) -> None:
+        for client in self._clients:
+            client.offer(payload, binary=False)
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "sockets": len(self._clients),
+            "frames_sent": self.frames_sent,
+            "queued": [c.queue_depth for c in self._clients],
+            "dropped": sum(c.dropped for c in self._clients),
+        }
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -396,11 +467,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def debug_pipeline() -> dict[str, Any]:
         return {
             "station": station.status_snapshot(),
-            "live_hub": {
-                "sockets": hub.count,
-                "frames_sent": hub.frames_sent,
-                "send_failures": hub.send_failures,
-            },
+            "live_hub": hub.stats(),
             "recent_events": station.bus.recent(120),
         }
 
@@ -417,10 +484,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.websocket(f"{API_PREFIX}/live")
     async def live_socket(socket: WebSocket) -> None:
         await socket.accept()
-        hub.add(socket)
+        client = LiveClient(socket)
         subscription = station.bus.subscribe(maxsize=256, label="live-ws")
+        writer = asyncio.create_task(client.run(), name="live-writer")
+        pump: asyncio.Task[None] | None = None
         try:
-            await socket.send_json(
+            client.offer(
                 {
                     "type": "hello",
                     "server_utc": time.time(),
@@ -432,62 +501,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         record.to_dict() for record in station.recent_detections[-40:]
                     ],
                     "recent_events": station.bus.recent(60),
-                }
+                },
+                binary=False,
             )
-            # Backfill each spectrogram channel so the canvas is populated at once.
+            # Backfill each channel so the canvas is populated at once rather than
+            # showing a minute of blank, which looks exactly like a broken pipeline.
             #
-            # Capped and yielded between channels on purpose. The full history is
-            # 2400 columns per channel — roughly 770 kB across both — and pushing it
-            # in one burst measurably delayed the *audio* consumer on the same event
-            # loop, which arrived as ~1.9 s of backlog and 900 dropped chunks on the
-            # GO LIVE feed. Sixty seconds is more than any default view shows.
-            backfill_columns = int(60.0 / max(0.001, min(
-                encoder.hop_s for encoder in station.spectrograms.values()
-            ))) if station.spectrograms else 0
+            # Genuinely capped, unlike the first attempt: that computed a column
+            # count from a 60 s window, which at a 24 ms hop is 2500 — more than the
+            # 2400 the history holds, so the cap never bound and every client still
+            # got the full ~770 kB burst.
             for encoder in station.spectrograms.values():
-                history = encoder.history_frame(max_columns=backfill_columns)
+                history = encoder.history_frame(
+                    max_columns=max(1, int(settings.spectrogram_backfill_s / encoder.hop_s))
+                )
                 if history is not None:
-                    await socket.send_bytes(history.to_binary())
-                await asyncio.sleep(0)
+                    client.offer(history.to_binary(), binary=True)
 
-            pump = asyncio.create_task(_pump_events(socket, subscription))
-            try:
-                while True:
-                    # Client messages are only pings/config today; reading also
-                    # gives us prompt disconnect detection.
-                    await socket.receive_text()
-            finally:
-                pump.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await pump
+            # Only now join the fan-out, so live frames queue behind the backfill
+            # and the client never has to reorder.
+            hub.add(client)
+            pump = asyncio.create_task(_pump_events(client, subscription), name="live-pump")
+
+            while True:
+                # Client messages are only keep-alive pings today; reading also gives
+                # prompt disconnect detection.
+                await socket.receive_text()
         except WebSocketDisconnect:
             pass
         except Exception:
             log.exception("live_socket.error")
         finally:
-            hub.discard(socket)
+            hub.discard(client)
             subscription.close()
+            for task in (pump, writer):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
 
-    async def _pump_events(socket: WebSocket, subscription: Any) -> None:
+    async def _pump_events(client: LiveClient, subscription: Any) -> None:
+        """Feed events and periodic status into the client's single write queue."""
         status_due = time.monotonic()
-        while True:
+        while not client.closed:
             try:
-                event = await asyncio.wait_for(subscription.queue.get(), timeout=1.0)
+                event = await asyncio.wait_for(subscription.queue.get(), timeout=0.5)
                 if event.get("event_type") == "_bus.closed":
                     return
-                await socket.send_json({"type": "event", "event": event})
+                client.offer({"type": "event", "event": event}, binary=False)
             except TimeoutError:
                 pass
-            except (WebSocketDisconnect, RuntimeError):
-                return
             if time.monotonic() >= status_due:
                 status_due = time.monotonic() + 2.0
-                try:
-                    await socket.send_json(
-                        {"type": "status", "station": station.status_snapshot()}
-                    )
-                except (WebSocketDisconnect, RuntimeError):
-                    return
+                client.offer(
+                    {"type": "status", "station": station.status_snapshot()}, binary=False
+                )
 
     @app.websocket(f"{API_PREFIX}/live/audio")
     async def live_audio_socket(socket: WebSocket) -> None:

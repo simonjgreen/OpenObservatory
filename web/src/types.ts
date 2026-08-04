@@ -12,9 +12,15 @@ export interface SpectrogramSpec {
   fft_size: number
   floor_db: number
   ceiling_db: number
-  centre_frequencies: number[]
+  /** Sent only in the `hello` frame: it never changes and is ~1.2 kB per channel.
+   *  The frequency axis is derived from min_hz/max_hz, so this is provenance only. */
+  centre_frequencies?: number[]
   columns_emitted: number
   history_columns: number
+  /** Frames each column summarises. Exceeds fft_size where the hop is wider. */
+  column_span_frames?: number
+  /** Sub-windows max-combined per column, so no audio falls between columns. */
+  sub_windows_per_column?: number
 }
 
 export interface LevelSample {

@@ -4,7 +4,8 @@ Honest state of the implementation against `IMPLEMENTATION_PLAN.md`. Anything no
 demonstrated on the actual Pi is marked as not done, regardless of whether the code
 exists.
 
-Recorded 2026-08-04.
+Recorded 2026-08-04. See `HANDOVER.md` for operational context, the bugs found by
+measurement, and a prioritised list of what to do next.
 
 ## Milestone 0 — Repository and target diagnostics — **complete**
 
@@ -52,6 +53,7 @@ run; the 72-hour soak remains outstanding.
 | Redis Streams job contract | **deferred** — in-process `EventBus` behind the same protocol, per ADR-009 and the explicit permission in `CLAUDE.md` |
 | Bounded queue policies | done; per-detector bounded queues, delivery deadline, circuit breaker |
 | Window inspection CLI | partial — `oo audio resample-check` inspects timing; there is no window dump command |
+| Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps |
 
 **Exit gate — synthetic impulse timing error under 100 ms, target under 10 ms:
 met, at 0 ms.** An impulse at native frame *N* appears at derived frame *N/8* to
@@ -68,6 +70,8 @@ within one frame (20 µs), verified by test.
 | Evidence clip manager | done, with a rate limit, size budget, disk reserve and retention sweep |
 | Minimal FastAPI list/detail endpoints | done, plus health, metrics, devices, streams, gaps, detectors, models, taxa activity, media |
 | Temporary UI | done — the real-time debug UI |
+| Audible rendering of ultrasound | done, beyond plan — time-expansion and heterodyne derivatives, verified on live bats at 18-54 kHz |
+| Low-latency live listening | done, beyond plan — ~180 ms end to end |
 
 **Exit gate — known bird fixture produces expected candidate label and an aligned
 playable clip: partially met.** BirdNET produced real identifications on live audio
@@ -94,6 +98,8 @@ the native stream genuinely useful rather than theoretical.
 | Pi 5 benchmark report | partial — `ultrasonic-pass-v1` measured at ~36–40× realtime |
 | Night scheduler / deferred mode | **not started** — the ultrasonic detector runs continuously, day and night |
 | Native-rate evidence + audible playback derivative | done |
+| Ultrasound rendered for human review | done — time expansion (frequencies divide, everything preserved) and heterodyne (real time preserved, band-limited), each labelled with what it changed and that its levels are not comparable with the native recording |
+| Ultrasonic spectrogram coverage | fixed — the hop (9216 frames) exceeded the FFT (4096), so 55% of the audio was never inspected and a 4 ms pulse could fall entirely between columns. Columns now max-combine four sub-windows across the whole hop. |
 
 ## Milestone 6 — MQTT and Home Assistant — **not started**
 
@@ -111,12 +117,21 @@ directory before being served.
 
 | Gate | State |
 |---|---|
-| Unit tests | 111 passing on the target device |
+| Unit tests | 138 passing on the target device |
 | Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |
 | Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. ADR-007 records how to move to PostgreSQL and back |
 | Updated docs | done |
 | Measured CPU, memory, dropped audio | done — `TARGET_DIAGNOSTICS.md` |
+
+## Verified from a real client, not just from the server
+
+The live channels are now measured **in a browser over Wi-Fi**, not only from a
+probe on the Pi. That distinction found the worst bug in the project: concurrent
+writers to one WebSocket, which produced a flawless result on loopback (sends
+complete too fast to overlap) and near-total failure over Wi-Fi (the socket was
+evicted from the fan-out after a send error, so the spectrogram died while JSON
+kept flowing). Any future work on these channels must be measured the same way.
 
 ## What must not be claimed yet
 

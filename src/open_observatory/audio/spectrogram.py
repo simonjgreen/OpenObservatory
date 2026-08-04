@@ -86,6 +86,18 @@ class SpectrogramEncoder:
         self._window = np.hanning(fft_size).astype(np.float32)
         # Normalise so a full-scale sine reads near 0 dBFS regardless of FFT size.
         self._window_gain = float(np.sum(self._window)) / 2.0
+
+        # A column must summarise its whole hop, not just one FFT window at the
+        # start of it. On the ultrasonic channel the hop (9216 frames at 384 kHz)
+        # is more than twice the FFT (4096), so a single window per column looked
+        # at 4096 frames and ignored the other 5120 — 55% of the audio, in which a
+        # 4 ms bat pulse could sit and be entirely invisible. Where the hop is
+        # wider than the window, several sub-windows are taken across it and the
+        # per-bin maximum kept, which covers the gap and preserves transients.
+        self._column_span = max(self.hop_frames, fft_size)
+        self._sub_offsets = list(range(0, self._column_span - fft_size + 1, max(1, fft_size // 2)))
+        if self._sub_offsets[-1] + fft_size < self._column_span:
+            self._sub_offsets.append(self._column_span - fft_size)
         self._buffer = np.zeros(0, dtype=np.float32)
         #: Frame index in the stream of ``_buffer[0]``.
         self._buffer_first_frame = 0
@@ -119,8 +131,15 @@ class SpectrogramEncoder:
         edges = np.geomspace(self.min_hz, self.max_hz, self.bins + 1)
         return [float(np.sqrt(edges[i] * edges[i + 1])) for i in range(self.bins)]
 
-    def describe(self) -> dict[str, object]:
-        return {
+    def describe(self, *, include_frequencies: bool = True) -> dict[str, object]:
+        """Channel descriptor.
+
+        ``include_frequencies`` exists because the bin centre table is ~2.5 kB
+        across both channels and never changes, yet it was being re-sent inside
+        every two-second status frame — about a quarter of that frame for nothing.
+        The client keeps the copy it got in ``hello``.
+        """
+        payload: dict[str, object] = {
             "channel": self.channel,
             "name": self.name,
             "sample_rate": self.sample_rate,
@@ -131,10 +150,14 @@ class SpectrogramEncoder:
             "fft_size": self.fft_size,
             "floor_db": self.floor_db,
             "ceiling_db": self.ceiling_db,
-            "centre_frequencies": [round(f, 1) for f in self.centre_frequencies],
             "columns_emitted": self.columns_emitted,
             "history_columns": len(self.history),
+            "column_span_frames": self._column_span,
+            "sub_windows_per_column": len(self._sub_offsets),
         }
+        if include_frequencies:
+            payload["centre_frequencies"] = [round(f, 1) for f in self.centre_frequencies]
+        return payload
 
     # ------------------------------------------------------------------
 
@@ -155,22 +178,27 @@ class SpectrogramEncoder:
             np.concatenate((self._buffer, pcm)) if self._buffer.size else np.asarray(pcm, np.float32)
         )
 
-        if self._buffer.shape[0] < self.fft_size:
+        if self._buffer.shape[0] < self._column_span:
             return None
 
         columns: list[np.ndarray] = []
         first_column_frame = self._buffer_first_frame
         offset = 0
-        while offset + self.fft_size <= self._buffer.shape[0]:
-            segment = self._buffer[offset : offset + self.fft_size]
-            columns.append(self._column(segment))
+        while offset + self._column_span <= self._buffer.shape[0]:
+            columns.append(self._column(offset))
             offset += self.hop_frames
 
         if not columns:
             return None
 
-        self._buffer = self._buffer[offset:].copy()
-        self._buffer_first_frame += offset
+        # Advance by what was actually consumed. `offset` can overshoot the buffer
+        # when the hop exceeds the window, and advancing the frame index by the
+        # overshoot silently claimed frames that were never in the buffer — which
+        # showed up as ~4% too many columns and overlapping column timestamps on
+        # the ultrasonic channel.
+        consumed = min(offset, int(self._buffer.shape[0]))
+        self._buffer = self._buffer[consumed:].copy()
+        self._buffer_first_frame += consumed
 
         centre_frame = first_column_frame + self.fft_size / 2.0
         first_utc_s = (
@@ -196,9 +224,20 @@ class SpectrogramEncoder:
             data=stacked,
         )
 
-    def _column(self, segment: np.ndarray) -> np.ndarray:
-        spectrum = np.abs(np.fft.rfft(segment * self._window)) / self._window_gain
-        power_db = 20.0 * np.log10(spectrum + 1e-12)
+    def _column(self, offset: int) -> np.ndarray:
+        """One display column, covering ``_column_span`` frames from ``offset``."""
+        peak: np.ndarray | None = None
+        for sub in self._sub_offsets:
+            begin = offset + sub
+            segment = self._buffer[begin : begin + self.fft_size]
+            if segment.shape[0] < self.fft_size:
+                break
+            spectrum = np.abs(np.fft.rfft(segment * self._window)) / self._window_gain
+            peak = spectrum if peak is None else np.maximum(peak, spectrum)
+        if peak is None:
+            return np.zeros(self.bins, dtype=np.uint8)
+
+        power_db = 20.0 * np.log10(peak + 1e-12)
         out = np.empty(self.bins, dtype=np.float32)
         for index, (low, high) in enumerate(self._bin_edges):
             out[index] = power_db[low:high].max()

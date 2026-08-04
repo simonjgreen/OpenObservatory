@@ -299,6 +299,24 @@ class TestClipIntegration:
         pcm, rate = sf.read(str(expanded.path), dtype="float32")
         assert 1500 < dominant_hz(pcm, rate) < 9000
 
+        # Reported durations must match the files. Deriving duration from the
+        # native frame bounds and a derivative's own rate reported a 4.6 s clip's
+        # 48 kHz playback copy as 36.5 s.
+        for asset in assets:
+            actual, actual_rate = sf.read(str(asset.path), dtype="float32")
+            assert asset.sample_rate == actual_rate
+            assert asset.duration_s == pytest.approx(
+                len(actual) / actual_rate, abs=0.01
+            ), f"{asset.kind} reports {asset.duration_s:.2f}s for a {len(actual)/actual_rate:.2f}s file"
+
+        native = next(a for a in assets if a.kind == "evidence_native")
+        heterodyne = next(a for a in audible if a.detail["method"] == "heterodyne")
+        # Heterodyning preserves real time; expansion multiplies it by the factor.
+        assert heterodyne.duration_s == pytest.approx(native.duration_s, rel=0.05)
+        assert expanded.duration_s == pytest.approx(
+            native.duration_s * float(expanded.detail["factor"]), rel=0.05
+        )
+
     def test_audible_detection_gets_no_ultrasonic_derivative(self, tmp_path) -> None:
         import uuid
         from datetime import UTC, datetime

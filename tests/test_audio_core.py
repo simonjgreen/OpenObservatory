@@ -291,6 +291,85 @@ class TestSpectrogramEncoder:
         expected = first.first_utc_s + first.columns * encoder.hop_s
         assert second.first_utc_s == pytest.approx(expected, abs=encoder.hop_s * 0.51)
 
+    def test_wide_hop_channel_covers_all_audio(self) -> None:
+        """A hop wider than the FFT must not create blind spots between columns.
+
+        The ultrasonic channel runs a 4096-point FFT with a 9216-frame hop at
+        384 kHz. Taking one window per column looked at 4096 frames and ignored the
+        other 5120 — 55% of the audio — so a 4 ms bat pulse landing in the gap was
+        invisible. Every position in the stream must reach some column.
+        """
+        encoder = SpectrogramEncoder(
+            channel=1,
+            name="ultrasonic",
+            sample_rate=384000,
+            fft_size=4096,
+            hop_ms=24.0,
+            bins=64,
+            min_hz=15_000.0,
+            max_hz=150_000.0,
+        )
+        assert encoder.hop_frames > encoder.fft_size, "precondition: hop wider than window"
+        # Sub-windows must span the whole hop.
+        assert encoder._sub_offsets[0] == 0
+        assert encoder._sub_offsets[-1] + encoder.fft_size >= encoder.hop_frames
+
+        # A short 60 kHz burst placed anywhere in the hop must show up.
+        rate = 384000
+        detected = []
+        for position in (0, 2000, 5000, 7000, 9000):
+            fresh = SpectrogramEncoder(
+                channel=1, name="u", sample_rate=rate, fft_size=4096, hop_ms=24.0,
+                bins=64, min_hz=15_000.0, max_hz=150_000.0,
+            )
+            pcm = np.zeros(rate // 10, dtype=np.float32)
+            length = int(rate * 0.004)
+            t = np.arange(length) / rate
+            pcm[position : position + length] = (
+                0.5 * np.sin(2 * np.pi * 60_000 * t)
+            ).astype(np.float32)
+            batch = fresh.push(pcm, 0, 1_700_000_000_000_000_000)
+            assert batch is not None
+            detected.append(int(batch.data.max()))
+        assert all(v > 40 for v in detected), (
+            f"a 4 ms burst was lost depending on where it fell in the hop: {detected}"
+        )
+
+    def test_frame_index_never_advances_past_the_buffer(self) -> None:
+        """Overshooting the buffer corrupted the column timeline.
+
+        With a hop wider than the window the write offset can pass the end of the
+        buffered audio. Advancing the frame index by that overshoot claimed frames
+        that were never present, which produced ~4% too many columns and
+        overlapping column timestamps on the live ultrasonic channel.
+        """
+        rate = 384000
+        encoder = SpectrogramEncoder(
+            channel=1, name="u", sample_rate=rate, fft_size=4096, hop_ms=24.0,
+            bins=64, min_hz=15_000.0, max_hz=150_000.0,
+        )
+        utc0 = 1_700_000_000 * NS_PER_S
+        block = rate // 10  # 100 ms blocks, as capture delivers
+        previous_end: float | None = None
+        emitted = 0
+        for index in range(60):  # 6 seconds
+            batch = encoder.push(
+                np.zeros(block, dtype=np.float32), index * block, utc0 + index * NS_PER_S // 10
+            )
+            if batch is None:
+                continue
+            emitted += batch.columns
+            if previous_end is not None:
+                # Contiguous: no overlap and no gap beyond rounding.
+                assert batch.first_utc_s >= previous_end - 1e-6, (
+                    f"column timeline went backwards by "
+                    f"{(previous_end - batch.first_utc_s) * 1000:.1f} ms"
+                )
+                assert batch.first_utc_s - previous_end < encoder.hop_s, "gap in the timeline"
+            previous_end = batch.first_utc_s + (batch.columns - 1) * encoder.hop_s + encoder.hop_s
+        # 6 s of audio at a 24 ms hop is 250 columns; allow the trailing partial.
+        assert 240 <= emitted <= 252, f"emitted {emitted} columns for 6 s of audio"
+
     def test_binary_frame_roundtrips(self) -> None:
         encoder = self._encoder()
         batch = encoder.push(np.random.default_rng(1).normal(0, 0.1, 48000).astype(np.float32), 0, 0)

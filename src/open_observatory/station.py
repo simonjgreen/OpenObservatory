@@ -1074,7 +1074,11 @@ class Station:
                 else None,
                 "note": "dBFS relative to digital full scale; not calibrated SPL",
             },
-            "spectrograms": [encoder.describe() for encoder in self.spectrograms.values()],
+            # Frequency tables are sent once, in the live channel's hello frame.
+            "spectrograms": [
+                encoder.describe(include_frequencies=False)
+                for encoder in self.spectrograms.values()
+            ],
             "segmenters": self.router.snapshot() if self.router else [],
             "leases": self.leases.snapshot(),
             "detectors": [worker.snapshot() for worker in self.workers],

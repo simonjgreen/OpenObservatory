@@ -50,10 +50,15 @@ class ClipAsset:
     sha256: str
     expires_at: datetime | None
     detail: dict[str, object]
+    #: How long this file plays. Kept explicit rather than derived from the frame
+    #: bounds: those are *native* stream provenance, so dividing them by a
+    #: derivative's own rate is meaningless. Doing exactly that reported a 4.6 s
+    #: clip's 48 kHz playback copy as 36.5 s.
+    duration_s: float = 0.0
 
     @property
-    def duration_s(self) -> float:
-        return (self.end_frame - self.start_frame) / self.sample_rate
+    def native_frame_count(self) -> int:
+        return self.end_frame - self.start_frame
 
 
 @dataclass(slots=True)
@@ -126,6 +131,8 @@ class ClipManager:
         self.stats = ClipStats()
         self._recent_writes: deque[float] = deque(maxlen=max(1, max_per_minute * 4))
         self._guard_reason: str | None = None
+        #: (sampled_at_monotonic, file_count, total_bytes)
+        self._usage_cache: tuple[float, int, int] | None = None
 
     # ------------------------------------------------------------------
 
@@ -216,6 +223,7 @@ class ClipManager:
                 with contextlib.suppress(OSError):
                     day.rmdir()
 
+        self._usage_cache = None
         self.stats.expired_deleted += removed_expired
         self.stats.budget_deleted += removed_budget
         self.stats.bytes_reclaimed += reclaimed
@@ -391,6 +399,7 @@ class ClipManager:
         digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
         size = temporary.stat().st_size
         temporary.replace(path)
+        duration = float(pcm.shape[0]) / sample_rate
 
         expires = (
             datetime.now(UTC) + timedelta(days=self.retention_days)
@@ -402,7 +411,7 @@ class ClipManager:
             path=str(path.name),
             kind=kind,
             sample_rate=sample_rate,
-            seconds=round(int(pcm.shape[0]) / sample_rate, 2),
+            seconds=round(duration, 2),
             bytes=size,
         )
         return ClipAsset(
@@ -417,6 +426,7 @@ class ClipManager:
             sha256=digest,
             expires_at=expires,
             detail=detail,
+            duration_s=duration,
         )
 
     def _write_ultrasonic_audible(
@@ -507,16 +517,31 @@ class ClipManager:
 
     # ------------------------------------------------------------------
 
-    def disk_usage(self) -> dict[str, object]:
-        total = 0
-        count = 0
-        for path in self.clip_dir.rglob("*.wav"):
-            try:
-                total += path.stat().st_size
-                count += 1
-            except OSError:
-                continue
+    def disk_usage(self, *, max_age_s: float = 30.0) -> dict[str, object]:
+        """Clip and filesystem usage, cached.
+
+        Walking the clip tree costs ~8 ms at 700 files and grows with the archive.
+        This is read by every status snapshot — which fires per live viewer every two
+        seconds, on every API request and on every metrics scrape — all on the event
+        loop, so an uncached walk is a recurring stall on the same loop that feeds the
+        spectrogram. The free-space figure is cheap and always fresh; only the tree
+        walk is cached.
+        """
         usage = shutil.disk_usage(self.clip_dir)
+        now = time.monotonic()
+        cached = self._usage_cache
+        if cached is None or now - cached[0] > max_age_s:
+            total = 0
+            count = 0
+            for path in self.clip_dir.rglob("*.wav"):
+                try:
+                    total += path.stat().st_size
+                    count += 1
+                except OSError:
+                    continue
+            cached = (now, count, total)
+            self._usage_cache = cached
+        _, count, total = cached
         return {
             "clip_dir": str(self.clip_dir),
             "clip_count": count,

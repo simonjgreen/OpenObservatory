@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     spectrogram_ceiling_db: float = -15.0
     #: Columns retained server-side so a newly-connected browser sees history.
     spectrogram_history_columns: int = 2400
+    #: Seconds of history pushed to a client on connect. Matches the UI's default
+    #: view; the full retained history is ~770 kB across both channels and sending
+    #: all of it in one burst delayed the audio consumer on the same event loop.
+    spectrogram_backfill_s: float = 30.0
 
     # ---- detectors --------------------------------------------------------
     activity_enabled: bool = True
