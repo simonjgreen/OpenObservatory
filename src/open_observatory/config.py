@@ -110,6 +110,36 @@ class Settings(BaseSettings):
     #: so evidence writing can never threaten the database (technical spec §12).
     clip_min_free_gb: float = 5.0
 
+    # ---- making ultrasound listenable ------------------------------------
+    #: How to render an ultrasonic event into something a human can hear.
+    #:
+    #: ``time-expansion`` — replay slowed by a factor, so a 45 kHz call becomes a
+    #:   4.5 kHz one. Preserves every harmonic and the exact call shape, which is
+    #:   what makes it the standard for analysis. Duration is multiplied.
+    #: ``heterodyne`` — mix against a local oscillator tuned near the call, as a
+    #:   handheld bat detector does. Keeps real-time duration; discards everything
+    #:   outside the tuned band, so it is for listening, not measurement.
+    #: ``both`` — write one of each.
+    #: ``none`` — disable.
+    ultrasonic_audible_method: Literal["time-expansion", "heterodyne", "both", "none"] = "both"
+    #: Time-expansion factor. 0 chooses one per detection so the call lands near
+    #: ``ultrasonic_target_hz``, which keeps a 25 kHz and a 110 kHz species equally
+    #: audible instead of favouring whichever the fixed factor happened to suit.
+    ultrasonic_time_expansion_factor: float = 0.0
+    ultrasonic_target_hz: float = 4000.0
+    #: Everything below this is removed first. Wind and traffic rumble would
+    #: otherwise be shifted down into a sub-audible thump that masks the call.
+    ultrasonic_highpass_hz: float = 12000.0
+    #: Bandwidth kept either side of the tuned frequency when heterodyning.
+    ultrasonic_heterodyne_bandwidth_hz: float = 5000.0
+    #: Cap on the *expanded* clip length, since expansion multiplies duration.
+    ultrasonic_audible_max_s: float = 60.0
+    #: Render anything peaking above this. Set at 15 kHz rather than the 24 kHz
+    #: Nyquist of the playback derivative because content between the two is
+    #: technically present in that file and yet effectively inaudible — most adults
+    #: cannot hear 18 kHz. Bush-crickets and the lower bat calls both live there.
+    ultrasonic_audible_min_peak_hz: float = 15000.0
+
     # ---- api --------------------------------------------------------------
     bind_host: str = "0.0.0.0"
     bind_port: int = 8080

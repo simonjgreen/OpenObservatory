@@ -30,6 +30,10 @@ until the acceptance criteria pass a 72-hour soak.
     and peak frequency, explicitly not a species identification.
 - **Writes evidence clips** at the authoritative rate with a browser-playable
   derivative, inside a rate limit, size budget and disk reserve.
+- **Makes ultrasound audible.** A 48 kHz bat call is inaudible and undecodable by a
+  browser, so ultrasonic detections also get time-expanded (slowed, so frequencies
+  divide — preserves everything) and heterodyned (mixed down like a handheld
+  detector — preserves real time) renderings, each labelled with what it changed.
 - **Serves a real-time debug UI** with a scrolling spectrogram (audible and
   ultrasonic), live species/event list, low-latency listen button, and the pipeline's
   own internals.
@@ -141,7 +145,7 @@ and `docs/architecture/TECHNICAL_SPEC.md`.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 111 tests
+.venv/bin/python -m pytest        # 135 tests
 ```
 
 They run without a microphone, against the mandated replay/synthetic sources.
@@ -155,6 +159,9 @@ They run without a microphone, against the mandated replay/synthetic sources.
   probability.
 - Levels are labelled dBFS relative to digital full scale, never as calibrated SPL,
   because no calibration procedure exists yet.
+- Audible renderings of ultrasound are filtered and normalised, so they record
+  `amplitudes_comparable_to_native: false` and the UI marks them "processed". Only
+  the native clip is evidence of level.
 - ALSA rate substitution is refused rather than accepted, so the stream's true
   bandwidth is always known.
 - A synthetic or replayed source is stated loudly everywhere it appears, including

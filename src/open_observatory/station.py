@@ -132,6 +132,13 @@ class Station:
             max_per_minute=settings.clip_max_per_minute,
             max_total_bytes=int(settings.clip_max_total_gb * 1024**3),
             min_free_bytes=int(settings.clip_min_free_gb * 1024**3),
+            ultrasonic_audible_method=settings.ultrasonic_audible_method,
+            ultrasonic_time_expansion_factor=settings.ultrasonic_time_expansion_factor,
+            ultrasonic_target_hz=settings.ultrasonic_target_hz,
+            ultrasonic_highpass_hz=settings.ultrasonic_highpass_hz,
+            ultrasonic_heterodyne_bandwidth_hz=settings.ultrasonic_heterodyne_bandwidth_hz,
+            ultrasonic_audible_max_s=settings.ultrasonic_audible_max_s,
+            ultrasonic_audible_min_peak_hz=settings.ultrasonic_audible_min_peak_hz,
         )
 
         self.workers: list[DetectorWorker] = []
@@ -686,6 +693,7 @@ class Station:
             label=detection.detector_label,
             event_start_utc=detection.event_start_utc,
             plugin_id=metadata.plugin_id,
+            peak_frequency_hz=detection.peak_frequency_hz,
         )
         for asset in assets:
             record.media.append(
@@ -693,6 +701,7 @@ class Station:
                     "id": str(asset.asset_id),
                     "kind": asset.kind,
                     "role": str(asset.detail.get("role", "evidence")),
+                    "description": asset.detail.get("description"),
                     "sample_rate": asset.sample_rate,
                     "duration_s": round(asset.duration_s, 3),
                     "byte_length": asset.byte_length,

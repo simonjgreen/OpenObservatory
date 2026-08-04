@@ -40,6 +40,11 @@ echo "==> syncing source to $HOST:$REMOTE_DIR"
 rsync -a --delete \
     --exclude '.git' \
     --exclude 'data' \
+    `# Per-station operator configuration: station name, coordinates, device key.` \
+    `# It is gitignored, so it does not exist in the source tree and --delete would` \
+    `# remove it from the target on every deploy. It did, once.` \
+    --exclude 'config/runtime.env' \
+    --exclude '.env' \
     --exclude '.venv' \
     --exclude 'node_modules' \
     --exclude 'web/node_modules' \

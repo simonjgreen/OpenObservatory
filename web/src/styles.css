@@ -541,3 +541,17 @@ code {
   background: linear-gradient(90deg, #2f7d4f, #5ce08a 70%, #fbbf24 92%, #f87171);
   transition: width 100ms linear;
 }
+
+/* Evidence media, including the audible renderings of ultrasound. */
+.media-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 2px; }
+.media-title { font-size: 12px; font-weight: 600; }
+.media-badge {
+  font-size: 10px; font-family: var(--mono);
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(195, 155, 255, 0.16); color: var(--bat);
+}
+.media.audible-ultrasonic {
+  border-left: 2px solid var(--bat);
+  padding-left: 9px;
+}
+.media-explainer { font-size: 11px; margin: 4px 0 2px; line-height: 1.5; }

@@ -192,6 +192,10 @@ export interface MediaRef {
   id: string
   kind: string
   role: string
+  /** Short human-readable rendering description, e.g. "x10 time expansion". */
+  description?: string | null
+  /** Provenance of any processing applied. See audio/ultrasound.py. */
+  detail?: Record<string, unknown>
   sample_rate: number
   duration_s?: number
   byte_length: number

@@ -149,3 +149,63 @@ laptop speakers at unity. The client applies adjustable make-up gain (default
 +24 dB) followed by a limiter, so the feed is usable without a loud close event
 becoming painful. This gain is monitoring only and never affects what is analysed,
 stored or measured.
+
+## Making ultrasound audible in evidence clips
+
+An ultrasonic detection is inaudible in both of the clips written for an audible
+one: the authoritative recording is at 384 kHz, which no browser will decode, and
+the 48 kHz playback derivative is band-limited to 24 kHz — so the call has been
+filtered away entirely. A clip you cannot listen to is only half a piece of
+evidence.
+
+Detections whose peak frequency is above 24 kHz therefore get extra derivatives,
+served through the same `/api/v1/media/{id}` endpoint with `kind:
+"audible_ultrasonic"`. Both are produced by default. Configure with
+`OO_ULTRASONIC_AUDIBLE_METHOD` (`time-expansion`, `heterodyne`, `both`, `none`).
+
+### Time expansion — the analysis view
+
+Replays the recording slowed by a factor *N*, so every frequency divides by *N*: a
+48 kHz call is heard at 4.8 kHz with `N = 10`. Harmonics, sweep shape, amplitude
+envelope and inter-pulse timing all survive exactly, which is why hardware
+detectors offer it as TE mode and why recordists use it for identification.
+
+No resampling is involved. The samples are written unchanged with a lower rate in
+the WAV header, which *is* time expansion — exactly, and with no filter artefacts.
+
+The factor is chosen per detection so the call lands near
+`OO_ULTRASONIC_TARGET_HZ` (default 4 kHz), rounded to a whole number. A single
+fixed factor would suit one species and bury another: a 25 kHz noctule and a
+110 kHz lesser horseshoe need different treatment. Set
+`OO_ULTRASONIC_TIME_EXPANSION_FACTOR` to pin it.
+
+Cost: the clip lasts *N* times longer than the event did.
+`OO_ULTRASONIC_AUDIBLE_MAX_S` caps the result.
+
+### Heterodyne — the listening view
+
+Multiplies the signal by a local oscillator tuned to the detection's peak frequency
+and keeps the difference, exactly as a handheld bat detector does. Real-time
+duration is preserved, so a pass sounds like the sequence of clicks a surveyor
+would recognise.
+
+Everything outside `± OO_ULTRASONIC_HETERODYNE_BANDWIDTH_HZ` of the tuning is
+discarded, so this one is for listening, not for measurement. The band-pass is
+applied *before* mixing, so out-of-band content cannot alias into the result.
+
+### Both are processed, and say so
+
+Each derivative is high-pass filtered first (`OO_ULTRASONIC_HIGHPASS_HZ`, default
+12 kHz), because wind and traffic dominate the low end and either method would
+otherwise fold that rumble in on top of the call — under time expansion, 90 Hz of
+wind becomes a 9 Hz thump that masks everything.
+
+Each is then peak-normalised to −3 dBFS, because ultrasonic calls sit tens of dB
+below full scale after filtering and an un-normalised derivative is inaudible even
+once shifted into the audible band.
+
+Both steps mean **these files' amplitudes are not comparable with the
+authoritative recording's**. The asset detail records
+`amplitudes_comparable_to_native: false`, the applied gain in dB, the method and its
+parameters; the UI shows a "processed" chip and a sentence explaining what was done
+and what it cost. Only the native clip is evidence of level.

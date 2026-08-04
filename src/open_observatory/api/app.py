@@ -575,6 +575,8 @@ def _detection_payload(row: orm.Detection, *, include_native: bool = False) -> d
                 "id": str(link.media_asset_id),
                 "role": link.role,
                 "kind": link.asset.kind,
+                "description": (link.asset.detail or {}).get("description"),
+                "detail": link.asset.detail or {},
                 "sample_rate": link.asset.sample_rate,
                 "byte_length": link.asset.byte_length,
                 "sha256": link.asset.sha256,

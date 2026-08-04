@@ -5,9 +5,48 @@
  *  surprising identification can be argued with rather than just believed.
  */
 
-import type { Detection } from '../types'
+import type { Detection, MediaRef } from '../types'
 import { formatHz } from './Spectrogram'
 import { glyphFor } from './Suggestions'
+
+const MEDIA_LABELS: Record<string, string> = {
+  evidence_native: 'Authoritative recording',
+  playback: 'Playback (48 kHz)',
+  audible_ultrasonic: 'Ultrasound made audible',
+}
+
+/** Say plainly what was done to the audio and what it costs.
+ *
+ *  Both renderings alter the signal, and a reviewer drawing conclusions from one
+ *  needs to know which properties survived. Time expansion keeps everything but
+ *  changes the timebase; heterodyning keeps the timebase but throws away most of
+ *  the spectrum.
+ */
+function explainUltrasonic(asset: MediaRef): string {
+  const detail = asset.detail ?? {}
+  if (detail.method === 'time-expansion') {
+    const factor = Number(detail.factor ?? 0)
+    const source = Number(detail.source_peak_hz ?? 0)
+    const audible = Number(detail.audible_peak_hz ?? 0)
+    return (
+      `Played ${factor}x slower, so every frequency is divided by ${factor}: ` +
+      `the ${(source / 1000).toFixed(1)} kHz call is heard at ${(audible / 1000).toFixed(1)} kHz. ` +
+      `Harmonics, sweep shape and pulse timing are all preserved — the clip simply ` +
+      `lasts ${factor}x longer than the event did.`
+    )
+  }
+  if (detail.method === 'heterodyne') {
+    const tuned = Number(detail.tuned_hz ?? 0)
+    const bandwidth = Number(detail.bandwidth_hz ?? 0)
+    return (
+      `Mixed down from ${(tuned / 1000).toFixed(1)} kHz, keeping ±${(bandwidth / 1000).toFixed(1)} kHz, ` +
+      `as a handheld bat detector does. Real time is preserved, so the rhythm of the ` +
+      `pass is intact, but everything outside that band is discarded — good for ` +
+      `listening, not for measurement.`
+    )
+  }
+  return ''
+}
 
 interface Props {
   detection: Detection | null
@@ -92,22 +131,46 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
         <div className="subsection">
           <h3>Evidence</h3>
           {detection.media.map((asset) => (
-            <div className="media" key={asset.id}>
-              <div className="media-meta mono dim">
-                {asset.kind} · {(asset.sample_rate / 1000).toFixed(0)} kHz ·{' '}
-                {(asset.byte_length / 1024).toFixed(0)} kB
+            <div
+              className={`media ${asset.kind === 'audible_ultrasonic' ? 'audible-ultrasonic' : ''}`}
+              key={asset.id}
+            >
+              <div className="media-head">
+                <span className="media-title">{MEDIA_LABELS[asset.kind] ?? asset.kind}</span>
+                {asset.description && <span className="media-badge">{asset.description}</span>}
+                {asset.detail?.authoritative === false && (
+                  <span
+                    className="chip warn"
+                    title="Filtered and normalised for listening. Its levels are not comparable with the authoritative recording."
+                  >
+                    processed
+                  </span>
+                )}
               </div>
+              <div className="media-meta mono dim">
+                {(asset.sample_rate / 1000).toFixed(asset.sample_rate < 10000 ? 1 : 0)} kHz ·{' '}
+                {(asset.byte_length / 1024).toFixed(0)} kB
+                {typeof asset.duration_s === 'number' && ` · ${asset.duration_s.toFixed(1)} s`}
+              </div>
+
               {asset.sample_rate <= 96000 ? (
                 <audio controls preload="none" src={asset.url} />
               ) : (
                 <p className="dim">
-                  {(asset.sample_rate / 1000).toFixed(0)} kHz source — browsers cannot
-                  decode this directly. A 48 kHz playback derivative is written alongside.{' '}
+                  {(asset.sample_rate / 1000).toFixed(0)} kHz — no browser will decode this
+                  directly. It is the authoritative recording; use the derivatives below to
+                  listen, or{' '}
                   <a href={asset.url} download>
-                    download
-                  </a>
+                    download it
+                  </a>{' '}
+                  for analysis.
                 </p>
               )}
+
+              {asset.kind === 'audible_ultrasonic' && (
+                <p className="media-explainer dim">{explainUltrasonic(asset)}</p>
+              )}
+
               <div className="mono dim hash" title="SHA-256 of the written file">
                 {asset.sha256.slice(0, 32)}…
               </div>

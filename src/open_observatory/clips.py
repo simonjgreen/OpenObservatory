@@ -96,6 +96,13 @@ class ClipManager:
         max_per_minute: int = 20,
         max_total_bytes: int = 20 * 1024**3,
         min_free_bytes: int = 5 * 1024**3,
+        ultrasonic_audible_method: str = "both",
+        ultrasonic_time_expansion_factor: float = 0.0,
+        ultrasonic_target_hz: float = 4000.0,
+        ultrasonic_highpass_hz: float = 12000.0,
+        ultrasonic_heterodyne_bandwidth_hz: float = 5000.0,
+        ultrasonic_audible_max_s: float = 60.0,
+        ultrasonic_audible_min_peak_hz: float = 15000.0,
     ) -> None:
         self.clip_dir = Path(clip_dir)
         self.clip_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +116,13 @@ class ClipManager:
         self.max_per_minute = max_per_minute
         self.max_total_bytes = max_total_bytes
         self.min_free_bytes = min_free_bytes
+        self.ultrasonic_audible_method = ultrasonic_audible_method
+        self.ultrasonic_time_expansion_factor = ultrasonic_time_expansion_factor
+        self.ultrasonic_target_hz = ultrasonic_target_hz
+        self.ultrasonic_highpass_hz = ultrasonic_highpass_hz
+        self.ultrasonic_heterodyne_bandwidth_hz = ultrasonic_heterodyne_bandwidth_hz
+        self.ultrasonic_audible_max_s = ultrasonic_audible_max_s
+        self.ultrasonic_audible_min_peak_hz = ultrasonic_audible_min_peak_hz
         self.stats = ClipStats()
         self._recent_writes: deque[float] = deque(maxlen=max(1, max_per_minute * 4))
         self._guard_reason: str | None = None
@@ -230,6 +244,9 @@ class ClipManager:
         label: str | None,
         event_start_utc: datetime,
         plugin_id: str = "",
+        #: Drives the ultrasonic audible derivative: it is what the time-expansion
+        #: factor and the heterodyne tuning are chosen from.
+        peak_frequency_hz: float | None = None,
     ) -> list[ClipAsset]:
         """Write evidence for one detection. Returns the assets created."""
         self.stats.requested += 1
@@ -314,6 +331,32 @@ class ClipManager:
                 # A missing derivative is a degraded outcome, not a lost clip.
                 log.warning("clip.playback_failed", detection=str(detection_id), error=str(exc))
 
+        # A high-frequency event is inaudible in both of the above: the native clip
+        # is at a rate no browser will decode, and while the 48 kHz playback
+        # derivative retains everything below 24 kHz, human hearing gives out well
+        # before that. Render something that can actually be heard.
+        if peak_frequency_hz and peak_frequency_hz >= self.ultrasonic_audible_min_peak_hz:
+            try:
+                assets.extend(
+                    self._write_ultrasonic_audible(
+                        day_dir,
+                        base,
+                        pcm,
+                        rate,
+                        stream_id=stream_id,
+                        start_frame=start,
+                        end_frame=end,
+                        detection_id=detection_id,
+                        peak_frequency_hz=peak_frequency_hz,
+                    )
+                )
+            except Exception as exc:
+                log.warning(
+                    "clip.ultrasonic_audible_failed",
+                    detection=str(detection_id),
+                    error=str(exc),
+                )
+
         self.stats.written += len(assets)
         self.stats.bytes_written += sum(asset.byte_length for asset in assets)
         return assets
@@ -375,6 +418,65 @@ class ClipManager:
             expires_at=expires,
             detail=detail,
         )
+
+    def _write_ultrasonic_audible(
+        self,
+        day_dir: Path,
+        base: str,
+        pcm: np.ndarray,
+        source_rate: int,
+        *,
+        stream_id: uuid.UUID,
+        start_frame: int,
+        end_frame: int,
+        detection_id: uuid.UUID,
+        peak_frequency_hz: float,
+    ) -> list[ClipAsset]:
+        """Write the audible rendering(s) of an ultrasonic event."""
+        from .audio import ultrasound
+
+        renders = ultrasound.render(
+            pcm,
+            source_rate,
+            method=self.ultrasonic_audible_method,
+            peak_hz=peak_frequency_hz,
+            target_hz=self.ultrasonic_target_hz,
+            fixed_factor=self.ultrasonic_time_expansion_factor,
+            highpass_hz=self.ultrasonic_highpass_hz,
+            bandwidth_hz=self.ultrasonic_heterodyne_bandwidth_hz,
+            max_seconds=self.ultrasonic_audible_max_s,
+        )
+
+        assets: list[ClipAsset] = []
+        for rendered in renders:
+            suffix = "te" if rendered.method == "time-expansion" else "het"
+            asset = self._write_wav(
+                day_dir / f"{base}_{suffix}.wav",
+                rendered.pcm,
+                rendered.sample_rate,
+                kind="audible_ultrasonic",
+                stream_id=stream_id,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                detail={
+                    "role": rendered.method,
+                    "detection_id": str(detection_id),
+                    "description": rendered.description,
+                    # This derivative is normalised and filtered, so its levels must
+                    # not be compared with the authoritative recording's.
+                    "authoritative": False,
+                    **rendered.detail,
+                },
+            )
+            assets.append(asset)
+            log.info(
+                "clip.ultrasonic_audible",
+                detection=str(detection_id),
+                method=rendered.method,
+                description=rendered.description,
+                seconds=round(rendered.duration_s, 2),
+            )
+        return assets
 
     def _write_playback(
         self,
