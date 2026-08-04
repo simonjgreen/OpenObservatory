@@ -1,0 +1,456 @@
+"""Tests for segmentation, normalisation, clip policy and the replay sources.
+
+The replay source is what makes these possible without a microphone, which is
+exactly why the audio pipeline spec makes it mandatory rather than optional.
+"""
+
+from __future__ import annotations
+
+import uuid
+from itertools import pairwise
+
+import numpy as np
+import pytest
+
+from open_observatory.audio.contracts import (
+    NS_PER_S,
+    AudioWindow,
+    DetectorMetadata,
+    DiscontinuityReason,
+    NativeDetection,
+    WindowSpec,
+)
+from open_observatory.audio.replay_source import ReplaySource, SyntheticSource
+from open_observatory.clips import ClipManager, _slug
+from open_observatory.normaliser import ClaimViolation, Normaliser
+from open_observatory.segmenter import StreamSegmenter, TransientAssetStore, WindowRouter
+
+AUDIBLE = WindowSpec(stream_kind="audible48", sample_rate=48000, duration_s=1.0, stride_s=0.5)
+
+
+def make_metadata(plugin_id: str, *, calibrated: bool = False) -> DetectorMetadata:
+    return DetectorMetadata(
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        model_id="test",
+        model_version="1",
+        model_sha256=None,
+        taxonomy_version=None,
+        licence_name="Apache-2.0",
+        licence_url=None,
+        claim="test detector",
+        calibrated=calibrated,
+    )
+
+
+class TestSegmenter:
+    def _segmenter(self, native_rate: int = 384000) -> StreamSegmenter:
+        return StreamSegmenter(
+            AUDIBLE, stream_id=uuid.uuid4(), sample_rate=48000, native_rate=native_rate
+        )
+
+    def test_windows_have_exact_frame_bounds_and_stride(self) -> None:
+        segmenter = self._segmenter()
+        windows = segmenter.push(np.zeros(48000 * 3, dtype=np.float32), 0, 0, 0)
+        # 3 s of audio, 1 s windows on a 0.5 s stride -> starts at 0, 0.5 ... 2.0
+        assert [w.start_frame for w in windows] == [0, 24000, 48000, 72000, 96000]
+        for window in windows:
+            assert window.end_frame - window.start_frame == 48000
+            assert window.pcm.shape[0] == 48000
+
+    def test_native_frame_mapping_targets_the_authoritative_stream(self) -> None:
+        segmenter = self._segmenter(native_rate=384000)
+        windows = segmenter.push(np.zeros(48000 * 2, dtype=np.float32), 0, 0, 0)
+        window = windows[1]
+        assert window.native_start_frame == window.start_frame * 8
+        assert window.native_end_frame == window.end_frame * 8
+
+    def test_utc_bounds_come_from_frame_index(self) -> None:
+        segmenter = self._segmenter()
+        utc0 = 1_700_000_000 * NS_PER_S
+        windows = segmenter.push(np.zeros(48000 * 2, dtype=np.float32), 0, utc0, 0)
+        for window in windows:
+            expected = utc0 + window.start_frame * NS_PER_S // 48000
+            assert window.utc_start_ns == expected
+            assert window.utc_end_ns - window.utc_start_ns == NS_PER_S
+
+    def test_windows_are_contiguous_across_pushes(self) -> None:
+        """The stride continues over a push boundary rather than restarting.
+
+        One second of audio yields exactly one 1 s window (at frame 0) and leaves
+        the 0.5 s of overlap buffered; the next push must resume from there, so the
+        second push's first window starts at the stride, not at its own first frame.
+        """
+        segmenter = self._segmenter()
+        first = segmenter.push(np.zeros(48000, dtype=np.float32), 0, 0, 0)
+        second = segmenter.push(np.zeros(48000, dtype=np.float32), 48000, 0, 0)
+        assert [w.start_frame for w in first] == [0]
+        assert [w.start_frame for w in second] == [24000, 48000]
+        # No frame range is ever emitted twice, and none is skipped.
+        starts = [w.start_frame for w in first + second]
+        assert starts == sorted(starts)
+        assert all(b - a == 24000 for a, b in pairwise(starts))
+
+    def test_discontinuity_drops_the_tail_rather_than_splicing(self) -> None:
+        """A window spanning a gap would read to a detector as one continuous call."""
+        segmenter = self._segmenter()
+        segmenter.push(np.zeros(30000, dtype=np.float32), 0, 0, 0)  # partial, buffered
+        windows = segmenter.push(
+            np.zeros(30000, dtype=np.float32), 90000, 0, 0, discontinuous=True
+        )
+        # The buffered 30000 frames were discarded, so nothing completes yet.
+        assert windows == []
+        assert segmenter.stats.windows_emitted == 0
+
+    def test_window_pcm_is_immutable(self) -> None:
+        segmenter = self._segmenter()
+        window = segmenter.push(np.ones(48000, dtype=np.float32), 0, 0, 0)[0]
+        with pytest.raises(ValueError):
+            window.pcm[0] = 2.0
+
+    def test_spec_rate_mismatch_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Hz"):
+            StreamSegmenter(AUDIBLE, stream_id=uuid.uuid4(), sample_rate=96000, native_rate=96000)
+
+
+class TestWindowRouter:
+    def test_identical_specs_share_one_segmenter(self) -> None:
+        router = WindowRouter(native_rate=48000, stream_id=uuid.uuid4())
+        router.register(AUDIBLE, "a", sample_rate=48000)
+        router.register(AUDIBLE, "b", sample_rate=48000)
+        assert len(router.snapshot()) == 1
+        assert router.snapshot()[0]["consumers"] == ["a", "b"]
+
+    def test_each_window_is_offered_to_every_consumer(self) -> None:
+        router = WindowRouter(native_rate=48000, stream_id=uuid.uuid4())
+        router.register(AUDIBLE, "a", sample_rate=48000)
+        router.register(AUDIBLE, "b", sample_rate=48000)
+        seen: list[tuple[int, list[str]]] = []
+        router.push(
+            "audible48",
+            np.zeros(48000, dtype=np.float32),
+            0,
+            0,
+            0,
+            on_window=lambda window, consumers: seen.append((window.start_frame, consumers)),
+        )
+        assert seen
+        assert all(consumers == ["a", "b"] for _, consumers in seen)
+
+    def test_streams_of_a_different_kind_are_not_routed(self) -> None:
+        router = WindowRouter(native_rate=384000, stream_id=uuid.uuid4())
+        router.register(AUDIBLE, "a", sample_rate=48000)
+        calls: list[AudioWindow] = []
+        router.push(
+            "native",
+            np.zeros(384000, dtype=np.float32),
+            0,
+            0,
+            0,
+            on_window=lambda window, _consumers: calls.append(window),
+        )
+        assert calls == []
+
+
+class TestLeases:
+    def test_grant_and_release_balance(self) -> None:
+        store = TransientAssetStore()
+        window_id = uuid.uuid4()
+        store.grant(window_id, "plugin")
+        assert store.snapshot()["outstanding"] == 1
+        store.release(window_id, "plugin")
+        assert store.snapshot()["outstanding"] == 0
+        assert store.released == 1
+
+    def test_expiry_is_swept_and_counted(self) -> None:
+        store = TransientAssetStore(default_lease_s=0.0)
+        store.grant(uuid.uuid4(), "plugin", lease_s=-1.0)
+        assert store.sweep() == 1
+        assert store.expired == 1
+
+
+class TestNormaliser:
+    def _window(self, *, rate: int = 48000, start_frame: int = 48000) -> AudioWindow:
+        utc0 = 1_700_000_000 * NS_PER_S
+        return AudioWindow(
+            window_id=uuid.uuid4(),
+            stream_id=uuid.uuid4(),
+            stream_kind="audible48",
+            sample_rate=rate,
+            start_frame=start_frame,
+            end_frame=start_frame + rate,
+            native_start_frame=start_frame * 8,
+            native_end_frame=(start_frame + rate) * 8,
+            utc_start_ns=utc0,
+            utc_end_ns=utc0 + NS_PER_S,
+            monotonic_start_ns=0,
+            pcm=np.zeros(rate, dtype=np.float32),
+            spec=AUDIBLE,
+            created_monotonic_ns=0,
+        )
+
+    def test_offsets_become_native_frames(self) -> None:
+        normaliser = Normaliser()
+        window = self._window(start_frame=48000)
+        detection = NativeDetection(offset_start_s=0.25, offset_end_s=0.75, score=0.9, label="x")
+        result = normaliser.normalise(
+            make_metadata("birdnet-v2.4"), window, detection, native_sample_rate=384000
+        )
+        assert result is not None
+        # 48000 + 0.25 s at 48 kHz = frame 60000 in the derived stream, x8 native.
+        assert result.source_start_frame == 60000 * 8
+        assert result.source_end_frame == 84000 * 8
+
+    def test_utc_bounds_follow_the_window(self) -> None:
+        normaliser = Normaliser()
+        window = self._window()
+        detection = NativeDetection(offset_start_s=0.5, offset_end_s=1.0, score=0.5, label="x")
+        result = normaliser.normalise(
+            make_metadata("birdnet-v2.4"), window, detection, native_sample_rate=48000
+        )
+        assert result is not None
+        assert result.event_start_utc.timestamp() == pytest.approx(1_700_000_000.5, abs=1e-6)
+        assert result.duration_s == pytest.approx(0.5, abs=1e-6)
+
+    def test_activity_detector_cannot_emit_a_species(self) -> None:
+        """ADR-010 enforced in code, not just written down."""
+        normaliser = Normaliser()
+        window = self._window()
+        offender = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=0.5,
+            score=0.9,
+            label="acoustic event",
+            common_name="European Robin",
+        )
+        with pytest.raises(ClaimViolation, match="not permitted"):
+            normaliser.normalise(
+                make_metadata("activity-v1"), window, offender, native_sample_rate=48000
+            )
+        assert normaliser.stats.claim_violations == 1
+
+    def test_uncalibrated_detector_cannot_claim_a_probability(self) -> None:
+        normaliser = Normaliser()
+        window = self._window()
+        offender = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=0.5,
+            score=0.9,
+            label="x",
+            calibrated_probability=0.9,
+        )
+        with pytest.raises(ClaimViolation, match="calibrated"):
+            normaliser.normalise(
+                make_metadata("birdnet-v2.4", calibrated=False),
+                window,
+                offender,
+                native_sample_rate=48000,
+            )
+
+    def test_overlapping_duplicate_is_suppressed(self) -> None:
+        normaliser = Normaliser()
+        metadata = make_metadata("birdnet-v2.4")
+        first = self._window(start_frame=0)
+        second = self._window(start_frame=24000)  # 50% overlapping window
+        detection = NativeDetection(offset_start_s=0.5, offset_end_s=1.0, score=0.8, label="robin")
+        assert normaliser.normalise(metadata, first, detection, native_sample_rate=48000)
+        again = NativeDetection(offset_start_s=0.0, offset_end_s=0.5, score=0.8, label="robin")
+        assert normaliser.normalise(metadata, second, again, native_sample_rate=48000) is None
+        assert normaliser.stats.duplicates_suppressed == 1
+
+    def test_different_labels_are_not_duplicates(self) -> None:
+        normaliser = Normaliser()
+        metadata = make_metadata("birdnet-v2.4")
+        window = self._window()
+        a = NativeDetection(offset_start_s=0.0, offset_end_s=1.0, score=0.8, label="robin")
+        b = NativeDetection(offset_start_s=0.0, offset_end_s=1.0, score=0.7, label="wren")
+        assert normaliser.normalise(metadata, window, a, native_sample_rate=48000)
+        assert normaliser.normalise(metadata, window, b, native_sample_rate=48000)
+
+    def test_taxon_id_only_asserted_for_species_rank(self) -> None:
+        normaliser = Normaliser()
+        window = self._window()
+        species = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.8,
+            label="x",
+            rank="species",
+            scientific_name="Erithacus rubecula",
+            taxonomic_group="bird",
+        )
+        result = normaliser.normalise(
+            make_metadata("birdnet-v2.4"), window, species, native_sample_rate=48000
+        )
+        assert result is not None
+        assert result.canonical_taxon_id == "sci:erithacus_rubecula"
+
+        event = NativeDetection(
+            offset_start_s=2.0, offset_end_s=3.0, score=0.8, label="e", taxonomic_group="acoustic_event"
+        )
+        other = normaliser.normalise(
+            make_metadata("activity-v1"), window, event, native_sample_rate=48000
+        )
+        assert other is not None
+        assert other.canonical_taxon_id is None
+
+
+class TestClipPolicy:
+    def _manager(self, tmp_path, **kwargs) -> ClipManager:
+        defaults = dict(
+            clip_dir=tmp_path / "clips",
+            clip_plugins=("birdnet-v2.4",),
+            min_score=0.25,
+            max_per_minute=3,
+        )
+        defaults.update(kwargs)
+        return ClipManager(**defaults)  # type: ignore[arg-type]
+
+    def test_only_configured_plugins_are_clipped(self, tmp_path) -> None:
+        manager = self._manager(tmp_path)
+        assert manager.admits("birdnet-v2.4", 0.9)[0] is True
+        admitted, reason = manager.admits("activity-v1", 0.9)
+        assert admitted is False
+        assert "clip_plugins" in reason
+        assert manager.stats.skipped_plugin_not_clipped == 1
+
+    def test_low_scores_are_refused(self, tmp_path) -> None:
+        manager = self._manager(tmp_path)
+        admitted, reason = manager.admits("birdnet-v2.4", 0.1)
+        assert admitted is False
+        assert "below" in reason
+
+    def test_rate_limit_caps_writes(self, tmp_path) -> None:
+        manager = self._manager(tmp_path, max_per_minute=3)
+        for _ in range(3):
+            assert manager.admits("birdnet-v2.4", 0.9)[0]
+            manager._recent_writes.append(__import__("time").monotonic())
+        admitted, reason = manager.admits("birdnet-v2.4", 0.9)
+        assert admitted is False
+        assert "rate limit" in reason
+
+    def test_disk_reserve_stops_writes(self, tmp_path) -> None:
+        # An impossible reserve stands in for a nearly-full disk.
+        manager = self._manager(tmp_path, min_free_bytes=1 << 62)
+        admitted, reason = manager.admits("birdnet-v2.4", 0.9)
+        assert admitted is False
+        assert "free" in reason
+        assert manager.stats.skipped_disk_guard == 1
+
+    def test_retention_deletes_over_budget_oldest_first(self, tmp_path) -> None:
+        manager = self._manager(tmp_path, max_total_bytes=2048, retention_days=0)
+        day = manager.clip_dir / "2026-08-04"
+        day.mkdir(parents=True)
+        import os
+        import time
+
+        for index in range(5):
+            path = day / f"clip{index}.wav"
+            path.write_bytes(b"\x00" * 1024)
+            os.utime(path, (time.time() - (5 - index) * 100,) * 2)
+        result = manager.enforce_retention()
+        assert result["budget_deleted"] == 3
+        remaining = sorted(p.name for p in day.glob("*.wav"))
+        assert remaining == ["clip3.wav", "clip4.wav"]
+
+    def test_labels_from_models_are_made_filesystem_safe(self) -> None:
+        assert _slug("../../etc/passwd") == "etc-passwd"
+        assert _slug("Erithacus rubecula_European Robin") == "erithacus-rubecula-european-robin"
+        assert _slug("") == "event"
+        assert "/" not in _slug("a/b/c")
+
+
+class TestSyntheticSource:
+    async def test_step_mode_is_deterministic(self) -> None:
+        source = SyntheticSource(scene="tone", sample_rate=48000, block_ms=100, mode="step")
+        await source.open()
+        await source.step(1)
+        block = await source.read()
+        assert block is not None
+        assert block.frame_count == 4800
+        assert block.first_frame == 0
+        assert block.discontinuity == DiscontinuityReason.STREAM_START
+        await source.close()
+
+    async def test_frames_and_timestamps_advance_together(self) -> None:
+        source = SyntheticSource(scene="tone", sample_rate=48000, block_ms=100, mode="accelerated")
+        info = await source.open()
+        previous_end = info.started_monotonic_ns
+        for index in range(20):
+            block = await source.read()
+            assert block is not None
+            assert block.first_frame == index * 4800
+            assert block.monotonic_start_ns == previous_end
+            previous_end = block.monotonic_end_ns
+        await source.close()
+
+    async def test_injected_gap_shows_as_missing_frames(self) -> None:
+        source = SyntheticSource(scene="tone", sample_rate=48000, block_ms=100, mode="accelerated")
+        await source.open()
+        await source.read()
+        source.inject_gap(4800)
+        block = await source.read()
+        assert block is not None
+        assert block.missing_frames == 4800
+        assert block.discontinuity == DiscontinuityReason.OVERRUN
+        # The frame index skips the lost audio rather than pretending it existed.
+        assert block.first_frame == 4800 + 4800
+        await source.close()
+
+    async def test_bat_scene_is_silent_when_the_rate_cannot_carry_it(self) -> None:
+        """Honesty check: no fake ultrasound on a 48 kHz stream."""
+        source = SyntheticSource(scene="bat-pass", sample_rate=48000, block_ms=100, mode="accelerated")
+        await source.open()
+        peak = 0.0
+        for _ in range(130):
+            block = await source.read()
+            assert block is not None
+            peak = max(peak, float(np.abs(block.pcm).max()))
+        await source.close()
+        assert peak < 0.05  # noise floor only
+
+    async def test_bat_scene_present_at_high_rate(self) -> None:
+        source = SyntheticSource(scene="bat-pass", sample_rate=384000, block_ms=100, mode="accelerated")
+        await source.open()
+        peak = 0.0
+        for _ in range(130):
+            block = await source.read()
+            assert block is not None
+            peak = max(peak, float(np.abs(block.pcm).max()))
+        await source.close()
+        assert peak > 0.2
+
+
+class TestReplaySource:
+    async def test_wav_fixture_round_trips(self, tmp_path) -> None:
+        import soundfile as sf
+
+        path = tmp_path / "fixture.wav"
+        rate = 48000
+        t = np.arange(rate) / rate
+        sf.write(str(path), (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), rate)
+
+        source = ReplaySource(path, block_ms=100, mode="accelerated", loop=False)
+        info = await source.open()
+        assert info.fmt.sample_rate == rate
+        frames = 0
+        while True:
+            block = await source.read()
+            if block is None:
+                break
+            frames += block.frame_count
+        await source.close()
+        assert frames == rate
+
+    async def test_loop_marks_the_wrap_as_a_discontinuity(self, tmp_path) -> None:
+        import soundfile as sf
+
+        path = tmp_path / "short.wav"
+        sf.write(str(path), np.zeros(4800, dtype=np.float32), 48000)
+        source = ReplaySource(path, block_ms=100, mode="accelerated", loop=True)
+        await source.open()
+        await source.read()
+        second = await source.read()
+        await source.close()
+        assert second is not None
+        assert second.discontinuity == DiscontinuityReason.REPLAY_WRAP

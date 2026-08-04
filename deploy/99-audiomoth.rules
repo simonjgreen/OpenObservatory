@@ -1,0 +1,24 @@
+# AudioMoth USB access without root.
+#
+# The device presents two different identities depending on the position of its
+# side switch, and both need rules:
+#
+#   USB/OFF  -> 10c4:0002  HID configuration interface (firmware identity, gain,
+#               sample rate, bootloader entry). Reached through /dev/hidraw*.
+#   USB/OFF  -> 10c4:0003  Silicon Labs serial bootloader, during flashing.
+#   DEFAULT  -> 16d0:06f3  USB Audio Class capture device. ALSA handles this; the
+#               rule exists so the by-id symlink is predictable.
+#
+# Card numbers are deliberately not referenced anywhere: they change across
+# reboots and hot-plugs.
+
+# HID configuration interface.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="0002", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="0002", MODE="0660", GROUP="plugdev"
+
+# Serial bootloader, used only while flashing firmware.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="0003", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev"
+
+# USB microphone mode.
+SUBSYSTEM=="usb", ATTR{idVendor}=="16d0", ATTR{idProduct}=="06f3", MODE="0660", GROUP="audio"

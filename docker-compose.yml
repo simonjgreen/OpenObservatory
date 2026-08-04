@@ -1,0 +1,49 @@
+# Specification-level Compose skeleton. Claude Code should replace placeholder images/builds
+# milestone by milestone and must not claim this is runnable yet.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: openobservatory
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: openobservatory
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openobservatory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+
+  capture:
+    build:
+      context: .
+      dockerfile: services/capture/Dockerfile
+    devices:
+      - /dev/snd:/dev/snd
+    env_file: config/runtime.env
+    volumes:
+      - ./data/transient:/srv/open-observatory/transient
+    restart: unless-stopped
+    profiles: ["implementation-required"]
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file: config/runtime.env
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    profiles: ["implementation-required"]

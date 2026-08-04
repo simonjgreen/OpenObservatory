@@ -1,0 +1,24 @@
+.env
+config/runtime.env
+data/
+models/
+*.wav
+*.flac
+*.sqlite
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+
+# Model assets are never committed (ADR-006): their licences differ from this
+# code's and acquisition is a deliberate, attributable operator step.
+models/*.tflite
+models/*.txt
+!models/manifest.tsv
+
+# Build output
+web/dist/
+tsbuildinfo
+*.tsbuildinfo

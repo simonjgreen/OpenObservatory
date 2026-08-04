@@ -1,0 +1,75 @@
+[project]
+name = "open-observatory"
+version = "0.3.0"
+description = "Local-first passive acoustic observatory for Raspberry Pi 5 + AudioMoth"
+requires-python = ">=3.12,<3.14"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.4",
+  "pydantic-settings==2.7.1",
+  "SQLAlchemy==2.0.36",
+  "alembic==1.14.0",
+  "numpy==2.2.1",
+  "soundfile==0.13.0",
+  "typer==0.15.1",
+  "rich==13.9.4",
+  "structlog==24.4.0",
+  "prometheus-client==0.21.1",
+  "psutil==6.1.1",
+]
+
+[project.optional-dependencies]
+# ALSA capture on the target device.
+alsa = ["pyalsaaudio==0.11.0"]
+# Preferred high-quality polyphase resampler. Falls back to scipy when absent.
+resample = ["soxr==0.5.0.post1", "scipy==1.15.0"]
+# TFLite inference for the BirdNET adapter. `tflite-runtime` has no cp312
+# aarch64 wheel; ai-edge-litert is its maintained successor and does.
+birdnet = ["ai-edge-litert==2.1.6"]
+# PostgreSQL production profile (ADR-007).
+postgres = ["psycopg[binary]==3.2.3"]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.1",
+  "httpx==0.28.1",
+  "ruff==0.8.6",
+  "mypy==1.14.1",
+]
+
+[project.scripts]
+oo = "open_observatory.cli:app"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+# 110 rather than the more common 88/100: this codebase favours descriptive names
+# and explanatory inline comments, and wrapping them harder hurt readability more
+# than the extra columns cost.
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["open_observatory"]
+mypy_path = "src"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning"]

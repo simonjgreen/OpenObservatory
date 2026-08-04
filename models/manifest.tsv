@@ -1,0 +1,23 @@
+# Model acquisition manifest.
+#
+# ADR-006: model assets are NOT bundled with this repository. Their licences
+# differ from the code's, so acquisition is a separate, attributable step that
+# the operator performs knowingly with `oo models fetch`.
+#
+# Every entry is checksummed. A file already present with a matching digest is
+# never re-downloaded, so a Pi on a metered or intermittent link touches the
+# network exactly once. A digest mismatch is a hard failure, never a warning.
+#
+# Columns: filename <TAB> sha256 <TAB> licence <TAB> url
+#
+# --- BirdNET GLOBAL 6K V2.4 -------------------------------------------------
+# Classifier: 1x144000 float32 in (3 s @ 48 kHz), 1x6522 logits out.
+# Code is Apache-2.0; these released model assets are CC BY-NC-SA 4.0.
+# Mirrored from BirdNET-Go, which vendors Cornell's released checkpoints.
+birdnet.tflite	55f3e4055b1a13bfa9a2452731d0d34f6a02d6b775a334362665892794165e4c	CC-BY-NC-SA-4.0	https://raw.githubusercontent.com/tphakala/birdnet-go/main/internal/classifier/data/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite
+# Range ("MData") model: (latitude, longitude, week) -> per-species occurrence
+# probability. This is what turns "sounds like species X" into "species X is
+# plausible here, this week".
+birdnet_mdata.tflite	1226f23fc20362617deb09178f366111b70cf085c2c82893f2814e5acedce6c2	CC-BY-NC-SA-4.0	https://raw.githubusercontent.com/tphakala/birdnet-go/main/internal/classifier/data/BirdNET_GLOBAL_6K_V2.4_MData_Model_V2_FP16.tflite
+# Labels, en_uk common names, in model output order.
+birdnet_labels.txt	487937b6ad132b8506215523209a87b86adc9dce8e5ed3048ce9268189dddd3d	CC-BY-NC-SA-4.0	https://raw.githubusercontent.com/tphakala/birdnet-go/main/internal/classifier/data/labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_en_uk.txt

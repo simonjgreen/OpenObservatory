@@ -1,0 +1,47 @@
+[Unit]
+Description=Open Observatory station (capture, detectors, API, debug UI)
+Documentation=file:///home/observer/open-observatory/docs/operations/DEPLOYMENT_AND_OPERATIONS.md
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=observer
+Group=observer
+# Capture needs the audio group for /dev/snd, and hidraw access for AudioMoth
+# configuration reads. Nothing here needs root.
+SupplementaryGroups=audio plugdev
+WorkingDirectory=/home/observer/open-observatory
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/observer/open-observatory/config/runtime.env
+ExecStart=/home/observer/open-observatory/.venv/bin/oo serve
+
+Restart=always
+RestartSec=5
+# The capture thread must not be starved by detector inference. A modest
+# real-time-ish priority is enough; full SCHED_FIFO is not needed and would risk
+# locking up the box if capture ever spun.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+# Bounded logging: this station is expected to run for months.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=open-observatory
+
+# Privilege reduction (technical spec §13). The service needs its own directory,
+# /dev/snd and the network; nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/observer/open-observatory/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=false
+MemoryMax=6G
+
+[Install]
+WantedBy=multi-user.target

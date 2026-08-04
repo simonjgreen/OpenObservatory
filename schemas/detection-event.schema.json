@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openobservatory.local/schemas/detection-event.schema.json",
+  "title": "DetectionEvent",
+  "type": "object",
+  "required": ["schema_version", "event_id", "station_id", "detector", "interval", "score", "native_result"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_id": {"type": "string", "format": "uuid"},
+    "station_id": {"type": "string", "format": "uuid"},
+    "detector": {
+      "type": "object",
+      "required": ["plugin_id", "plugin_version", "model_id", "model_version"],
+      "properties": {
+        "plugin_id": {"type": "string"},
+        "plugin_version": {"type": "string"},
+        "model_id": {"type": "string"},
+        "model_version": {"type": "string"},
+        "model_sha256": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "interval": {
+      "type": "object",
+      "required": ["start_utc", "end_utc", "source_start_frame", "source_end_frame"],
+      "properties": {
+        "start_utc": {"type": "string", "format": "date-time"},
+        "end_utc": {"type": "string", "format": "date-time"},
+        "source_start_frame": {"type": "integer", "minimum": 0},
+        "source_end_frame": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "label": {"type": ["string", "null"]},
+    "canonical_taxon_id": {"type": ["string", "null"]},
+    "common_name": {"type": ["string", "null"]},
+    "scientific_name": {"type": ["string", "null"]},
+    "score": {"type": "number"},
+    "calibrated_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "native_result": {"type": "object"}
+  },
+  "additionalProperties": false
+}

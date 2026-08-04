@@ -1,0 +1,392 @@
+/** Scrolling live spectrogram, Merlin-style: newest audio at the right edge,
+ *  history flowing left.
+ *
+ *  Rendering strategy: columns are written into an offscreen canvas used as a ring
+ *  buffer, one pixel column each, and every animation frame blits at most two
+ *  slices of that ring onto the visible canvas. The alternative — rebuilding an
+ *  ImageData of the whole viewport each frame — is hundreds of thousands of JS
+ *  pixel writes per frame and drops the display to a crawl on a modest client.
+ *  Here the per-frame cost is two GPU-accelerated `drawImage` calls regardless of
+ *  how much history is on screen.
+ *
+ *  The frequency axis is logarithmic because the server's bins are, and gridlines
+ *  are placed by looking up each label frequency in the bin centre table rather
+ *  than by assuming a scale.
+ */
+
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ColumnBatch, Detection, SpectrogramSpec } from '../types'
+
+export type Palette = 'observatory' | 'merlin' | 'ice'
+
+const GRID_HZ = [50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000, 50_000, 100_000]
+
+/** Colour ramp anchors, as [position, r, g, b].
+ *
+ *  Every ramp must start at (near) black and rise monotonically in perceived
+ *  brightness. The first version of this file used a hand-rolled sinusoidal ramp
+ *  whose blue channel was 64 at zero and whose red channel saturated by a third of
+ *  the way up; against a real garden noise floor that painted the entire display
+ *  a flat magenta and hid everything. Perceptually ordered ramps are not a
+ *  cosmetic preference — the picture is the diagnostic.
+ */
+const RAMPS: Record<Palette, Array<[number, number, number, number]>> = {
+  // Inferno: the usual choice for spectrograms, and hard to beat for showing
+  // faint structure just above the floor.
+  observatory: [
+    [0.0, 0, 0, 4],
+    [0.1, 22, 11, 57],
+    [0.2, 66, 10, 104],
+    [0.3, 106, 23, 110],
+    [0.4, 147, 38, 103],
+    [0.5, 188, 55, 84],
+    [0.6, 221, 81, 58],
+    [0.7, 243, 120, 25],
+    [0.8, 252, 165, 10],
+    [0.9, 246, 215, 70],
+    [1.0, 252, 255, 164],
+  ],
+  // Merlin's own look: dark ink on near-white paper.
+  merlin: [
+    [0.0, 250, 250, 248],
+    [0.35, 190, 190, 190],
+    [0.7, 90, 90, 92],
+    [1.0, 12, 12, 16],
+  ],
+  ice: [
+    [0.0, 2, 4, 10],
+    [0.25, 12, 44, 92],
+    [0.5, 20, 110, 158],
+    [0.75, 96, 194, 210],
+    [1.0, 240, 253, 255],
+  ],
+}
+
+/** 256-entry RGB lookup, built once per palette. */
+function buildPalette(name: Palette): Uint8ClampedArray {
+  const ramp = RAMPS[name]
+  const table = new Uint8ClampedArray(256 * 3)
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255
+    let upper = 1
+    while (upper < ramp.length - 1 && ramp[upper][0] < t) upper++
+    const [t0, r0, g0, b0] = ramp[upper - 1]
+    const [t1, r1, g1, b1] = ramp[upper]
+    const f = t1 > t0 ? (t - t0) / (t1 - t0) : 0
+    table[i * 3] = r0 + (r1 - r0) * f
+    table[i * 3 + 1] = g0 + (g1 - g0) * f
+    table[i * 3 + 2] = b0 + (b1 - b0) * f
+  }
+  return table
+}
+
+interface Props {
+  spec: SpectrogramSpec
+  /** Registers a sink the parent calls for every batch on this channel. */
+  register: (channel: number, sink: (batch: ColumnBatch) => void) => () => void
+  detections: Detection[]
+  palette: Palette
+  /** Seconds of history to show. */
+  windowSeconds: number
+  serverClockSkewS: number
+  /** Display range within the server's 0-255 encoding, as fractions. */
+  blackPoint: number
+  whitePoint: number
+  showDetections: boolean
+  height: number
+}
+
+export function Spectrogram({
+  spec,
+  register,
+  detections,
+  palette,
+  windowSeconds,
+  serverClockSkewS,
+  blackPoint,
+  whitePoint,
+  showDetections,
+  height,
+}: Props) {
+  const visibleRef = useRef<HTMLCanvasElement | null>(null)
+  const overlayRef = useRef<HTMLCanvasElement | null>(null)
+  const ringRef = useRef<HTMLCanvasElement | null>(null)
+  const writeXRef = useRef(0)
+  const totalColumnsRef = useRef(0)
+  /** UTC seconds of the newest column written. */
+  const newestUtcRef = useRef<number | null>(null)
+  const [ready, setReady] = useState(false)
+  const [hover, setHover] = useState<{ hz: number; secondsAgo: number } | null>(null)
+
+  // Compose the display range into the palette so the hot loop stays a single
+  // table lookup per bin rather than an arithmetic rescale per bin.
+  const paletteTable = useMemo(() => {
+    const base = buildPalette(palette)
+    const low = Math.round(Math.min(blackPoint, whitePoint - 0.02) * 255)
+    const high = Math.round(Math.max(whitePoint, blackPoint + 0.02) * 255)
+    const composed = new Uint8ClampedArray(256 * 3)
+    for (let value = 0; value < 256; value++) {
+      const scaled = Math.max(0, Math.min(255, Math.round(((value - low) / (high - low)) * 255)))
+      composed[value * 3] = base[scaled * 3]
+      composed[value * 3 + 1] = base[scaled * 3 + 1]
+      composed[value * 3 + 2] = base[scaled * 3 + 2]
+    }
+    return composed
+  }, [palette, blackPoint, whitePoint])
+  const ringColumns = Math.max(2048, Math.ceil(windowSeconds / spec.hop_s) * 2)
+
+  // The offscreen ring is sized in *columns*, one pixel each; the visible canvas
+  // stretches it horizontally, so history length is independent of viewport width.
+  useLayoutEffect(() => {
+    const ring = document.createElement('canvas')
+    ring.width = ringColumns
+    ring.height = spec.bins
+    const context = ring.getContext('2d', { willReadFrequently: false })
+    if (context) {
+      context.fillStyle = palette === 'merlin' ? '#f7f7f5' : '#05060a'
+      context.fillRect(0, 0, ring.width, ring.height)
+    }
+    ringRef.current = ring
+    writeXRef.current = 0
+    totalColumnsRef.current = 0
+    newestUtcRef.current = null
+    setReady(true)
+  }, [ringColumns, spec.bins, palette])
+
+  // Column ingest. Kept out of React state entirely: at ~40 columns a second a
+  // re-render per batch would dominate the frame budget.
+  useEffect(() => {
+    const sink = (batch: ColumnBatch) => {
+      const ring = ringRef.current
+      if (!ring || batch.bins !== spec.bins) return
+      const context = ring.getContext('2d')
+      if (!context) return
+
+      const image = context.createImageData(1, spec.bins)
+      const pixels = image.data
+      for (let column = 0; column < batch.columns; column++) {
+        const offset = column * batch.bins
+        for (let bin = 0; bin < batch.bins; bin++) {
+          const value = batch.data[offset + bin]
+          // Bin 0 is the lowest frequency; canvas row 0 is the top, so flip.
+          const row = spec.bins - 1 - bin
+          const index = row * 4
+          const p = value * 3
+          pixels[index] = paletteTable[p]
+          pixels[index + 1] = paletteTable[p + 1]
+          pixels[index + 2] = paletteTable[p + 2]
+          pixels[index + 3] = 255
+        }
+        context.putImageData(image, writeXRef.current, 0)
+        writeXRef.current = (writeXRef.current + 1) % ring.width
+        totalColumnsRef.current += 1
+      }
+      newestUtcRef.current = batch.firstUtcS + (batch.columns - 1) * spec.hop_s
+    }
+    return register(spec.channel, sink)
+  }, [register, spec.channel, spec.bins, spec.hop_s, paletteTable])
+
+  // Draw loop.
+  useEffect(() => {
+    if (!ready) return
+    let frame = 0
+    const draw = () => {
+      frame = requestAnimationFrame(draw)
+      const canvas = visibleRef.current
+      const ring = ringRef.current
+      if (!canvas || !ring) return
+      const context = canvas.getContext('2d')
+      if (!context) return
+
+      const dpr = window.devicePixelRatio || 1
+      const cssWidth = canvas.clientWidth
+      const cssHeight = canvas.clientHeight
+      if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+        canvas.width = Math.round(cssWidth * dpr)
+        canvas.height = Math.round(cssHeight * dpr)
+      }
+
+      const columnsWanted = Math.min(
+        Math.max(1, Math.round(windowSeconds / spec.hop_s)),
+        Math.min(ring.width, totalColumnsRef.current || 1),
+      )
+      const start = (writeXRef.current - columnsWanted + ring.width * 2) % ring.width
+
+      context.imageSmoothingEnabled = false
+      context.fillStyle = palette === 'merlin' ? '#f7f7f5' : '#05060a'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+
+      // Two blits at most: the ring may wrap between `start` and the write head.
+      const scaleX = canvas.width / columnsWanted
+      if (start + columnsWanted <= ring.width) {
+        context.drawImage(
+          ring, start, 0, columnsWanted, ring.height,
+          0, 0, canvas.width, canvas.height,
+        )
+      } else {
+        const firstRun = ring.width - start
+        const firstWidth = Math.round(firstRun * scaleX)
+        context.drawImage(
+          ring, start, 0, firstRun, ring.height,
+          0, 0, firstWidth, canvas.height,
+        )
+        context.drawImage(
+          ring, 0, 0, columnsWanted - firstRun, ring.height,
+          firstWidth, 0, canvas.width - firstWidth, canvas.height,
+        )
+      }
+    }
+    frame = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(frame)
+  }, [ready, windowSeconds, spec.hop_s, palette])
+
+  // Overlay: gridlines, labels and detection boxes. Separate canvas so the
+  // spectrogram blit never has to be redrawn to update a label.
+  useEffect(() => {
+    let frame = 0
+    const draw = () => {
+      frame = requestAnimationFrame(draw)
+      const canvas = overlayRef.current
+      if (!canvas) return
+      const dpr = window.devicePixelRatio || 1
+      const cssWidth = canvas.clientWidth
+      const cssHeight = canvas.clientHeight
+      if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+        canvas.width = Math.round(cssWidth * dpr)
+        canvas.height = Math.round(cssHeight * dpr)
+      }
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.clearRect(0, 0, cssWidth, cssHeight)
+
+      const dark = palette !== 'merlin'
+      const logMin = Math.log(spec.min_hz)
+      const logMax = Math.log(spec.max_hz)
+      const yFor = (hz: number) =>
+        cssHeight * (1 - (Math.log(hz) - logMin) / (logMax - logMin))
+
+      // Frequency gridlines.
+      context.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace'
+      context.textBaseline = 'middle'
+      for (const hz of GRID_HZ) {
+        if (hz < spec.min_hz * 1.05 || hz > spec.max_hz * 0.98) continue
+        const y = yFor(hz)
+        context.strokeStyle = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.12)'
+        context.lineWidth = 1
+        context.beginPath()
+        context.moveTo(0, y)
+        context.lineTo(cssWidth, y)
+        context.stroke()
+        const label = hz >= 1000 ? `${hz / 1000}k` : `${hz}`
+        context.fillStyle = dark ? 'rgba(233,238,248,0.62)' : 'rgba(20,20,24,0.6)'
+        context.fillText(label, 4, y - 7)
+      }
+
+      // Detection boxes, positioned from the newest column's timestamp.
+      const newest = newestUtcRef.current
+      if (showDetections && newest !== null) {
+        const secondsPerPixel = windowSeconds / cssWidth
+        for (const detection of detections) {
+          const startS = Date.parse(detection.event_start_utc) / 1000
+          const endS = Date.parse(detection.event_end_utc) / 1000
+          const xEnd = cssWidth - (newest - endS) / secondsPerPixel
+          const xStart = cssWidth - (newest - startS) / secondsPerPixel
+          if (xEnd < -80 || xStart > cssWidth + 80) continue
+
+          const group = detection.taxonomic_group
+          const colour =
+            group === 'bird' ? '#5ce08a' : group === 'bat' ? '#c39bff' : '#6fb4ff'
+          const peak = detection.peak_frequency_hz
+          const boxTop = peak ? Math.max(2, yFor(Math.min(spec.max_hz, peak * 1.6))) : 4
+          const boxBottom = peak
+            ? Math.min(cssHeight - 2, yFor(Math.max(spec.min_hz, peak / 1.6)))
+            : cssHeight - 4
+
+          const width = Math.max(3, xEnd - xStart)
+          if (group === 'acoustic_event') {
+            // The activity detector fires several times a second. Drawing each one
+            // as a full box turned the spectrogram into a wall of rectangles and
+            // hid the audio underneath, so unidentified events get a low tick on
+            // the time axis instead: present and countable, but not shouting.
+            context.strokeStyle = colour
+            context.globalAlpha = 0.5
+            context.lineWidth = 2
+            context.beginPath()
+            context.moveTo(xStart, cssHeight - 2)
+            context.lineTo(xStart + width, cssHeight - 2)
+            context.stroke()
+            context.globalAlpha = 1
+          } else {
+            context.strokeStyle = colour
+            context.lineWidth = 1.5
+            context.strokeRect(xStart, boxTop, width, boxBottom - boxTop)
+          }
+
+          if (group !== 'acoustic_event') {
+            const text = `${detection.display_name} ${(detection.score * 100).toFixed(0)}%`
+            context.font = '600 11px ui-sans-serif, system-ui, sans-serif'
+            const metrics = context.measureText(text)
+            const labelX = Math.max(2, Math.min(xStart, cssWidth - metrics.width - 10))
+            const labelY = Math.max(11, boxTop - 9)
+            context.fillStyle = dark ? 'rgba(6,8,14,0.82)' : 'rgba(255,255,255,0.88)'
+            context.fillRect(labelX, labelY - 8, metrics.width + 8, 16)
+            context.fillStyle = colour
+            context.fillText(text, labelX + 4, labelY)
+          }
+        }
+      }
+
+      // Live edge marker.
+      context.strokeStyle = dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
+      context.lineWidth = 1
+      context.beginPath()
+      context.moveTo(cssWidth - 0.5, 0)
+      context.lineTo(cssWidth - 0.5, cssHeight)
+      context.stroke()
+    }
+    frame = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(frame)
+  }, [detections, palette, spec.min_hz, spec.max_hz, windowSeconds, showDetections, serverClockSkewS])
+
+  const onMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const fractionY = 1 - (event.clientY - bounds.top) / bounds.height
+    const hz = Math.exp(
+      Math.log(spec.min_hz) + fractionY * (Math.log(spec.max_hz) - Math.log(spec.min_hz)),
+    )
+    const secondsAgo = (1 - (event.clientX - bounds.left) / bounds.width) * windowSeconds
+    setHover({ hz, secondsAgo })
+  }
+
+  return (
+    <div
+      className="spectrogram"
+      style={{ height }}
+      onMouseMove={onMove}
+      onMouseLeave={() => setHover(null)}
+    >
+      <canvas ref={visibleRef} className="spectrogram-canvas" />
+      <canvas ref={overlayRef} className="spectrogram-overlay" />
+      <div className="spectrogram-badges">
+        <span className="badge">{spec.name}</span>
+        <span className="badge dim">
+          {formatHz(spec.min_hz)}–{formatHz(spec.max_hz)}
+        </span>
+        <span className="badge dim">{spec.bins} bins</span>
+        <span className="badge dim">{(spec.hop_s * 1000).toFixed(0)} ms/col</span>
+        <span className="badge dim">FFT {spec.fft_size}</span>
+      </div>
+      {hover && (
+        <div className="spectrogram-readout">
+          {formatHz(hover.hz)} · {hover.secondsAgo < 1 ? 'now' : `${hover.secondsAgo.toFixed(1)} s ago`}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function formatHz(hz: number): string {
+  if (hz >= 1000) return `${(hz / 1000).toFixed(hz >= 10_000 ? 0 : 1)} kHz`
+  return `${Math.round(hz)} Hz`
+}
