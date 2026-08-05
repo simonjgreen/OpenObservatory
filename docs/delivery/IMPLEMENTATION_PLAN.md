@@ -131,29 +131,66 @@ Already delivered:
   It detects passes, claims no species, and does **not** discharge the BatDetect2
   deliverable below.
 
-Deliver, in this order:
+Deliver, in this order. Scheduling comes first deliberately: it removes the daytime
+false positives that would otherwise be the noise against which buzz thresholds are
+tuned.
 
-- **Feeding-buzz flagging.** Specified in
-  `docs/superpowers/specs/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
-  The pulse timing is already computed and discarded; a buzz is a terminal collapse in
-  inter-pulse interval. Emits `min_interval_ms` on every pass so a wrong threshold can be
-  re-judged from stored data rather than from audio that no longer exists.
-- **Frequency-band candidate titles.** Peak frequency and a candidate name in the event
-  title. The candidate is presentational only: the stored record keeps `label = "bat
-  pass"` and no species name, and the normaliser's guard continues to hold.
-- **Ultrasonic detector configuration.** `station.py` currently constructs the detector
-  with no configuration wiring at all, so `min_snr_db`, `min_pulses_per_pass` and the
-  band cannot be set from `runtime.env` — despite the handover instructing a successor to
-  tune exactly those. This blocks the false-positive work below.
-- **Night scheduler and deferred mode.** Civil dusk to civil dawn plus a margin. The
-  detector currently runs 24 hours a day, which wastes CPU through daylight and produces
-  false positives from wind and handling noise when no bat could plausibly be flying.
-- **False-positive review**, using the buzz figures and the audible renderings as
-  evidence. 18–21 kHz remains genuinely ambiguous between noctule, serotine and
-  bush-cricket, which is an insect; no amount of tuning resolves that from frequency
-  alone.
-- **BatDetect2 evaluation harness and Pi 5 benchmark**, then a bat adapter only if it
-  meets the acceptance threshold and sustains real-time inference alongside BirdNET.
+**1. Ultrasonic detector configuration.** `station.py:424` constructs the detector as
+`UltrasonicDetector(native_sample_rate=native_rate)` with no configuration wiring at
+all, so `min_snr_db`, `min_pulses_per_pass`, the band and `pass_gap_s` cannot be set
+from `runtime.env` — despite `HANDOVER.md` instructing a successor to tune exactly
+those. Everything below needs this path to exist. Defaults must equal the current
+constructor defaults exactly, so behaviour is unchanged until someone sets one.
+
+**2. Night scheduler.** Gate the ultrasonic detector to civil dusk through civil dawn
+plus a configurable margin either side, per `TECHNICAL_SPEC.md` §184.
+
+- *Why it is not merely tidiness.* A detector that runs at two in the afternoon reports
+  bat passes from wind, machinery and handling noise, and no threshold tuning can
+  identify those as false, because a broadband transient genuinely resembles a pulse
+  train. The clock carries information the signal does not. It also returns roughly half
+  the detector's CPU — measured at p95 54–104 ms per window — which is the same budget
+  BatDetect2 would have to fit inside.
+- *Solar computation.* Sunrise/sunset from the station's latitude, longitude and date,
+  with civil twilight at the standard −6° solar elevation. The `solar.py` approach from
+  the earlier OutdoorAcousticEvents prototype is a reasonable starting point and avoids a
+  dependency, but it must be tested against known dusk and dawn times for this latitude
+  before it is trusted, including across a BST boundary.
+- *Failure mode, chosen explicitly.* If coordinates are unset there is no schedule to
+  compute. The detector then runs continuously and the UI says why. It must never
+  silently detect nothing all night because a guessed schedule was wrong — a station
+  that records nothing looks identical to a quiet night, and that is the exact confusion
+  the coverage bar exists to prevent.
+- *Configuration.* `ultrasonic_schedule` (`always` | `night`), plus dusk and dawn margin
+  minutes. Default `always`, so upgrading changes nothing until it is set.
+- *Observability.* The current schedule state, the computed dusk and dawn for tonight,
+  and whether the detector is gated must be visible in the API and the UI, and the
+  transition logged. A detector that is off must be visibly off, not absent.
+
+**3. Deferred mode.** Specified at `DETECTOR_STRATEGY.md:32` for when real-time
+inference is not sustainable: queue night windows to a bounded queue and process them
+after capture, reporting lag honestly rather than dropping silently. The scheduler is
+what makes this tractable, because it bounds what can enter the queue. Build it when
+BatDetect2's benchmark shows whether it is needed, not before.
+
+**4. Feeding-buzz flagging.** Specified in
+`docs/superpowers/specs/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
+The pulse timing is already computed and discarded; a buzz is a terminal collapse in
+inter-pulse interval. Emits `min_interval_ms` on every pass so a wrong threshold can be
+re-judged from stored data rather than from audio that no longer exists.
+
+**5. Frequency-band candidate titles.** Peak frequency and a candidate name in the event
+title. The candidate is presentational only: the stored record keeps `label = "bat
+pass"` and no species name, and the normaliser's guard continues to hold.
+
+**6. False-positive review**, using the buzz figures and the audible renderings as
+evidence, against detections gathered under the night schedule. 18–21 kHz remains
+genuinely ambiguous between noctule, serotine and bush-cricket, which is an insect; no
+amount of tuning resolves that from frequency alone.
+**7. BatDetect2 evaluation harness and Pi 5 benchmark**, then a bat adapter only if it
+meets the acceptance threshold. The benchmark must be run under the night schedule, since
+that is the profile it would actually run in, and measured alongside BirdNET rather than
+alone.
 
 Exit gate: a known bat fixture is processed, provenance retained, and capture continuity
 unaffected under the operating profile. A species claim requires a classifier that

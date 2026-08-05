@@ -122,7 +122,9 @@ the native stream genuinely useful rather than theoretical.
 | Ultrasonic detection | done, but as a **pulse-train detector, not a classifier** — `ultrasonic-pass-v1`, no species claim |
 | BatDetect2 evaluation harness | not started |
 | Pi 5 benchmark report | partial — `ultrasonic-pass-v1` measured at ~36–40× realtime |
-| Night scheduler / deferred mode | **not started** — the ultrasonic detector runs continuously, day and night |
+| Detector configuration | **absent** — `station.py:424` builds the ultrasonic detector with no config wiring, so the thresholds the handover says to tune cannot be set at all |
+| Night scheduler | **not started** — the detector runs continuously, day and night. Now sequenced *before* the buzz work, because daytime broadband transients are exactly the false positives that would otherwise pollute threshold tuning |
+| Deferred mode | **not started** — build once the BatDetect2 benchmark shows whether real-time inference is sustainable |
 | Native-rate evidence + audible playback derivative | done |
 | Ultrasound rendered for human review | done — time expansion (frequencies divide, everything preserved) and heterodyne (real time preserved, band-limited), each labelled with what it changed and that its levels are not comparable with the native recording |
 | Ultrasonic spectrogram coverage | fixed — the hop (9216 frames) exceeded the FFT (4096), so 55% of the audio was never inspected and a 4 ms pulse could fall entirely between columns. Columns now max-combine four sub-windows across the whole hop. |

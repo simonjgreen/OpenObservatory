@@ -178,7 +178,10 @@ current constructor defaults exactly, so behaviour is unchanged until someone se
 ## Out of scope
 
 - Any species classifier. BatDetect2 remains Milestone 5.
-- The night scheduler.
+- The night scheduler and the detector configuration wiring it needs. Both are separate
+  Milestone 5 items sequenced *before* this work, because tuning buzz thresholds against
+  data containing a full day of daytime broadband transients would be tuning against
+  noise the scheduler is about to remove.
 - Filtering or aggregating history by buzz.
 - Persisting a buzz flag as its own column, which would need a migration path that does
   not exist yet.
