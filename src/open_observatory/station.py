@@ -171,8 +171,19 @@ class Station:
         self.persist_failures = 0
         #: Evidence extraction is slow (disk I/O plus ultrasound rendering), so it
         #: runs off the detector's task. Bounded, with an explicit drop policy.
+        #:
+        #: The bound is not arbitrary. Deferring extraction means the audio must
+        #: still be in the native ring when its turn comes, and the ring holds
+        #: `native_ring_seconds` (120 s by default). A queue deep enough to outlive
+        #: the ring converts an honest, counted drop into a silent extraction miss
+        #: — the detection survives but its evidence is empty for a reason the
+        #: operator cannot see from the drop counter. Sizing the queue below what
+        #: the ring can cover keeps refusals at the door, where they are counted.
+        #: Measured on this station, an ultrasonic detection's four clips take
+        #: roughly 1.5 s to write, so 32 items is about 48 s of backlog against a
+        #: 120 s ring.
         self._evidence_queue: asyncio.Queue[tuple[DetectionRecord, DetectorMetadata] | None] = (
-            asyncio.Queue(maxsize=64)
+            asyncio.Queue(maxsize=32)
         )
         self._evidence_task: asyncio.Task[None] | None = None
         self.evidence_dropped = 0
