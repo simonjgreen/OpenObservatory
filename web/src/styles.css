@@ -600,3 +600,13 @@ code {
   .hero-waterfall .spectrogram-row { display: flex; gap: 8px; }
   .hero-waterfall .spectrogram { flex: 1; min-width: 0; }
 }
+
+/* Event stream controls, matching the suggestion list's row. */
+.events-controls {
+  display: flex; align-items: center; gap: 14px; justify-content: space-between;
+  padding: 6px 13px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px; color: var(--text-dim);
+}
+.events-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.events-controls .mono { font-size: 10px; }

@@ -410,6 +410,19 @@ const EVENT_TONE: Record<string, string> = {
   'detector.state': 'warn',
 }
 
+/** Is this event an unidentified acoustic event rather than an identification?
+ *
+ *  The activity detector fires several times a second, so these outnumber
+ *  everything else by a wide margin and bury the events you are usually reading the
+ *  stream for — capture gaps, detector state changes, clip writes, real detections.
+ */
+function isUnidentified(event: Envelope): boolean {
+  return (
+    event.event_type === 'detection.created' &&
+    (event.data as Record<string, unknown>).taxonomic_group === 'acoustic_event'
+  )
+}
+
 export function EventLog({
   events,
   localTimeZone,
@@ -420,15 +433,19 @@ export function EventLog({
   const [filter, setFilter] = useState('')
   const [paused, setPaused] = useState(false)
   const [frozen, setFrozen] = useState<Envelope[]>([])
+  // Hidden by default, for the same reason the suggestion list hides them.
+  const [hideUnidentified, setHideUnidentified] = useState(true)
 
   const shown = paused ? frozen : events
+  const hiddenCount = hideUnidentified ? shown.filter(isUnidentified).length : 0
+  const visible = hideUnidentified ? shown.filter((event) => !isUnidentified(event)) : shown
   const filtered = filter
-    ? shown.filter(
+    ? visible.filter(
         (event) =>
           event.event_type.includes(filter) ||
           JSON.stringify(event.data).toLowerCase().includes(filter.toLowerCase()),
       )
-    : shown
+    : visible
 
   const format = new Intl.DateTimeFormat('en-GB', {
     hour: '2-digit',
@@ -457,6 +474,21 @@ export function EventLog({
           {paused ? 'resume' : 'pause'}
         </button>
       </header>
+      <div className="events-controls">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={hideUnidentified}
+            onChange={(event) => setHideUnidentified(event.target.checked)}
+          />
+          hide unidentified events
+        </label>
+        {/* Stated rather than silent: suppressed is not the same as absent, and a
+            quiet stream should not be mistaken for a quiet garden. */}
+        <span className="dim mono">
+          {hiddenCount > 0 ? `${hiddenCount} hidden` : ''}
+        </span>
+      </div>
       <ol className="event-list">
         {filtered.map((event) => (
           <li key={event.event_id} className={`event tone-${EVENT_TONE[event.event_type] ?? 'dim'}`}>
@@ -465,7 +497,13 @@ export function EventLog({
             <span className="summary mono">{summarise(event)}</span>
           </li>
         ))}
-        {filtered.length === 0 && <li className="empty">no matching events</li>}
+        {filtered.length === 0 && (
+          <li className="empty">
+            {hiddenCount > 0
+              ? `nothing but unidentified events — ${hiddenCount} hidden`
+              : 'no matching events'}
+          </li>
+        )}
       </ol>
     </section>
   )
