@@ -167,12 +167,20 @@ instead is a non-ML pulse-train detector operating on the native 384 kHz stream.
 bat *passes* — never species — and the normaliser rejects any detection from a
 non-taxonomic plugin that carries a species name.
 
+Every threshold below is now a configuration key on `Settings` — previously `station.py`
+constructed `UltrasonicDetector` with no configuration path at all, so none of these could
+be tuned without editing code. Defaults are unchanged from the previous hard-coded
+constructor defaults, so behaviour did not change until an operator set something.
+
 | Config key | Default |
 |---|---|
-| `band_hz` (constructor default) | `(15_000.0, 125_000.0)` |
-| `min_snr_db` | `12.0` |
-| `min_pulse_ms` | `1.5` |
-| `min_pulses_per_pass` | `3` |
+| `ultrasonic_enabled` | `True` |
+| `ultrasonic_band_hz` | `(15_000.0, 125_000.0)` |
+| `ultrasonic_min_snr_db` | `12.0` |
+| `ultrasonic_min_pulse_ms` | `1.5` |
+| `ultrasonic_max_pulse_ms` | `40.0` |
+| `ultrasonic_pass_gap_s` | `1.5` |
+| `ultrasonic_min_pulses_per_pass` | `3` |
 
 A detection reports a measured frequency band, pulse count and SNR, and nothing more. A
 frequency band is evidence a human can interpret, not an identification: the detector's own
@@ -183,8 +191,83 @@ Two honesty-relevant limitations, stated in ADR-013 and in `TARGET_DIAGNOSTICS.m
 
 - it has a known false-positive rate on broadband transients such as wind and handling
   noise;
-- it has no night scheduler and currently runs 24 hours a day, including doing ultrasonic
-  work at noon when nothing is flying.
+- it now has a night scheduler (below), but that only reduces *when* it runs; it does not
+  reduce the false-positive rate of an individual pass.
+
+### Night scheduling (`src/open_observatory/schedule.py`)
+
+The detector is gated to civil dusk through civil dawn, plus configurable margins, computed
+from the station's own coordinates using the NOAA low-precision solar position formulas at
+the standard -6 degree civil-twilight elevation. No new dependency was added. The gate is
+checked before any FFT work runs, so the CPU saving on a gated-out window is real, not
+nominal.
+
+| Config key | Default |
+|---|---|
+| `ultrasonic_schedule` | `"always"` (`"always"` \| `"night"`) |
+| `ultrasonic_schedule_dusk_margin_min` | `30.0` |
+| `ultrasonic_schedule_dawn_margin_min` | `30.0` |
+
+Verified on the Pi for the development station on 2026-08-05: civil dusk 20:27Z, civil dawn 03:55Z,
+the schedule reported active at 21:45 local and inactive at noon. The station's
+`config/runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`; the repository default remains
+`always`.
+
+The failure mode is deliberate and stated plainly in the module docstring: with coordinates
+unset there is no schedule to compute, so the detector runs continuously rather than gating
+to nothing. A station that silently records nothing overnight would look identical to a
+quiet night, which is worse than running the detector when it need not. Schedule mode,
+tonight's computed dusk/dawn, and the count of windows gated out are all visible in
+`GET /api/v1/detectors`.
+
+### Feeding-buzz flagging
+
+A feeding buzz — the terminal acceleration in pulse rate as a bat closes on prey — is
+flagged when a run of at least `ultrasonic_buzz_min_pulses` (default `5`) consecutive
+inter-pulse intervals falls below `ultrasonic_buzz_max_interval_ms` (default `12.0`) **and**
+that run's own median interval is below `ultrasonic_buzz_interval_ratio` (default `0.4`) of
+the whole pass's median interval. The second condition is what separates a genuine terminal
+collapse from a bat that simply calls fast throughout the pass; the first alone is not
+sufficient.
+
+| Config key | Default |
+|---|---|
+| `ultrasonic_buzz_max_interval_ms` | `12.0` |
+| `ultrasonic_buzz_min_pulses` | `5` |
+| `ultrasonic_buzz_interval_ratio` | `0.4` |
+
+`native_result` gains `has_feeding_buzz`, `buzz_offset_s`, `buzz_min_interval_ms` and
+`buzz_pulse_count`. `min_interval_ms` is also emitted on every pass, buzz or not, so a
+threshold that later proves wrong can be re-judged against stored data rather than against
+audio that no longer exists.
+
+### Sub-bin peak frequency (a measurement bug, fixed)
+
+The pulse-detection FFT uses a 128-sample window so it can resolve a 1.5 ms call; at 384 kHz
+that gives 3000 Hz bins, so every reported peak frequency used to land on an exact multiple
+of 3 kHz. The candidate-species band edges fall *between* bin centres — 38 kHz, the boundary
+between the Myotis group and common pipistrelle, sits between the 36 and 39 kHz bins — so a
+bat calling at, say, 37.5 kHz was assigned to a species group by quantisation artefact
+rather than by its actual call.
+
+Parabolic interpolation through the peak bin and its two neighbours, done in the log domain,
+now recovers the peak to a fraction of a bin, clamped to the neighbouring half-bins so a
+parabola fitted to noise cannot place the vertex arbitrarily far away. Confirmed live on the
+Pi: before the fix the station reported peak frequencies of 33000.0, 36000.0, 39000.0,
+54000.0 Hz exactly; after it, the same passes reported 35286.6, 35841.5, 36225.0, 53520.4 Hz.
+The 35–36 kHz cluster therefore survives as a genuine signal rather than being an artefact of
+bin quantisation.
+
+### Candidate naming — presentational only
+
+Bat pass event titles now carry the peak frequency and a candidate group name, for example
+"36 kHz - Myotis / barbastelle?" and "54 kHz - soprano pipistrelle?"; the question mark is
+mandatory and always present. The 17–21 kHz band additionally carries "may be a bush-cricket"
+— an insect, not a bat. This is presentational only: the stored record keeps
+`label = "bat pass"` with no species name anywhere in it, and the normaliser's
+`ClaimViolation` guard, which rejects any species claim from a non-taxonomic plugin, is
+unchanged and covered by test. The candidate name is a hint for a human to weigh, never an
+identification, and it must not be read as one.
 
 Evidence clips for this plugin get an audible derivative via
 `src/open_observatory/audio/ultrasound.py` (time-expansion or heterodyne — see

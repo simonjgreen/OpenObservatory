@@ -122,9 +122,12 @@ the native stream genuinely useful rather than theoretical.
 | Ultrasonic detection | done, but as a **pulse-train detector, not a classifier** — `ultrasonic-pass-v1`, no species claim |
 | BatDetect2 evaluation harness | not started |
 | Pi 5 benchmark report | partial — `ultrasonic-pass-v1` measured at ~36–40× realtime |
-| Detector configuration | **absent** — `station.py:424` builds the ultrasonic detector with no config wiring, so the thresholds the handover says to tune cannot be set at all |
-| Night scheduler | **not started** — the detector runs continuously, day and night. Now sequenced *before* the buzz work, because daytime broadband transients are exactly the false positives that would otherwise pollute threshold tuning |
-| Deferred mode | **not started** — build once the BatDetect2 benchmark shows whether real-time inference is sustainable |
+| Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
+| Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
+| Deferred mode | **not started, deliberately** — specified at `DETECTOR_STRATEGY.md:32`; build only if the BatDetect2 benchmark shows real-time inference is not sustainable |
+| Feeding-buzz flagging | **done** — a run of short inter-pulse intervals that is also well below the train's own median, which is what distinguishes a terminal collapse from a bat calling fast throughout. `min_interval_ms` is emitted on every pass so a wrong threshold can be re-judged from stored data |
+| Frequency-band candidate titles | **done** — presentational only; the stored record keeps `label = "bat pass"` and no species name, and the normaliser's guard is asserted by test |
+| Sub-bin peak frequency | **done** — the pulse FFT has 3 kHz bins at 384 kHz and the candidate band edges fall between bin centres, so peaks were being assigned to a species group by quantisation. Parabolic interpolation fixes it; live, the station's 35–36 kHz cluster survives as a genuine 35.3–36.2 kHz signal |
 | Native-rate evidence + audible playback derivative | done |
 | Ultrasound rendered for human review | done — time expansion (frequencies divide, everything preserved) and heterodyne (real time preserved, band-limited), each labelled with what it changed and that its levels are not comparable with the native recording |
 | Ultrasonic spectrogram coverage | fixed — the hop (9216 frames) exceeded the FFT (4096), so 55% of the audio was never inspected and a 4 ms pulse could fall entirely between columns. Columns now max-combine four sub-windows across the whole hop. |
@@ -145,7 +148,7 @@ directory before being served.
 
 | Gate | State |
 |---|---|
-| Unit tests | 161 passing on the target device, plus 38 frontend tests |
+| Unit tests | 197 passing on the target device (3 BatDetect2 tests skip until its assets are fetched), plus 49 frontend tests |
 | Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. **Gap:** the history endpoints have no HTTP-level test; `tests/test_history.py` exercises the aggregation functions only |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |
 | Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. ADR-007 records how to move to PostgreSQL and back |

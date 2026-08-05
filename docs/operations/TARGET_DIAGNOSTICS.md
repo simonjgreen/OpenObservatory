@@ -176,6 +176,13 @@ missed delivery deadline in any observed run.
 BirdNET produced real identifications on this station within minutes of starting,
 including *Columba palumbus* (Common Woodpigeon).
 
+Re-measured on the Pi on 2026-08-05 after the night scheduler, buzz flagging and
+sub-bin frequency interpolation were added: `ultrasonic-pass-v1` p95 runtime **75.7 ms**
+per 2-second native window, still comfortably inside the 2 s budget. 197 Python tests
+pass on the Pi, of which 3 BatDetect2 tests skip pending its assets being fetched, plus
+49 frontend tests; BatDetect2 evaluation is in progress and nothing about it is proven
+yet.
+
 ## Live channel delivery, measured from a real browser over Wi-Fi
 
 | Property | Value |
@@ -209,9 +216,17 @@ one burst, so a stall parks the display rather than letting it drift out of step
   `OO_LONGITUDE` and `OO_BIRDNET_USE_LOCATION_FILTER=true`.
 - **Ultrasonic detections are not species identifications** and, on a broadband-noisy
   evening, some "bat passes" are likely false positives from wind or handling noise.
-  Peak frequency yields a coarse group hint only.
+  Peak frequency yields a coarse group hint only. Event titles now show a candidate
+  group name and peak frequency, for example "36 kHz - Myotis / barbastelle?", but this
+  is presentational — the stored record still carries no species label, and the
+  question mark is mandatory. Seeing a candidate name in the UI does not mean this
+  constraint has been relaxed.
 - **72-hour soak test not run.** The acceptance criteria require it before the
   system may be described as complete.
-- **The ultrasonic detector runs day and night.** No civil-dusk scheduler exists yet,
-  so it is doing ultrasonic work at noon when nothing is flying.
+- **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),
+  gating it to civil dusk through civil dawn plus configurable margins, computed from the
+  station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); Charter
+  Alley's `runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`. If coordinates are unset the
+  detector runs continuously rather than gating to nothing, by design — see
+  `DETECTOR_STRATEGY.md`.
 - **No authentication.** The API binds LAN-only with anonymous read enabled.
