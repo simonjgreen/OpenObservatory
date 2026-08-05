@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { formatDetectionTitle } from './detectionTitle'
 
 export interface HistoryRange {
   start_utc: string
@@ -31,6 +32,7 @@ interface SpeciesRow {
   scientific_name: string | null
   label: string | null
   display_name: string
+  title_hint?: string | null
   plugin_id: string
   detections: number
   best_score: number
@@ -314,7 +316,9 @@ export function History({
                   </tr>
                 </thead>
                 <tbody>
-                  {payload.species.map((row) => (
+                  {payload.species.map((row) => {
+                    const title = formatDetectionTitle(row)
+                    return (
                     <tr
                       key={`${row.plugin_id}:${row.display_name}`}
                       onClick={() => onFocus(row.first_seen_utc, row.last_seen_utc)}
@@ -325,7 +329,8 @@ export function History({
                           className="dot"
                           style={{ background: GROUP_COLOUR[row.taxonomic_group] ?? '#6fb4ff' }}
                         />
-                        {row.display_name}
+                        {title.label}
+                        {title.hint && <span className="title-hint">{title.hint}</span>}
                         {row.scientific_name && <i className="sci"> {row.scientific_name}</i>}
                       </td>
                       <td className="mono">{row.detections}</td>
@@ -333,7 +338,8 @@ export function History({
                       <td className="mono dim">{timeFormat.format(Date.parse(row.first_seen_utc))}</td>
                       <td className="mono dim">{timeFormat.format(Date.parse(row.last_seen_utc))}</td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

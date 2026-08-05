@@ -167,6 +167,41 @@ class TestDetections:
         # The detector's own output is preserved verbatim.
         assert detail["native_result"]
 
+        # display_title's fields are on both the list row and the detail row, so
+        # the same detection cannot display differently depending on how it was
+        # fetched (the bug this work fixes).
+        for row in (first, detail):
+            assert "title_hint" in row
+            assert "flags" in row
+            assert "feeding_buzz" in row["flags"]
+
+    def test_bat_pass_gets_a_frequency_title_hint(self, client) -> None:
+        """A bat pass must show a presentational title_hint with the mandatory
+        '?' on any candidate name, but must never carry a species name in its
+        taxonomic fields (that guard belongs to the normaliser, not to the UI)."""
+        import time
+
+        bat_rows: list = []
+        for _ in range(60):
+            rows = client.get(
+                "/api/v1/detections?limit=200&plugin_id=ultrasonic-pass-v1"
+            ).json()["detections"]
+            bat_rows = [row for row in rows if row["taxonomic_group"] == "bat"]
+            if bat_rows:
+                break
+            time.sleep(0.5)
+        assert bat_rows, "the synthetic bat scene produced no ultrasonic pass"
+
+        for row in bat_rows:
+            assert row["common_name"] is None
+            assert row["scientific_name"] is None
+            assert row["canonical_taxon_id"] is None
+            if row["title_hint"] is not None:
+                assert "kHz" in row["title_hint"]
+                # Any candidate name in the hint must carry its mandatory '?'.
+                if "·" in row["title_hint"].split("kHz", 1)[-1]:
+                    assert "?" in row["title_hint"]
+
     def test_activity_detections_never_carry_taxonomy(self, client) -> None:
         import time
 
@@ -218,6 +253,7 @@ class TestDetections:
         for entry in payload["entries"]:
             assert entry["detections"] >= 1
             assert entry["display_name"]
+            assert "title_hint" in entry
 
     def test_streams_and_gaps_endpoints(self, client) -> None:
         streams = client.get("/api/v1/streams").json()["streams"]

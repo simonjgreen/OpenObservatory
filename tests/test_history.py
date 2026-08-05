@@ -266,6 +266,10 @@ class TestSpeciesSummary:
         first = by_name["European Robin"]["first_seen_utc"]
         last = by_name["European Robin"]["last_seen_utc"]
         assert first < last
+        # display_name/title_hint come from the shared display_title() helper now,
+        # not a locally re-derived fallback chain.
+        assert "title_hint" in by_name["European Robin"]
+        assert by_name["European Robin"]["title_hint"] is None
 
     def test_excludes_unidentified_by_default(self, seeded) -> None:
         window = history.Range(seeded["base"], seeded["base"] + timedelta(hours=2), "t")

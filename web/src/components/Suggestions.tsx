@@ -15,6 +15,7 @@
 
 import { useMemo, useState } from 'react'
 import type { Detection } from '../types'
+import { formatDetectionTitle } from './detectionTitle'
 import { formatHz } from './Spectrogram'
 
 interface Props {
@@ -31,6 +32,8 @@ type Grouping = 'species' | 'recent'
 interface SpeciesRow {
   key: string
   displayName: string
+  titleHint: string | null
+  feedingBuzz: boolean
   scientificName: string | null
   group: string
   bestScore: number
@@ -84,10 +87,13 @@ export function Suggestions({
       const key = groupKey(detection)
       const at = Date.parse(detection.event_start_utc)
       const existing = byKey.get(key)
+      const title = formatDetectionTitle(detection)
       if (!existing) {
         byKey.set(key, {
           key,
-          displayName: detection.display_name,
+          displayName: title.label,
+          titleHint: title.hint,
+          feedingBuzz: title.feedingBuzz,
           scientificName: detection.scientific_name,
           group: detection.taxonomic_group,
           bestScore: detection.score,
@@ -107,6 +113,9 @@ export function Suggestions({
           existing.lastSeen = at
           existing.latestScore = detection.score
           existing.latest = detection
+          existing.displayName = title.label
+          existing.titleHint = title.hint
+          existing.feedingBuzz = title.feedingBuzz
         }
       }
     }
@@ -213,6 +222,8 @@ export function Suggestions({
               <div className="suggestion-body">
                 <div className="suggestion-title">
                   <span className="name">{row.displayName}</span>
+                  {row.titleHint && <span className="title-hint">{row.titleHint}</span>}
+                  {row.feedingBuzz && <span className="feeding-buzz-marker">feeding buzz</span>}
                   {row.count > 1 && (
                     <button
                       className={`count ${expanded.has(row.key) ? 'on' : ''}`}
@@ -293,26 +304,33 @@ export function Suggestions({
         </ul>
       ) : (
         <ul className="timeline-list">
-          {recent.map((detection) => (
-            <li
-              key={detection.id}
-              className={[
-                'timeline-row',
-                detection.id === selectedId ? 'selected' : '',
-                `group-${detection.taxonomic_group}`,
-              ].join(' ')}
-              onClick={() => onSelect(detection)}
-            >
-              <span className="mono time">
-                {timeFormat.format(Date.parse(detection.event_start_utc))}
-              </span>
-              <span className="glyph" aria-hidden>
-                {glyphFor(detection.taxonomic_group)}
-              </span>
-              <span className="label">{detection.display_name}</span>
-              <span className="mono score">{(detection.score * 100).toFixed(0)}</span>
-            </li>
-          ))}
+          {recent.map((detection) => {
+            const title = formatDetectionTitle(detection)
+            return (
+              <li
+                key={detection.id}
+                className={[
+                  'timeline-row',
+                  detection.id === selectedId ? 'selected' : '',
+                  `group-${detection.taxonomic_group}`,
+                ].join(' ')}
+                onClick={() => onSelect(detection)}
+              >
+                <span className="mono time">
+                  {timeFormat.format(Date.parse(detection.event_start_utc))}
+                </span>
+                <span className="glyph" aria-hidden>
+                  {glyphFor(detection.taxonomic_group)}
+                </span>
+                <span className="label">{title.label}</span>
+                {title.hint && <span className="title-hint">{title.hint}</span>}
+                {title.feedingBuzz && (
+                  <span className="feeding-buzz-marker">feeding buzz</span>
+                )}
+                <span className="mono score">{(detection.score * 100).toFixed(0)}</span>
+              </li>
+            )
+          })}
         </ul>
       )}
     </section>

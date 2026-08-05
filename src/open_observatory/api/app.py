@@ -42,6 +42,7 @@ from ..audio.probe import enumerate_capture_devices, probe_supported_rates, syst
 from ..config import Settings, get_settings
 from ..db import models as orm
 from ..db.session import create_all, get_session, init_engine
+from ..display import detection_flags, display_title
 from ..events import EventType
 from ..station import Station
 from .metrics import PrometheusExporter
@@ -450,22 +451,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             .order_by(func.count().desc())
         ).all()
-        return {
-            "since_utc": _iso(since),
-            "hours": hours,
-            "entries": [
+        entries = []
+        for row in rows:
+            # Aggregated across many detections, so there is no single
+            # peak_frequency_hz/native_result to derive a hint from; display_title
+            # still gives the uniform name-fallback chain.
+            display_name, title_hint = display_title(
+                common_name=row.common_name,
+                scientific_name=row.scientific_name,
+                label=row.detector_label,
+                plugin_id=None,
+                taxonomic_group=row.taxonomic_group,
+                peak_frequency_hz=None,
+                native_result=None,
+            )
+            entries.append(
                 {
                     "taxonomic_group": row.taxonomic_group,
                     "common_name": row.common_name,
                     "scientific_name": row.scientific_name,
                     "label": row.detector_label,
-                    "display_name": row.common_name or row.detector_label or "unknown",
+                    "display_name": display_name,
+                    "title_hint": title_hint,
                     "detections": row.detections,
                     "best_score": round(row.best_score, 4),
                     "last_seen_utc": _iso(row.last_seen),
                 }
-                for row in rows
-            ],
+            )
+        return {
+            "since_utc": _iso(since),
+            "hours": hours,
+            "entries": entries,
         }
 
     @app.get(f"{API_PREFIX}/history")
@@ -697,13 +713,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _detection_payload(row: orm.Detection, *, include_native: bool = False) -> dict[str, Any]:
+    display_name, title_hint = display_title(
+        common_name=row.common_name,
+        scientific_name=row.scientific_name,
+        label=row.detector_label,
+        plugin_id=row.detector.plugin_id if row.detector else None,
+        taxonomic_group=row.taxonomic_group,
+        peak_frequency_hz=row.peak_frequency_hz,
+        native_result=row.native_result,
+    )
     payload: dict[str, Any] = {
         "id": str(row.id),
         "event_start_utc": _iso(row.event_start_utc),
         "event_end_utc": _iso(row.event_end_utc),
         "duration_s": round((row.event_end_utc - row.event_start_utc).total_seconds(), 3),
         "label": row.detector_label,
-        "display_name": row.common_name or row.detector_label or "unknown",
+        "display_name": display_name,
+        "title_hint": title_hint,
+        "flags": detection_flags(row.native_result),
         "common_name": row.common_name,
         "scientific_name": row.scientific_name,
         "canonical_taxon_id": row.canonical_taxon_id,

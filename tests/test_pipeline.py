@@ -294,6 +294,66 @@ class TestNormaliser:
         assert other is not None
         assert other.canonical_taxon_id is None
 
+    def test_bat_pass_gets_a_title_hint_but_no_taxonomic_claim(self) -> None:
+        """A bat pass may get a presentational title_hint, but the candidate name
+        must never leak into common_name/scientific_name/canonical_taxon_id/rank —
+        those stay exactly as the ultrasonic detector (deliberately) left them."""
+        normaliser = Normaliser()
+        window = self._window()
+        pass_ = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.8,
+            label="bat pass",
+            rank=None,
+            taxonomic_group="bat",
+            peak_frequency_hz=45_000.0,
+            native_result={"detector": "ultrasonic-pass-v1"},
+        )
+        result = normaliser.normalise(
+            make_metadata("ultrasonic-pass-v1"), window, pass_, native_sample_rate=384000
+        )
+        assert result is not None
+        assert result.title_hint is not None
+        assert result.common_name is None
+        assert result.scientific_name is None
+        assert result.canonical_taxon_id is None
+        assert result.rank is None
+
+    def test_non_bat_detection_gets_no_title_hint(self) -> None:
+        normaliser = Normaliser()
+        window = self._window()
+        bird = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.8,
+            label="x",
+            common_name="European Robin",
+            taxonomic_group="bird",
+        )
+        result = normaliser.normalise(
+            make_metadata("birdnet-v2.4"), window, bird, native_sample_rate=48000
+        )
+        assert result is not None
+        assert result.title_hint is None
+
+    def test_claim_violation_still_fires_alongside_title_hint_support(self) -> None:
+        """Adding title_hint must not weaken the ADR-010 guard: a non-taxonomic
+        plugin (e.g. the ultrasonic detector) still cannot emit a species name."""
+        normaliser = Normaliser()
+        window = self._window()
+        offender = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=0.5,
+            score=0.9,
+            label="acoustic event",
+            common_name="European Robin",
+        )
+        with pytest.raises(ClaimViolation, match="not permitted"):
+            normaliser.normalise(
+                make_metadata("activity-v1"), window, offender, native_sample_rate=48000
+            )
+
 
 class TestClipPolicy:
     def _manager(self, tmp_path, **kwargs) -> ClipManager:

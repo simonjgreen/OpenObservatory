@@ -228,6 +228,27 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 .chip.warn { background: rgba(251, 191, 36, 0.16); color: var(--warn); }
 .chip.danger { background: rgba(248, 113, 113, 0.18); color: var(--danger); }
 
+/* Presentational-only title hint (frequency + candidate species for a bat pass).
+   Deliberately a separate text run from the label, never the same weight or
+   colour, so a candidate guess can never be mistaken for the identification. */
+.title-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--bat);
+  font-family: var(--mono);
+  margin-left: 2px;
+}
+.feeding-buzz-marker {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(195, 155, 255, 0.16);
+  color: var(--bat);
+  margin-left: 4px;
+}
+
 .spectrogram {
   position: relative;
   width: 100%;

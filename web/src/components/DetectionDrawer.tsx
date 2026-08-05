@@ -6,6 +6,7 @@
  */
 
 import type { Detection, MediaRef } from '../types'
+import { formatDetectionTitle } from './detectionTitle'
 import { formatHz } from './Spectrogram'
 import { glyphFor } from './Suggestions'
 
@@ -63,6 +64,9 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
     timeZone: localTimeZone,
   })
   const native = detection.native_result
+  const title = formatDetectionTitle(detection)
+  const frequencyGroup =
+    typeof native?.frequency_group_hint === 'string' ? native.frequency_group_hint : null
 
   return (
     <aside className="drawer" role="dialog" aria-label="Detection detail">
@@ -71,7 +75,11 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           {glyphFor(detection.taxonomic_group)}
         </div>
         <div className="grow">
-          <h2>{detection.display_name}</h2>
+          <h2>
+            {title.label}
+            {title.hint && <span className="title-hint">{title.hint}</span>}
+            {title.feedingBuzz && <span className="feeding-buzz-marker">feeding buzz</span>}
+          </h2>
           {detection.scientific_name && <p className="sci">{detection.scientific_name}</p>}
         </div>
         <button className="close" onClick={onClose} aria-label="Close">
@@ -183,6 +191,58 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           <code> clip_plugins</code>, above the score threshold, and within the rate and
           disk budgets.
         </p>
+      )}
+
+      {detection.taxonomic_group === 'bat' && (
+        <div className="subsection">
+          <h3>Bat pass candidate</h3>
+          <p className="dim">
+            The candidate name above is inferred from peak frequency alone, using a coarse
+            band table. It is <strong>not a species identification</strong> — several UK
+            species share the same band, and peak frequency is only a weak signal even
+            within a band. Treat it as a hint for where to look, not a result.
+          </p>
+          {frequencyGroup && (
+            <dl className="kv compact">
+              <div>
+                <dt>frequency group</dt>
+                <dd>{frequencyGroup}</dd>
+              </div>
+            </dl>
+          )}
+          {typeof native?.min_interval_ms === 'number' && (
+            <dl className="kv compact">
+              <div>
+                <dt>shortest interval in train</dt>
+                <dd className="mono">{Number(native.min_interval_ms).toFixed(1)} ms</dd>
+              </div>
+              {title.feedingBuzz && (
+                <>
+                  {typeof native?.buzz_offset_s === 'number' && (
+                    <div>
+                      <dt>buzz starts at</dt>
+                      <dd className="mono">{Number(native.buzz_offset_s).toFixed(2)} s</dd>
+                    </div>
+                  )}
+                  {typeof native?.buzz_min_interval_ms === 'number' && (
+                    <div>
+                      <dt>buzz shortest interval</dt>
+                      <dd className="mono">
+                        {Number(native.buzz_min_interval_ms).toFixed(1)} ms
+                      </dd>
+                    </div>
+                  )}
+                  {typeof native?.buzz_pulse_count === 'number' && (
+                    <div>
+                      <dt>buzz pulse count</dt>
+                      <dd className="mono">{native.buzz_pulse_count}</dd>
+                    </div>
+                  )}
+                </>
+              )}
+            </dl>
+          )}
+        </div>
       )}
 
       <div className="subsection">

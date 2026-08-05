@@ -24,10 +24,13 @@ project, reworked onto this project's window contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from ..audio.contracts import (
+    NS_PER_S,
     AudioWindow,
     DetectorHealth,
     DetectorMetadata,
@@ -36,25 +39,135 @@ from ..audio.contracts import (
 )
 from .base import DetectorContext, DetectorUnavailable
 
+# Note: no import of schedule.py, even under TYPE_CHECKING — it may not exist
+# yet or may be mid-edit by another agent. `schedule` is accepted duck-typed
+# via _ScheduleLike below; any object with a matching is_active works,
+# including the real NightSchedule once it lands.
+
 PLUGIN_VERSION = "1.0.0"
 
+
+@runtime_checkable
+class _ScheduleLike(Protocol):
+    """Anything with an ``is_active(now: datetime) -> bool`` method.
+
+    Deliberately duck-typed rather than importing ``NightSchedule`` directly,
+    so this detector does not depend on that module's existence or shape.
+    """
+
+    def is_active(self, now: datetime) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _Band:
+    low: float
+    high: float
+    #: The existing, longer group string. Unchanged in meaning; several
+    #: callers already depend on its wording.
+    group: str
+    #: Short display name for a candidate title, e.g. "common pipistrelle".
+    short_name: str
+    #: Set only where the band is genuinely confusable with something else.
+    ambiguity: str | None = None
+
+
 #: Coarse peak-frequency groups for UK species. A hint on top of a pass, never
-#: an identification — several of these bands overlap between species.
-FREQUENCY_HINTS: tuple[tuple[float, float, str], ...] = (
-    (17_000, 26_000, "Nyctalus / Eptesicus group (noctule, serotine)"),
-    (26_000, 38_000, "Myotis / Barbastelle group"),
-    (38_000, 50_000, "Pipistrellus pipistrellus group (common pipistrelle)"),
-    (50_000, 62_000, "Pipistrellus pygmaeus group (soprano pipistrelle)"),
-    (62_000, 90_000, "Rhinolophus ferrumequinum / high-frequency group"),
-    (90_000, 130_000, "Rhinolophus hipposideros group (lesser horseshoe)"),
+#: an identification — several of these bands overlap between species. The
+#: 17-26 kHz range is split so the bush-cricket ambiguity note attaches only
+#: to the lower half, where it actually applies.
+FREQUENCY_HINTS: tuple[_Band, ...] = (
+    _Band(
+        17_000,
+        21_000,
+        "Nyctalus / Eptesicus group (noctule, serotine)",
+        "noctule / serotine",
+        "may be a bush-cricket",
+    ),
+    _Band(
+        21_000,
+        26_000,
+        "Nyctalus / Eptesicus group (noctule, serotine)",
+        "noctule / serotine",
+    ),
+    _Band(26_000, 38_000, "Myotis / Barbastelle group", "Myotis / barbastelle"),
+    _Band(
+        38_000,
+        50_000,
+        "Pipistrellus pipistrellus group (common pipistrelle)",
+        "common pipistrelle",
+    ),
+    _Band(
+        50_000,
+        62_000,
+        "Pipistrellus pygmaeus group (soprano pipistrelle)",
+        "soprano pipistrelle",
+    ),
+    _Band(
+        62_000,
+        90_000,
+        "Rhinolophus ferrumequinum / high-frequency group",
+        "greater horseshoe",
+    ),
+    _Band(
+        90_000,
+        130_000,
+        "Rhinolophus hipposideros group (lesser horseshoe)",
+        "lesser horseshoe",
+    ),
 )
 
 
 def frequency_hint(hz: float) -> str | None:
-    for low, high, name in FREQUENCY_HINTS:
-        if low <= hz < high:
-            return name
+    for band in FREQUENCY_HINTS:
+        if band.low <= hz < band.high:
+            return band.group
     return None
+
+
+def frequency_candidate(hz: float) -> tuple[str | None, str | None]:
+    """Return (short_candidate_name, ambiguity_note); either may be None."""
+    for band in FREQUENCY_HINTS:
+        if band.low <= hz < band.high:
+            return band.short_name, band.ambiguity
+    return None, None
+
+
+def _interpolated_peak_hz(
+    column: np.ndarray, peak_bin: int, band_freqs: np.ndarray
+) -> float:
+    """Estimate a pulse's peak frequency to better than one FFT bin.
+
+    The pulse-detection FFT is short by design — it has to resolve a 1.5 ms call —
+    which at 384 kHz leaves 3 kHz bins. Reporting the bin centre quantises every
+    peak to a multiple of 3 kHz, and the frequency bands used to suggest a
+    candidate species have edges that fall *between* bins: 38 kHz, the boundary
+    between the Myotis and common pipistrelle groups, sits between the 36 and
+    39 kHz bins. A bat calling at 37.5 kHz would be assigned to either group
+    depending on noise.
+
+    Fitting a parabola through the peak bin and its two neighbours in the log
+    domain recovers the true maximum to a fraction of a bin, which is the standard
+    correction for this and costs three array lookups. It does not make the
+    measurement precise enough to identify a species — nothing here does — but it
+    stops the band assignment being decided by quantisation.
+    """
+    last = column.shape[0] - 1
+    if peak_bin <= 0 or peak_bin >= last:
+        return float(band_freqs[peak_bin])
+    alpha, beta, gamma = (
+        float(np.log(column[peak_bin - 1] + 1e-20)),
+        float(np.log(column[peak_bin] + 1e-20)),
+        float(np.log(column[peak_bin + 1] + 1e-20)),
+    )
+    denominator = alpha - 2.0 * beta + gamma
+    if denominator == 0.0:
+        return float(band_freqs[peak_bin])
+    # Offset in bins, bounded to the neighbouring half-bins: a parabola fitted to
+    # noise can otherwise place the vertex arbitrarily far away.
+    delta = 0.5 * (alpha - gamma) / denominator
+    delta = max(-0.5, min(0.5, delta))
+    bin_width = float(band_freqs[1] - band_freqs[0]) if band_freqs.shape[0] > 1 else 0.0
+    return float(band_freqs[peak_bin] + delta * bin_width)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +216,10 @@ class UltrasonicDetector:
         max_pulse_ms: float = 40.0,
         pass_gap_s: float = 1.5,
         min_pulses_per_pass: int = 3,
+        buzz_max_interval_ms: float = 12.0,
+        buzz_min_pulses: int = 5,
+        buzz_interval_ratio: float = 0.4,
+        schedule: _ScheduleLike | None = None,
     ) -> None:
         self.native_sample_rate = native_sample_rate
         self.window_spec = WindowSpec(
@@ -121,10 +238,15 @@ class UltrasonicDetector:
         self._max_pulse_s = max_pulse_ms / 1000.0
         self._pass_gap_s = pass_gap_s
         self._min_pulses = min_pulses_per_pass
+        self._buzz_max_interval_ms = buzz_max_interval_ms
+        self._buzz_min_pulses = buzz_min_pulses
+        self._buzz_interval_ratio = buzz_interval_ratio
+        self._schedule = schedule
         self._noise_floor_db: float | None = None
         self.pulses_found = 0
         self.passes_found = 0
         self._blocks = 0
+        self._gated_windows = 0
 
     async def initialise(self, context: DetectorContext) -> None:
         if self.native_sample_rate < self.MIN_SAMPLE_RATE:
@@ -135,6 +257,14 @@ class UltrasonicDetector:
         self._noise_floor_db = None
 
     async def analyse(self, window: AudioWindow) -> list[NativeDetection]:
+        if self._schedule is not None:
+            # Use the window's own UTC time, not wall-clock now, so replayed
+            # audio is gated the same way it would have been live, and so this
+            # early return precedes any FFT work.
+            window_utc = datetime.fromtimestamp(window.utc_start_ns / NS_PER_S, tz=UTC)
+            if not self._schedule.is_active(window_utc):
+                self._gated_windows += 1
+                return []
         pcm = np.asarray(window.pcm, dtype=np.float32)
         rate = window.sample_rate
         self._blocks += 1
@@ -220,13 +350,50 @@ class UltrasonicDetector:
         floor: float,
     ) -> Pulse:
         segment = band_power[:, start:end]
-        peak_bin = int(np.unravel_index(int(np.argmax(segment)), segment.shape)[0])
+        peak_bin, peak_col = (
+            int(v) for v in np.unravel_index(int(np.argmax(segment)), segment.shape)
+        )
         return Pulse(
             offset_s=float(times[start]),
             duration_s=(end - start) * bin_dt,
-            peak_hz=float(band_freqs[peak_bin]),
+            peak_hz=_interpolated_peak_hz(segment[:, peak_col], peak_bin, band_freqs),
             snr_db=float(energy_db[start:end].max() - floor),
         )
+
+    def _find_buzz(
+        self, intervals_ms: np.ndarray, overall_median_ms: float
+    ) -> tuple[int, int] | None:
+        """Return (start, end) pulse indices [start, end) of the buzz run, if any.
+
+        A run is a maximal stretch of consecutive intervals each below
+        ``buzz_max_interval_ms``. It qualifies as a buzz only if it is at
+        least ``buzz_min_pulses`` intervals long AND its own median is below
+        ``buzz_interval_ratio`` of the whole train's median — the ratio test
+        is what rules out a bat that simply called fast throughout the pass,
+        rather than collapsing into a terminal buzz. Among qualifying runs,
+        the one with the lowest (strongest) median interval wins.
+        """
+        n = intervals_ms.shape[0]
+        best: tuple[int, int] | None = None
+        best_median = np.inf
+        i = 0
+        while i < n:
+            if intervals_ms[i] < self._buzz_max_interval_ms:
+                j = i
+                while j < n and intervals_ms[j] < self._buzz_max_interval_ms:
+                    j += 1
+                run_len = j - i
+                if run_len >= self._buzz_min_pulses:
+                    run_median = float(np.median(intervals_ms[i:j]))
+                    if run_median < self._buzz_interval_ratio * overall_median_ms and (
+                        run_median < best_median
+                    ):
+                        best = (i, j)
+                        best_median = run_median
+                i = j
+            else:
+                i += 1
+        return best
 
     def _summarise(self, pulses: list[Pulse]) -> NativeDetection:
         peaks = np.array([p.peak_hz for p in pulses])
@@ -235,6 +402,25 @@ class UltrasonicDetector:
         median_peak = float(np.median(peaks))
         peak_snr = max(p.snr_db for p in pulses)
         hint = frequency_hint(median_peak)
+        candidate_name, candidate_ambiguity = frequency_candidate(median_peak)
+
+        min_interval_ms = round(float(intervals.min()) * 1000.0, 2) if intervals.size else None
+
+        has_buzz = False
+        buzz_offset_s: float | None = None
+        buzz_min_interval_ms: float | None = None
+        buzz_pulse_count: int | None = None
+        if intervals.size and intervals.size >= self._buzz_min_pulses:
+            intervals_ms = intervals * 1000.0
+            overall_median_ms = float(np.median(intervals_ms))
+            run = self._find_buzz(intervals_ms, overall_median_ms)
+            if run is not None:
+                start_idx, end_idx = run
+                has_buzz = True
+                buzz_offset_s = float(pulses[start_idx].offset_s - pulses[0].offset_s)
+                buzz_min_interval_ms = round(float(intervals_ms[start_idx:end_idx].min()), 2)
+                buzz_pulse_count = end_idx - start_idx + 1
+
         return NativeDetection(
             offset_start_s=float(starts[0]),
             offset_end_s=float(starts[-1] + pulses[-1].duration_s),
@@ -266,6 +452,13 @@ class UltrasonicDetector:
                 "peak_snr_db": round(float(peak_snr), 1),
                 "frequency_group_hint": hint,
                 "hint_is_not_identification": True,
+                "candidate_name": candidate_name,
+                "candidate_ambiguity": candidate_ambiguity,
+                "min_interval_ms": min_interval_ms,
+                "has_feeding_buzz": has_buzz,
+                "buzz_offset_s": buzz_offset_s,
+                "buzz_min_interval_ms": buzz_min_interval_ms,
+                "buzz_pulse_count": buzz_pulse_count,
                 "score_definition": (
                     "0.4*min(1, pulses/8) + 0.6*min(1, (peak_snr_db - 12)/24)"
                 ),
@@ -273,16 +466,32 @@ class UltrasonicDetector:
         )
 
     async def health(self) -> DetectorHealth:
+        detail = (
+            f"{self.pulses_found} pulses, {self.passes_found} passes over "
+            f"{self._blocks} windows; noise floor "
+            f"{self._noise_floor_db:.1f} dB"
+            if self._noise_floor_db is not None
+            else "awaiting audio"
+        )
+        # A gated detector must be visibly off rather than silently absent: a
+        # station reporting nothing all night looks identical to a quiet night,
+        # and telling those apart is the whole point of the coverage bar.
+        if self._schedule is not None:
+            state_fn = getattr(self._schedule, "state", None)
+            if callable(state_fn):
+                schedule_state = state_fn(datetime.now(UTC))
+                active = schedule_state.get("active", True)
+                reason = schedule_state.get("reason", "")
+                detail += f"; schedule {'active' if active else 'gated'} ({reason})"
+                dusk, dawn = schedule_state.get("dusk_utc"), schedule_state.get("dawn_utc")
+                if dusk and dawn:
+                    detail += f", tonight {dusk[11:16]}Z to {dawn[11:16]}Z"
+            if self._gated_windows:
+                detail += f"; {self._gated_windows} windows gated by schedule"
         return DetectorHealth(
             available=True,
             state="ok",
-            detail=(
-                f"{self.pulses_found} pulses, {self.passes_found} passes over "
-                f"{self._blocks} windows; noise floor "
-                f"{self._noise_floor_db:.1f} dB"
-                if self._noise_floor_db is not None
-                else "awaiting audio"
-            ),
+            detail=detail,
         )
 
     async def shutdown(self) -> None:

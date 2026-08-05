@@ -227,6 +227,10 @@ export interface Detection {
   source_end_frame: number
   label: string | null
   display_name: string
+  /** Presentational only: frequency + candidate species for a bat pass, e.g.
+   *  "45 kHz · common pipistrelle?". Null for anything that is not a bat pass.
+   *  Never an identification — see docs/adr/ADR-013. */
+  title_hint?: string | null
   common_name: string | null
   scientific_name: string | null
   canonical_taxon_id: string | null
@@ -235,7 +239,12 @@ export interface Detection {
   score: number
   calibrated_probability: number | null
   peak_frequency_hz: number | null
-  native_result: Record<string, unknown>
+  /** Small derived markers computed from native_result, present even where
+   *  native_result itself is not (list responses). */
+  flags?: { feeding_buzz: boolean }
+  /** Present on `GET /detections/{id}` and on live WebSocket frames; omitted from
+   *  `GET /detections` list rows unless `include_native=true` was requested. */
+  native_result?: Record<string, unknown>
   media: MediaRef[]
 }
 

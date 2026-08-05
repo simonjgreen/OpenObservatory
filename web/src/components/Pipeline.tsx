@@ -7,6 +7,7 @@
  */
 
 import { useState } from 'react'
+import { formatDetectionTitleText, type DetectionTitleSource } from './detectionTitle'
 import type { DetectorStatus, Envelope, StationStatus } from '../types'
 
 function bytes(value: number): string {
@@ -513,7 +514,9 @@ function summarise(event: Envelope): string {
   const data = event.data as Record<string, unknown>
   switch (event.event_type) {
     case 'detection.created':
-      return `${data.display_name} ${(Number(data.score) * 100).toFixed(0)} (${
+      return `${formatDetectionTitleText(data as unknown as DetectionTitleSource)} ${(
+        Number(data.score) * 100
+      ).toFixed(0)} (${
         (data.detector as Record<string, unknown> | undefined)?.plugin_id ?? '?'
       })`
     case 'capture.gap':

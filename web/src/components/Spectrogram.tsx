@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { formatDetectionTitleText } from './detectionTitle'
 import type { ColumnBatch, Detection, SpectrogramSpec } from '../types'
 import {
   frequencyToPixel,
@@ -424,7 +425,7 @@ export function Spectrogram({
           context.lineWidth = 1.5
           context.strokeRect(rect.x, rect.y, rect.width, rect.height)
 
-          const text = `${detection.display_name} ${(detection.score * 100).toFixed(0)}%`
+          const text = `${formatDetectionTitleText(detection)} ${(detection.score * 100).toFixed(0)}%`
           context.font = '600 11px ui-sans-serif, system-ui, sans-serif'
           const metrics = context.measureText(text)
           const labelX = Math.max(2, Math.min(rect.x, cssWidth - metrics.width - 10))

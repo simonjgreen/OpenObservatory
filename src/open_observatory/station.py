@@ -62,6 +62,7 @@ from .detectors.ultrasonic import UltrasonicDetector
 from .events import EventBus, EventType
 from .live import LiveAudioBroadcaster
 from .normaliser import CanonicalDetection, ClaimViolation, Normaliser
+from .schedule import NightSchedule
 from .segmenter import TransientAssetStore, WindowRouter
 
 log = structlog.get_logger(__name__)
@@ -421,7 +422,28 @@ class Station:
                     ),
                 )
             )
-        plugins.append(UltrasonicDetector(native_sample_rate=native_rate))
+        if settings.ultrasonic_enabled:
+            plugins.append(
+                UltrasonicDetector(
+                    native_sample_rate=native_rate,
+                    band_hz=settings.ultrasonic_band_hz,
+                    min_snr_db=settings.ultrasonic_min_snr_db,
+                    min_pulse_ms=settings.ultrasonic_min_pulse_ms,
+                    max_pulse_ms=settings.ultrasonic_max_pulse_ms,
+                    pass_gap_s=settings.ultrasonic_pass_gap_s,
+                    min_pulses_per_pass=settings.ultrasonic_min_pulses_per_pass,
+                    buzz_max_interval_ms=settings.ultrasonic_buzz_max_interval_ms,
+                    buzz_min_pulses=settings.ultrasonic_buzz_min_pulses,
+                    buzz_interval_ratio=settings.ultrasonic_buzz_interval_ratio,
+                    schedule=NightSchedule(
+                        mode=settings.ultrasonic_schedule,
+                        latitude=settings.latitude,
+                        longitude=settings.longitude,
+                        dusk_margin_min=settings.ultrasonic_schedule_dusk_margin_min,
+                        dawn_margin_min=settings.ultrasonic_schedule_dawn_margin_min,
+                    ),
+                )
+            )
 
         assert self.router is not None
         for plugin in plugins:

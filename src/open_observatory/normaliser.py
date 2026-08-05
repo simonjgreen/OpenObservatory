@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 import structlog
 
 from .audio.contracts import NS_PER_S, AudioWindow, DetectorMetadata, NativeDetection
+from .display import display_title
 
 log = structlog.get_logger(__name__)
 
@@ -64,6 +65,10 @@ class CanonicalDetection:
     native_result: dict[str, object]
     #: Convenience for the UI: the best human-readable name available.
     display_name: str
+    #: Presentational only: frequency + candidate species for a bat pass, e.g.
+    #: "45 kHz · common pipistrelle?". None for anything that is not a bat pass.
+    #: Never persisted into common_name/scientific_name/canonical_taxon_id/rank.
+    title_hint: str | None
 
     @property
     def duration_s(self) -> float:
@@ -88,6 +93,7 @@ class CanonicalDetection:
             "source_end_frame": self.source_end_frame,
             "label": self.detector_label,
             "display_name": self.display_name,
+            "title_hint": self.title_hint,
             "common_name": self.common_name,
             "scientific_name": self.scientific_name,
             "canonical_taxon_id": self.canonical_taxon_id,
@@ -159,11 +165,14 @@ class Normaliser:
         start_ns = window.utc_start_ns + int(detection.offset_start_s * NS_PER_S)
         end_ns = window.utc_start_ns + int(detection.offset_end_s * NS_PER_S)
 
-        display_name = (
-            detection.common_name
-            or detection.scientific_name
-            or detection.label
-            or metadata.plugin_id
+        display_name, title_hint = display_title(
+            common_name=detection.common_name,
+            scientific_name=detection.scientific_name,
+            label=detection.label,
+            plugin_id=metadata.plugin_id,
+            taxonomic_group=detection.taxonomic_group,
+            peak_frequency_hz=detection.peak_frequency_hz,
+            native_result=detection.native_result,
         )
 
         self.stats.normalised += 1
@@ -191,6 +200,7 @@ class Normaliser:
             peak_frequency_hz=detection.peak_frequency_hz,
             native_result=dict(detection.native_result),
             display_name=display_name,
+            title_hint=title_hint,
         )
 
     def _check_claims(self, metadata: DetectorMetadata, detection: NativeDetection) -> None:

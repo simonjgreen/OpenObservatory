@@ -245,3 +245,36 @@ truthful. Milestone 4 owns the authentication foundation.
 rather than assumed: the station must not be exposed beyond the local network until
 Milestone 4 lands, and station coordinates are readable by anyone who can reach the port.
 Milestone 4 cannot be called complete while this ADR stands.
+
+## ADR-017: BatDetect2 is evaluated as an optional adapter, and its weights are never bundled
+
+**Decision:** BatDetect2 may be evaluated and adapted, but its model weights and example
+recordings are **not committed to this repository**. They are acquired through the same
+documented, attributable operator step as BirdNET (`oo models fetch`), and their licence
+is surfaced in `/api/v1/models` and in the UI before download.
+
+**Reason:** BatDetect2 is licensed **CC-BY-NC-4.0** — code, weights and example audio
+alike, under a single repository licence. The authors state plainly that commercial use
+is not permitted. That licence *does* permit non-commercial redistribution with
+attribution, so bundling would be lawful for a non-commercial deployment — but it would
+silently bind every future user of this repository to a non-commercial restriction that
+the rest of the codebase does not carry. Keeping the weights out means the restriction
+attaches to the operator's deliberate choice, not to a `git clone`. This is ADR-006
+applied to a model whose licence is more restrictive than BirdNET's, not a new principle.
+
+**Consequence for the fixture gate:** BatDetect2 ships three labelled UK recordings
+(*Myotis myotis*, *Eptesicus serotinus*, *Rhinolophus ferrumequinum*). They are a
+legitimate basis for the Milestone 5 fixture test *once fetched*, but the test must skip
+rather than fail when the assets are absent, exactly as the BirdNET tests do.
+
+**Constraint — real-time inference is not assumed.** BatDetect2 requires PyTorch, expects
+256 kHz mono input (not an integer ratio from this station's 384 kHz, so resampling goes
+through the existing soxr stage rather than the library's internal path), and no primary
+source establishes a CPU inference time on ARM. The nearest precedent, `acoupi_batdetect2`
+on a Pi 4B, treats edge-CPU inference as a known bottleneck needing quantisation. It is
+therefore adopted behind the deferred-queue path of `DETECTOR_STRATEGY.md` unless a
+measured on-device benchmark shows otherwise. A benchmark, not an expectation, decides.
+
+**Constraint — no claim without a passing fixture test on the target architecture**, per
+`CLAUDE.md`. Until that test passes on the Pi, BatDetect2 is "evaluated", never
+"supported".

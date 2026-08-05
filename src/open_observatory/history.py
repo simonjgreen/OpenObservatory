@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .db import models as orm
+from .display import display_title
 
 #: Groups that name an organism, as opposed to describing an unattributed sound.
 IDENTIFIED_GROUPS = ("bird", "bat")
@@ -234,21 +235,36 @@ def species_summary(
         .limit(limit)
     ).all()
 
-    return [
-        {
-            "taxonomic_group": row.group,
-            "common_name": row.common_name,
-            "scientific_name": row.scientific_name,
-            "label": row.detector_label,
-            "display_name": row.common_name or row.detector_label or "unknown",
-            "plugin_id": row.plugin_id,
-            "detections": row.detections,
-            "best_score": round(row.best_score, 4),
-            "first_seen_utc": _iso(row.first_seen),
-            "last_seen_utc": _iso(row.last_seen),
-        }
-        for row in rows
-    ]
+    results = []
+    for row in rows:
+        # Aggregated across many detections (once per distinct label), so there is
+        # no single peak_frequency_hz/native_result to derive a frequency hint or
+        # buzz flag from; display_title still gives the uniform name-fallback chain.
+        display_name, title_hint = display_title(
+            common_name=row.common_name,
+            scientific_name=row.scientific_name,
+            label=row.detector_label,
+            plugin_id=row.plugin_id,
+            taxonomic_group=row.group,
+            peak_frequency_hz=None,
+            native_result=None,
+        )
+        results.append(
+            {
+                "taxonomic_group": row.group,
+                "common_name": row.common_name,
+                "scientific_name": row.scientific_name,
+                "label": row.detector_label,
+                "display_name": display_name,
+                "title_hint": title_hint,
+                "plugin_id": row.plugin_id,
+                "detections": row.detections,
+                "best_score": round(row.best_score, 4),
+                "first_seen_utc": _iso(row.first_seen),
+                "last_seen_utc": _iso(row.last_seen),
+            }
+        )
+    return results
 
 
 def coverage(session: Session, window: Range) -> dict[str, object]:

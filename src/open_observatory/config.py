@@ -144,6 +144,40 @@ class Settings(BaseSettings):
     #: cannot hear 18 kHz. Bush-crickets and the lower bat calls both live there.
     ultrasonic_audible_min_peak_hz: float = 15000.0
 
+    # ---- ultrasonic pass detector -------------------------------------------
+    #: Off switch. The detector needs a native stream at 96 kHz or above anyway,
+    #: but this lets an operator disable it without touching capture config.
+    ultrasonic_enabled: bool = True
+    #: Matches UltrasonicDetector's own default band; below 15 kHz is where the
+    #: audible activity/BirdNET detectors already have coverage.
+    ultrasonic_band_hz: tuple[float, float] = (15000.0, 125000.0)
+    #: Matches UltrasonicDetector's own default; see detectors/ultrasonic.py.
+    ultrasonic_min_snr_db: float = 12.0
+    #: Matches UltrasonicDetector's own default pulse-duration bounds — short
+    #: enough to exclude sustained tones, long enough to exclude clicks.
+    ultrasonic_min_pulse_ms: float = 1.5
+    ultrasonic_max_pulse_ms: float = 40.0
+    #: Matches UltrasonicDetector's own default; pulses closer together than this
+    #: belong to the same pass.
+    ultrasonic_pass_gap_s: float = 1.5
+    #: Matches UltrasonicDetector's own default; fewer pulses than this is more
+    #: likely a stray transient than a genuine echolocation pass.
+    ultrasonic_min_pulses_per_pass: int = 3
+    #: A feeding buzz is a terminal collapse in inter-pulse interval as a bat
+    #: closes on prey; these three thresholds describe that collapse. Defaults
+    #: are a starting point pending the false-positive review in Milestone 5
+    #: item 6, not a calibrated result.
+    ultrasonic_buzz_max_interval_ms: float = 12.0
+    ultrasonic_buzz_min_pulses: int = 5
+    ultrasonic_buzz_interval_ratio: float = 0.4
+    #: ``always`` runs the detector continuously, so upgrading an existing
+    #: station changes nothing until this is set to ``night``. See schedule.py:
+    #: with coordinates unset, ``night`` still runs continuously rather than
+    #: silently detecting nothing overnight.
+    ultrasonic_schedule: Literal["always", "night"] = "always"
+    ultrasonic_schedule_dusk_margin_min: float = 30.0
+    ultrasonic_schedule_dawn_margin_min: float = 30.0
+
     # ---- api --------------------------------------------------------------
     bind_host: str = "0.0.0.0"
     bind_port: int = 8080
