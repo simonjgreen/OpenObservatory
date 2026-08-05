@@ -1,7 +1,10 @@
 .env
 config/runtime.env
-data/
-models/
+# Anchored with a leading slash: these are the runtime directories at the repository
+# root. Unanchored, `data/` also matched `docs/data/`, which kept DATA_MODEL.md out of
+# version control entirely.
+/data/
+/models/
 *.wav
 *.flac
 *.sqlite
@@ -14,11 +17,12 @@ dist/
 
 # Model assets are never committed (ADR-006): their licences differ from this
 # code's and acquisition is a deliberate, attributable operator step.
-models/*.tflite
-models/*.txt
-!models/manifest.tsv
+/models/*.tflite
+/models/*.txt
+!/models/manifest.tsv
 
 # Build output
+*.egg-info/
 web/dist/
 tsbuildinfo
 *.tsbuildinfo

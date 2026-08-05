@@ -4,8 +4,9 @@ Honest state of the implementation against `IMPLEMENTATION_PLAN.md`. Anything no
 demonstrated on the actual Pi is marked as not done, regardless of whether the code
 exists.
 
-Recorded 2026-08-04. See `HANDOVER.md` for operational context, the bugs found by
-measurement, and a prioritised list of what to do next.
+Recorded 2026-08-04, revised 2026-08-05 to cover the waterfall spectrogram view, the
+event-stream filtering default and history browsing. See `HANDOVER.md` for operational
+context, the bugs found by measurement, and a prioritised list of what to do next.
 
 ## Milestone 0 — Repository and target diagnostics — **complete**
 
@@ -53,7 +54,9 @@ run; the 72-hour soak remains outstanding.
 | Redis Streams job contract | **deferred** — in-process `EventBus` behind the same protocol, per ADR-009 and the explicit permission in `CLAUDE.md` |
 | Bounded queue policies | done; per-detector bounded queues, delivery deadline, circuit breaker |
 | Window inspection CLI | partial — `oo audio resample-check` inspects timing; there is no window dump command |
-| Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps |
+| Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps. Recorded as ADR-012 |
+| Spectrogram presentation | done, beyond plan — scrolling and waterfall orientations, with the shared coordinate mapping in `web/src/components/geometry.ts` tested against both |
+| Event stream filtering | done — unidentified events are hidden by default, so the stream shows what was identified rather than everything the activity detector fired on |
 
 **Exit gate — synthetic impulse timing error under 100 ms, target under 10 ms:
 met, at 0 ms.** An impulse at native frame *N* appears at derived frame *N/8* to
@@ -68,8 +71,9 @@ within one frame (20 µs), verified by test.
 | Detector fixture self-test | done for `activity-v1` and `ultrasonic-pass-v1`; BirdNET's *logic* is tested but there is **no fixture test asserting a known species from a known recording** |
 | Normalised detection persistence | done |
 | Evidence clip manager | done, with a rate limit, size budget, disk reserve and retention sweep |
-| Minimal FastAPI list/detail endpoints | done, plus health, metrics, devices, streams, gaps, detectors, models, taxa activity, media |
-| Temporary UI | done — the real-time debug UI |
+| Minimal FastAPI list/detail endpoints | done, plus health, metrics, devices, streams, gaps, detectors, models, taxa activity, media, history and history windows |
+| Temporary UI | done — the real-time debug UI, with a LIVE and a HISTORY mode |
+| History browsing | done, beyond plan — named windows resolved in the station's timezone, SQL-aggregated timeline and species summary, shown against capture coverage so an empty stretch is distinguishable from a quiet one. No historical spectrogram: the ring buffer is memory-only by design |
 | Audible rendering of ultrasound | done, beyond plan — time-expansion and heterodyne derivatives, verified on live bats at 18-54 kHz |
 | Low-latency live listening | done, beyond plan — ~180 ms end to end |
 
@@ -79,11 +83,33 @@ within minutes (including *Columba palumbus*) with playable, aligned clips. That
 a live demonstration, not the repeatable fixture test the gate asks for, because no
 licensed reference recording is committed to the repository.
 
-## Milestone 4 — Product dashboard and review — **not started**
+## Milestone 4 — Product dashboard and review — **foundation in place, not started**
 
-The debug UI is explicitly **not** this (ADR-011). Timeline, filters, review
-workflow, retention UI and the authentication foundation remain outstanding. The
-`review` table exists in the schema; nothing writes to it.
+Reassessed 2026-08-05. ADR-016 supersedes the part of ADR-011 that treated the debug
+UI as a surface to be replaced: this milestone **promotes** it instead. The plan's own
+exit gate asks that a user can operate *and diagnose* through one local UI, which is a
+single surface with two depths.
+
+| Deliverable | State |
+|---|---|
+| React dashboard | foundation done — application shell and component set; surface-agnostic WebSocket and audio clients |
+| Styling | **not foundation** — `styles.css` is a colour-token header over ad-hoc component CSS, no spacing or type scale |
+| Frontend test harness | **absent** — no component testing library installed; only pure functions are testable, which is why `geometry.test.ts` stands alone |
+| Timeline, filters, detail | foundation done — HISTORY mode: named windows, stacked timeline, species summary, click-to-focus, coverage bar |
+| Spectrogram and playback | done — two orientations, live listening, per-detection clips including audible ultrasound |
+| Health/system page | partial — the diagnostic half exists; no operator-facing view |
+| Operator/diagnostic disclosure | **not started** |
+| `App.tsx` state extraction | **not started** — around 25 `useState` hooks in one 425-line component; a prerequisite, not a tidy-up |
+| Review workflow | **not started** — no table writer, no endpoint, no UI |
+| Retention job and UI | **not started** |
+| CSV/JSON export | **not started** — required by the acceptance criteria, absent from the original plan |
+| Authentication foundation | **not started** — ADR-015 records the deviation this must close |
+
+## Milestone 4.5 — Close the Milestone 1–3 exit gates — **not started**
+
+Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
+test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
+mutually exclusive, because deploying restarts capture and voids the run.
 
 ## Milestone 5 — Ultrasonic and bat support — **partial, beyond plan**
 
@@ -117,8 +143,8 @@ directory before being served.
 
 | Gate | State |
 |---|---|
-| Unit tests | 138 passing on the target device |
-| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end |
+| Unit tests | 161 passing on the target device, plus 38 frontend tests |
+| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. **Gap:** the history endpoints have no HTTP-level test; `tests/test_history.py` exercises the aggregation functions only |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |
 | Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. ADR-007 records how to move to PostgreSQL and back |
 | Updated docs | done |

@@ -198,11 +198,15 @@ one burst, so a stall parks the display rather than letting it drift out of step
 
 ## Known limitations recorded honestly
 
-- **Range model is off.** The station's latitude/longitude are not configured, so
-  BirdNET's location/date occurrence model is disabled and every species is judged
-  on confidence alone. Set `OO_LATITUDE`/`OO_LONGITUDE` and
-  `OO_BIRDNET_USE_LOCATION_FILTER=true` to enable it; species implausible for the
-  location and week then have to clear a much higher bar.
+- **Range model: off by default in the repository, on at this station.** The shipped
+  defaults leave latitude and longitude unset and `birdnet_use_location_filter`
+  `False`, so every species is judged on confidence alone. the development station's
+  coordinates were written to the Pi's `config/runtime.env` — which is deliberately
+  not in version control — and the model is enabled there: week 29, 139 species
+  plausible, 7 suppressed as implausible. It matters more than it sounds: before it
+  was enabled, "Great Bittern" and "Spotted Crake" were stored at 0.9 confidence in
+  a the development area garden. To enable it on another station, set `OO_LATITUDE`,
+  `OO_LONGITUDE` and `OO_BIRDNET_USE_LOCATION_FILTER=true`.
 - **Ultrasonic detections are not species identifications** and, on a broadband-noisy
   evening, some "bat passes" are likely false positives from wind or handling noise.
   Peak frequency yields a coarse group hint only.

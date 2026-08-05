@@ -73,8 +73,9 @@ would dominate both the Pi's CPU and the browser's parse time.
 ### Backfill on connect
 
 After `hello`, the server sends one binary frame per channel containing up to
-**60 seconds** of retained history, so a newly-opened page shows context
-immediately instead of an empty canvas.
+the configured `spectrogram_backfill_s` seconds of retained history (default
+**30 seconds**), so a newly-opened page shows context immediately instead of
+an empty canvas.
 
 This is capped and yielded between channels for a measured reason: sending the
 full 2400-column history for both channels in one burst (~770 kB) delayed the

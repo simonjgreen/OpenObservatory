@@ -12,7 +12,8 @@ The station captures live 384 kHz mono audio from an AudioMoth on a Pi 5, derive
 48 kHz audible stream with verified zero group delay, cuts immutable time-addressed
 windows to three detectors' own specifications, normalises and persists detections,
 writes checksummed evidence clips (including audible renderings of ultrasound), and
-serves a real-time debug UI over two WebSocket channels, with a history mode for
+serves a real-time debug UI over two WebSocket channels — in scrolling or waterfall
+orientation, with unidentified events hidden by default — plus a history mode for
 browsing what was persisted. 161 Python tests and 38 frontend tests pass on the
 target; ruff is clean. It runs as a systemd unit and survives reboots. It is **not
 complete**: no 72-hour soak, no authentication, no product dashboard, and one
@@ -89,11 +90,14 @@ real client over the real link.
   detector cannot report a probability, and a synthetic source is announced loudly
   everywhere including `/api/v1/health`.
 
-Deviations from the seed spec are ADR-007 to ADR-011 in
+Deviations from the seed spec are ADR-007 to ADR-015 in
 `docs/architecture/ADRS.md`: SQLite in developer mode, native systemd instead of
 Compose, in-process event bus instead of Redis Streams, an owned activity detector
-as the first plugin, and the debug UI as an observability surface rather than the
-product dashboard.
+as the first plugin, the debug UI as an observability surface rather than the
+product dashboard, the two-channel live transport and its single-writer rule, the
+ultrasonic pass detector as a second owned plugin, the audible rendering of
+ultrasonic evidence, and — the one with a real consequence — running with anonymous
+read access and no authentication until Milestone 4.
 
 ## 5. Known-good measured figures (regressions should be judged against these)
 
@@ -155,11 +159,24 @@ useful addition and is not currently planned.
    `min_snr_db`, `min_pulses_per_pass` and the band.
 7. **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI and
    only the resampler check exists.
+8. **Cover the history endpoints at the HTTP level.** `tests/test_history.py` tests
+   the aggregation functions; nothing exercises `/api/v1/history` or
+   `/api/v1/history/windows` through the app, which is where the true-division
+   bucket bug would have shown itself.
+9. **Close the event-envelope schema gap.** `schemas/detection-event.schema.json`
+   sets `additionalProperties: false` and omits `rank` and `taxonomic_group`, which
+   internal records carry. It was flagged for Milestone 3 and not done. The MQTT
+   publisher of Milestone 6 is the forcing function, because that is the point at
+   which something outside this repository starts depending on the shape.
+10. **Write the Alembic migration environment before, not during, the PostgreSQL
+    move.** `alembic` is a declared dependency with no `alembic/` directory;
+    `create_all()` is what actually builds the schema. ADR-007 now records this.
 
 ### 6.4 Then the plan's own next milestones
 
-8. **Milestone 4**: product dashboard, review workflow, retention UI, and the
-   authentication foundation. Note the `review` table exists and nothing writes to
+11. **Milestone 4**: product dashboard, review workflow, retention UI, and the
+   authentication foundation. ADR-015 records the deferred authentication as a
+   deviation with a real security consequence; this milestone is what closes it. Note the `review` table exists and nothing writes to
    it. Keep the debug UI separate (ADR-011).
 9. **Milestone 5 proper**: BatDetect2 evaluation and benchmark on this Pi. The
    window contract and native stream are already in place, so this is an adapter

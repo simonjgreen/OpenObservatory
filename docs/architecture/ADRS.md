@@ -54,9 +54,19 @@ No raw SQL and no dialect-specific types are used, so the DSN swap is configurat
 
 **Constraint:** Any feature that requires concurrent writers, `LISTEN/NOTIFY`, or JSON
 indexing must not be built on the SQLite profile. Retention and review workflows are
-gated on the PostgreSQL profile.
+gated on the PostgreSQL profile. Query code must also stay dialect-portable: the history
+aggregation layer (`history.py`) is the working example, and it is why bucket truncation
+is written as `x - (x % n)` rather than with `FLOOR` or integer division — `/` on an
+Integer column in SQLAlchemy 2 is *true* division and casts to NUMERIC.
 
-**Rollback:** set `OO_DATABASE_DSN` to a PostgreSQL URL and run `alembic upgrade head`.
+**Status of Alembic (2026-08-05):** declared as a dependency but **not yet implemented**.
+There is no `alembic/` migration environment in the repository; `create_all()` in
+`db/session.py` is what actually builds the schema. That is adequate for the SQLite debug
+profile and is *not* a migration path.
+
+**Rollback:** setting `OO_DATABASE_DSN` to a PostgreSQL URL is the intended one-line
+switch, but it cannot be exercised until the migration environment exists — writing it is
+a prerequisite of the PostgreSQL profile, not a step within it.
 
 ## ADR-008: Native systemd deployment for the debug slice; Compose deferred
 
@@ -107,3 +117,131 @@ dashboard would hide.
 **Reason:** It exists to prove and diagnose Milestones 1–3 on real hardware. Keeping it
 separate stops diagnostic affordances leaking into the product surface and stops product
 polish being mistaken for pipeline correctness.
+
+**See also:** ADR-012 for the transport it reads from. **Partly superseded by ADR-016**,
+which makes this UI the foundation of the Milestone 4 product dashboard rather than a
+surface to be replaced by it. The separation of *concerns* below still holds; the
+separation of *codebases* does not.
+
+## ADR-016: The debug UI is the foundation of the product dashboard, not a throwaway
+
+**Decision:** Milestone 4 promotes the existing UI rather than starting a second one.
+Operator and diagnostic views become progressive disclosure within one application —
+one component library, one design-token stylesheet, one transport client, one type set —
+not two applications sharing a repository.
+
+**Reason:** ADR-011 was written before the UI existed, when the risk was that debug
+affordances would set the product's direction. The opposite happened: the surface that
+got built is largely product-shaped. HISTORY mode already answers "what visited last
+night" over persisted data, with named windows resolved in the station's timezone and
+DST-aware, a stacked timeline over real aggregation SQL, species summaries with counts
+and first/last-seen, focus-by-click, and capture coverage computed with correct interval
+merging so an empty stretch is distinguishable from a quiet one. `Suggestions` is already
+a species-grouped list a person can read. Discarding that to rebuild it would be waste,
+and the second implementation would not be better — it would be untested.
+
+**What is honestly *not* foundation, measured rather than assumed:**
+
+- `styles.css` is 692 lines with 18 custom properties covering colour, radius and font
+  stacks. There is no spacing or typographic scale, and the bulk is component-specific
+  selectors with hardcoded pixel values and off-token hex colours. It is a colour-token
+  header over ad-hoc CSS. A product surface inherits the dark, dense, monospace debug
+  aesthetic unless it is restyled, and restyling is real work.
+- `geometry.ts` is pure and well tested, but it is spectrogram-canvas mathematics. A
+  timeline, review queue or retention chart shares its discipline, not its code.
+- `types.ts` has a split personality: `Detection`, `MediaRef` and `Envelope` are near
+  product shape; `StationStatus` is almost entirely pipeline internals.
+- `audio.ts` and `live.ts` are genuinely surface-agnostic and reusable as they stand,
+  though `AudioTelemetry` bakes debug counters into its public interface.
+- The frontend has **no component testing library installed**. `vitest` is present but
+  only pure functions can be tested, which is why `geometry.test.ts` is the only test.
+  Everything with behaviour — mode switching, WebSocket wiring, history focus logic,
+  jitter-buffer resync — is untested.
+- There is no router and no URL-driven state, so a refresh loses the view.
+
+Milestone 4's own exit gate in `IMPLEMENTATION_PLAN.md` asks that a user can "operate
+**and diagnose** the station entirely through the local UI". That is one surface with two
+depths, which is what ADR-011 forbade. The plan's gate wins.
+
+**Constraint — what ADR-011 got right and is retained:** a diagnostic number must never
+be mistaken for a product claim. Queue depths, drop counters, frame offsets, resampler
+deficits and detector lag stay behind an explicit diagnostics disclosure. Product
+surfaces must not present uncalibrated levels as measurements, model scores as
+probabilities, or a frequency band as a species identification. Polish on the operator
+surface is never evidence that the pipeline is correct; only the measurements are.
+
+**Constraint — the debug affordances are not deleted.** They are how the pipeline was
+proven and how the next regression will be found. Promotion means reorganising them
+behind disclosure, not removing them.
+
+**Prerequisite:** `web/src/App.tsx` currently holds around twenty-five `useState` hooks
+covering live transport, history fetching, spectrogram controls, audio monitoring and
+mode switching in one 425-line component. A third surface cannot be added to that
+cleanly. State extraction is the first task of Milestone 4, not an optional tidy-up.
+
+## ADR-012: Two live channels, and exactly one writer per WebSocket
+
+**Decision:** The live surface is two separate WebSockets — `/api/v1/live` carrying JSON
+frames and binary spectrogram columns for the visual pipeline, and `/api/v1/live/audio`
+carrying raw PCM for the listen channel. On each socket, exactly one task performs every
+send; producers `offer()` into that task's bounded queue and never touch the socket.
+`DEBUG_UI_TRANSPORT.md` holds the frame formats.
+
+**Reason:** This is a correctness requirement, not tidiness. Concurrent writers to one
+WebSocket silently destroyed spectrogram delivery — the channel froze after roughly one
+frame while JSON kept flowing. Splitting audio from the visual channel keeps a slow or
+absent listener from stalling the spectrogram, and the single-writer rule makes interleaved
+sends structurally impossible rather than merely unlikely.
+
+**Constraint:** The bug is invisible on loopback, where sends complete too fast to overlap.
+Any change to these channels must be measured from a real browser over the real network
+link before it is believed. Both queues are bounded and drop rather than block: capture
+always wins.
+
+## ADR-013: `ultrasonic-pass-v1`, a second owned non-taxonomic detector on the native stream
+
+**Decision:** Ship a pulse-train detector operating on the native 384 kHz stream, emitting
+`bat pass` events with a measured frequency band, pulse count and SNR — never a species.
+This brings native-rate window support forward from Milestone 5.
+
+**Reason:** The ultrasonic band is the reason for capturing at 384 kHz; leaving it
+uninspected until a third-party classifier existed would have left the most expensive
+property of the pipeline unproven. A pass detector is fully owned, needs no model licence,
+and is testable.
+
+**Constraint:** It detects passes, not species, and the normaliser enforces that — a
+non-taxonomic detector that emits a species name raises. Frequency band is evidence a human
+can interpret, not an identification: 18–21 kHz is genuinely ambiguous between noctule and
+bush-cricket. It has a known false-positive rate on broadband transients (wind, handling
+noise) and no night scheduler, so it currently runs 24 hours a day. BatDetect2 remains
+Milestone 5 and is not implemented.
+
+## ADR-014: Ultrasonic evidence is rendered into the audible band for human review
+
+**Decision:** Alongside the native evidence clip, ultrasonic detections get an audible
+derivative — time-expansion or heterodyne, configurable — stored as a distinct media kind
+(`audible_ultrasonic`) and marked as not amplitude-comparable to the native recording.
+
+**Reason:** An ultrasonic clip is unfalsifiable by ear as recorded. Rendering it audible is
+what makes the detector's false positives *checkable* by a human, which is the only review
+mechanism that exists until a classifier does.
+
+**Constraint:** The rendering is peak-normalised and high-pass filtered, so its levels carry
+no information about the original amplitude and must never be presented as if they did.
+Levels anywhere in this system are uncalibrated; no sound-pressure calibration procedure
+exists.
+
+## ADR-015: Anonymous read access, with authentication deferred to Milestone 4
+
+**Decision:** The debug slice serves the API and UI with no authentication and anonymous
+read enabled, on a trusted LAN. This knowingly contradicts `TECHNICAL_SPEC.md` §9, which
+requires anonymous read access disabled by default in the first release.
+
+**Reason:** The debug slice's purpose is measurement on real hardware, and an auth layer
+would have added a failure surface to every diagnostic without making any measurement more
+truthful. Milestone 4 owns the authentication foundation.
+
+**Constraint:** This is a deviation with a real security consequence, so it is recorded
+rather than assumed: the station must not be exposed beyond the local network until
+Milestone 4 lands, and station coordinates are readable by anyone who can reach the port.
+Milestone 4 cannot be called complete while this ADR stands.

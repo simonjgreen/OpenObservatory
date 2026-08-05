@@ -1,72 +1,309 @@
 # Deployment and Operations
 
-## Host preparation
+This document describes the deployment that exists: `rsync` into a Python
+virtualenv on the Pi, managed by a single `systemd` unit. It does not use
+Docker, Compose, PostgreSQL or Redis. The Compose/PostgreSQL topology described
+in the technical spec is kept further down as the unrealised production
+target — see ADR-007 and ADR-008 in `docs/architecture/ADRS.md` for why the two
+diverge and what would have to be true before the Compose path is real.
 
-- Raspberry Pi OS 64-bit current stable.
-- USB SSD mounted at a stable path, e.g. `/srv/open-observatory`.
-- Docker Engine and Compose plugin.
-- Host timezone may be local, but containers and database operate in UTC.
-- NTP enabled.
-- Create a persistent udev symlink for the AudioMoth based on stable USB attributes where possible.
-- Disable aggressive USB autosuspend for the device if testing shows disconnects.
+## Current deployment: rsync + venv + systemd
 
-## Directory layout
+### Topology
+
+One host, one process, one owner of the microphone. `oo serve` runs capture,
+detectors, the API and the debug UI in a single Python process under
+`systemd`. Storage is SQLite by default (ADR-007); there is no database
+server. There is no message broker; the event bus is in-process (ADR-009).
+
+### Layout on the target
 
 ```text
-/srv/open-observatory/
+/home/observer/open-observatory/        REMOTE_DIR, synced source + venv
+  .venv/                             created by deploy.sh, not synced
   config/
-  postgres/
-  redis/
-  clips/
-  transient/
-  exports/
-  backups/
-  logs/
+    runtime.env                      operator-owned, NOT in the repo, NOT synced by rsync --delete
+  data/                               ReadWritePaths for the systemd unit
+  web/dist/                          built UI assets, served by the API process
 ```
 
-`transient/` may use tmpfs if memory permits, otherwise SSD with strict expiry.
+### Deploying
 
-## Setup workflow
+`deploy/deploy.sh` is the whole deployment mechanism. It:
 
-1. Run audio probe on host.
-2. Flash/configure AudioMoth USB microphone firmware separately if required.
-3. Verify switch/mode and enumerate sample rates.
-4. Run a 60-second test recording at selected high rate.
-5. Inspect spectrogram, clipping and silence warnings.
-6. Configure station location/timezone and retention.
-7. Install model adapters and accept/display their licences.
-8. Run fixture self-tests.
-9. Start services.
-10. Run 30-minute commissioning report.
+1. builds the web UI locally with `npm` (the Pi has no Node toolchain and is
+   not expected to get one);
+2. `rsync -a --delete`s the repository to the target, with a fixed exclude
+   list (see below);
+3. creates `.venv` if absent and installs the package with
+   `pip install -e '.[alsa,resample,birdnet,dev]'`;
+4. installs `deploy/open-observatory.service` and `deploy/99-audiomoth.rules`,
+   reloads `udev` and `systemd`, and does `enable --now` followed by
+   `restart`;
+5. polls `http://127.0.0.1:8080/api/v1/health` over SSH for up to 60 seconds
+   and prints recent `journalctl` output if the service does not come up
+   healthy in that time.
 
-## Backups
+It is idempotent — safe to run repeatedly — and takes flags:
 
-Daily database dump and configuration backup. Clips are optional in backup policy because they may dominate size. Include manifests and checksums. Test restore during v1 acceptance.
+| Invocation | Effect |
+|---|---|
+| `./deploy/deploy.sh` | full deploy |
+| `./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
+| `./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source and restart |
+| `HOST=user@host ./deploy/deploy.sh` | target a machine other than the default `station.example` |
 
-## Updates
+`REMOTE_DIR` (default `open-observatory`, relative to the SSH login home) is
+also overridable as an environment variable, though this is rarely needed.
 
-- Pull versioned images only.
-- Run `oo preflight-upgrade`.
-- Back up database.
-- Apply Compose update and Alembic migration.
-- Run health and fixture tests.
-- Roll back images if application check fails; database migrations must document reversibility.
+### `config/runtime.env` is operator-owned state — read this before touching deploy
+
+`config/runtime.env` holds the station name, coordinates and any device-path
+override for a given physical installation. It is listed in `.gitignore`, so
+it does not exist anywhere in the source tree, and `deploy.sh` carries an
+explicit `--exclude 'config/runtime.env'` on its `rsync --delete` for exactly
+one reason: `rsync --delete` removes anything on the target that is not in
+the source, and gitignored files are by definition never in the source. This
+file was destroyed by a deploy once, before the exclude existed. Do not
+remove that exclude line, and do not assume any file under `config/` survives
+a plain sync unless it is likewise excluded.
+
+The systemd unit loads it with `EnvironmentFile=-/home/observer/open-observatory/config/runtime.env`
+— the leading `-` means a missing file is not an error, so a freshly
+provisioned host with no `runtime.env` still starts (with defaults from
+`config/example.env`/`Settings`, not with the real station's identity).
+
+Because it is gitignored, `runtime.env` is never backed up by the deploy
+mechanism and never travels with `git`. Operators are responsible for keeping
+their own copy. There is no backup tooling for it in this repository at
+present.
+
+### Excludes applied on every sync
+
+In addition to `config/runtime.env`, `deploy.sh` excludes: `.git`, `data`,
+`.env`, `.venv`, `node_modules`, `web/node_modules`, `__pycache__`, `*.pyc`,
+`.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `models/*.tflite` and
+`models/*.txt`. The model exclusions matter operationally: model assets
+fetched on the target with `oo models fetch` are not overwritten or deleted
+by a later deploy, and are not shipped from the developer machine either
+(ADR-006 — model licences differ from the code's and are not bundled).
+
+### The systemd unit
+
+`deploy/open-observatory.service` runs `ExecStart=.venv/bin/oo serve` as user
+`observer`, group `observer`, with `SupplementaryGroups=audio plugdev` for `/dev/snd`
+and AudioMoth `hidraw` access. Relevant settings and why they are there:
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `Nice=-5` | mild priority boost | capture must not be starved by detector inference; full `SCHED_FIFO` was judged unnecessary and riskier |
+| `Restart=always`, `RestartSec=5` | | automatic recovery from crashes |
+| `MemoryMax=6G` | hard cap | bounds the process on a machine with ~7.8 GiB total |
+| `NoNewPrivileges=true` | | no privilege escalation |
+| `ProtectSystem=full` | | most of the filesystem read-only to the service |
+| `ProtectHome=read-only` | | home directories read-only, including the working directory's parent |
+| `ReadWritePaths=/home/observer/open-observatory/data` | | the one path the service may write, explicitly carved out of `ProtectHome` |
+| `PrivateTmp=true`, `ProtectKernelTunables=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true` | | further privilege reduction per technical spec §13 |
+| `StandardOutput=journal`, `StandardError=journal` | | logs go to the journal, not files, so log rotation is `journald`'s problem, not this project's |
+
+### Operating commands
+
+```bash
+# deploy (from the developer machine, repo root)
+./deploy/deploy.sh                     # full deploy to station.example
+./deploy/deploy.sh --no-web            # skip the UI build
+HOST=user@otherhost ./deploy/deploy.sh # different target
+
+# service control (run these, not process signals, from an SSH session — see trap below)
+ssh station.example sudo systemctl status open-observatory
+ssh station.example sudo systemctl restart open-observatory
+ssh station.example sudo systemctl stop open-observatory     # required before probing hardware directly; only one process may own the mic
+ssh station.example sudo journalctl -u open-observatory -f
+ssh station.example sudo journalctl -u open-observatory -n 100 --no-pager
+
+# on-device diagnostics (see docs/operations/TARGET_DIAGNOSTICS.md for recorded output)
+ssh station.example '~/open-observatory/.venv/bin/oo audio probe'
+ssh station.example '~/open-observatory/.venv/bin/oo audio test-capture --seconds 8'
+ssh station.example '~/open-observatory/.venv/bin/oo audio resample-check'
+ssh station.example '~/open-observatory/.venv/bin/oo audiomoth info'   # switch must be in USB/OFF
+ssh station.example '~/open-observatory/.venv/bin/oo models status'
+ssh station.example '~/open-observatory/.venv/bin/oo system-report'
+ssh station.example '~/open-observatory/.venv/bin/oo config'          # effective settings, resolved DSN
+
+# test suite on the target
+ssh station.example 'cd ~/open-observatory && .venv/bin/pytest'
+```
+
+The full operator CLI surface, verified against `src/open_observatory/cli.py`,
+is: `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`,
+`oo models status`, `oo models fetch`, `oo audiomoth info`,
+`oo system-report`, `oo serve`, `oo config`. There is no `oo preflight-upgrade`
+command or anything like it; an earlier version of this document referred to
+one, and it does not exist in the code.
+
+### Known operational trap: killing the service by pattern match
+
+Do not run `pkill -f "oo serve"` (or any `pkill -f`/`pgrep -f` pattern match
+on the same string) from an interactive SSH command. The SSH command itself
+— `ssh host 'pkill -f "oo serve" ...'` — contains the literal text `oo
+serve` in its own process argv on the target, so `pkill -f` matches and kills
+the SSH session's own remote command, not just the intended service process,
+with unpredictable results for which process actually dies. Use
+`sudo systemctl stop open-observatory` / `restart open-observatory` instead;
+systemd tracks the unit's cgroup, not a string match against argv.
+
+### Health check
+
+`GET /api/v1/health` on port 8080 is what `deploy.sh` polls after a restart.
+It is also the right first check after any manual `systemctl restart`.
+
+### Updating
+
+1. `./deploy/deploy.sh` (add `--no-web` if only Python changed, `--no-deps`
+   if only config or non-dependency source changed).
+2. Watch the health poll in the script's own output; it prints recent
+   `journalctl` on failure.
+3. If something is wrong post-deploy, re-run `oo audio probe` and
+   `oo system-report` on the target and compare against
+   `docs/operations/TARGET_DIAGNOSTICS.md`.
+4. There is no database migration step to run, because there is no migration
+   environment (below) and SQLite schema is created with `create_all()` on
+   startup.
+5. There is no documented rollback for the SQLite schema. Rollback in
+   practice is: check out the previous commit locally, re-run `deploy.sh`,
+   and restart. Back up `data/` first if the previous commit's schema differs.
+
+### Backups
+
+No backup tooling exists in this repository at present. Operators are on
+their own for backing up `data/` (SQLite database, clips) and their private
+`config/runtime.env`. This should be treated as a gap, not a documented
+procedure, until something is built and tested.
+
+## Database: SQLite by default, no migrations
+
+Per ADR-007, the default and only database in the current deployment is
+SQLite at `data/openobservatory.sqlite`, selected via `OO_DATABASE_DSN` (empty
+by default, which resolves to the SQLite path). PostgreSQL 16 remains the
+documented production DSN target, but:
+
+- there is **no Alembic migration environment** anywhere in this repository;
+  `alembic` is a declared dependency with no corresponding `alembic/`
+  directory;
+- `src/open_observatory/db/session.py` builds the schema with SQLAlchemy's
+  `create_all()`, which is adequate for standing up the SQLite debug profile
+  from nothing but is not a migration path and has no notion of reversibility;
+- switching `OO_DATABASE_DSN` to a PostgreSQL URL is the intended one-line
+  configuration change, but ADR-007 is explicit that this cannot be
+  meaningfully exercised as a production path until a real migration
+  environment exists — writing one is a prerequisite of the PostgreSQL
+  profile, not a step inside it.
+
+Do not tell an operator to run a migration. There isn't one.
+
+## Production target (unrealised): Docker Compose, PostgreSQL, Redis
+
+`docker-compose.yml` at the repository root is explicitly labelled in its own
+first line as a "specification-level Compose skeleton" that the implementation
+"must not claim... is runnable yet." Its `capture` and `api` services carry
+`profiles: ["implementation-required"]`, which keeps them out of any default
+`docker compose up` (Compose does not start a service that only appears under
+a non-active profile). The skeleton wires:
+
+- `postgres:16` with a hardcoded development password (`change-me`) and a
+  health check;
+- `redis:7-alpine` with append-only persistence, matching the "Redis Streams
+  for the internal job/event bus" line in the required stack, not yet
+  implemented (ADR-009 describes only the in-process `EventBus`, with Redis
+  Streams as "a second implementation of the same protocol" that has not been
+  built);
+- `capture` and `api` services referencing `services/capture/Dockerfile` and
+  `services/api/Dockerfile`, neither of which exists in this repository at
+  the time of writing.
+
+ADR-008 records why this was deferred rather than built first: only the
+capture process may own the ALSA device, and getting `/dev/snd`, USB
+hot-plug re-enumeration and real-time scheduling right through a container
+adds failure surface with no benefit while the target device work was still
+being commissioned. Native execution also gives CPU/latency measurements
+uncontended by container overhead — the figures in
+`docs/operations/TARGET_DIAGNOSTICS.md` are only trustworthy because nothing
+sits between the process and the hardware.
+
+Do not deploy this Compose file. It will not run as checked in.
+
+## Host preparation (current deployment)
+
+- The commissioned target is Ubuntu 24.04.3 LTS (Noble) on a Raspberry Pi 5,
+  **not** Raspberry Pi OS — see `docs/operations/TARGET_DIAGNOSTICS.md`. This
+  document does not assume Raspberry Pi OS.
+- Python 3.12 available as the system interpreter.
+- `node`/`npm` on the *developer* machine only, for the web build; not
+  required on the Pi.
+- `libasound2-dev` on the Pi for `pyalsaaudio` to build from source.
+- A stable ALSA device identity via `by-id` symlink or USB
+  vendor:product:serial — never card index, which is demonstrated unstable
+  across reboots in `TARGET_DIAGNOSTICS.md`. `deploy/99-audiomoth.rules` is
+  the udev rule installed by `deploy.sh` for this.
+- NTP enabled; the station operates internally in UTC and presents local time
+  using the configured IANA timezone.
+
+## Configuration
+
+`config/example.env` is the checked-in template; copy it to
+`config/runtime.env` on the target and edit in place (see the operator-owned
+state section above — do not let a sync remove it). All settings are read by
+`Settings` in `src/open_observatory/config.py` with an `OO_` prefix.
+
+`oo config` prints the effective configuration on the target, including the
+resolved database DSN, and is the authoritative way to check what a given
+`runtime.env` actually produced.
+
+### Unmapped keys in `config/example.env`
+
+`Settings` is defined with `extra="ignore"`, so unrecognised `OO_*`
+environment variables are silently accepted and do nothing rather than
+raising an error. Checking `config/example.env` against the fields declared
+on `Settings` in `src/open_observatory/config.py` shows four keys with no
+corresponding field:
+
+- `OO_POSTGRES_DSN`
+- `OO_REDIS_URL`
+- `OO_MQTT_ENABLED`
+- `OO_MQTT_URL`
+
+Setting any of these currently has no effect on the running service. This is
+reported here as found, not fixed, per the scope of this document; the
+Postgres/Redis/MQTT lines in the example file describe the deferred Compose
+target above and appear to have been left in the template unintentionally.
 
 ## Soak testing
 
-Capture the following over 72 hours:
+The acceptance criteria require a continuous 72-hour soak test on the target
+device before the system may be described as complete (see
+`docs/delivery/ACCEPTANCE_CRITERIA.md`). `TARGET_DIAGNOSTICS.md` records
+that this has **not** been run as of the most recent diagnostic capture.
+Capture the following over the run:
 
-- frame continuity and gaps;
+- frame continuity and gaps (frames captured ÷ frames elapsed time implies);
 - USB disconnect/reconnect behaviour;
 - CPU temperature/throttling;
-- memory high-water mark;
-- SSD writes and free-space trend;
-- detector queue lag;
-- worker crash/restart count;
+- memory high-water mark against `MemoryMax=6G`;
+- SD card/SSD writes and free-space trend;
+- detector queue lag and dropped-window counts;
+- worker crash/restart count (`Restart=always` will mask a crash loop unless
+  explicitly counted);
 - evidence extraction misses;
-- database growth;
-- false health alarms.
+- database growth (`data/openobservatory.sqlite` size);
+- false health-check failures.
 
 ## Commissioning output
 
-Generate a Markdown/JSON report recording hardware, firmware notes, negotiated audio mode, model versions/hashes, resource benchmarks, detected faults and recommended operating profile.
+`docs/operations/TARGET_DIAGNOSTICS.md` is the working example of a
+commissioning report: hardware identity, negotiated audio profile, firmware
+version, measured resampler and capture timing, per-detector runtime, live
+channel delivery over Wi-Fi, and a plainly stated list of known limitations.
+Regenerate the machine-readable portion with
+`oo audio probe --json --write docs/operations/probe.json` and update the
+prose sections by hand against a fresh run of `oo audio test-capture`,
+`oo audio resample-check` and `oo system-report`.
