@@ -80,6 +80,25 @@ function buildPalette(name: Palette): Uint8ClampedArray {
   return table
 }
 
+/** Should this detection be drawn over this frequency band?
+ *
+ *  It must not simply be drawn on every channel. A jackdaw call at 2 kHz labelled
+ *  across the 15-150 kHz ultrasonic spectrogram asserts evidence that is not there
+ *  — the audio in that panel physically cannot contain it — and with ultrasound
+ *  stacked on top that mislabelling is the first thing you read.
+ *
+ *  Peak frequency decides it when the detector reported one. When it did not
+ *  (BirdNET reports a species, not a frequency) fall back to the taxonomic group,
+ *  which encodes which stream the detector ran on: birds and unidentified acoustic
+ *  events come from the audible stream, bats from the native one.
+ */
+function belongsOnChannel(detection: Detection, spec: SpectrogramSpec): boolean {
+  const peak = detection.peak_frequency_hz
+  if (peak) return peak >= spec.min_hz && peak <= spec.max_hz
+  const ultrasonicChannel = spec.min_hz >= 15_000
+  return detection.taxonomic_group === 'bat' ? ultrasonicChannel : !ultrasonicChannel
+}
+
 interface Props {
   spec: SpectrogramSpec
   /** Registers a sink the parent calls for every batch on this channel. */
@@ -88,7 +107,6 @@ interface Props {
   palette: Palette
   /** Seconds of history to show. */
   windowSeconds: number
-  serverClockSkewS: number
   /** Display range within the server's 0-255 encoding, as fractions. */
   blackPoint: number
   whitePoint: number
@@ -102,7 +120,6 @@ export function Spectrogram({
   detections,
   palette,
   windowSeconds,
-  serverClockSkewS,
   blackPoint,
   whitePoint,
   showDetections,
@@ -120,6 +137,13 @@ export function Spectrogram({
   const [ready, setReady] = useState(false)
   const [hover, setHover] = useState<{ hz: number; secondsAgo: number } | null>(null)
 
+  // Read by the overlay's animation loop rather than closed over by it. Detections
+  // arrive several times a second, and having them in the effect's dependencies
+  // tore down and restarted the requestAnimationFrame loop on every one — which
+  // cost frames and left the boxes visibly rougher than the plot they sit on.
+  const detectionsRef = useRef(detections)
+  detectionsRef.current = detections
+
   // Compose the display range into the palette so the hot loop stays a single
   // table lookup per bin rather than an arithmetic rescale per bin.
   const paletteTable = useMemo(() => {
@@ -136,6 +160,17 @@ export function Spectrogram({
     return composed
   }, [palette, blackPoint, whitePoint])
   const ringColumns = Math.max(2048, Math.ceil(windowSeconds / spec.hop_s) * 2)
+
+  // Columns of scroll owed since the last batch landed, shared by the spectrogram
+  // and the overlay. It has to be one function used by both: interpolating the plot
+  // alone left the detection boxes stepping in 100 ms jumps over a smoothly gliding
+  // background, which reads worse than when both juddered together. Clamped so a
+  // stalled feed parks rather than drifting away from its own audio.
+  const elapsedColumns = () => {
+    const batch = lastBatchRef.current
+    if (!batch) return 0
+    return Math.min(((performance.now() - batch.at) / 1000) / spec.hop_s, 6)
+  }
 
   // The offscreen ring is sized in *columns*, one pixel each; the visible canvas
   // stretches it horizontally, so history length is independent of viewport width.
@@ -230,12 +265,7 @@ export function Spectrogram({
       // has elapsed since the last burst, which turns the lurch into a glide.
       // Clamped to one burst so a stalled feed parks rather than drifting away.
       const scaleX = canvas.width / columnsWanted
-      let shift = 0
-      const batch = lastBatchRef.current
-      if (batch) {
-        const elapsedColumns = ((performance.now() - batch.at) / 1000) / spec.hop_s
-        shift = Math.min(elapsedColumns, 6) * scaleX
-      }
+      const shift = elapsedColumns() * scaleX
       context.save()
       context.translate(-shift, 0)
 
@@ -308,16 +338,21 @@ export function Spectrogram({
         context.fillText(label, 4, y - 7)
       }
 
-      // Detection boxes, positioned from the newest column's timestamp.
-      const newest = newestUtcRef.current
+      // Detection boxes, positioned from the newest column's timestamp advanced by
+      // the same interpolation the spectrogram uses, so the two stay locked.
+      const newest =
+        newestUtcRef.current === null
+          ? null
+          : newestUtcRef.current + elapsedColumns() * spec.hop_s
       if (showDetections && newest !== null) {
         const secondsPerPixel = windowSeconds / cssWidth
-        for (const detection of detections) {
+        for (const detection of detectionsRef.current) {
           const startS = Date.parse(detection.event_start_utc) / 1000
           const endS = Date.parse(detection.event_end_utc) / 1000
           const xEnd = cssWidth - (newest - endS) / secondsPerPixel
           const xStart = cssWidth - (newest - startS) / secondsPerPixel
           if (xEnd < -80 || xStart > cssWidth + 80) continue
+          if (!belongsOnChannel(detection, spec)) continue
 
           const group = detection.taxonomic_group
           const colour =
@@ -372,7 +407,9 @@ export function Spectrogram({
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [detections, palette, spec.min_hz, spec.max_hz, windowSeconds, showDetections, serverClockSkewS])
+    // Deliberately excludes `detections`: it is read through a ref so that a new
+    // detection never restarts this loop.
+  }, [palette, spec.min_hz, spec.max_hz, spec.hop_s, windowSeconds, showDetections])
 
   const onMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect()

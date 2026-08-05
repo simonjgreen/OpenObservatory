@@ -38,6 +38,8 @@ interface SpeciesRow {
   latest: Detection
   calibrated: boolean
   pluginId: string
+  /** Every detection in this group, newest first, so grouping hides nothing. */
+  members: Detection[]
 }
 
 function groupKey(detection: Detection): string {
@@ -51,9 +53,12 @@ function groupKey(detection: Detection): string {
 export function Suggestions({ detections, localTimeZone, onSelect, selectedId }: Props) {
   const [grouping, setGrouping] = useState<Grouping>('species')
   const [minScore, setMinScore] = useState(0)
-  // Shown by default: this is a debug surface, and on a quiet afternoon the
-  // unidentified acoustic events are the only evidence the pipeline is alive.
-  const [hideEvents, setHideEvents] = useState(false)
+  // Hidden by default. The activity detector fires far more often than anything
+  // else, so leaving them in buries the actual identifications on first load. The
+  // event stream panel already proves the pipeline is alive.
+  const [hideEvents, setHideEvents] = useState(true)
+  /** Group keys whose individual detections are expanded. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
 
   const filtered = useMemo(
     () =>
@@ -84,10 +89,12 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
           latest: detection,
           calibrated: detection.calibrated_probability !== null,
           pluginId: detection.detector.plugin_id,
+          members: [detection],
         })
       } else {
         existing.count += 1
         existing.bestScore = Math.max(existing.bestScore, detection.score)
+        existing.members.push(detection)
         if (at >= existing.lastSeen) {
           existing.lastSeen = at
           existing.latestScore = detection.score
@@ -96,6 +103,11 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
       }
     }
     const list = [...byKey.values()]
+    for (const row of list) {
+      row.members.sort(
+        (a, b) => Date.parse(b.event_start_utc) - Date.parse(a.event_start_utc),
+      )
+    }
     // "Best suggestions" ranks by how recently it called, then by confidence —
     // the same instinct as Merlin highlighting whatever is singing now.
     list.sort((a, b) => b.lastSeen - a.lastSeen || b.bestScore - a.bestScore)
@@ -180,8 +192,9 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
               className={[
                 'suggestion',
                 row.key === newestKey ? 'newest' : '',
-                row.latest.id === selectedId ? 'selected' : '',
+                row.members.some((m) => m.id === selectedId) ? 'selected' : '',
                 row.group === 'acoustic_event' ? 'is-event' : '',
+                expanded.has(row.key) ? 'expanded' : '',
               ].join(' ')}
               onClick={() => onSelect(row.latest)}
             >
@@ -191,7 +204,25 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
               <div className="suggestion-body">
                 <div className="suggestion-title">
                   <span className="name">{row.displayName}</span>
-                  {row.count > 1 && <span className="count">×{row.count}</span>}
+                  {row.count > 1 && (
+                    <button
+                      className={`count ${expanded.has(row.key) ? 'on' : ''}`}
+                      title={`Show all ${row.count} detections in this group`}
+                      onClick={(event) => {
+                        // Grouping must not make the individual detections
+                        // unreachable; expanding beats forcing a view switch.
+                        event.stopPropagation()
+                        setExpanded((current) => {
+                          const next = new Set(current)
+                          if (next.has(row.key)) next.delete(row.key)
+                          else next.add(row.key)
+                          return next
+                        })
+                      }}
+                    >
+                      ×{row.count} {expanded.has(row.key) ? '▾' : '▸'}
+                    </button>
+                  )}
                 </div>
                 {row.scientificName && <div className="sci">{row.scientificName}</div>}
                 <div className="suggestion-meta">
@@ -215,6 +246,39 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
                   {row.calibrated ? 'probability' : 'model score'}
                 </div>
               </div>
+
+              {expanded.has(row.key) && (
+                <ol className="group-members">
+                  {row.members.slice(0, 40).map((member) => (
+                    <li
+                      key={member.id}
+                      className={member.id === selectedId ? 'selected' : ''}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onSelect(member)
+                      }}
+                    >
+                      <span className="mono time">
+                        {timeFormat.format(Date.parse(member.event_start_utc))}
+                      </span>
+                      <span className="mono score">{(member.score * 100).toFixed(0)}</span>
+                      {member.peak_frequency_hz && (
+                        <span className="mono dim">{formatHz(member.peak_frequency_hz)}</span>
+                      )}
+                      {member.media.length > 0 && (
+                        <span className="clip-dot" title="Evidence clip available">
+                          ♪
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                  {row.members.length > 40 && (
+                    <li className="dim more">
+                      showing the newest 40 of {row.members.length}
+                    </li>
+                  )}
+                </ol>
+              )}
             </li>
           ))}
         </ul>

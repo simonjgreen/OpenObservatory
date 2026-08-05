@@ -146,7 +146,21 @@ export default function App() {
   )
 
   const timeZone = status?.station.timezone ?? 'UTC'
-  const visibleSpecs = specs.filter(
+
+  // Highest band first, so ultrasound sits on top. It is the band you cannot hear,
+  // and therefore the one you are actually reading the display to check; the
+  // audible spectrogram below it is the one your ears can corroborate. Stacking
+  // them this way also puts the two frequency axes in one continuous run, high at
+  // the top of the page down to low at the bottom.
+  //
+  // Ordered by frequency rather than by channel id, which is a protocol
+  // identifier and not a display order, so a future third band lands in the right
+  // place without another edit here.
+  const orderedSpecs = useMemo(
+    () => [...specs].sort((a, b) => b.min_hz - a.min_hz),
+    [specs],
+  )
+  const visibleSpecs = orderedSpecs.filter(
     (spec) => activeChannel === 'both' || spec.channel === activeChannel,
   )
   const heroHeight = visibleSpecs.length > 1 ? 250 : 420
@@ -180,7 +194,8 @@ export default function App() {
             >
               both
             </button>
-            {specs.map((spec) => (
+            {/* Same order as the stack, so the picker cannot contradict it. */}
+            {orderedSpecs.map((spec) => (
               <button
                 key={spec.channel}
                 className={activeChannel === spec.channel ? 'on' : ''}
@@ -269,7 +284,6 @@ export default function App() {
             detections={detections}
             palette={palette}
             windowSeconds={windowSeconds}
-            serverClockSkewS={skewRef.current}
             blackPoint={blackPoint}
             whitePoint={whitePoint}
             showDetections={showDetections}

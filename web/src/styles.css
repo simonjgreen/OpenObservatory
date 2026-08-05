@@ -555,3 +555,37 @@ code {
   padding-left: 9px;
 }
 .media-explainer { font-size: 11px; margin: 4px 0 2px; line-height: 1.5; }
+
+/* Expanded group members: every detection in a group reachable without leaving
+   the grouped view. */
+.suggestion { grid-template-rows: auto; }
+.suggestion.expanded { background: #10131b; }
+.suggestion-title .count {
+  background: var(--line-strong); border: none; color: var(--text-dim);
+  font-family: var(--mono); font-size: 10px;
+  padding: 1px 5px; border-radius: 3px; cursor: pointer;
+}
+.suggestion-title .count:hover { color: var(--text); background: #39414f; }
+.suggestion-title .count.on { background: #1d2a3d; color: #cfe4ff; }
+
+.group-members {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 8px 0 2px;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--line);
+  max-height: 210px; overflow-y: auto;
+}
+.group-members li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 2px 4px 2px 0;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.group-members li:hover { background: #171b24; }
+.group-members li.selected { background: rgba(111, 180, 255, 0.14); }
+.group-members .time { color: var(--text-dim); }
+.group-members .score { color: var(--text); min-width: 20px; text-align: right; }
+.group-members .clip-dot { color: var(--ok); }
+.group-members li.more { cursor: default; font-style: italic; font-size: 10px; }
