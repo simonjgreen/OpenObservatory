@@ -18,6 +18,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Executor
 from typing import Protocol, runtime_checkable
 
 import structlog
@@ -93,6 +94,14 @@ class DetectorWorker:
         on_state_change: Callable[[DetectorWorker], None] | None = None,
         failure_threshold: int = 5,
         recovery_delay_s: float = 60.0,
+        #: When set, analysis runs on this executor instead of the loop's shared
+        #: default thread pool. ``DeferredDetectorWorker`` (detectors/deferred.py)
+        #: passes its own single-worker executor here so an expensive deferred
+        #: model can never take a thread slot away from a real-time detector
+        #: sharing the process default pool — that is the "lower priority" the
+        #: deferred-mode spec asks for. ``None`` preserves the exact behaviour
+        #: every live detector already has.
+        analysis_executor: Executor | None = None,
     ) -> None:
         self.plugin = plugin
         self.metadata = plugin.metadata
@@ -103,6 +112,7 @@ class DetectorWorker:
         self._on_state_change = on_state_change
         self._failure_threshold = failure_threshold
         self._recovery_delay_s = recovery_delay_s
+        self._analysis_executor = analysis_executor
 
         self.state: str = "starting"
         self.detail: str = ""
@@ -206,7 +216,7 @@ class DetectorWorker:
 
         began = time.perf_counter()
         try:
-            detections = await asyncio.to_thread(self._analyse_sync, window)
+            detections = await self._run_analysis(window)
         except Exception as exc:
             self.failures += 1
             self._consecutive_failures += 1
@@ -238,6 +248,13 @@ class DetectorWorker:
         if detections:
             self.detections_emitted += len(detections)
             await self._on_detections(self, window, detections)
+
+    async def _run_analysis(self, window: AudioWindow) -> list[NativeDetection]:
+        """Run ``_analyse_sync`` off the event loop, on whichever executor applies."""
+        if self._analysis_executor is not None:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(self._analysis_executor, self._analyse_sync, window)
+        return await asyncio.to_thread(self._analyse_sync, window)
 
     def _analyse_sync(self, window: AudioWindow) -> list[NativeDetection]:
         """Bridge the async plugin API onto the worker thread.

@@ -196,6 +196,27 @@ class PrometheusExporter:
                 plugin_id=plugin,
             )
 
+            deferred = detector.get("deferred")
+            self._set(
+                "oo_detector_deferred_mode",
+                "1 when a detector runs off the live path through a bounded deferred queue",
+                1.0 if deferred else 0.0,
+                plugin_id=plugin,
+            )
+            if deferred:
+                self._set(
+                    "oo_detector_deferred_oldest_queued_age_seconds",
+                    "Age of the longest-waiting window still in the deferred queue",
+                    deferred["oldest_queued_age_s"],
+                    plugin_id=plugin,
+                )
+                self._set(
+                    "oo_detector_deferred_items_abandoned_shutdown_total",
+                    "Deferred windows abandoned, lease released without analysis, at shutdown",
+                    deferred["items_abandoned_on_shutdown"],
+                    plugin_id=plugin,
+                )
+
         clips = snapshot["clips"]
         self._set("oo_clips_written_total", "Evidence clips written", clips["written"])
         self._set(

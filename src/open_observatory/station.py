@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -186,6 +187,18 @@ class Station:
             asyncio.Queue(maxsize=32)
         )
         self._evidence_task: asyncio.Task[None] | None = None
+        #: Its own thread, deliberately. `asyncio.to_thread` uses the default
+        #: executor, and so does the ALSA read in `alsa_source.read`. On a 4-core
+        #: Pi that pool has 8 workers shared with clip writing, retention sweeps
+        #: and database inserts, so a burst of multi-megabyte clip writes to the
+        #: SD card can delay the capture read long enough to overrun the ALSA
+        #: ring. Measured: 11 gaps and 8 overruns in five minutes once the
+        #: detector stopped stalling and evidence volume roughly tripled.
+        #: Capture always wins, so evidence gets an isolated single thread that
+        #: cannot occupy a slot capture needs.
+        self._evidence_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="oo-evidence"
+        )
         self.evidence_dropped = 0
         self.evidence_written = 0
 
@@ -216,6 +229,7 @@ class Station:
                 self._evidence_queue.put_nowait(None)
             with contextlib.suppress(asyncio.CancelledError, Exception, TimeoutError):
                 await asyncio.wait_for(self._evidence_task, timeout=5.0)
+            self._evidence_executor.shutdown(wait=False, cancel_futures=True)
         if self._persist_task:
             with contextlib.suppress(asyncio.QueueFull):
                 self._persist_queue.put_nowait(None)
@@ -837,7 +851,10 @@ class Station:
             record, metadata = item
             if self.settings.clips_enabled:
                 try:
-                    await asyncio.to_thread(self._attach_evidence, record, metadata)
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        self._evidence_executor, self._attach_evidence, record, metadata
+                    )
                     self.evidence_written += 1
                 except Exception:
                     # Evidence is supporting material. Losing it must never lose the
@@ -1184,7 +1201,10 @@ class Station:
             # and expiry policy would be configuration that does nothing.
             if ticks % 30 == 0:
                 try:
-                    result = await asyncio.to_thread(self.clips.enforce_retention)
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        self._evidence_executor, self.clips.enforce_retention
+                    )
                 except Exception:
                     log.exception("housekeeping.retention_failed")
                 else:

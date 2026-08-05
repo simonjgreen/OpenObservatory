@@ -280,3 +280,54 @@ BatDetect2 itself remains a planned, unimplemented Milestone 5 item (`acoupi_bat
 evaluation harness "not started" per `MILESTONE_STATUS.md`). Nothing shipped should be
 read as a substitute classifier for it: `ultrasonic-pass-v1` answers "was there a bat pass
 here" with supporting measurements, not "which species".
+
+### Deferred mode — as implemented (Milestone 5 item 3)
+
+A Pi 5 benchmark measured a candidate heavy detector at p95 968 ms for a 0.5 s clip —
+0.52x realtime — against 36-40x for the detectors that actually ship. This is exactly the
+"real-time BatDetect2 is not sustainable" case this document anticipated, and settles that
+no expensive model can run inline in the live detector path on this hardware.
+
+`detectors/deferred.py` implements the bounded deferred-night queue this document asks
+for, as a general capability of `DetectorWorker` rather than anything specific to one
+model: `DeferredDetectorWorker` subclasses the worker every live detector already uses,
+keeping its bounded queue, drop-and-count policy, stale-window rejection and circuit
+breaker unchanged, and adds three things a queue meant to survive a whole capture session
+needs on top of a queue meant to survive a few seconds of live windows:
+
+- **Lower priority.** Analysis runs on a dedicated single-worker thread pool instead of
+  the shared default pool every live detector's `asyncio.to_thread` call competes for, so
+  an expensive job can never take a thread slot away from a real-time detector.
+- **Honest lag.** Queue depth, oldest-queued-item age, items processed, items dropped
+  (queue-full, stale, and abandoned-on-shutdown, each counted separately) and processing
+  lag are all in `GET /api/v1/detectors` via `DeferredDetectorWorker.snapshot()`'s
+  `deferred` object, and as `oo_detector_deferred_*` Prometheus gauges alongside the
+  existing `oo_detector_*` metrics.
+- **Deterministic shutdown.** `stop()` keeps draining already-queued windows for
+  `deferred_shutdown_drain_timeout_s`, then abandons whatever remains: each abandoned
+  window is still released through the same `on_window_done` hook the processed path
+  uses, and the count is logged. One caveat stated rather than hidden: a window already
+  handed to the executor thread cannot be interrupted mid-analysis, so shutdown always
+  lets that one in-flight item finish before abandoning the rest of the queue — what
+  happens to each item is deterministic, its wall-clock duration is not.
+
+A plugin opts in by convention — setting `self.deferred = True` — rather than through a
+required `DetectorPlugin` protocol member, specifically so the three shipped detectors
+never need to change to keep conforming to the protocol.
+
+**Lease lifetime**, addressed rather than quietly worked around: a deferred window can sit
+queued for a large fraction of a session, far longer than the roughly 60 s lease the live
+path grants via `station.py`. `DeferredDetectorWorker` does not invent a long-lived lease
+policy of its own — it has no visibility into `TransientAssetStore` — but it does guarantee
+the hook shape a caller needs to implement one safely: `on_window_admitted` fires exactly
+once, synchronously, the instant a window is accepted into the queue, and `on_window_done`
+is guaranteed to fire exactly once later, on every removal path (processed, dropped as
+stale, or abandoned at shutdown). A caller wanting a long-lived lease grants it in the
+first hook and releases it in the second; a window rejected at `offer()` (queue full) never
+had a lease granted in the first place, matching the convention the live path already uses.
+
+Tested with a synthetic slow plugin (`tests/test_deferred.py`), not BatDetect2 — there is
+still no BatDetect2 adapter, per ADR-017, and this capability makes no assumption about
+which model eventually uses it. The capability is not yet wired into `station.py`: no
+shipped plugin declares itself deferred, so there is nothing for it to run against yet.
+`deferred_enabled` defaults to `False`.

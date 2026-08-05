@@ -93,6 +93,23 @@ class Settings(BaseSettings):
 
     detector_queue_depth: int = 16
 
+    # ---- deferred-mode detector queue --------------------------------------
+    #: DETECTOR_STRATEGY.md: "use a bounded deferred-night queue and process
+    #: windows after capture" for a detector too slow to run inline. This is a
+    #: general capability of DetectorWorker (detectors/deferred.py), not tied to
+    #: any specific model — no plugin ships enabled by default, since BatDetect2
+    #: remains evaluated, not adopted (ADR-017). Off unless a future adapter
+    #: both declares itself deferred and this is turned on.
+    deferred_enabled: bool = False
+    #: Much larger than ``detector_queue_depth``: this queue is sized to hold a
+    #: backlog across a capture session, not a few seconds of live windows.
+    deferred_queue_depth: int = 512
+    #: Bounded shutdown drain: give the queue this long to finish naturally,
+    #: then abandon (and release the lease for) whatever remains. A window
+    #: already handed to the analysis thread cannot be interrupted mid-call, so
+    #: this bounds when new items stop being started, not total shutdown time.
+    deferred_shutdown_drain_timeout_s: float = 5.0
+
     # ---- evidence clips ---------------------------------------------------
     clips_enabled: bool = True
     clip_pre_roll_s: float = 3.0
