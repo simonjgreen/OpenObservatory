@@ -79,9 +79,16 @@ candidates below it, the current one highlighted — with the extra screen space
 spent on what a diagnostic surface needs and a product dashboard would hide
 (ADR-011).
 
-- **Two live spectrograms.** Audible 80 Hz–15 kHz, and ultrasonic 15–150 kHz when
-  the native rate supports it. Log-frequency, adjustable history, three palettes
-  (including a Merlin-style greyscale), adjustable display range.
+- **Two live spectrograms**, in either of two views. Audible 80 Hz–15 kHz, and
+  ultrasonic 15–150 kHz when the native rate supports it. Log-frequency, adjustable
+  history, three palettes (including a Merlin-style greyscale), adjustable range.
+  - **scroll** — time across the page with now at the right, frequency vertical.
+    Reads rhythm and the shape of a call well.
+  - **waterfall** — frequency across the page, time down it with now at the top.
+    Reads where energy sits across the band well.
+
+  The panels are ordered so their frequency axes form one continuous run either way:
+  ultrasound above audible in scroll, audible left of ultrasound in waterfall.
 - **Best suggestions.** Species and events grouped or as a timeline, with the score
   as a number, which detector said so, and a clip to check it against. A score is
   never called a probability unless the detector declares itself calibrated.
@@ -145,11 +152,18 @@ and `docs/architecture/TECHNICAL_SPEC.md`.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 135 tests
+.venv/bin/python -m pytest        # 138 tests
+( cd web && npm test )            # 38 tests
 ```
 
-They run without a microphone, against the mandated replay/synthetic sources.
-`tests/test_api.py` drives the real FastAPI app over the real pipeline end to end.
+The Python tests run without a microphone, against the mandated replay/synthetic
+sources; `tests/test_api.py` drives the real FastAPI app over the real pipeline end
+to end.
+
+The frontend tests cover the display geometry, which is where a bug is most
+dangerous: a view that puts a sound at the wrong frequency or time produces
+confident, wrong conclusions. Both orientations are asserted against the same
+properties, so adding the second view cannot silently break the first.
 
 ## Honesty rules this codebase enforces in code, not just in prose
 

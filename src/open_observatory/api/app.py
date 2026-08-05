@@ -604,8 +604,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def _no_store(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
-        if request.url.path.startswith(API_PREFIX):
-            response.headers["Cache-Control"] = "no-store"
+        path = request.url.path
+        # The bundle filenames are content-hashed and safe to cache hard, but the
+        # document that names them must never be cached: otherwise a redeploy keeps
+        # serving the previous build until someone thinks to force-refresh, which is
+        # a confusing way to conclude that a fix did not work.
+        if path.startswith(API_PREFIX) or path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+        elif "/assets/" in path:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
     return app

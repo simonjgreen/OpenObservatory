@@ -16,6 +16,15 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ColumnBatch, Detection, SpectrogramSpec } from '../types'
+import {
+  frequencyToPixel,
+  pixelToFrequency,
+  pixelToSecondsAgo,
+  ringTransform,
+  spanRect,
+  type Band,
+  type Orientation,
+} from './geometry'
 
 export type Palette = 'observatory' | 'merlin' | 'ice'
 
@@ -111,6 +120,7 @@ interface Props {
   blackPoint: number
   whitePoint: number
   showDetections: boolean
+  orientation: Orientation
   height: number
 }
 
@@ -123,6 +133,7 @@ export function Spectrogram({
   blackPoint,
   whitePoint,
   showDetections,
+  orientation,
   height,
 }: Props) {
   const visibleRef = useRef<HTMLCanvasElement | null>(null)
@@ -136,6 +147,7 @@ export function Spectrogram({
   const lastBatchRef = useRef<{ at: number; columns: number } | null>(null)
   const [ready, setReady] = useState(false)
   const [hover, setHover] = useState<{ hz: number; secondsAgo: number } | null>(null)
+  const band: Band = { minHz: spec.min_hz, maxHz: spec.max_hz, bins: spec.bins }
 
   // Read by the overlay's animation loop rather than closed over by it. Detections
   // arrive several times a second, and having them in the effect's dependencies
@@ -255,45 +267,48 @@ export function Spectrogram({
       )
       const start = (writeXRef.current - columnsWanted + ring.width * 2) % ring.width
 
+      context.setTransform(1, 0, 0, 1, 0, 0)
       context.imageSmoothingEnabled = false
       context.fillStyle = palette === 'merlin' ? '#f7f7f5' : '#05060a'
       context.fillRect(0, 0, canvas.width, canvas.height)
 
-      // Sub-column interpolation. Columns arrive in bursts of ~4 every 100 ms, so
-      // drawing them flush to the right edge makes the whole image lurch ten times
-      // a second. Instead the viewport is nudged left by however much of a column
-      // has elapsed since the last burst, which turns the lurch into a glide.
-      // Clamped to one burst so a stalled feed parks rather than drifting away.
-      const scaleX = canvas.width / columnsWanted
-      const shift = elapsedColumns() * scaleX
-      context.save()
-      context.translate(-shift, 0)
+      // One affine matrix presents the ring in whichever orientation is selected —
+      // `waterfall` needs a transpose, which is a reflection about the diagonal and
+      // so still a single GPU blit rather than a second copy of the history.
+      //
+      // It also carries the sub-column interpolation: columns arrive in bursts of
+      // ~4 every 100 ms, and drawing them flush to the live edge makes the image
+      // lurch ten times a second instead of gliding.
+      context.setTransform(
+        ...ringTransform({
+          orientation,
+          deviceWidth: canvas.width,
+          deviceHeight: canvas.height,
+          columns: columnsWanted,
+          bins: ring.height,
+          shiftColumns: elapsedColumns(),
+        }),
+      )
 
       // Two blits at most: the ring may wrap between `start` and the write head.
-      // Drawn one column wider than needed so the shift cannot expose the edge.
-      const width = canvas.width + scaleX * 8
+      // Destination coordinates are in source units, so the matrix does the work.
       if (start + columnsWanted <= ring.width) {
         context.drawImage(
-          ring, start, 0, columnsWanted, ring.height,
-          0, 0, width, canvas.height,
+          ring, start, 0, columnsWanted, ring.height, 0, 0, columnsWanted, ring.height,
         )
       } else {
         const firstRun = ring.width - start
-        const firstWidth = Math.round(firstRun * scaleX)
-        context.drawImage(
-          ring, start, 0, firstRun, ring.height,
-          0, 0, firstWidth, canvas.height,
-        )
+        context.drawImage(ring, start, 0, firstRun, ring.height, 0, 0, firstRun, ring.height)
         context.drawImage(
           ring, 0, 0, columnsWanted - firstRun, ring.height,
-          firstWidth, 0, width - firstWidth, canvas.height,
+          firstRun, 0, columnsWanted - firstRun, ring.height,
         )
       }
-      context.restore()
+      context.setTransform(1, 0, 0, 1, 0, 0)
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [ready, windowSeconds, spec.hop_s, palette])
+  }, [ready, windowSeconds, spec.hop_s, palette, orientation])
 
   // Overlay: gridlines, labels and detection boxes. Separate canvas so the
   // spectrogram blit never has to be redrawn to update a label.
@@ -316,26 +331,39 @@ export function Spectrogram({
       context.clearRect(0, 0, cssWidth, cssHeight)
 
       const dark = palette !== 'merlin'
-      const logMin = Math.log(spec.min_hz)
-      const logMax = Math.log(spec.max_hz)
-      const yFor = (hz: number) =>
-        cssHeight * (1 - (Math.log(hz) - logMin) / (logMax - logMin))
+      const viewport = { width: cssWidth, height: cssHeight }
 
-      // Frequency gridlines.
+      // Frequency gridlines run across the frequency axis, whichever that is:
+      // horizontal in scroll, vertical in waterfall.
       context.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace'
       context.textBaseline = 'middle'
       for (const hz of GRID_HZ) {
         if (hz < spec.min_hz * 1.05 || hz > spec.max_hz * 0.98) continue
-        const y = yFor(hz)
+        const at = frequencyToPixel(hz, band, viewport, orientation)
         context.strokeStyle = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.12)'
         context.lineWidth = 1
         context.beginPath()
-        context.moveTo(0, y)
-        context.lineTo(cssWidth, y)
+        if (orientation === 'scroll') {
+          context.moveTo(0, at)
+          context.lineTo(cssWidth, at)
+        } else {
+          context.moveTo(at, 0)
+          context.lineTo(at, cssHeight)
+        }
         context.stroke()
         const label = hz >= 1000 ? `${hz / 1000}k` : `${hz}`
         context.fillStyle = dark ? 'rgba(233,238,248,0.62)' : 'rgba(20,20,24,0.6)'
-        context.fillText(label, 4, y - 7)
+        if (orientation === 'scroll') {
+          context.fillText(label, 4, at - 7)
+        } else {
+          // Along the bottom, nudged inside the edges so the extremes stay legible.
+          const metrics = context.measureText(label)
+          context.fillText(
+            label,
+            Math.max(2, Math.min(at + 3, cssWidth - metrics.width - 2)),
+            cssHeight - 8,
+          )
+        }
       }
 
       // Detection boxes, positioned from the newest column's timestamp advanced by
@@ -345,55 +373,66 @@ export function Spectrogram({
           ? null
           : newestUtcRef.current + elapsedColumns() * spec.hop_s
       if (showDetections && newest !== null) {
-        const secondsPerPixel = windowSeconds / cssWidth
         for (const detection of detectionsRef.current) {
-          const startS = Date.parse(detection.event_start_utc) / 1000
-          const endS = Date.parse(detection.event_end_utc) / 1000
-          const xEnd = cssWidth - (newest - endS) / secondsPerPixel
-          const xStart = cssWidth - (newest - startS) / secondsPerPixel
-          if (xEnd < -80 || xStart > cssWidth + 80) continue
           if (!belongsOnChannel(detection, spec)) continue
+          const startAgo = newest - Date.parse(detection.event_start_utc) / 1000
+          const endAgo = newest - Date.parse(detection.event_end_utc) / 1000
+          // Off-screen either way, with a margin for the label.
+          if (endAgo < -windowSeconds * 0.1 || startAgo > windowSeconds * 1.1) continue
 
           const group = detection.taxonomic_group
           const colour =
             group === 'bird' ? '#5ce08a' : group === 'bat' ? '#c39bff' : '#6fb4ff'
           const peak = detection.peak_frequency_hz
-          const boxTop = peak ? Math.max(2, yFor(Math.min(spec.max_hz, peak * 1.6))) : 4
-          const boxBottom = peak
-            ? Math.min(cssHeight - 2, yFor(Math.max(spec.min_hz, peak / 1.6)))
-            : cssHeight - 4
+          const rect = spanRect(
+            {
+              startSecondsAgo: startAgo,
+              endSecondsAgo: endAgo,
+              // A peak frequency marks a band around itself; without one the box
+              // spans everything, which states ignorance rather than bandwidth.
+              lowHz: peak ? Math.max(spec.min_hz, peak / 1.6) : null,
+              highHz: peak ? Math.min(spec.max_hz, peak * 1.6) : null,
+            },
+            band,
+            viewport,
+            windowSeconds,
+            orientation,
+          )
 
-          const width = Math.max(3, xEnd - xStart)
           if (group === 'acoustic_event') {
-            // The activity detector fires several times a second. Drawing each one
-            // as a full box turned the spectrogram into a wall of rectangles and
-            // hid the audio underneath, so unidentified events get a low tick on
-            // the time axis instead: present and countable, but not shouting.
+            // The activity detector fires several times a second. Drawing each as a
+            // full box turned the display into a wall of rectangles and hid the
+            // audio underneath, so unidentified events get a tick on the edge
+            // furthest from the live edge: present and countable, but not shouting.
             context.strokeStyle = colour
             context.globalAlpha = 0.5
             context.lineWidth = 2
             context.beginPath()
-            context.moveTo(xStart, cssHeight - 2)
-            context.lineTo(xStart + width, cssHeight - 2)
+            if (orientation === 'scroll') {
+              context.moveTo(rect.x, cssHeight - 2)
+              context.lineTo(rect.x + rect.width, cssHeight - 2)
+            } else {
+              context.moveTo(2, rect.y)
+              context.lineTo(2, rect.y + rect.height)
+            }
             context.stroke()
             context.globalAlpha = 1
-          } else {
-            context.strokeStyle = colour
-            context.lineWidth = 1.5
-            context.strokeRect(xStart, boxTop, width, boxBottom - boxTop)
+            continue
           }
 
-          if (group !== 'acoustic_event') {
-            const text = `${detection.display_name} ${(detection.score * 100).toFixed(0)}%`
-            context.font = '600 11px ui-sans-serif, system-ui, sans-serif'
-            const metrics = context.measureText(text)
-            const labelX = Math.max(2, Math.min(xStart, cssWidth - metrics.width - 10))
-            const labelY = Math.max(11, boxTop - 9)
-            context.fillStyle = dark ? 'rgba(6,8,14,0.82)' : 'rgba(255,255,255,0.88)'
-            context.fillRect(labelX, labelY - 8, metrics.width + 8, 16)
-            context.fillStyle = colour
-            context.fillText(text, labelX + 4, labelY)
-          }
+          context.strokeStyle = colour
+          context.lineWidth = 1.5
+          context.strokeRect(rect.x, rect.y, rect.width, rect.height)
+
+          const text = `${detection.display_name} ${(detection.score * 100).toFixed(0)}%`
+          context.font = '600 11px ui-sans-serif, system-ui, sans-serif'
+          const metrics = context.measureText(text)
+          const labelX = Math.max(2, Math.min(rect.x, cssWidth - metrics.width - 10))
+          const labelY = Math.max(11, rect.y - 9)
+          context.fillStyle = dark ? 'rgba(6,8,14,0.82)' : 'rgba(255,255,255,0.88)'
+          context.fillRect(labelX, labelY - 8, metrics.width + 8, 16)
+          context.fillStyle = colour
+          context.fillText(text, labelX + 4, labelY)
         }
       }
 
@@ -401,24 +440,34 @@ export function Spectrogram({
       context.strokeStyle = dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
       context.lineWidth = 1
       context.beginPath()
-      context.moveTo(cssWidth - 0.5, 0)
-      context.lineTo(cssWidth - 0.5, cssHeight)
+      if (orientation === 'scroll') {
+        context.moveTo(cssWidth - 0.5, 0)
+        context.lineTo(cssWidth - 0.5, cssHeight)
+      } else {
+        context.moveTo(0, 0.5)
+        context.lineTo(cssWidth, 0.5)
+      }
       context.stroke()
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
     // Deliberately excludes `detections`: it is read through a ref so that a new
     // detection never restarts this loop.
-  }, [palette, spec.min_hz, spec.max_hz, spec.hop_s, windowSeconds, showDetections])
+  }, [palette, spec.min_hz, spec.max_hz, spec.bins, spec.hop_s, windowSeconds, showDetections, orientation])
 
   const onMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect()
-    const fractionY = 1 - (event.clientY - bounds.top) / bounds.height
-    const hz = Math.exp(
-      Math.log(spec.min_hz) + fractionY * (Math.log(spec.max_hz) - Math.log(spec.min_hz)),
-    )
-    const secondsAgo = (1 - (event.clientX - bounds.left) / bounds.width) * windowSeconds
-    setHover({ hz, secondsAgo })
+    const viewport = { width: bounds.width, height: bounds.height }
+    const x = event.clientX - bounds.left
+    const y = event.clientY - bounds.top
+    // Same functions the plot and overlay use, so the readout cannot disagree with
+    // what is drawn under the cursor.
+    setHover({
+      hz: pixelToFrequency(orientation === 'scroll' ? y : x, band, viewport, orientation),
+      secondsAgo: pixelToSecondsAgo(
+        orientation === 'scroll' ? x : y, windowSeconds, viewport, orientation,
+      ),
+    })
   }
 
   return (
@@ -438,6 +487,7 @@ export function Spectrogram({
         <span className="badge dim">{spec.bins} bins</span>
         <span className="badge dim">{(spec.hop_s * 1000).toFixed(0)} ms/col</span>
         <span className="badge dim">FFT {spec.fft_size}</span>
+        <span className="badge dim">{orientation}</span>
       </div>
       {hover && (
         <div className="spectrogram-readout">

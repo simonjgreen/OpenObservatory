@@ -5,6 +5,7 @@ import { LiveConnection, type ConnectionState, type HelloPayload } from './live'
 import type { ColumnBatch, Detection, Envelope, SpectrogramSpec, StationStatus } from './types'
 import { Header } from './components/Header'
 import { Spectrogram, type Palette } from './components/Spectrogram'
+import { orderPanels, type Orientation } from './components/geometry'
 import { Suggestions } from './components/Suggestions'
 import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
@@ -30,6 +31,7 @@ export default function App() {
   const [blackPoint, setBlackPoint] = useState(0.13)
   const [whitePoint, setWhitePoint] = useState(0.72)
   const [showDetections, setShowDetections] = useState(true)
+  const [orientation, setOrientation] = useState<Orientation>('scroll')
   const [activeChannel, setActiveChannel] = useState<number | 'both'>('both')
 
   const [audioStatus, setAudioStatus] = useState<AudioStatus>('idle')
@@ -147,23 +149,18 @@ export default function App() {
 
   const timeZone = status?.station.timezone ?? 'UTC'
 
-  // Highest band first, so ultrasound sits on top. It is the band you cannot hear,
-  // and therefore the one you are actually reading the display to check; the
-  // audible spectrogram below it is the one your ears can corroborate. Stacking
-  // them this way also puts the two frequency axes in one continuous run, high at
-  // the top of the page down to low at the bottom.
-  //
-  // Ordered by frequency rather than by channel id, which is a protocol
-  // identifier and not a display order, so a future third band lands in the right
-  // place without another edit here.
-  const orderedSpecs = useMemo(
-    () => [...specs].sort((a, b) => b.min_hz - a.min_hz),
-    [specs],
-  )
+  // Ordered so the panels' frequency axes form one continuous run across the page.
+  // Which way round that is depends on the orientation, so the rule lives in
+  // geometry.ts where both directions are tested.
+  const orderedSpecs = useMemo(() => orderPanels(specs, orientation), [specs, orientation])
   const visibleSpecs = orderedSpecs.filter(
     (spec) => activeChannel === 'both' || spec.channel === activeChannel,
   )
-  const heroHeight = visibleSpecs.length > 1 ? 250 : 420
+  // A waterfall needs vertical room, because time runs down it rather than across.
+  const heroHeight =
+    orientation === 'waterfall'
+      ? visibleSpecs.length > 1 ? 420 : 620
+      : visibleSpecs.length > 1 ? 250 : 420
 
   return (
     <div className="app">
@@ -185,7 +182,7 @@ export default function App() {
         />
       </Header>
 
-      <div className="hero">
+      <div className={`hero ${orientation === 'waterfall' ? 'hero-waterfall' : ''}`}>
         <div className="hero-controls">
           <div className="segmented">
             <button
@@ -217,6 +214,17 @@ export default function App() {
                   {value < 60 ? `${value}s` : `${value / 60}m`}
                 </option>
               ))}
+            </select>
+          </label>
+
+          <label title="Scroll puts time across the page with now at the right, which reads rhythm well. Waterfall puts frequency across and time down the page with now at the top, which reads the shape of the band well.">
+            view
+            <select
+              value={orientation}
+              onChange={(event) => setOrientation(event.target.value as Orientation)}
+            >
+              <option value="scroll">scroll</option>
+              <option value="waterfall">waterfall</option>
             </select>
           </label>
 
@@ -276,6 +284,7 @@ export default function App() {
             waiting for the first audio columns…
           </div>
         )}
+        <div className={orientation === 'waterfall' ? 'spectrogram-row' : undefined}>
         {visibleSpecs.map((spec) => (
           <Spectrogram
             key={`${spec.channel}-${spec.bins}-${spec.sample_rate}`}
@@ -287,9 +296,11 @@ export default function App() {
             blackPoint={blackPoint}
             whitePoint={whitePoint}
             showDetections={showDetections}
+            orientation={orientation}
             height={heroHeight}
           />
         ))}
+        </div>
       </div>
 
       <main className="columns">
