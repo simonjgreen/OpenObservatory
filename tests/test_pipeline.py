@@ -6,6 +6,9 @@ exactly why the audio pipeline spec makes it mandatory rather than optional.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 import uuid
 from itertools import pairwise
 
@@ -514,3 +517,56 @@ class TestReplaySource:
         await source.close()
         assert second is not None
         assert second.discontinuity == DiscontinuityReason.REPLAY_WRAP
+
+
+class TestEvidenceIsOffTheDetectorPath:
+    """Writing evidence must never block the detector that produced it.
+
+    Measured at the development station on a busy night: `_on_detections` awaited clip
+    extraction inline, and because an ultrasonic detection writes four clips —
+    including a time expansion turning 6 s of 384 kHz audio into ~54 s of output
+    — the worker stalled on disk I/O. `ultrasonic-pass-v1` analysed 29 windows
+    and dropped 69, with a 42 s lag, while its own inference p95 was 57 ms. The
+    detector was missing bats because of file writing.
+    """
+
+    async def test_slow_evidence_does_not_stall_the_producer(self) -> None:
+        import asyncio
+
+        from open_observatory.config import Settings
+        from open_observatory.station import DetectionRecord, Station
+
+        station = Station(Settings(clips_enabled=True))
+        started = asyncio.get_running_loop().time()
+        attached: list[str] = []
+
+        def slow_attach(record: DetectionRecord, metadata: object) -> None:
+            time.sleep(0.25)
+            attached.append("done")
+
+        station._attach_evidence = slow_attach  # type: ignore[method-assign]
+        station._evidence_task = asyncio.create_task(station._evidence_loop())
+        try:
+            for _ in range(4):
+                station._evidence_queue.put_nowait((object(), object()))  # type: ignore[arg-type]
+            # Handing work over must be immediate: the producer is the detector.
+            assert asyncio.get_running_loop().time() - started < 0.05
+            await asyncio.sleep(0.35)
+            assert attached, "evidence work must actually run in the background"
+        finally:
+            station._evidence_queue.put_nowait(None)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(station._evidence_task, timeout=2.0)
+
+    async def test_full_queue_drops_evidence_rather_than_blocking(self) -> None:
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings())
+        while not station._evidence_queue.full():
+            station._evidence_queue.put_nowait((object(), object()))  # type: ignore[arg-type]
+
+        # The queue is bounded, so the next offer must be refused rather than
+        # awaited. Capture always wins.
+        with pytest.raises(asyncio.QueueFull):
+            station._evidence_queue.put_nowait((object(), object()))  # type: ignore[arg-type]

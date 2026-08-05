@@ -169,6 +169,14 @@ class Station:
         self.persist_dropped = 0
         self.persist_written = 0
         self.persist_failures = 0
+        #: Evidence extraction is slow (disk I/O plus ultrasound rendering), so it
+        #: runs off the detector's task. Bounded, with an explicit drop policy.
+        self._evidence_queue: asyncio.Queue[tuple[DetectionRecord, DetectorMetadata] | None] = (
+            asyncio.Queue(maxsize=64)
+        )
+        self._evidence_task: asyncio.Task[None] | None = None
+        self.evidence_dropped = 0
+        self.evidence_written = 0
 
     # -- lifecycle ------------------------------------------------------
 
@@ -178,6 +186,7 @@ class Station:
         await asyncio.to_thread(self._close_orphaned_streams)
         self._running = True
         self._persist_task = asyncio.create_task(self._persist_loop(), name="persist")
+        self._evidence_task = asyncio.create_task(self._evidence_loop(), name="evidence")
         self._housekeeping_task = asyncio.create_task(self._housekeeping_loop(), name="housekeeping")
         self._capture_task = asyncio.create_task(self._capture_supervisor(), name="capture")
         log.info("station.started", station_id=str(self.station_id))
@@ -191,6 +200,11 @@ class Station:
                     await task
         for worker in self.workers:
             await worker.stop()
+        if self._evidence_task:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._evidence_queue.put_nowait(None)
+            with contextlib.suppress(asyncio.CancelledError, Exception, TimeoutError):
+                await asyncio.wait_for(self._evidence_task, timeout=5.0)
         if self._persist_task:
             with contextlib.suppress(asyncio.QueueFull):
                 self._persist_queue.put_nowait(None)
@@ -773,16 +787,60 @@ class Station:
             if canonical is None:
                 continue
             record = DetectionRecord(detection=canonical)
-            if self.settings.clips_enabled:
-                await asyncio.to_thread(self._attach_evidence, record, worker.metadata)
-            self._remember(record)
-            self.bus.emit(EventType.DETECTION_CREATED, record.to_dict(), station_id=self.station_id)
+            # Evidence writing must not run in the detector's own task. Awaiting it
+            # here blocks the worker until the clips are on disk, and an ultrasonic
+            # detection writes four of them — including a time expansion that turns
+            # 6 s of 384 kHz audio into ~54 s of output. Measured on a busy night at
+            # the development station, that stalled `ultrasonic-pass-v1` badly enough to drop
+            # 69 of 98 windows with a 42 s lag, while its own inference p95 was
+            # 57 ms. The detector was missing bats because of disk I/O.
             try:
-                self._persist_queue.put_nowait(record)
+                self._evidence_queue.put_nowait((record, worker.metadata))
             except asyncio.QueueFull:
-                self.persist_dropped += 1
+                # Capture always wins, and a bounded queue must drop rather than
+                # block. Losing the evidence for one detection is much cheaper than
+                # falling behind the live audio, so the drop is counted and the
+                # detection is published without media rather than lost entirely.
+                self.evidence_dropped += 1
+                log.warning(
+                    "evidence.dropped",
+                    plugin=worker.plugin_id,
+                    queued=self._evidence_queue.qsize(),
+                    dropped_total=self.evidence_dropped,
+                )
+                self._publish_detection(record)
         # The lease is released by the worker's on_window_done hook, which runs for
         # quiet windows too.
+
+    async def _evidence_loop(self) -> None:
+        """Attach evidence off the detector path, then publish and persist.
+
+        Ordering within a detection is unchanged: clips are attached before the
+        record is emitted, so a live client still sees its media. What changed is
+        that the detector worker no longer waits for any of it.
+        """
+        while True:
+            item = await self._evidence_queue.get()
+            if item is None:
+                return
+            record, metadata = item
+            if self.settings.clips_enabled:
+                try:
+                    await asyncio.to_thread(self._attach_evidence, record, metadata)
+                    self.evidence_written += 1
+                except Exception:
+                    # Evidence is supporting material. Losing it must never lose the
+                    # detection itself.
+                    log.exception("evidence.failed", plugin=metadata.plugin_id)
+            self._publish_detection(record)
+
+    def _publish_detection(self, record: DetectionRecord) -> None:
+        self._remember(record)
+        self.bus.emit(EventType.DETECTION_CREATED, record.to_dict(), station_id=self.station_id)
+        try:
+            self._persist_queue.put_nowait(record)
+        except asyncio.QueueFull:
+            self.persist_dropped += 1
 
     def _attach_evidence(self, record: DetectionRecord, metadata: DetectorMetadata) -> None:
         if self.native_ring is None or self.stream is None:
@@ -1239,6 +1297,11 @@ class Station:
                 "queued": self._persist_queue.qsize(),
                 "dropped": self.persist_dropped,
                 "failures": self.persist_failures,
+            },
+            "evidence": {
+                "queued": self._evidence_queue.qsize(),
+                "written": self.evidence_written,
+                "dropped": self.evidence_dropped,
             },
         }
 
