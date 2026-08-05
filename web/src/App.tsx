@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { LiveAudioPlayer, type AudioStatus, type AudioTelemetry } from './audio'
+import {
+  LiveAudioPlayer,
+  clampTuneHz,
+  type AudioHelloInfo,
+  type AudioStatus,
+  type AudioTelemetry,
+  type LiveAudioChannel,
+} from './audio'
 import { LiveConnection, type ConnectionState, type HelloPayload } from './live'
 import type { ColumnBatch, Detection, Envelope, SpectrogramSpec, StationStatus } from './types'
 import { Header } from './components/Header'
@@ -52,6 +59,11 @@ export default function App() {
   // The live mic runs near -45 dBFS in a quiet garden, so unity monitoring is
   // effectively silent on laptop speakers. Default to a useful listening level.
   const [monitorGainDb, setMonitorGainDb] = useState(24)
+  // Audible is the unconditional default: pressing GO LIVE must always listen
+  // to the audible mix unless the operator explicitly switches.
+  const [audioChannel, setAudioChannel] = useState<LiveAudioChannel>('audible')
+  const [tuneHz, setTuneHz] = useState(45000)
+  const [audioHello, setAudioHello] = useState<AudioHelloInfo | null>(null)
   //: Mirrors the suggestion list's default; also drives the history aggregation.
   const [hideUnidentifiedHistory] = useState(true)
 
@@ -158,6 +170,13 @@ export default function App() {
         },
         (telemetry) => setAudioTelemetry(telemetry),
         0.9,
+        120,
+        (hello) => {
+          setAudioHello(hello)
+          // The server may have clamped an out-of-range request; reflect what
+          // it actually landed on rather than what was asked for.
+          if (hello.tuneHz !== undefined) setTuneHz(hello.tuneHz)
+        },
       ),
     [],
   )
@@ -166,8 +185,33 @@ export default function App() {
 
   const toggleAudio = useCallback(() => {
     if (player.playing) void player.stop()
-    else void player.start(volume)
-  }, [player, volume])
+    else void player.start(volume, audioChannel, tuneHz)
+  }, [player, volume, audioChannel, tuneHz])
+
+  // Switching channel while playing reconnects — the socket's channel is
+  // fixed for its lifetime (ADR-012: exactly one writer per socket, selected
+  // once at connect), so there is nothing to "switch" on the open socket.
+  const changeChannel = useCallback(
+    (value: LiveAudioChannel) => {
+      setAudioChannel(value)
+      setAudioHello(null)
+      if (player.playing) {
+        void player.stop().then(() => void player.start(volume, value, tuneHz))
+      }
+    },
+    [player, volume, tuneHz],
+  )
+
+  const changeTuneHz = useCallback(
+    (value: number) => {
+      const clamped = clampTuneHz(value)
+      setTuneHz(clamped)
+      // Live retune over the open socket when already listening — no
+      // reconnect needed for this one, per the transport doc.
+      if (player.playing && audioChannel === 'ultrasonic') player.setTuneHz(clamped)
+    },
+    [player, audioChannel],
+  )
 
   const changeVolume = useCallback(
     (value: number) => {
@@ -229,6 +273,11 @@ export default function App() {
           onVolume={changeVolume}
           onMonitorGain={changeMonitorGain}
           detail={audioDetail}
+          channel={audioChannel}
+          onChannel={changeChannel}
+          tuneHz={tuneHz}
+          onTuneHz={changeTuneHz}
+          hello={audioHello}
         />
       </Header>
 

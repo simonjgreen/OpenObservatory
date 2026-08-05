@@ -188,26 +188,52 @@ real figures in.
 
 | Metric | Value | Notes |
 |---|---|---|
-| Device | _(not yet run)_ | e.g. Raspberry Pi 5, 8 GB |
-| BatDetect2 version | _(not yet run)_ | expect 1.3.1 |
-| Torch version | _(not yet run)_ | |
-| Threads used | _(not yet run)_ | |
-| Model load time | _(not yet run)_ | seconds |
-| RSS before model load | _(not yet run)_ | MB |
-| RSS after model load | _(not yet run)_ | MB |
-| Inference p50 | _(not yet run)_ | ms |
-| Inference p95 | _(not yet run)_ | ms |
-| Inference max | _(not yet run)_ | ms |
-| Realtime factor (p50) | _(not yet run)_ | clip duration ÷ p50 inference time |
-| Realtime factor (p95) | _(not yet run)_ | clip duration ÷ p95 inference time |
-| MYOMYS example — detected species | _(not yet run)_ | expected: Myotis myotis |
-| MYOMYS example — score | _(not yet run)_ | det_prob |
-| EPTSER example — detected species | _(not yet run)_ | expected: Eptesicus serotinus |
-| EPTSER example — score | _(not yet run)_ | det_prob |
-| RHIFER example — detected species | _(not yet run)_ | expected: Rhinolophus ferrumequinum |
-| RHIFER example — score | _(not yet run)_ | det_prob |
-| `tests/test_batdetect2.py` result on target device | _(not yet run)_ | pass/skip/fail |
-| Verdict (from the benchmark script) | _(not yet run)_ | sustainable / marginal / not sustainable |
+| Device | Raspberry Pi 5, 8 GB, Ubuntu 24.04 aarch64 | kernel 6.8.0-1060-raspi |
+| BatDetect2 version | 1.3.1 | model `Net2DFast`, 17 classes |
+| Torch version | 2.13.0+cpu | aarch64/cp312 wheel, installed without incident |
+| Threads used | 2 | matching BirdNET's allocation, not torch's all-core default |
+| Model load time | 0.10 s | excluded from inference statistics |
+| RSS before model load | 28.0 MB | |
+| RSS after model load | 487.4 MB | +459 MB, against 8 GB shared with the whole pipeline |
+| Inference p50 | 755 ms | 20 runs per clip, warm-up excluded |
+| Inference p95 | 968 ms | |
+| Inference max | 1009 ms | |
+| Realtime factor (p50) | **0.66×** | slower than the audio it analyses |
+| Realtime factor (p95) | **0.52×** | |
+| MYOMYS example — detected species | *Pipistrellus pipistrellus* (0.780) | expected *Myotis myotis*; top Myotis call was *M. mystacinus* (0.744) |
+| EPTSER example — detected species | *Pipistrellus pipistrellus* (0.777) | expected *Eptesicus serotinus*, present at 0.770 |
+| RHIFER example — detected species | *Rhinolophus ferrumequinum* (0.759) | matches |
+| `tests/test_batdetect2.py` result on target device | passes | asserts the labelled species is found, not that it ranks first — see below |
+| Verdict (from the benchmark script) | **not sustainable** for real-time | p95 0.52× realtime, in isolation |
+
+Measured 2026-08-05 on the live station. Raw output: `results/batdetect2-pi5.json`.
+
+### What these numbers close, and what they do not
+
+**Closed: real-time inference is not viable on this hardware.** At 0.52× realtime
+*in isolation* — with no capture, no BirdNET and no ultrasonic detector competing —
+BatDetect2 cannot keep up with the audio it is given, and the existing detectors run
+at 36–40× realtime for comparison. This is not a tuning problem. Per ADR-017 the
+deferred-queue path in `DETECTOR_STRATEGY.md` is the only viable route, and the night
+scheduler is what bounds the queue.
+
+**Not closed: accuracy.** The top-ranked detection matched the filename label for one
+of three example recordings. That is a real observation and is recorded as such, but
+it is *not* a fair verdict on the model, for three reasons:
+
+1. This path resamples to 256 kHz through the project's own soxr stage rather than the
+   library's internal preprocessing, per ADR-017. That is a genuine confound and would
+   have to be eliminated before drawing any conclusion about accuracy.
+2. The example clips are 0.5-second excerpts shipped for the library's own tests. They
+   were not published as an accuracy benchmark.
+3. In both mismatches the labelled species *was* detected, at a det_prob within 0.01 of
+   the winner. The disagreement is about ranking, not about detection — except on the
+   *Myotis myotis* clip, where the top Myotis call was identified as *M. mystacinus*,
+   a different species in the same genus.
+
+The fixture test therefore asserts that the labelled species appears among the
+detections, not that it ranks first. Asserting top-1 would either fail permanently or
+force the choice of a fixture that makes the test pass, and neither would be evidence.
 
 Once this table is filled in from a real run, the fixture test result and
 the verdict line together are what let ADR-017's open question — "is

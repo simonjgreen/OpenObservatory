@@ -300,6 +300,55 @@ class TestLiveChannels:
             socket.receive_bytes()
             assert client.get("/api/v1/station").json()["live_audio"]["listeners"] >= 1
 
+    def test_audible_channel_is_the_default_and_costs_nothing_idle(self, client) -> None:
+        # No one has ever connected to the ultrasonic channel in this test, so
+        # the heterodyne must not have processed a single native sample, even
+        # though capture has been running for a while (the `client` fixture
+        # waits for >12 blocks before yielding).
+        import time
+
+        time.sleep(0.5)
+        snapshot = client.get("/api/v1/station").json()["live_audio_ultrasonic"]
+        assert snapshot["listeners"] == 0
+        heterodyne = snapshot["heterodyne"]
+        assert heterodyne is not None
+        assert heterodyne["native_samples_processed"] == 0
+
+    def test_ultrasonic_channel_streams_pcm_at_the_tuning_frequency(self, client) -> None:
+        with client.websocket_connect("/api/v1/live/audio?channel=ultrasonic&tune_hz=42000") as socket:
+            hello = socket.receive_json()
+            assert hello["type"] == "audio-hello"
+            assert hello["channel"] == "ultrasonic"
+            assert hello["available"] is True
+            assert hello["sample_rate"] == 48000
+            assert hello["tune_hz"] == pytest.approx(42000.0)
+            assert hello["bandwidth_hz"] > 0
+            chunk = socket.receive_bytes()
+            assert len(chunk) % 2 == 0
+            assert len(chunk) == hello["chunk_frames"] * 2
+
+    def test_ultrasonic_listener_count_and_only_ultrasonic_broadcaster_is_used(self, client) -> None:
+        with client.websocket_connect("/api/v1/live/audio?channel=ultrasonic") as socket:
+            socket.receive_json()
+            socket.receive_bytes()
+            station = client.get("/api/v1/station").json()
+            assert station["live_audio_ultrasonic"]["listeners"] >= 1
+            # The audible channel's own listener count is untouched.
+            assert station["live_audio"]["listeners"] == 0
+
+    def test_ultrasonic_retune_via_socket_message_is_applied(self, client) -> None:
+        with client.websocket_connect("/api/v1/live/audio?channel=ultrasonic&tune_hz=30000") as socket:
+            socket.receive_json()
+            socket.send_json({"type": "tune", "tune_hz": 60000})
+            # Give the reader task a moment to process it, then drain a chunk
+            # so the connection stays alive long enough to matter.
+            socket.receive_bytes()
+            import time
+
+            time.sleep(0.2)
+            heterodyne = client.get("/api/v1/station").json()["live_audio_ultrasonic"]["heterodyne"]
+            assert heterodyne["tune_hz"] == pytest.approx(60000.0, abs=1.0)
+
 
 class TestDebugSurface:
     def test_pipeline_debug_includes_recent_events(self, client) -> None:

@@ -652,22 +652,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
     @app.websocket(f"{API_PREFIX}/live/audio")
-    async def live_audio_socket(socket: WebSocket) -> None:
+    async def live_audio_socket(
+        socket: WebSocket,
+        channel: str = Query("audible", pattern="^(audible|ultrasonic)$"),
+        tune_hz: float | None = Query(None),
+    ) -> None:
+        """The GO LIVE listen channel. ``?channel=ultrasonic`` selects the live
+        heterodyne monitor instead of the default 48 kHz audible mix.
+
+        ADR-012: exactly one task performs every send on this socket. The send
+        loop below owns it entirely; a concurrent reader loop only *receives*
+        (keep-alive pings on the audible channel, retune requests on the
+        ultrasonic one) and never touches ``socket.send*``, so the single-writer
+        invariant that the visual channel already relies on holds here too.
+        """
         await socket.accept()
-        listener = station.live_audio.add_listener(label="browser")
+        ultrasonic = channel == "ultrasonic"
+        broadcaster = station.live_audio_ultrasonic if ultrasonic else station.live_audio
+        listener = broadcaster.add_listener(label=f"browser:{channel}")
+
+        if ultrasonic and tune_hz is not None:
+            station.set_ultrasonic_tune_hz(tune_hz)
+
+        available = not ultrasonic or station.heterodyne is not None
+        hello: dict[str, Any] = {
+            "type": "audio-hello",
+            "channel": channel,
+            "sample_rate": broadcaster.sample_rate,
+            "chunk_frames": broadcaster.chunk_frames,
+            "chunk_ms": broadcaster.chunk_ms,
+            "encoding": "pcm_s16le_mono",
+            "available": available,
+        }
+        if ultrasonic:
+            if station.heterodyne is not None:
+                hello["tune_hz"] = station.heterodyne.tune_hz
+                hello["bandwidth_hz"] = station.heterodyne.bandwidth_hz
+            else:
+                hello["reason"] = station.heterodyne_unavailable_reason
+
+        reader: asyncio.Task[None] | None = None
         try:
-            await socket.send_json(
-                {
-                    "type": "audio-hello",
-                    "sample_rate": station.live_audio.sample_rate,
-                    "chunk_frames": station.live_audio.chunk_frames,
-                    "chunk_ms": station.live_audio.chunk_ms,
-                    "encoding": "pcm_s16le_mono",
-                }
-            )
-            # Anything queued while the handshake completed is already stale; a live
-            # feed should start at now, not at whatever accumulated during setup.
+            await socket.send_json(hello)
+            if not available:
+                # Nothing this connection can ever stream; say so and stop,
+                # rather than accepting a socket that will sit silent forever.
+                return
+            # Anything queued while the handshake completed is already stale; a
+            # live feed should start at now, not at whatever accumulated during
+            # setup.
             listener.drain()
+
+            if ultrasonic:
+                reader = asyncio.create_task(
+                    _pump_tune_requests(socket, station), name="live-audio-tune-reader"
+                )
+
             while True:
                 payload = await listener.queue.get()
                 if payload is None:
@@ -676,9 +716,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             pass
         except Exception:
-            log.exception("live_audio_socket.error")
+            log.exception("live_audio_socket.error", channel=channel)
         finally:
-            station.live_audio.remove_listener(listener)
+            broadcaster.remove_listener(listener)
+            if reader is not None:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader
+
+    async def _pump_tune_requests(socket: WebSocket, station: Station) -> None:
+        """Read-only loop: applies retune requests without ever writing to the
+        socket, so it cannot violate the single-writer rule above.
+
+        Frame: ``{"type": "tune", "tune_hz": 42000}``. Anything else, or a
+        message that fails to parse, is ignored rather than closing the
+        connection over a stray keep-alive ping.
+        """
+        try:
+            while True:
+                try:
+                    message = await socket.receive_json()
+                except (WebSocketDisconnect, asyncio.CancelledError):
+                    raise
+                except Exception:
+                    # Malformed frame (or a plain keep-alive text ping): skip
+                    # it rather than tearing down the whole reader over one
+                    # bad message.
+                    continue
+                if not isinstance(message, dict) or message.get("type") != "tune":
+                    continue
+                try:
+                    hz = float(message["tune_hz"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                station.set_ultrasonic_tune_hz(hz)
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except Exception:
+            log.exception("live_audio_socket.tune_reader_error")
 
     # -- static UI ------------------------------------------------------
 

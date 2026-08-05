@@ -217,8 +217,13 @@ class PrometheusExporter:
 
         self._set(
             "oo_live_audio_listeners",
-            "Browsers listening to live audio",
+            "Browsers listening to live audible audio",
             snapshot["live_audio"]["listeners"],
+        )
+        self._set(
+            "oo_live_audio_ultrasonic_listeners",
+            "Browsers listening to the live heterodyne channel",
+            snapshot["live_audio_ultrasonic"]["listeners"],
         )
         self._set(
             "oo_bus_published_total",

@@ -46,6 +46,7 @@ from .audio.contracts import (
     StreamClock,
     StreamInfo,
 )
+from .audio.heterodyne_stream import StreamingHeterodyne
 from .audio.levels import LevelAggregator
 from .audio.probe import enumerate_capture_devices, find_device
 from .audio.resample import AudibleResampler
@@ -123,6 +124,18 @@ class Station:
         self.leases = TransientAssetStore()
         self.normaliser = Normaliser()
         self.live_audio = LiveAudioBroadcaster(sample_rate=settings.audible_sample_rate)
+        # A second broadcaster, not a second class: same chunk framing, same
+        # int16 LE encoding, same bounded per-listener queue — the client's
+        # existing jitter buffer keeps working unchanged for either channel.
+        # Fed only from `_handle_block` when it has listeners, so an idle
+        # ultrasonic channel costs nothing beyond this object's existence.
+        self.live_audio_ultrasonic = LiveAudioBroadcaster(sample_rate=settings.audible_sample_rate)
+        self.heterodyne: StreamingHeterodyne | None = None
+        #: Why `heterodyne` is None, for the API to explain to a client that
+        #: connects to the ultrasonic channel before/without a usable native
+        #: rate (e.g. the device negotiated a rate live monitoring can't
+        #: evenly decimate).
+        self.heterodyne_unavailable_reason: str = "capture not yet open"
         self.clips = ClipManager(
             clip_dir=settings.clip_dir,
             pre_roll_s=settings.clip_pre_roll_s,
@@ -187,6 +200,7 @@ class Station:
             with contextlib.suppress(Exception):
                 await self.source.close()
         self.live_audio.close()
+        self.live_audio_ultrasonic.close()
         self.bus.close()
         log.info("station.stopped")
 
@@ -318,6 +332,8 @@ class Station:
         self.audible_levels = LevelAggregator(sample_rate=self.settings.audible_sample_rate)
         self.normaliser.reset()
         self.live_audio.reconfigure(self.settings.audible_sample_rate)
+        self.live_audio_ultrasonic.reconfigure(self.settings.audible_sample_rate)
+        self._build_heterodyne(rate)
         self._build_spectrograms(rate)
 
         if self.router is None:
@@ -354,6 +370,59 @@ class Station:
             },
             station_id=self.station_id,
         )
+
+    def _build_heterodyne(self, native_rate: int) -> None:
+        """(Re)build the live ultrasonic monitor for the stream's native rate.
+
+        Construction is cheap and unconditional — the actual CPU cost only
+        happens in `_handle_block` when there is a listener attached, exactly
+        as `LiveAudioBroadcaster.publish` is a no-op with none. Preserves the
+        currently-tuned frequency across a device reopen rather than
+        resetting to the configured default, so an operator's tuning survives
+        a USB blip.
+        """
+        settings = self.settings
+        tune_hz = self.heterodyne.tune_hz if self.heterodyne is not None else settings.ultrasonic_live_tune_hz
+        output_rate = settings.audible_sample_rate
+        if native_rate % output_rate != 0:
+            self.heterodyne = None
+            self.heterodyne_unavailable_reason = (
+                f"native rate {native_rate} Hz is not an integer multiple of "
+                f"{output_rate} Hz; live ultrasonic monitoring needs an exact "
+                "decimation ratio"
+            )
+            log.warning("station.heterodyne_unavailable", reason=self.heterodyne_unavailable_reason)
+            return
+        nyquist = native_rate / 2.0
+        if tune_hz >= nyquist:
+            tune_hz = min(tune_hz, nyquist * 0.9)
+        try:
+            self.heterodyne = StreamingHeterodyne(
+                native_rate,
+                output_rate=output_rate,
+                tune_hz=tune_hz,
+                bandwidth_hz=settings.ultrasonic_heterodyne_bandwidth_hz,
+            )
+            self.heterodyne_unavailable_reason = ""
+        except ValueError as exc:
+            self.heterodyne = None
+            self.heterodyne_unavailable_reason = str(exc)
+            log.warning("station.heterodyne_unavailable", reason=self.heterodyne_unavailable_reason)
+
+    def set_ultrasonic_tune_hz(self, hz: float) -> float:
+        """Retune the live ultrasonic monitor. Returns the value actually applied.
+
+        Clamped to the configured ultrasonic band and to just under the
+        native Nyquist, so a client cannot request a tuning the oscillator
+        cannot represent.
+        """
+        low, high = self.settings.ultrasonic_band_hz
+        if self.heterodyne is not None:
+            high = min(high, self.heterodyne.native_rate / 2.0 * 0.98)
+        clamped = max(low, min(high, hz))
+        if self.heterodyne is not None:
+            self.heterodyne.set_tune_hz(clamped)
+        return clamped
 
     def _build_spectrograms(self, native_rate: int) -> None:
         settings = self.settings
@@ -430,6 +499,7 @@ class Station:
                     min_snr_db=settings.ultrasonic_min_snr_db,
                     min_pulse_ms=settings.ultrasonic_min_pulse_ms,
                     max_pulse_ms=settings.ultrasonic_max_pulse_ms,
+                    merge_gap_ms=settings.ultrasonic_merge_gap_ms,
                     pass_gap_s=settings.ultrasonic_pass_gap_s,
                     min_pulses_per_pass=settings.ultrasonic_min_pulses_per_pass,
                     buzz_max_interval_ms=settings.ultrasonic_buzz_max_interval_ms,
@@ -584,6 +654,17 @@ class Station:
                 self._spectrogram_sink(columns)
 
         self.live_audio.publish(derived.pcm)
+
+        # 3b. Live ultrasonic monitor: only heterodyne when someone is actually
+        # listening. Capture always wins, and continuously heterodyning
+        # 384 kHz for nobody would waste real CPU on a device that must never
+        # be starved of it. `StreamingHeterodyne.process` carries oscillator
+        # phase and filter state across calls itself, so skipping calls while
+        # idle and resuming later is safe — it simply continues from wherever
+        # it left off, exactly like `live_audio` skipping idle publishes.
+        if self.heterodyne is not None and self.live_audio_ultrasonic.listener_count:
+            ultrasonic_pcm = self.heterodyne.process(block.pcm)
+            self.live_audio_ultrasonic.publish(ultrasonic_pcm)
 
         # 4. Windows for detectors, dropped rather than blocking.
         self.router.push(
@@ -1147,6 +1228,11 @@ class Station:
             "clips": self.clips.snapshot(),
             "storage": self.clips.disk_usage(),
             "live_audio": self.live_audio.snapshot(),
+            "live_audio_ultrasonic": {
+                **self.live_audio_ultrasonic.snapshot(),
+                "heterodyne": self.heterodyne.describe() if self.heterodyne else None,
+                "unavailable_reason": self.heterodyne_unavailable_reason if self.heterodyne is None else None,
+            },
             "bus": self.bus.stats(),
             "persistence": {
                 "written": self.persist_written,

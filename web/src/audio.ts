@@ -28,6 +28,52 @@
  *     is the failure mode that makes a "live" feed quietly useless.
  */
 
+export type LiveAudioChannel = 'audible' | 'ultrasonic'
+
+/** What the server actually gave us, echoed back from the `audio-hello` frame
+ *  so the UI never has to guess the tuning it landed on (a request near the
+ *  band edge gets clamped server-side) or whether the channel even works for
+ *  this stream's native rate. */
+export interface AudioHelloInfo {
+  channel: LiveAudioChannel
+  sampleRate: number
+  available: boolean
+  reason?: string
+  tuneHz?: number
+  bandwidthHz?: number
+}
+
+//: Roughly what a handheld heterodyne detector covers: above this most
+//: adults hear nothing to expand on, below it native gear already used for
+//: bush-crickets and the lowest bat calls starts to overlap the audible band.
+export const ULTRASONIC_TUNE_MIN_HZ = 15000
+export const ULTRASONIC_TUNE_MAX_HZ = 125000
+
+/** Keep a requested tuning frequency inside the range the live monitor
+ *  supports. Pure so it can be unit tested without a socket or an AudioContext. */
+export function clampTuneHz(hz: number): number {
+  if (!Number.isFinite(hz)) return ULTRASONIC_TUNE_MIN_HZ
+  return Math.min(ULTRASONIC_TUNE_MAX_HZ, Math.max(ULTRASONIC_TUNE_MIN_HZ, hz))
+}
+
+/** Build the `/api/v1/live/audio` URL for a given channel. Pure so the query
+ *  string logic — the part most likely to silently rot — is unit tested
+ *  without needing a real `window.location` or WebSocket. */
+export function buildLiveAudioUrl(
+  location: { protocol: string; host: string },
+  channel: LiveAudioChannel,
+  tuneHz?: number,
+): string {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const params = new URLSearchParams()
+  if (channel === 'ultrasonic') {
+    params.set('channel', 'ultrasonic')
+    if (tuneHz !== undefined) params.set('tune_hz', String(Math.round(clampTuneHz(tuneHz))))
+  }
+  const query = params.toString()
+  return `${scheme}//${location.host}/api/v1/live/audio${query ? `?${query}` : ''}`
+}
+
 export interface AudioTelemetry {
   bufferedFrames: number
   bufferedMs: number
@@ -66,6 +112,8 @@ export class LiveAudioPlayer {
   private resyncs = 0
   private sampleRate = 48000
   private reportTimer: number | null = null
+  private channel: LiveAudioChannel = 'audible'
+  private tuneHz = 45000
 
   telemetry: AudioTelemetry | null = null
 
@@ -74,6 +122,9 @@ export class LiveAudioPlayer {
     private readonly onTelemetry: (telemetry: AudioTelemetry) => void,
     private volume = 1,
     private readonly targetLatencyMs = 120,
+    /** Called once per connection with what the server actually gave us —
+     *  see `AudioHelloInfo`. Optional so existing callers are unaffected. */
+    private readonly onHello?: (info: AudioHelloInfo) => void,
     /** Chunks are dropped above this, so the steady state sits just under it.
      *
      *  This must be only a little above the target, not a generous ceiling: each
@@ -87,9 +138,11 @@ export class LiveAudioPlayer {
     return this.context !== null
   }
 
-  async start(volume = 1): Promise<void> {
+  async start(volume = 1, channel: LiveAudioChannel = 'audible', tuneHz = 45000): Promise<void> {
     if (this.context) return
     this.volume = volume
+    this.channel = channel
+    this.tuneHz = clampTuneHz(tuneHz)
     this.onStatus('starting')
     try {
       // 48 kHz matches the station's derived stream exactly, so no browser-side
@@ -135,8 +188,8 @@ export class LiveAudioPlayer {
       // A user gesture triggered this call, so resume() is permitted.
       await context.resume()
 
-      const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/live/audio`)
+      const url = buildLiveAudioUrl(window.location, this.channel, this.tuneHz)
+      const socket = new WebSocket(url)
       socket.binaryType = 'arraybuffer'
       this.socket = socket
 
@@ -146,7 +199,10 @@ export class LiveAudioPlayer {
         if (this.context) void this.stop()
       }
       socket.onmessage = (event) => {
-        if (typeof event.data === 'string') return
+        if (typeof event.data === 'string') {
+          this.handleHello(event.data)
+          return
+        }
         this.enqueue(event.data as ArrayBuffer)
       }
 
@@ -155,6 +211,43 @@ export class LiveAudioPlayer {
       this.onStatus('error', error instanceof Error ? error.message : String(error))
       await this.stop()
     }
+  }
+
+  private handleHello(raw: string): void {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return
+    }
+    if (!parsed || typeof parsed !== 'object' || (parsed as { type?: string }).type !== 'audio-hello') {
+      return
+    }
+    const payload = parsed as {
+      channel?: LiveAudioChannel
+      sample_rate?: number
+      available?: boolean
+      reason?: string
+      tune_hz?: number
+      bandwidth_hz?: number
+    }
+    this.onHello?.({
+      channel: payload.channel ?? this.channel,
+      sampleRate: payload.sample_rate ?? this.sampleRate,
+      available: payload.available ?? true,
+      reason: payload.reason,
+      tuneHz: payload.tune_hz,
+      bandwidthHz: payload.bandwidth_hz,
+    })
+  }
+
+  /** Retune the live heterodyne monitor without reconnecting. A no-op on the
+   *  audible channel or before the socket is open. */
+  setTuneHz(hz: number): void {
+    this.tuneHz = clampTuneHz(hz)
+    if (this.channel !== 'ultrasonic') return
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
+    this.socket.send(JSON.stringify({ type: 'tune', tune_hz: this.tuneHz }))
   }
 
   private enqueue(payload: ArrayBuffer): void {

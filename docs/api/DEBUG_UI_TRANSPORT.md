@@ -84,35 +84,129 @@ around 900 dropped audio chunks on the listen channel.
 
 ## `GET /api/v1/live/audio` — listen channel
 
-For the UI's **GO LIVE** button.
+For the UI's **GO LIVE** button. Carries two channels, selected once at
+connect time by a query parameter — `?channel=audible` (the default) or
+`?channel=ultrasonic`. Switching channel reconnects; ADR-012's single-writer
+rule is per-*socket*, and a socket's channel is fixed for its lifetime.
 
-1. One JSON frame on connect:
+### Audible (default)
+
+The derived 48 kHz audible mix — unchanged from before this channel existed.
+
+```
+GET /api/v1/live/audio
+GET /api/v1/live/audio?channel=audible   # equivalent
+```
+
+### Ultrasonic
+
+A **live heterodyne** rendering of the native ultrasonic stream, mixed down
+to the audible band around a tuning frequency — the behaviour of a handheld
+bat detector, not the offline time-expansion/heterodyne clip renderer below.
+Real-time duration is preserved (this is heterodyne, not time-expansion:
+time-expansion would fall behind live audio immediately and unboundedly).
+Implemented by `audio/heterodyne_stream.py`; carries oscillator phase and
+low-pass filter state continuously across chunks, so there is no click at
+chunk boundaries the way there would be if a clip renderer were called once
+per chunk.
+
+```
+GET /api/v1/live/audio?channel=ultrasonic
+GET /api/v1/live/audio?channel=ultrasonic&tune_hz=45000   # initial tuning
+```
+
+`tune_hz` is optional; it defaults to `OO_ULTRASONIC_LIVE_TUNE_HZ` (45 kHz).
+Requests are clamped to `OO_ULTRASONIC_BAND_HZ` (15–125 kHz by default) and to
+just under the native stream's Nyquist. The bandwidth kept either side of the
+tuning frequency is `OO_ULTRASONIC_HETERODYNE_BANDWIDTH_HZ`, shared with the
+offline renderer — both describe the same "how selective is the mix"
+question.
+
+Retuning while connected does **not** require a reconnect: send a text frame
+on the same socket —
+
+```json
+{ "type": "tune", "tune_hz": 42000 }
+```
+
+— read by a small concurrent reader task that only ever calls
+`socket.receive_json()`; it never writes to the socket, so ADR-012's
+single-writer invariant holds. Anything that isn't a `tune` frame, or fails
+to parse, is ignored.
+
+There is exactly one oscillator per station, shared by every ultrasonic
+listener: the last tuning request wins for everyone connected to that
+channel. Fine for the expected single-operator LAN use; a second concurrent
+listener wanting a different band is not supported.
+
+If the station's native rate cannot be decimated to the output rate by an
+integer factor (only 384 kHz -> 48 kHz, an exact 1/8, is exercised in
+practice), the ultrasonic channel is unavailable; `hello.available` is
+`false` and `hello.reason` explains why. AudioMoth's one hardware profile on
+this project's target is 384 kHz, so this is a defensive fallback rather than
+an expected path.
+
+### Hello frame
+
+One JSON frame on connect, before any binary audio:
 
 ```json
 {
   "type": "audio-hello",
+  "channel": "audible",
   "sample_rate": 48000,
   "chunk_frames": 1920,
   "chunk_ms": 40.0,
-  "encoding": "pcm_s16le_mono"
+  "encoding": "pcm_s16le_mono",
+  "available": true
 }
 ```
 
-2. Then a continuous series of binary frames, each exactly `chunk_frames`
-   little-endian signed 16-bit mono samples (3840 bytes at the defaults) from the
-   derived 48 kHz audible stream. About 96 kB/s.
+The ultrasonic channel's hello adds the tuning actually applied (which may
+have been clamped from what was requested) and the kept bandwidth:
 
-Opening this channel costs nothing until someone presses the button; the
-broadcaster is a no-op with no listeners.
+```json
+{
+  "type": "audio-hello",
+  "channel": "ultrasonic",
+  "sample_rate": 48000,
+  "chunk_frames": 1920,
+  "chunk_ms": 40.0,
+  "encoding": "pcm_s16le_mono",
+  "available": true,
+  "tune_hz": 45000.0,
+  "bandwidth_hz": 5000.0
+}
+```
+
+so the client never has to guess what it actually got.
+
+### Framing, both channels
+
+A continuous series of binary frames, each exactly `chunk_frames`
+little-endian signed 16-bit mono samples (3840 bytes at the defaults, ~96 kB/s)
+at `sample_rate` (48 kHz for both channels — the ultrasonic path decimates the
+native stream down before it ever reaches the broadcaster). Same chunk
+framing and encoding on both channels deliberately, so the client's existing
+jitter buffer (below) needs no channel-specific logic.
+
+Opening either channel costs nothing until someone presses the button, or
+switches to it: each channel's broadcaster is a no-op with no listeners, and
+the ultrasonic channel additionally skips the heterodyne computation itself
+whenever it has no listeners — continuously heterodyning 384 kHz for nobody
+would waste real CPU on a device whose capture must always win.
 
 ### Back-pressure
 
 Each listener has a bounded queue (48 chunks ≈ 1.9 s). A listener that cannot keep
 up loses the **oldest** audio, not the newest, so it converges back to live rather
 than falling further behind; the drop count is reported per listener in
-`/api/v1/station` under `live_audio.per_listener`. Anything queued during the
-handshake is discarded before the send loop starts, because a live feed should
-begin at *now*.
+`/api/v1/station` under `live_audio.per_listener` (audible) or
+`live_audio_ultrasonic.per_listener` (ultrasonic — that block also carries
+`heterodyne`, the oscillator/filter state description, or `null` with
+`unavailable_reason` set when the channel can't run for this stream's native
+rate). Anything queued during the handshake is discarded before the send loop
+starts, because a live feed should begin at *now*.
 
 Capture always wins: no queue between capture and a listener can ever block the
 capture loop.

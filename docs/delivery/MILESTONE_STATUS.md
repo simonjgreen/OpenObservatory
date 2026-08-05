@@ -120,17 +120,33 @@ the native stream genuinely useful rather than theoretical.
 |---|---|
 | Native high-rate window profile | done |
 | Ultrasonic detection | done, but as a **pulse-train detector, not a classifier** — `ultrasonic-pass-v1`, no species claim |
-| BatDetect2 evaluation harness | not started |
-| Pi 5 benchmark report | partial — `ultrasonic-pass-v1` measured at ~36–40× realtime |
+| BatDetect2 evaluation harness | **done** — `scripts/benchmark_batdetect2.py`, `tests/test_batdetect2.py`, `docs/detectors/BATDETECT2_EVALUATION.md`, results in `results/batdetect2-pi5.json` |
+| Pi 5 benchmark report | **done** — BatDetect2 measured on the target: p95 968 ms per 0.5 s clip, **0.52× realtime in isolation**, +459 MB RSS. Against BirdNET at ~40× and the pass detector at ~36–40×. Verdict: not sustainable for real-time inference |
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
-| Deferred mode | **not started, deliberately** — specified at `DETECTOR_STRATEGY.md:32`; build only if the BatDetect2 benchmark shows real-time inference is not sustainable |
+| Deferred mode | **not built, and now known to be required *if* BatDetect2 is adopted** — the benchmark settles the question it was waiting on. Not built tonight because adoption is not settled: the speed verdict is clear, the accuracy picture is not |
 | Feeding-buzz flagging | **done** — a run of short inter-pulse intervals that is also well below the train's own median, which is what distinguishes a terminal collapse from a bat calling fast throughout. `min_interval_ms` is emitted on every pass so a wrong threshold can be re-judged from stored data |
 | Frequency-band candidate titles | **done** — presentational only; the stored record keeps `label = "bat pass"` and no species name, and the normaliser's guard is asserted by test |
 | Sub-bin peak frequency | **done** — the pulse FFT has 3 kHz bins at 384 kHz and the candidate band edges fall between bin centres, so peaks were being assigned to a species group by quantisation. Parabolic interpolation fixes it; live, the station's 35–36 kHz cluster survives as a genuine 35.3–36.2 kHz signal |
 | Native-rate evidence + audible playback derivative | done |
 | Ultrasound rendered for human review | done — time expansion (frequencies divide, everything preserved) and heterodyne (real time preserved, band-limited), each labelled with what it changed and that its levels are not comparable with the native recording |
 | Ultrasonic spectrogram coverage | fixed — the hop (9216 frames) exceeded the FFT (4096), so 55% of the audio was never inspected and a 4 ms pulse could fall entirely between columns. Columns now max-combine four sub-windows across the whole hop. |
+
+
+### What tonight's work changed, measured on the station
+
+| Finding | Evidence |
+|---|---|
+| Peak frequencies were quantised to 3 kHz | Every reported peak was a multiple of 3000 Hz. Sub-bin interpolation now yields 35286.6, 35841.5, 36225.0, 53520.4 Hz where before it reported 36000.0 exactly |
+| Single calls were counted as whole passes | A "pass" of 8 pulses spanning 28 ms with a 3.8 ms median interval is one fragmented call, not eight calls. Real search-phase spacing measured on the same station is 120 ms. Fragments now merge below 2 ms onset spacing, measured onset to onset so a feeding buzz is never merged away |
+| Live ultrasonic monitoring works and is selective | Heterodyne RMS falls from −61.6 dBFS tuned to 25 kHz to −77.3 dBFS at 120 kHz, so it band-limits rather than passing broadband noise. Both live channels verified over a real WebSocket, 40 chunks each, no stalling |
+| Capture is unaffected | Continuity 0.99939, 0 overruns, after every change tonight |
+
+**Still open, and not resolvable by code:** whether the 33–36 kHz cluster this station
+reports is genuinely Myotis. The frequencies are consistent and survive the
+interpolation fix, so they are not an artefact, but distinguishing a Myotis from a
+mislabelled pipistrelle needs the audible renderings reviewed by ear. That is what
+the false-positive review deliverable is for, and it needs a human.
 
 ## Milestone 6 — MQTT and Home Assistant — **not started**
 

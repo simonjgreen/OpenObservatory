@@ -144,6 +144,20 @@ class Settings(BaseSettings):
     #: cannot hear 18 kHz. Bush-crickets and the lower bat calls both live there.
     ultrasonic_audible_min_peak_hz: float = 15000.0
 
+    # ---- live heterodyne monitoring ---------------------------------------
+    #: Default tuning frequency for the live "GO LIVE -> ultrasonic" listen
+    #: channel (`heterodyne_stream.StreamingHeterodyne`), independent of
+    #: ``ultrasonic_target_hz`` above: that setting picks where a *rendered
+    #: clip's* time-expansion lands in the audible band, not where a live
+    #: monitor is tuned. 45 kHz sits in the common pipistrelle range, a
+    #: reasonable default for a UK garden station; the UI makes it adjustable
+    #: because a bat detector tuned to the wrong band hears nothing useful.
+    ultrasonic_live_tune_hz: float = 45000.0
+    #: Bandwidth kept either side of the live tuning frequency. Shares
+    #: ``ultrasonic_heterodyne_bandwidth_hz`` with the clip renderer
+    #: deliberately — both describe the same "how selective is the mix"
+    #: question, just for a live oscillator instead of a fixed one.
+
     # ---- ultrasonic pass detector -------------------------------------------
     #: Off switch. The detector needs a native stream at 96 kHz or above anyway,
     #: but this lets an operator disable it without touching capture config.
@@ -157,6 +171,11 @@ class Settings(BaseSettings):
     #: enough to exclude sustained tones, long enough to exclude clicks.
     ultrasonic_min_pulse_ms: float = 1.5
     ultrasonic_max_pulse_ms: float = 40.0
+    #: Onset-to-onset spacing below which two threshold crossings are treated as
+    #: fragments of one echolocation call: a sweep's envelope dips mid-call and
+    #: arrives as several crossings. Measured onset to onset so a buzz's short,
+    #: fast calls are never merged; kept well under their 5 ms spacing.
+    ultrasonic_merge_gap_ms: float = 2.0
     #: Matches UltrasonicDetector's own default; pulses closer together than this
     #: belong to the same pass.
     ultrasonic_pass_gap_s: float = 1.5

@@ -214,6 +214,7 @@ class UltrasonicDetector:
         min_snr_db: float = 12.0,
         min_pulse_ms: float = 1.5,
         max_pulse_ms: float = 40.0,
+        merge_gap_ms: float = 2.0,
         pass_gap_s: float = 1.5,
         min_pulses_per_pass: int = 3,
         buzz_max_interval_ms: float = 12.0,
@@ -236,6 +237,7 @@ class UltrasonicDetector:
         self._min_snr_db = min_snr_db
         self._min_pulse_s = min_pulse_ms / 1000.0
         self._max_pulse_s = max_pulse_ms / 1000.0
+        self._merge_gap_s = merge_gap_ms / 1000.0
         self._pass_gap_s = pass_gap_s
         self._min_pulses = min_pulses_per_pass
         self._buzz_max_interval_ms = buzz_max_interval_ms
@@ -336,7 +338,60 @@ class UltrasonicDetector:
                     start, len(above), times, bin_dt, band_power, band_freqs, energy_db, floor
                 )
             )
+        pulses = self._merge_fragments(pulses)
         return [p for p in pulses if self._min_pulse_s <= p.duration_s <= self._max_pulse_s]
+
+    def _merge_fragments(self, pulses: list[Pulse]) -> list[Pulse]:
+        """Rejoin threshold crossings that belong to one echolocation call.
+
+        A bat call is a single frequency sweep lasting a few milliseconds, and its
+        envelope is not smooth: the band energy can dip below threshold partway
+        through, so one call arrives here as several "pulses" a millisecond or two
+        apart. Left alone that inflates the pulse count, and because a pass needs
+        only ``min_pulses_per_pass`` crossings, the fragments of a *single* call can
+        manufacture a bat pass on their own. It also destroys the interval series
+        that feeding-buzz detection depends on, which measures call-to-call timing,
+        not within-call timing.
+
+        The threshold is measured **onset to onset**, not edge to edge, and that
+        distinction matters: during a feeding buzz the calls shorten as they speed
+        up, so an edge-to-edge gap conflates "two calls close together" with "one
+        long call", and a buzz whose 4 ms calls arrive every 5 ms would be merged
+        into a single blob — hiding precisely what buzz detection exists to find.
+        Onset spacing is unaffected by call duration.
+
+        The default is deliberately conservative. Fragments of one sweep have onsets
+        a millisecond or two apart; the calls of a feeding buzz are 5 ms apart or
+        more. Merging below 2 ms leaves a wide margin against the fastest buzz.
+        A merged pulse is also never allowed to exceed ``max_pulse_ms``, since
+        beyond that it is no longer a plausible single call.
+        """
+        if self._merge_gap_s <= 0.0 or not pulses:
+            return pulses
+        merged: list[Pulse] = [pulses[0]]
+        # Measured from the previous *fragment's* onset, not from the start of the
+        # group being accumulated: a call breaking into three pieces would
+        # otherwise stop merging once the group grew past the threshold.
+        last_onset = pulses[0].offset_s
+        for pulse in pulses[1:]:
+            previous = merged[-1]
+            onset_gap = pulse.offset_s - last_onset
+            span = (pulse.offset_s + pulse.duration_s) - previous.offset_s
+            last_onset = pulse.offset_s
+            if onset_gap < self._merge_gap_s and span <= self._max_pulse_s:
+                merged[-1] = Pulse(
+                    offset_s=previous.offset_s,
+                    duration_s=(pulse.offset_s + pulse.duration_s) - previous.offset_s,
+                    # Keep the louder fragment's peak: the quiet tail of a sweep is a
+                    # worse estimate of the call's frequency than its strongest part.
+                    peak_hz=(
+                        previous.peak_hz if previous.snr_db >= pulse.snr_db else pulse.peak_hz
+                    ),
+                    snr_db=max(previous.snr_db, pulse.snr_db),
+                )
+            else:
+                merged.append(pulse)
+        return merged
 
     @staticmethod
     def _make_pulse(

@@ -5,7 +5,8 @@
  *  procedure, a number labelled "dB SPL" would be a fabrication.
  */
 
-import type { AudioStatus, AudioTelemetry } from '../audio'
+import type { AudioHelloInfo, AudioStatus, AudioTelemetry, LiveAudioChannel } from '../audio'
+import { ULTRASONIC_TUNE_MAX_HZ, ULTRASONIC_TUNE_MIN_HZ } from '../audio'
 import type { LevelSample } from '../types'
 
 interface MeterProps {
@@ -56,6 +57,11 @@ interface ListenProps {
   onVolume: (value: number) => void
   onMonitorGain: (value: number) => void
   detail?: string
+  channel: LiveAudioChannel
+  onChannel: (channel: LiveAudioChannel) => void
+  tuneHz: number
+  onTuneHz: (hz: number) => void
+  hello: AudioHelloInfo | null
 }
 
 export function ListenControl({
@@ -67,21 +73,79 @@ export function ListenControl({
   onVolume,
   onMonitorGain,
   detail,
+  channel,
+  onChannel,
+  tuneHz,
+  onTuneHz,
+  hello,
 }: ListenProps) {
   const playing = status === 'playing'
   const busy = status === 'starting'
+  const ultrasonic = channel === 'ultrasonic'
+  const unavailable = hello !== null && hello.available === false
 
   return (
     <div className={`listen ${playing ? 'on' : ''}`}>
+      <div className="segmented channel-switch" title="Audible listens to the derived 48 kHz mix. Ultrasonic heterodynes the native stream down to an audible band around a tuned frequency, like a handheld bat detector.">
+        <button
+          className={!ultrasonic ? 'on' : ''}
+          disabled={playing}
+          onClick={() => onChannel('audible')}
+        >
+          audible
+        </button>
+        <button
+          className={ultrasonic ? 'on' : ''}
+          disabled={playing}
+          onClick={() => onChannel('ultrasonic')}
+        >
+          ultrasonic
+        </button>
+      </div>
+
+      {ultrasonic && (
+        <label
+          className="tune"
+          title="Heterodyne tuning frequency. Everything outside a band around this is discarded — this is a listening aid, not a measurement, and its levels are not comparable with the native recording."
+        >
+          <span aria-hidden>🦇</span>
+          <input
+            type="range"
+            min={ULTRASONIC_TUNE_MIN_HZ}
+            max={ULTRASONIC_TUNE_MAX_HZ}
+            step={500}
+            value={tuneHz}
+            onChange={(event) => onTuneHz(Number(event.target.value))}
+          />
+          <span className="mono">{(tuneHz / 1000).toFixed(1)} kHz</span>
+        </label>
+      )}
+
       <button
         className={`go-live ${playing ? 'on' : ''}`}
         onClick={onToggle}
         disabled={busy}
-        title="Stream the live 48 kHz audible mix to this browser with a small jitter buffer"
+        title={
+          ultrasonic
+            ? 'Stream a live heterodyne rendering of the native ultrasonic stream, tuned to the frequency above — a listening aid, not a measurement'
+            : 'Stream the live 48 kHz audible mix to this browser with a small jitter buffer'
+        }
       >
         <span className="go-live-dot" />
         {busy ? 'connecting…' : playing ? 'STOP' : 'GO LIVE'}
       </button>
+
+      {playing && unavailable && (
+        <span className="warn-text" title={hello?.reason}>
+          ultrasonic monitoring unavailable{hello?.reason ? `: ${hello.reason}` : ''}
+        </span>
+      )}
+
+      {playing && ultrasonic && !unavailable && (
+        <span className="dim" title="Band-limited around the tuning frequency; everything outside is discarded. Real-time heterodyne rendering, not a calibrated measurement.">
+          heterodyne ±{hello?.bandwidthHz ? (hello.bandwidthHz / 1000).toFixed(1) : '—'} kHz
+        </span>
+      )}
 
       {playing && (
         <>

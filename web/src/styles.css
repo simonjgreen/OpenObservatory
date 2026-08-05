@@ -161,6 +161,9 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 
 .volume { display: flex; align-items: center; gap: 5px; }
 .volume input { width: 76px; }
+.tune { display: flex; align-items: center; gap: 5px; }
+.tune input { width: 110px; }
+.channel-switch { font-size: 11px; }
 .listen-telemetry { display: flex; gap: 10px; font-size: 10.5px; color: var(--text-dim); }
 
 /* ---------- hero spectrogram ---------- */

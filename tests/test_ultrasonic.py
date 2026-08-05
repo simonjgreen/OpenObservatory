@@ -328,3 +328,95 @@ class TestPeakFrequencyResolution:
         column = np.array([9.0, 1.0, 1.0], dtype=float)
         assert _interpolated_peak_hz(column, 0, freqs) == 30_000.0
         assert _interpolated_peak_hz(column, 2, freqs) == 36_000.0
+
+
+class TestFragmentMerging:
+    """A bat call is one frequency sweep whose envelope dips mid-call, so it
+    arrives as several threshold crossings a millisecond or two apart. Counting
+    those as separate pulses lets the fragments of a single call satisfy
+    min_pulses_per_pass and manufacture a bat pass, and it destroys the
+    call-to-call interval series that buzz detection depends on."""
+
+    async def test_fragments_of_one_call_become_one_pulse(self) -> None:
+        detector = await _detector(min_pulses_per_pass=3)
+        # Three crossings 1 ms apart: one call, not a pass.
+        fragments = [0.300, 0.3015, 0.3030]
+        signal = pulse_train_signal(fragments, pulse_ms=1.6, f0=45_000.0, f1=45_000.0)
+        window = make_window(signal, RATE, detector.window_spec)
+
+        detections = await detector.analyse(window)
+
+        assert not detections, (
+            "fragments of a single call must not satisfy min_pulses_per_pass; "
+            f"got {detections}"
+        )
+
+    async def test_buzz_spaced_calls_are_not_merged(self) -> None:
+        """The decisive counter-test: a feeding buzz's calls are ~6 ms apart and
+        must survive de-fragmentation, or the fix would hide the thing we added
+        buzz detection to find."""
+        detector = await _detector(min_pulses_per_pass=3)
+        calls = [0.300 + i * 0.006 for i in range(8)]
+        signal = pulse_train_signal(calls, pulse_ms=2.0, f0=45_000.0, f1=45_000.0)
+        window = make_window(signal, RATE, detector.window_spec)
+
+        detections = await detector.analyse(window)
+
+        assert detections, "buzz-spaced calls should still form a pass"
+        assert detections[0].native_result["pulse_count"] >= 6, (
+            "6 ms spacing is a buzz, not intra-call fragmentation, and must not be "
+            f"merged away: {detections[0].native_result}"
+        )
+
+    def test_merge_is_a_pure_function_over_pulses(self) -> None:
+        """Unit-level, because through `analyse` the two paths are
+        indistinguishable: crossings close enough to be fragments are usually
+        contiguous above threshold anyway, and sub-1.5 ms pieces are filtered by
+        min_pulse_ms before a pass is formed."""
+        from open_observatory.detectors.ultrasonic import Pulse
+
+        detector = UltrasonicDetector(native_sample_rate=RATE, merge_gap_ms=2.0)
+        fragments = [
+            Pulse(offset_s=0.300, duration_s=0.0008, peak_hz=45_000.0, snr_db=20.0),
+            Pulse(offset_s=0.3013, duration_s=0.0008, peak_hz=44_000.0, snr_db=26.0),
+            Pulse(offset_s=0.3026, duration_s=0.0008, peak_hz=45_500.0, snr_db=18.0),
+        ]
+
+        merged = detector._merge_fragments(fragments)
+
+        assert len(merged) == 1
+        assert merged[0].offset_s == pytest.approx(0.300)
+        assert merged[0].duration_s == pytest.approx(0.0034, abs=1e-4)
+        # The loudest fragment decides the frequency: a sweep's quiet tail is a
+        # worse estimate of the call than its strongest part.
+        assert merged[0].peak_hz == pytest.approx(44_000.0)
+        assert merged[0].snr_db == pytest.approx(26.0)
+
+    def test_merge_disabled_returns_pulses_untouched(self) -> None:
+        from open_observatory.detectors.ultrasonic import Pulse
+
+        detector = UltrasonicDetector(native_sample_rate=RATE, merge_gap_ms=0.0)
+        fragments = [
+            Pulse(offset_s=0.300, duration_s=0.0008, peak_hz=45_000.0, snr_db=20.0),
+            Pulse(offset_s=0.3013, duration_s=0.0008, peak_hz=44_000.0, snr_db=26.0),
+        ]
+
+        assert detector._merge_fragments(fragments) == fragments
+
+    def test_merge_never_exceeds_a_plausible_single_call(self) -> None:
+        """Onset spacing alone is not enough: a long run of near-simultaneous
+        crossings must not accumulate into one implausibly long "call"."""
+        from open_observatory.detectors.ultrasonic import Pulse
+
+        detector = UltrasonicDetector(
+            native_sample_rate=RATE, merge_gap_ms=2.0, max_pulse_ms=10.0
+        )
+        fragments = [
+            Pulse(offset_s=0.300 + i * 0.0015, duration_s=0.0008, peak_hz=45_000.0, snr_db=20.0)
+            for i in range(20)
+        ]
+
+        merged = detector._merge_fragments(fragments)
+
+        assert len(merged) > 1, "merging must stop at max_pulse_ms, not run away"
+        assert all(p.duration_s <= 0.010 + 1e-6 for p in merged)
