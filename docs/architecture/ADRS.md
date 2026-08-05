@@ -279,6 +279,25 @@ measured on-device benchmark shows otherwise. A benchmark, not an expectation, d
 `CLAUDE.md`. Until that test passes on the Pi, BatDetect2 is "evaluated", never
 "supported".
 
+**Update 2026-08-05, after measurement.** The operator confirmed no commercial use is
+intended, so CC-BY-NC-4.0 is not a bar to using BatDetect2 on this station. The weights
+still are **not** bundled: the licence would otherwise attach to everyone who clones this
+repository, and that should remain a deliberate choice rather than a side effect of
+`git clone`. `oo models fetch` is the seam.
+
+**The cascade is the viable shape, and it is now measured.** Real-time inference is not
+possible at 0.52x realtime, but the expensive classifier never needs to see the live
+stream: `ultrasonic-pass-v1` runs at 36-40x realtime and decides *when* something
+happened, and BatDetect2 only ever sees audio that has already been flagged. Measured on
+stored clips from this station, trimmed to 1.5 s centred on the pass: **2.1 s of inference
+per pass**. Against 1015 passes on the night of 2026-08-05, that is about 36 minutes of
+classifier work for a whole night — roughly 20% of one core spread over the dark hours,
+against four cores available. Classifying untrimmed 6 s clips costs four times as much for
+no benefit, because an evidence clip is mostly pre-roll silence.
+
+This is what `DeferredDetectorWorker` was built for, and it is the only route by which
+BatDetect2 could become supported here.
+
 ## ADR-018: Live ultrasonic monitoring is a second heterodyne implementation, not a reuse of the clip renderer, sharing one oscillator per station
 
 **Decision:** `/api/v1/live/audio` gains a `?channel=ultrasonic` option: a live,
