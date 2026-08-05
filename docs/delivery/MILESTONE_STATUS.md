@@ -140,7 +140,9 @@ the native stream genuinely useful rather than theoretical.
 | Peak frequencies were quantised to 3 kHz | Every reported peak was a multiple of 3000 Hz. Sub-bin interpolation now yields 35286.6, 35841.5, 36225.0, 53520.4 Hz where before it reported 36000.0 exactly |
 | Single calls were counted as whole passes | A "pass" of 8 pulses spanning 28 ms with a 3.8 ms median interval is one fragmented call, not eight calls. Real search-phase spacing measured on the same station is 120 ms. Fragments now merge below 2 ms onset spacing, measured onset to onset so a feeding buzz is never merged away |
 | Live ultrasonic monitoring works and is selective | Heterodyne RMS falls from −61.6 dBFS tuned to 25 kHz to −77.3 dBFS at 120 kHz, so it band-limits rather than passing broadband noise. Both live channels verified over a real WebSocket, 40 chunks each, no stalling |
-| Capture is unaffected | Continuity 0.99939, 0 overruns, after every change tonight |
+| Evidence writing was stalling the detector that produced it | `ultrasonic-pass-v1` analysed 29 windows and dropped 69 with a 42 s lag, while its own inference p95 was 57 ms. Clip extraction was awaited inline in the detector's task. Now a bounded queue off that path: 76 analysed, 0 dropped, lag 0.14 s |
+| Clip I/O was overrunning the capture ring | Once the detector kept up, evidence volume tripled and SD-card writes delayed the ALSA read through the shared default thread pool — 11 gaps, 8 overruns, continuity 0.997. Evidence and retention now have a dedicated executor; final state 0.999318 with 0 overruns and 0 gaps |
+| Capture is unaffected | Continuity 0.999318, 0 overruns, measured after every change tonight |
 
 **Still open, and not resolvable by code:** whether the 33–36 kHz cluster this station
 reports is genuinely Myotis. The frequencies are consistent and survive the

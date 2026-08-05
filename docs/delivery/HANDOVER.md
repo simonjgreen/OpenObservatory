@@ -218,6 +218,23 @@ useful addition and is not currently planned.
 - **A stream row is only closed on graceful shutdown.** `Station.start` now closes
   any left open by a previous process; without that, history treats them as still
   running and coverage exceeds 100%.
+- **The default thread pool is shared with the ALSA read.** `alsa_source.read`
+  uses `asyncio.to_thread`, so anything else using `to_thread` — clip writing,
+  retention sweeps, database inserts — competes for the same 8 worker threads on a
+  4-core Pi. Heavy clip writing delayed the capture read enough to overrun the ALSA
+  ring: 11 gaps and 8 overruns in five minutes. Evidence extraction and retention
+  now have their own single-thread executor. Anything else that does sustained disk
+  I/O needs the same treatment.
+- **A bottleneck can be load-bearing.** The ultrasonic detector was stalling on
+  inline clip writes and dropping 70% of its windows, which was *also* throttling
+  clip production. Fixing the stall tripled evidence volume and exposed an SD-card
+  I/O limit that had never been reached. Expect the next constraint to appear when
+  you remove one.
+- **Clip volume on a busy bat night is the binding storage constraint.** Roughly
+  15 MB per pass across four clips, 15 GB in one night, against a 20 GB budget. The
+  station now renders heterodyne only rather than heterodyne plus time expansion
+  (`OO_ULTRASONIC_AUDIBLE_METHOD=heterodyne`) and caps `OO_CLIP_MAX_PER_MINUTE=6`.
+  Both are in `runtime.env` and reversible. The durable fix is the USB SSD.
 - **`pytest` escalates `DeprecationWarning` to an error** by configuration. That is
   deliberate — it is what forced the FastAPI lifespan migration — but it means a
   dependency deprecation will fail the suite.
