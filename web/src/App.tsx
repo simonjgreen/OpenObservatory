@@ -10,6 +10,7 @@ import { Suggestions } from './components/Suggestions'
 import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
 import { DetectionDrawer } from './components/DetectionDrawer'
+import { History, type HistoryRange } from './components/History'
 
 const MAX_DETECTIONS = 600
 const MAX_EVENTS = 400
@@ -32,6 +33,16 @@ export default function App() {
   const [whitePoint, setWhitePoint] = useState(0.72)
   const [showDetections, setShowDetections] = useState(true)
   const [orientation, setOrientation] = useState<Orientation>('scroll')
+
+  // Live shows the socket's session; history reads what was persisted, so a page
+  // opened at breakfast can still browse the night.
+  const [mode, setMode] = useState<'live' | 'history'>('live')
+  const [historyWindow, setHistoryWindow] = useState('last-night')
+  const [historyRange, setHistoryRange] = useState<HistoryRange | null>(null)
+  const [focus, setFocus] = useState<{ fromUtc: string; toUtc: string } | null>(null)
+  const [historyDetections, setHistoryDetections] = useState<Detection[]>([])
+  const [historyTruncated, setHistoryTruncated] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [activeChannel, setActiveChannel] = useState<number | 'both'>('both')
 
   const [audioStatus, setAudioStatus] = useState<AudioStatus>('idle')
@@ -41,6 +52,8 @@ export default function App() {
   // The live mic runs near -45 dBFS in a quiet garden, so unity monitoring is
   // effectively silent on laptop speakers. Default to a useful listening level.
   const [monitorGainDb, setMonitorGainDb] = useState(24)
+  //: Mirrors the suggestion list's default; also drives the history aggregation.
+  const [hideUnidentifiedHistory] = useState(true)
 
   // Spectrogram sinks are held in a ref: batches arrive dozens of times a second
   // and must reach the canvases without a React render.
@@ -111,6 +124,31 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (mode !== 'history') return
+    let cancelled = false
+    setHistoryLoading(true)
+    const params = new URLSearchParams({ limit: '500' })
+    if (focus) {
+      params.set('since', focus.fromUtc)
+      params.set('until', focus.toUtc)
+    } else {
+      params.set('window', historyWindow)
+    }
+    fetch(`/api/v1/detections?${params}`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (cancelled) return
+        setHistoryDetections(data.detections ?? [])
+        setHistoryTruncated(Boolean(data.truncated))
+      })
+      .catch(() => !cancelled && setHistoryDetections([]))
+      .finally(() => !cancelled && setHistoryLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [mode, historyWindow, focus])
+
   const player = useMemo(
     () =>
       new LiveAudioPlayer(
@@ -170,6 +208,18 @@ export default function App() {
         clock={clock}
         localTimeZone={timeZone}
       >
+        <div className="segmented mode-switch">
+          <button className={mode === 'live' ? 'on' : ''} onClick={() => setMode('live')}>
+            LIVE
+          </button>
+          <button
+            className={mode === 'history' ? 'on' : ''}
+            onClick={() => setMode('history')}
+            title="Browse persisted detections and evidence from earlier, including overnight"
+          >
+            HISTORY
+          </button>
+        </div>
         <ListenControl
           status={audioStatus}
           telemetry={audioTelemetry}
@@ -182,6 +232,28 @@ export default function App() {
         />
       </Header>
 
+      {mode === 'history' ? (
+        <History
+          timeZone={timeZone}
+          windowName={historyWindow}
+          focused={focus}
+          includeUnidentified={!hideUnidentifiedHistory}
+          onWindowChange={(name, range) => {
+            if (name !== historyWindow) {
+              setHistoryWindow(name)
+              setFocus(null)
+            }
+            if (range) setHistoryRange(range)
+          }}
+          onFocus={(fromUtc, toUtc) => {
+            const wholeWindow =
+              historyRange !== null &&
+              fromUtc === historyRange.start_utc &&
+              toUtc === historyRange.end_utc
+            setFocus(wholeWindow ? null : { fromUtc, toUtc })
+          }}
+        />
+      ) : (
       <div className={`hero ${orientation === 'waterfall' ? 'hero-waterfall' : ''}`}>
         <div className="hero-controls">
           <div className="segmented">
@@ -302,11 +374,21 @@ export default function App() {
         ))}
         </div>
       </div>
+      )}
 
       <main className="columns">
         <div className="column left">
           <Suggestions
-            detections={detections}
+            detections={mode === 'history' ? historyDetections : detections}
+            caption={
+              mode === 'history'
+                ? historyLoading
+                  ? 'loading…'
+                  : `${historyDetections.length}${historyTruncated ? '+' : ''} in ${
+                      focus ? 'focused slice' : historyRange?.label ?? 'window'
+                    }`
+                : null
+            }
             localTimeZone={timeZone}
             onSelect={setSelected}
             selectedId={selected?.id ?? null}

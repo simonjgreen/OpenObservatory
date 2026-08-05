@@ -12,7 +12,8 @@ The station captures live 384 kHz mono audio from an AudioMoth on a Pi 5, derive
 48 kHz audible stream with verified zero group delay, cuts immutable time-addressed
 windows to three detectors' own specifications, normalises and persists detections,
 writes checksummed evidence clips (including audible renderings of ultrasound), and
-serves a real-time debug UI over two WebSocket channels. 138 tests pass on the
+serves a real-time debug UI over two WebSocket channels, with a history mode for
+browsing what was persisted. 161 Python tests and 38 frontend tests pass on the
 target; ruff is clean. It runs as a systemd unit and survives reboots. It is **not
 complete**: no 72-hour soak, no authentication, no product dashboard, and one
 Milestone 3 exit gate only partially met.
@@ -37,7 +38,7 @@ UI: `http://station.example:8080`. API: `/api/v1/…`. Metrics: `/metrics`.
 name, coordinates and any device override. `deploy.sh` excludes it — it must stay
 excluded, because `rsync --delete` deleted it once already.
 
-## 3. The eight bugs found by measuring, and why they matter
+## 3. The ten bugs found by measuring, and why they matter
 
 Every one of these looked fine until a number was checked. They are listed because
 the *method* is the transferable part: measure the property, do not assume it.
@@ -52,6 +53,8 @@ the *method* is the transferable part: measure the property, do not assume it.
 | Window leases leaked | Lease count grew without bound | `lease.expired` warnings; releases only happened on the detection path |
 | **Concurrent WebSocket writers** | **Spectrogram froze after ~1 frame while JSON kept flowing** | Ran the measurement *in the browser over Wi-Fi*; loopback had looked perfect |
 | Ultrasonic hop wider than its FFT | 55% of the audio never inspected; 4% too many columns | Column timeline showed overlapping timestamps and more audio than wall time |
+| `/` in SQLAlchemy 2 is *true* division | History buckets never truncated: 1899 ten-minute buckets in a twelve hour window | The bucket count was arithmetically impossible; raw SQL was fine, the ORM expression was not |
+| Streams left unclosed by killed processes | Capture coverage of a night reported as 1302% | A fraction above 1 cannot be true |
 
 Two more, cosmetic but misleading: `/metrics` and `/api/v1/detectors` both returned
 500 (caught by the new integration tests), and derivative clip durations were
@@ -124,7 +127,17 @@ product dashboard.
    candidates — check each recording's own licence, they vary).
 3. **Run the one-hour drift test at full duration.** Currently verified at 5 min.
 
-### 6.2 Fix the things I know are wrong or unfinished
+### 6.2 History browsing, and what it still lacks
+
+`HISTORY` mode reads persisted detections, aggregates them in SQL, and shows capture
+coverage beside them. What it deliberately does **not** offer is a historical
+*spectrogram*: the ring buffer is memory-only by design, and the audio pipeline spec
+rules out continuous native-rate archival (66 GB/day at 384 kHz). If a day-view
+spectrogram is wanted, the honest way is to persist the uint8 spectrogram columns —
+about 40 MB/day for both channels — rather than the audio. That would be a genuinely
+useful addition and is not currently planned.
+
+### 6.3 Fix the things I know are wrong or unfinished
 
 4. **Reduce the AudioMoth gain.** The input clips on loud nearby events. This needs
    the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
@@ -143,7 +156,7 @@ product dashboard.
 7. **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI and
    only the resampler check exists.
 
-### 6.3 Then the plan's own next milestones
+### 6.4 Then the plan's own next milestones
 
 8. **Milestone 4**: product dashboard, review workflow, retention UI, and the
    authentication foundation. Note the `review` table exists and nothing writes to
@@ -155,7 +168,7 @@ product dashboard.
     the event envelope is already the published one — a publisher subscribing to
     the existing bus needs no contract changes.
 
-### 6.4 Longer-term, and worth deciding early
+### 6.5 Longer-term, and worth deciding early
 
 - **PostgreSQL migration.** ADR-007 keeps SQLite for the debug slice. Anything
   needing concurrent writers, `LISTEN/NOTIFY` or JSON indexing must wait for this.
@@ -182,6 +195,12 @@ product dashboard.
   and needs NumPy 1.x.
 - **Test helpers can mask a fix.** The activity detector's recalibration appeared not
   to work because the test helper passed the old threshold explicitly.
+- **`/` on an Integer column in SQLAlchemy 2 is true division**, not integer
+  division: it casts to NUMERIC. Use `x - (x % n)` to truncate, which also needs no
+  `FLOOR` and behaves the same on SQLite and PostgreSQL.
+- **A stream row is only closed on graceful shutdown.** `Station.start` now closes
+  any left open by a previous process; without that, history treats them as still
+  running and coverage exceeds 100%.
 - **`pytest` escalates `DeprecationWarning` to an error** by configuration. That is
   deliberate — it is what forced the FastAPI lifespan migration — but it means a
   dependency deprecation will fail the suite.

@@ -610,3 +610,83 @@ code {
 }
 .events-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .events-controls .mono { font-size: 10px; }
+
+/* ---------- history browsing ---------- */
+
+.mode-switch button { font-size: 11px; font-weight: 700; letter-spacing: 0.07em; }
+
+.history {
+  padding: 10px 14px 12px;
+  background: #0a0c11;
+  border-bottom: 1px solid var(--line);
+}
+.history-controls {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.history-span { font-size: 11px; }
+
+/* Coverage is shown before the detections, because it decides what an empty
+   window means: nothing called, or nothing was listening. */
+.coverage { margin-bottom: 10px; }
+.coverage-bar {
+  position: relative;
+  height: 10px;
+  background: #14171f;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.coverage-bar span { position: absolute; top: 0; bottom: 0; }
+.coverage-bar .live { background: var(--ok); }
+.coverage-bar .synthetic {
+  background: repeating-linear-gradient(45deg, #f87171 0 3px, #7f1d1d 3px 6px);
+}
+.coverage-numbers { display: flex; gap: 16px; font-size: 10.5px; margin-top: 4px; }
+
+.history-chart { position: relative; }
+.history-chart svg {
+  width: 100%; height: 150px; display: block;
+  background: #06070b;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.history-chart .bucket { cursor: pointer; }
+.history-chart .bucket:hover rect { opacity: 0.75; }
+.history-chart .bucket.focused rect { stroke: #fff; stroke-width: 0.5; }
+.history-axis {
+  position: relative; height: 14px; font-size: 10px; margin-top: 2px;
+}
+.history-axis span { position: absolute; transform: translateX(-50%); }
+.history-axis span:first-child { transform: none; }
+.history-axis span:last-child { transform: translateX(-100%); }
+.history-legend {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  font-size: 10.5px; color: var(--text-dim); margin-top: 4px;
+}
+.history-legend i {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 5px; vertical-align: middle;
+}
+.history-note { font-size: 10.5px; margin: 6px 0 0; }
+
+.history-species { margin-top: 10px; max-height: 240px; overflow-y: auto; }
+.history-species table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.history-species th {
+  text-align: left; font-weight: 600; font-size: 9.5px;
+  text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint);
+  padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; background: #0a0c11;
+}
+.history-species td { padding: 3px 8px 3px 0; border-bottom: 1px solid #12141b; }
+.history-species tbody tr { cursor: pointer; }
+.history-species tbody tr:hover { background: #12151d; }
+.history-species .dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 7px; vertical-align: middle;
+}
+.history-species .sci { color: var(--text-dim); font-size: 10.5px; }
+.history-species td.mono { text-align: right; }
+.history-species td:first-child { text-align: left; }
+
+.panel-caption { font-size: 10px; }

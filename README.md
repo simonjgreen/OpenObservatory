@@ -99,6 +99,16 @@ spent on what a diagnostic surface needs and a product dashboard would hide
   and lag, clip policy decisions, disk budget, lease balance, bus drops.
 - **Event stream.** Every `capture.*`, `window.*`, `detection.*`, `clip.*` and
   `health.*` event, filterable and pausable.
+- **HISTORY mode.** The live channel only knows the session it is connected for, so
+  there is a second mode that reads what was persisted: named windows (last night,
+  dawn chorus, yesterday, …) resolved in the station's own timezone, a timeline of
+  detections per bucket split by group, what was identified and when it called, and
+  clips playable from any of it. Click a bucket or a species to focus the list on it.
+
+  **Capture coverage is shown above the timeline**, because an empty window means
+  something completely different depending on whether nothing called or nothing was
+  recording. Aggregation happens in SQL — a night holds around 170,000 activity
+  detections, and the browser is sent a few hundred numbers rather than all of them.
 
 ## Commands
 
@@ -152,7 +162,7 @@ and `docs/architecture/TECHNICAL_SPEC.md`.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 138 tests
+.venv/bin/python -m pytest        # 161 tests
 ( cd web && npm test )            # 38 tests
 ```
 

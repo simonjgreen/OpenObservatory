@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import history as history_queries
 from .. import models as model_registry
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
 from ..config import Settings, get_settings
@@ -379,14 +380,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_detections(
         limit: int = Query(100, ge=1, le=500),
         since: datetime | None = None,
+        until: datetime | None = None,
+        #: A named window such as `last-night`, resolved in the station's timezone.
+        #: Ignored when `since` is given explicitly.
+        window: str | None = None,
         group: str | None = None,
         plugin_id: str | None = None,
+        identified_only: bool = False,
         min_score: float = Query(0.0, ge=0.0, le=1.0),
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
+        resolved: history_queries.Range | None = None
+        if since is None and window:
+            resolved = history_queries.resolve_named_range(window, settings.timezone)
+            since, until = resolved.start, resolved.end
+
         query = select(orm.Detection).order_by(orm.Detection.event_start_utc.desc())
         if since is not None:
             query = query.where(orm.Detection.event_start_utc >= since)
+        if until is not None:
+            query = query.where(orm.Detection.event_start_utc < until)
+        if identified_only:
+            query = query.where(
+                orm.Detection.taxonomic_group.in_(history_queries.IDENTIFIED_GROUPS)
+            )
         if group:
             query = query.where(orm.Detection.taxonomic_group == group)
         if min_score > 0:
@@ -394,7 +411,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if plugin_id:
             query = query.join(orm.Detector).where(orm.Detector.plugin_id == plugin_id)
         rows = session.scalars(query.limit(limit)).all()
-        return {"detections": [_detection_payload(row) for row in rows]}
+        return {
+            "detections": [_detection_payload(row) for row in rows],
+            "range": resolved.to_dict() if resolved else None,
+            # So the client can tell "that is all of them" from "that is the first
+            # page", which changes what an apparently quiet night means.
+            "truncated": len(rows) >= limit,
+        }
 
     @app.get(f"{API_PREFIX}/detections/{{detection_id}}")
     def get_detection(detection_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -442,6 +465,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "last_seen_utc": _iso(row.last_seen),
                 }
                 for row in rows
+            ],
+        }
+
+    @app.get(f"{API_PREFIX}/history")
+    def get_history(
+        window: str = "last-night",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        bucket_seconds: int | None = Query(None, ge=10, le=86400),
+        min_score: float = Query(0.0, ge=0.0, le=1.0),
+        include_unidentified: bool = True,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Everything needed to browse a past window without shipping every row.
+
+        A night holds on the order of a hundred thousand activity detections, so the
+        timeline and the species list are both aggregated in SQL. Capture coverage is
+        included because an empty night is otherwise ambiguous — nothing called, or
+        nothing was listening — and those mean very different things.
+        """
+        resolved = (
+            history_queries.Range(since, until or datetime.now(UTC), "custom")
+            if since is not None
+            else history_queries.resolve_named_range(window, settings.timezone)
+        )
+        return {
+            "range": resolved.to_dict(),
+            "timezone": settings.timezone,
+            "timeline": history_queries.timeline(
+                session,
+                resolved,
+                bucket_seconds=bucket_seconds,
+                min_score=min_score,
+                include_unidentified=include_unidentified,
+            ),
+            "species": history_queries.species_summary(
+                session, resolved, min_score=min_score, include_unidentified=False
+            ),
+            "unidentified": history_queries.species_summary(
+                session, resolved, min_score=min_score, include_unidentified=True, limit=5
+            )
+            if include_unidentified
+            else [],
+            "coverage": history_queries.coverage(session, resolved),
+        }
+
+    @app.get(f"{API_PREFIX}/history/windows")
+    def get_history_windows() -> dict[str, Any]:
+        """The named windows the UI offers, resolved now for this station."""
+        names = ("last-hour", "last-night", "dawn-chorus", "today", "yesterday", "last-24h")
+        return {
+            "timezone": settings.timezone,
+            "windows": [
+                {"name": name, **history_queries.resolve_named_range(name, settings.timezone).to_dict()}
+                for name in names
             ],
         }
 

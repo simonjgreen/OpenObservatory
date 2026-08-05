@@ -22,6 +22,8 @@ interface Props {
   localTimeZone: string
   onSelect: (detection: Detection) => void
   selectedId: string | null
+  /** Shown next to the heading when the list is not the live feed. */
+  caption?: string | null
 }
 
 type Grouping = 'species' | 'recent'
@@ -50,7 +52,13 @@ function groupKey(detection: Detection): string {
   )
 }
 
-export function Suggestions({ detections, localTimeZone, onSelect, selectedId }: Props) {
+export function Suggestions({
+  detections,
+  localTimeZone,
+  onSelect,
+  selectedId,
+  caption,
+}: Props) {
   const [grouping, setGrouping] = useState<Grouping>('species')
   const [minScore, setMinScore] = useState(0)
   // Hidden by default. The activity detector fires far more often than anything
@@ -138,6 +146,7 @@ export function Suggestions({ detections, localTimeZone, onSelect, selectedId }:
     <section className="panel suggestions">
       <header className="panel-head">
         <h2>Best suggestions</h2>
+        {caption && <span className="dim mono panel-caption">{caption}</span>}
         <div className="segmented">
           <button
             className={grouping === 'species' ? 'on' : ''}

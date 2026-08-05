@@ -32,6 +32,7 @@ from typing import Any
 
 import numpy as np
 import structlog
+from sqlalchemy import func
 
 from . import models as model_registry
 from .audio.contracts import (
@@ -160,6 +161,7 @@ class Station:
     async def start(self) -> None:
         self.settings.ensure_directories()
         self.station_id = await asyncio.to_thread(self._ensure_station_row)
+        await asyncio.to_thread(self._close_orphaned_streams)
         self._running = True
         self._persist_task = asyncio.create_task(self._persist_loop(), name="persist")
         self._housekeeping_task = asyncio.create_task(self._housekeeping_loop(), name="housekeeping")
@@ -923,6 +925,39 @@ class Station:
                 )
             )
             return device_id
+
+    def _close_orphaned_streams(self) -> None:
+        """End any stream a previous process left open.
+
+        `_close_stream_row` only runs on a graceful shutdown, so a killed or crashed
+        process leaves `end_utc` NULL forever. Anything reading history then treats
+        that stream as still running, and overlapping open streams made capture
+        coverage of a twelve hour night report as 1300% — a figure that discredits
+        every other number beside it. Each is closed at the last moment there is
+        evidence it was actually recording.
+        """
+        with session_scope() as session:
+            open_streams = (
+                session.query(orm.AudioStream).filter(orm.AudioStream.end_utc.is_(None)).all()
+            )
+            for row in open_streams:
+                if row.id == getattr(self.stream, "stream_id", None):
+                    continue
+                last_detection = (
+                    session.query(func.max(orm.Detection.event_end_utc))
+                    .filter(orm.Detection.stream_id == row.id)
+                    .scalar()
+                )
+                last_gap = (
+                    session.query(func.max(orm.CaptureGap.start_utc))
+                    .filter(orm.CaptureGap.stream_id == row.id)
+                    .scalar()
+                )
+                candidates = [value for value in (last_detection, last_gap) if value is not None]
+                row.end_utc = max(candidates) if candidates else row.start_utc
+                row.end_reason = "process_exited"
+            if open_streams:
+                log.info("station.closed_orphaned_streams", count=len(open_streams))
 
     def _close_stream_row(self, stream_id: uuid.UUID, reason: str, frames: int) -> None:
         with session_scope() as session:
