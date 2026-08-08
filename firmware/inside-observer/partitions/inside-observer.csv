@@ -1,0 +1,20 @@
+# Partition table for the inside observer (ESP32-2432S028R, 4 MB flash).
+#
+# This is a byte-for-byte copy of the layout the stock DIYmalls weather
+# firmware shipped with, read back from the full-flash backup image at
+# offset 0x8000. Keeping it identical matters for two reasons:
+#
+#  1. NVS stays at 0x9000 with the same size, so the WiFi credentials the
+#     operator already provisioned under the stock firmware survive a flash
+#     of this application (esptool only writes 0x1000, 0x8000, 0xe000 and
+#     0x10000 on a normal upload). We never see those credentials and never
+#     store them ourselves.
+#  2. Restoring the original firmware from the backup image is a plain
+#     whole-image write with no layout surprises.
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+otadata,    data, ota,     0xe000,   0x2000,
+app0,       app,  ota_0,   0x10000,  0x300000,
+spiffs,     data, spiffs,  0x310000, 0xe0000,
+coredump,   data, coredump,0x3f0000, 0x10000,
