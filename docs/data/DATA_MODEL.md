@@ -53,6 +53,25 @@ Columns as implemented:
 - end reason
 - frame count
 - discontinuity count
+- last_frame_at_utc — nullable; a heartbeat written every ~10 s while the
+  stream is open, added by ADR-022. NULL for rows written before it existed
+  and for streams too short-lived to see a housekeeping tick. `frame_count`
+  and `discontinuity_count` are also written at that same cadence now, not
+  only at close, so a crashed process's row carries real numbers rather than
+  the zeros a freshly-created row starts with.
+- detail — free-form JSON; also now carries an `orphan_recovery` or
+  `reconciliation` sub-object when `Station._close_orphaned_streams` or
+  `oo history reconcile-streams` has corrected the row's `end_utc`, recording
+  the original claim and the method used (ADR-022).
+
+**Correctness note (ADR-022):** `start_utc`/`end_utc` is a *claim*, not
+ground truth — a stream row was found in the live database claiming a 32 hour
+span while its own `frame_count` implied 2.79 hours of actual audio, with the
+gap explained by a capture-side hang rather than a crash. `history.coverage()`
+now bounds each row's contribution by `frame_count`/`sample_rate` and by
+`last_frame_at_utc`, whichever is tighter, and flags a row `suspect` when the
+two disagree by more than 10%. Do not read `end_utc - start_utc` anywhere as
+"how long this stream captured for" without going through that reconciliation.
 
 ### capture_gap — Implemented
 

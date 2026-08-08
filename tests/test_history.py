@@ -54,6 +54,9 @@ def seeded(settings):
                 start_monotonic_ns=0,
                 sample_rate=384000,
                 sample_format="S16_LE",
+                # Frame count matches the claimed span exactly -- a healthy stream,
+                # not the ADR-022 case under test elsewhere in this file.
+                frame_count=384000 * 2 * 3600,
             )
         )
         # A second stream overlapping the first, as a restart produces.
@@ -66,6 +69,7 @@ def seeded(settings):
                 start_monotonic_ns=0,
                 sample_rate=384000,
                 sample_format="S16_LE",
+                frame_count=384000 * 2 * 3600,
             )
         )
 
@@ -114,6 +118,7 @@ def seeded(settings):
                 start_monotonic_ns=0,
                 sample_rate=48000,
                 sample_format="S16_LE",
+                frame_count=48000 * 2 * 3600,
             )
         )
         session.add(
@@ -350,6 +355,163 @@ class TestCoverage:
         assert result["streams"] == []
 
 
+class TestFrameDerivedCoverage:
+    """ADR-022: the live database's worst case -- a stream row that claimed
+    `start_utc` 2026-08-07 03:38:54 to `end_utc` 2026-08-08 11:36:36 (32 hours),
+    ending in `AlsaCaptureError: ALSA read failed: File descriptor in bad state`,
+    but whose `frame_count` (3,852,212,352 at 384 kHz) was only 2.79 hours of
+    actual audio -- with zero capture-gap rows and zero detections anywhere in
+    the other ~29 hours. Coverage must not believe the claimed span over the
+    frames actually delivered.
+    """
+
+    def _stale_row(self, session, station_id, base, *, last_frame_at_utc=None):
+        stream_id = uuid.uuid4()
+        session.add(
+            orm.AudioStream(
+                id=stream_id,
+                source_kind="alsa",
+                start_utc=base,
+                end_utc=base + timedelta(hours=32),
+                start_monotonic_ns=0,
+                sample_rate=384000,
+                sample_format="S16_LE",
+                # 2.79 hours' worth of frames inside a 32 hour claim.
+                frame_count=3_852_212_352,
+                end_reason="AlsaCaptureError: ALSA read failed: File descriptor in bad state",
+                last_frame_at_utc=last_frame_at_utc,
+            )
+        )
+        return stream_id
+
+    def test_coverage_is_capped_by_frame_count_not_the_claimed_end(self, seeded) -> None:
+        with session_scope() as session:
+            self._stale_row(session, seeded["station_id"], seeded["base"])
+        window = history.Range(seeded["base"], seeded["base"] + timedelta(hours=32), "t")
+        with session_scope() as session:
+            result = history.coverage(session, window)
+        # 2 healthy hours (the seeded alsa streams) plus ~2.79 stale-row hours,
+        # nowhere near the 32 the row claims.
+        assert result["seconds_captured"] < 6 * 3600
+        assert result["fraction_captured"] < (6 * 3600) / (32 * 3600)
+
+    def test_stale_row_is_flagged_suspect(self, seeded) -> None:
+        with session_scope() as session:
+            self._stale_row(session, seeded["station_id"], seeded["base"])
+        window = history.Range(seeded["base"], seeded["base"] + timedelta(hours=32), "t")
+        with session_scope() as session:
+            result = history.coverage(session, window)
+        assert result["suspect_stream_count"] == 1
+        suspects = [span for span in result["streams"] if span["suspect"]]
+        assert len(suspects) == 1
+        assert suspects[0]["frame_derived_seconds"] == pytest.approx(
+            3_852_212_352 / 384000, abs=1
+        )
+
+    def test_healthy_rows_are_not_flagged(self, seeded) -> None:
+        window = history.Range(seeded["base"], seeded["base"] + timedelta(hours=2), "t")
+        with session_scope() as session:
+            result = history.coverage(session, window)
+        assert result["suspect_stream_count"] == 0
+        assert all(not span["suspect"] for span in result["streams"])
+
+    def test_heartbeat_gives_a_tighter_cap_than_frame_count_alone(self, seeded) -> None:
+        """A row with a heartbeat gets capped to it directly, not just proportionally."""
+        heartbeat = seeded["base"] + timedelta(hours=1)
+        with session_scope() as session:
+            stream_id = self._stale_row(
+                session, seeded["station_id"], seeded["base"], last_frame_at_utc=heartbeat
+            )
+        window = history.Range(seeded["base"], seeded["base"] + timedelta(hours=32), "t")
+        with session_scope() as session:
+            result = history.coverage(session, window)
+        span = next(s for s in result["streams"] if s["stream_id"] == str(stream_id))
+        # Capped at the heartbeat (1h in), tighter than the frame-derived bound
+        # (~2.79h), because the heartbeat is a direct timestamp.
+        assert span["seconds"] == pytest.approx(3600, abs=1)
+
+
+class TestFindSuspectStreams:
+    def test_finds_the_stale_row_by_its_own_frame_count(self, seeded) -> None:
+        base = seeded["base"]
+        with session_scope() as session:
+            stream_id = uuid.uuid4()
+            session.add(
+                orm.AudioStream(
+                    id=stream_id,
+                    source_kind="alsa",
+                    start_utc=base,
+                    end_utc=base + timedelta(hours=32),
+                    start_monotonic_ns=0,
+                    sample_rate=384000,
+                    sample_format="S16_LE",
+                    frame_count=3_852_212_352,
+                    end_reason="AlsaCaptureError: ALSA read failed: File descriptor in bad state",
+                )
+            )
+        with session_scope() as session:
+            suspects = history.find_suspect_streams(session)
+        assert len(suspects) == 1
+        assert suspects[0].stream_id == stream_id
+        assert suspects[0].proposed_end_utc < suspects[0].claimed_end_utc
+        assert suspects[0].proposed_end_utc == base + timedelta(seconds=3_852_212_352 / 384000)
+
+    def test_healthy_rows_are_not_suspect(self, seeded) -> None:
+        with session_scope() as session:
+            suspects = history.find_suspect_streams(session)
+        assert suspects == []
+
+    def test_open_rows_are_never_touched(self, seeded) -> None:
+        """A NULL `end_utc` might belong to a station running right now."""
+        base = seeded["base"]
+        with session_scope() as session:
+            session.add(
+                orm.AudioStream(
+                    id=uuid.uuid4(),
+                    source_kind="alsa",
+                    start_utc=base,
+                    end_utc=None,
+                    start_monotonic_ns=0,
+                    sample_rate=384000,
+                    sample_format="S16_LE",
+                    frame_count=0,
+                )
+            )
+        with session_scope() as session:
+            assert history.find_suspect_streams(session) == []
+
+    def test_apply_preserves_the_original_claim_for_audit(self, seeded) -> None:
+        base = seeded["base"]
+        with session_scope() as session:
+            stream_id = uuid.uuid4()
+            session.add(
+                orm.AudioStream(
+                    id=stream_id,
+                    source_kind="alsa",
+                    start_utc=base,
+                    end_utc=base + timedelta(hours=32),
+                    start_monotonic_ns=0,
+                    sample_rate=384000,
+                    sample_format="S16_LE",
+                    frame_count=3_852_212_352,
+                    end_reason="AlsaCaptureError: ALSA read failed: File descriptor in bad state",
+                )
+            )
+
+        with session_scope() as session:
+            [suspect] = history.find_suspect_streams(session)
+            claimed_before = suspect.claimed_end_utc
+            history.apply_stream_reconciliation(session, suspect)
+
+        with session_scope() as session:
+            row = session.get(orm.AudioStream, stream_id)
+            assert history._aware(row.end_utc) < claimed_before
+            assert row.detail["reconciliation"]["claimed_end_utc"] is not None
+            assert "reconciled" in row.end_reason
+            # And it no longer shows up as suspect.
+            assert history.find_suspect_streams(session) == []
+
+
 class TestSourceFiltering:
     """The AudioMoth USB/OFF incident: a synthetic fallback stream's detections
     (five "Grey-winged Inca-Finch" rows in the real database) must never be
@@ -424,3 +586,87 @@ class TestSourceFiltering:
         with session_scope() as session:
             assert history.excluded_synthetic_count(session, window, min_score=0.95) == 1
             assert history.excluded_synthetic_count(session, window, min_score=0.999) == 0
+
+
+class TestHistoryHTTP:
+    """`/api/v1/history` and `/api/v1/history/windows` through the real app.
+
+    HANDOVER.md §6.3 item 8: everything above this class tests the aggregation
+    functions directly, but nothing previously exercised these two endpoints
+    through FastAPI at all -- exactly where the true-division bucket bug would
+    have shown itself (SQLAlchemy 2's ``/`` on an Integer column is *true*
+    division, not floor division; it once produced 1899 ten-minute buckets for a
+    twelve hour window because ``(epoch / seconds) * seconds`` truncated
+    nothing). Nothing here is mocked: a real `Station` runs a real synthetic
+    capture through a real FastAPI app.
+    """
+
+    @pytest.fixture
+    def http_client(self, settings):
+        from fastapi.testclient import TestClient
+
+        from open_observatory.api.app import create_app
+        from open_observatory.config import set_settings
+
+        configured = settings.model_copy(
+            update={"source": "synthetic", "synthetic_scene": "dawn-chorus"}
+        )
+        set_settings(configured)
+        app = create_app(configured)
+        with TestClient(app) as test_client:
+            import time
+
+            for _ in range(60):
+                if test_client.get("/api/v1/station").json()["capture"]["blocks"] > 12:
+                    break
+                time.sleep(0.25)
+            yield test_client
+
+    def test_history_windows_lists_the_named_ranges(self, http_client) -> None:
+        payload = http_client.get("/api/v1/history/windows").json()
+        names = {entry["name"] for entry in payload["windows"]}
+        assert {"last-hour", "last-night", "dawn-chorus", "today", "yesterday", "last-24h"} <= names
+        for entry in payload["windows"]:
+            # Each resolved window must be a real, non-negative, closed-open span.
+            assert entry["seconds"] >= 0
+            assert entry["start_utc"] < entry["end_utc"] or entry["seconds"] == 0
+
+    def test_history_endpoint_has_every_documented_section(self, http_client) -> None:
+        payload = http_client.get("/api/v1/history?window=last-24h").json()
+        for key in ("range", "timezone", "timeline", "species", "unidentified", "coverage"):
+            assert key in payload, payload.keys()
+
+    def test_history_timeline_buckets_stay_truncated_through_http(self, http_client) -> None:
+        """The regression that mattered, exercised through the real endpoint.
+
+        A naive `/` truncation over a 24 hour window at the default target of
+        ~120 buckets would (as it once did) yield one bucket per second instead
+        of one per interval -- tens of thousands of buckets rather than at most a
+        couple of hundred.
+        """
+        payload = http_client.get("/api/v1/history?window=last-24h").json()
+        buckets = payload["timeline"]["buckets"]
+        assert len(buckets) <= 300
+        seconds = payload["timeline"]["bucket_seconds"]
+        for bucket in buckets:
+            stamp = datetime.fromisoformat(str(bucket["start_utc"]).replace("Z", "+00:00"))
+            assert int(stamp.timestamp()) % seconds == 0
+
+    def test_history_coverage_cannot_exceed_the_window_through_http(self, http_client) -> None:
+        payload = http_client.get("/api/v1/history?window=last-hour").json()
+        coverage = payload["coverage"]
+        assert coverage["fraction_captured"] is not None
+        assert 0.0 <= coverage["fraction_captured"] <= 1.0
+        assert coverage["seconds_captured"] <= coverage["seconds_in_range"] + 1
+        assert "suspect_stream_count" in coverage
+        # The fixture only ever runs the synthetic source, which is real
+        # capture-of-a-kind but never "from the microphone" (ADR-020).
+        assert coverage["seconds_from_microphone"] == 0
+
+    def test_history_custom_since_until_window(self, http_client) -> None:
+        now = datetime.now(UTC)
+        since = (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        until = now.isoformat().replace("+00:00", "Z")
+        payload = http_client.get(f"/api/v1/history?since={since}&until={until}").json()
+        assert payload["range"]["label"] == "custom"
+        assert payload["coverage"]["seconds_in_range"] == pytest.approx(3600, abs=2)

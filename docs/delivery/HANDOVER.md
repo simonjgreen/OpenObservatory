@@ -249,6 +249,13 @@ useful addition and is not currently planned.
    the aggregation functions; nothing exercises `/api/v1/history` or
    `/api/v1/history/windows` through the app, which is where the true-division
    bucket bug would have shown itself.
+   **Done (ADR-022 session):** `tests/test_history.py::TestHistoryHTTP` now runs a
+   real `FastAPI` app + synthetic capture through `TestClient` and hits both
+   endpoints, including the coverage block and bucket-truncation check.
+   Same session also found and fixed a live-data instance of the 1302%-coverage
+   family of bug: a stream row claimed a 32 hour span but its own `frame_count`
+   showed 2.79 hours of actual audio. See ADR-022, `history.coverage()`, and
+   `oo history reconcile-streams` for the repair path.
 9. **Close the event-envelope schema gap.** `schemas/detection-event.schema.json`
    sets `additionalProperties: false` and omits `rank` and `taxonomic_group`, which
    internal records carry. It was flagged for Milestone 3 and not done. The MQTT

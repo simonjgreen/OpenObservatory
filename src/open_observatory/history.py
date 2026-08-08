@@ -13,6 +13,7 @@ to a few hundred. Every function here returns something already reduced.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -333,12 +334,104 @@ def species_summary(
     return results
 
 
+#: A stream is only flagged "suspect" if its claimed wall-clock span is long
+#: enough that a frame/clock mismatch cannot be an artefact of rounding or a
+#: process starting and stopping within the same second.
+SUSPECT_MIN_CLAIMED_SECONDS = 60.0
+
+#: How far the frame-derived duration may fall short of the claimed wall-clock
+#: span before a row is flagged suspect. 0.9 gives headroom for legitimate
+#: clock-rate offset (measured on this station at a few hundred ppm, nowhere
+#: near enough to explain a 10% shortfall) while still catching the case that
+#: prompted this: 2.79 hours of frames inside a 32 hour claim is a ratio of 0.09.
+SUSPECT_FRAME_RATIO = 0.9
+
+
+def _frame_count_is_trustworthy(end_reason: str | None, detail: object) -> bool:
+    """False for a row whose `frame_count` cannot be told apart from "never recorded".
+
+    Every row closed by `Station._close_stream_row` (a graceful exit or a read
+    error such as the `AlsaCaptureError` in ADR-022) carries a real, per-stream
+    frame count -- that is exactly the number this module's frame-derived cap
+    exists to trust over the row's own claimed `end_utc`.
+
+    Rows closed by `Station._close_orphaned_streams` are different. Before
+    ADR-022 added the `last_frame_at_utc` heartbeat, that path never wrote
+    `frame_count` at all, so every historical row it touched shows
+    ``frame_count == 0`` -- indistinguishable from "definitely captured
+    nothing". Treating that zero as ground truth would zero out coverage for
+    what may well have been hours of genuine, working capture, which is the
+    opposite failure to the one this module exists to prevent. Only a row the
+    *current* orphan-recovery path closed via the heartbeat
+    (``detail.orphan_recovery.method == "heartbeat"``) carries a frame count
+    earned the same way a normal close does, so only that case is trusted.
+    """
+    if end_reason != "process_exited":
+        return True
+    recovery = detail.get("orphan_recovery") if isinstance(detail, dict) else None
+    return isinstance(recovery, dict) and recovery.get("method") == "heartbeat"
+
+
+def _honest_stream_end(
+    *,
+    start: datetime,
+    claimed_end: datetime,
+    sample_rate: int,
+    frame_count: int,
+    last_frame_at_utc: datetime | None,
+    frame_count_trusted: bool = True,
+) -> datetime:
+    """The latest moment there is actual evidence this stream was still capturing.
+
+    `end_utc` is a claim -- what the row says happened -- and claims are exactly
+    what this module exists to stop trusting blindly (see the module docstring's
+    account of the 1302% coverage incident, and ADR-022 for the sequel: a single
+    stream row claimed a 32 hour span but delivered 2.79 hours of frames, with no
+    detections and no capture-gap rows anywhere in the other 29). Two
+    independent, cheaper-to-fake-badly signals cap it instead:
+
+    - the frame count actually delivered, converted to seconds at the stream's
+      own sample rate and laid down starting at `start` (audio is known to have
+      begun exactly there -- `StreamClock` anchors to the first block read).
+      Skipped when `frame_count_trusted` is false -- see
+      :func:`_frame_count_is_trustworthy` for why a legacy orphan-closed row's
+      zero must not be read as "definitely captured nothing".
+    - `last_frame_at_utc`, the heartbeat written every ~10 s while the stream
+      was open (ADR-022) -- a direct timestamp, not an assumption that frames
+      arrived at a constant rate. Trusted whenever present, regardless of
+      `frame_count_trusted`, because it is only ever written from a real block.
+
+    The tighter of whichever bounds are available wins. Never returns a value
+    later than `claimed_end`, so this can only pull coverage down, never invent
+    extra.
+    """
+    honest = claimed_end
+    if sample_rate > 0 and frame_count_trusted:
+        frame_bound = start + timedelta(seconds=frame_count / sample_rate)
+        honest = min(honest, frame_bound)
+    if last_frame_at_utc is not None:
+        honest = min(honest, max(start, _aware(last_frame_at_utc)))
+    return max(start, honest)
+
+
 def coverage(session: Session, window: Range) -> dict[str, object]:
     """How much of the window the station was actually capturing for.
 
     Without this, an empty night is ambiguous: nothing called, or nothing was
     listening. The answer changes what the absence means, so it is reported
     alongside the detections rather than left for someone to wonder about.
+
+    Coverage above 100% must be impossible *by construction*, not by hoping
+    every row is well-formed (ADR-022). Two defences, applied in order:
+
+    1. Each stream's contribution is capped by what it actually delivered --
+       see :func:`_honest_stream_end` -- before it ever reaches an interval.
+       A row whose claimed end time outlived its own capture, whether from a
+       process that hung instead of crashing or one a previous session's
+       start-up patch closed with a guessed timestamp, cannot inflate the
+       total.
+    2. Intervals are still merged before summing (the original 1302% fix):
+       overlapping restarts must not be double-counted either.
     """
     streams = session.execute(
         select(
@@ -347,7 +440,11 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
             orm.AudioStream.start_utc,
             orm.AudioStream.end_utc,
             orm.AudioStream.sample_rate,
+            orm.AudioStream.frame_count,
             orm.AudioStream.discontinuity_count,
+            orm.AudioStream.last_frame_at_utc,
+            orm.AudioStream.end_reason,
+            orm.AudioStream.detail,
         ).where(
             orm.AudioStream.start_utc < window.end,
             (orm.AudioStream.end_utc.is_(None)) | (orm.AudioStream.end_utc > window.start),
@@ -357,9 +454,34 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
     now = datetime.now(UTC)
     spans: list[dict[str, object]] = []
     intervals: list[tuple[datetime, datetime, str]] = []
+    suspect_count = 0
     for row in streams:
-        start = max(_aware(row.start_utc), window.start)
-        end = min(_aware(row.end_utc) if row.end_utc else now, window.end)
+        full_start = _aware(row.start_utc)
+        claimed_end = _aware(row.end_utc) if row.end_utc else now
+        trusted = _frame_count_is_trustworthy(row.end_reason, row.detail)
+        honest_end = _honest_stream_end(
+            start=full_start,
+            claimed_end=claimed_end,
+            sample_rate=row.sample_rate or 0,
+            frame_count=row.frame_count or 0,
+            last_frame_at_utc=row.last_frame_at_utc,
+            frame_count_trusted=trusted,
+        )
+
+        claimed_seconds_full = max(0.0, (claimed_end - full_start).total_seconds())
+        frame_seconds_full = (
+            (row.frame_count / row.sample_rate) if row.sample_rate and trusted else None
+        )
+        suspect = (
+            frame_seconds_full is not None
+            and claimed_seconds_full >= SUSPECT_MIN_CLAIMED_SECONDS
+            and frame_seconds_full < claimed_seconds_full * SUSPECT_FRAME_RATIO
+        )
+        if suspect:
+            suspect_count += 1
+
+        start = max(full_start, window.start)
+        end = min(honest_end, window.end)
         seconds = max(0.0, (end - start).total_seconds())
         if seconds > 0:
             intervals.append((start, end, row.source_kind))
@@ -372,6 +494,15 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
                 "seconds": round(seconds, 1),
                 "sample_rate": row.sample_rate,
                 "discontinuity_count": row.discontinuity_count,
+                "frame_count": row.frame_count,
+                # Unclamped by the window, for the honesty check itself: how long
+                # the row claims to span versus how long its own frame count
+                # says it actually captured.
+                "claimed_seconds": round(claimed_seconds_full, 1),
+                "frame_derived_seconds": (
+                    round(frame_seconds_full, 1) if frame_seconds_full is not None else None
+                ),
+                "suspect": suspect,
             }
         )
 
@@ -396,13 +527,15 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
         "seconds_in_range": round(window.seconds, 1),
         "seconds_captured": round(covered, 1),
         "seconds_from_microphone": round(live, 1),
-        # Cannot exceed 1 now that intervals are merged, but clamped anyway: a
-        # coverage figure above 100% would discredit every other number here.
+        # Cannot exceed 1 now that intervals are both frame-capped and merged,
+        # but clamped anyway: a coverage figure above 100% would discredit every
+        # other number here.
         "fraction_captured": round(min(1.0, covered / window.seconds), 5)
         if window.seconds
         else None,
         "gaps": gap_rows.gaps,
         "estimated_missing_frames": int(gap_rows.frames or 0),
+        "suspect_stream_count": suspect_count,
         "streams": spans,
     }
 
@@ -426,3 +559,132 @@ def _merged_seconds(intervals: list[tuple[datetime, datetime]]) -> float:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamReconciliation:
+    """One `audio_stream` row whose claimed span disagrees with its own frame count.
+
+    Produced by :func:`find_suspect_streams` for the ``oo history reconcile-streams``
+    CLI command. Never applied automatically -- see that command's docstring.
+    """
+
+    stream_id: uuid.UUID
+    source_kind: str
+    start_utc: datetime
+    claimed_end_utc: datetime
+    proposed_end_utc: datetime
+    sample_rate: int
+    frame_count: int
+    claimed_seconds: float
+    frame_derived_seconds: float
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "stream_id": str(self.stream_id),
+            "source_kind": self.source_kind,
+            "start_utc": _iso(self.start_utc),
+            "claimed_end_utc": _iso(self.claimed_end_utc),
+            "proposed_end_utc": _iso(self.proposed_end_utc),
+            "sample_rate": self.sample_rate,
+            "frame_count": self.frame_count,
+            "claimed_hours": round(self.claimed_seconds / 3600, 2),
+            "frame_derived_hours": round(self.frame_derived_seconds / 3600, 2),
+            "reason": self.reason,
+        }
+
+
+def find_suspect_streams(
+    session: Session,
+    *,
+    min_claimed_seconds: float = SUSPECT_MIN_CLAIMED_SECONDS,
+    ratio_threshold: float = SUSPECT_FRAME_RATIO,
+) -> list[StreamReconciliation]:
+    """Scan every closed stream row for one whose frame count contradicts its claim.
+
+    Deliberately restricted to rows that already have an `end_utc` -- i.e. a
+    process closed them, gracefully or via `AlsaCaptureError` -- rather than rows
+    still open (`end_utc IS NULL`). An open row might belong to a station that is
+    running right now; a CLI process with no view of that has no business
+    guessing whether it is stale. Open orphans are `Station._close_orphaned_streams`'s
+    job, at the next startup of whichever process owns the database, not this
+    command's (see ADR-022).
+
+    Also skips any row whose `frame_count` cannot be trusted -- see
+    :func:`_frame_count_is_trustworthy` -- rather than reporting every row
+    `Station._close_orphaned_streams` closed before the `last_frame_at_utc`
+    heartbeat existed (all of them showing `frame_count == 0`) as if that zero
+    were measured rather than simply never recorded.
+    """
+    now = datetime.now(UTC)
+    rows = (
+        session.execute(select(orm.AudioStream).where(orm.AudioStream.end_utc.is_not(None)))
+        .scalars()
+        .all()
+    )
+    out: list[StreamReconciliation] = []
+    for row in rows:
+        if not _frame_count_is_trustworthy(row.end_reason, row.detail):
+            continue
+        full_start = _aware(row.start_utc)
+        claimed_end = _aware(row.end_utc) if row.end_utc else now
+        sample_rate = row.sample_rate or 0
+        if sample_rate <= 0:
+            continue
+        claimed_seconds = max(0.0, (claimed_end - full_start).total_seconds())
+        if claimed_seconds < min_claimed_seconds:
+            continue
+        frame_seconds = row.frame_count / sample_rate
+        if frame_seconds >= claimed_seconds * ratio_threshold:
+            continue
+        honest_end = _honest_stream_end(
+            start=full_start,
+            claimed_end=claimed_end,
+            sample_rate=sample_rate,
+            frame_count=row.frame_count or 0,
+            last_frame_at_utc=row.last_frame_at_utc,
+        )
+        out.append(
+            StreamReconciliation(
+                stream_id=row.id,
+                source_kind=row.source_kind,
+                start_utc=full_start,
+                claimed_end_utc=claimed_end,
+                proposed_end_utc=honest_end,
+                sample_rate=sample_rate,
+                frame_count=row.frame_count or 0,
+                claimed_seconds=claimed_seconds,
+                frame_derived_seconds=frame_seconds,
+                reason=(
+                    f"claimed {claimed_seconds / 3600:.2f}h but frame_count implies only "
+                    f"{frame_seconds / 3600:.2f}h of audio actually arrived "
+                    f"(ratio {frame_seconds / claimed_seconds:.3f} < {ratio_threshold})"
+                ),
+            )
+        )
+    return out
+
+
+def apply_stream_reconciliation(session: Session, item: StreamReconciliation) -> None:
+    """Correct one stream row's `end_utc`, preserving the original claim for audit.
+
+    Never call this without having shown the operator :meth:`StreamReconciliation.to_dict`
+    first and had it confirmed -- this rewrites the operator's historical record,
+    and the whole point of this repair path is that such a rewrite is visible and
+    consented to, not silent.
+    """
+    row = session.get(orm.AudioStream, item.stream_id)
+    if row is None:
+        return
+    detail = dict(row.detail or {})
+    detail["reconciliation"] = {
+        "claimed_end_utc": _iso(item.claimed_end_utc),
+        "corrected_end_utc": _iso(item.proposed_end_utc),
+        "reason": item.reason,
+        "applied_utc": _iso(datetime.now(UTC)),
+    }
+    row.detail = detail
+    row.end_utc = item.proposed_end_utc
+    if row.end_reason and "reconciled" not in row.end_reason:
+        row.end_reason = (row.end_reason[:40] + " (reconciled)")[:64]

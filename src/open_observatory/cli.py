@@ -26,9 +26,11 @@ app = typer.Typer(help="Open Observatory operator CLI", no_args_is_help=True)
 audio_app = typer.Typer(help="Audio device diagnostics")
 models_app = typer.Typer(help="Model asset acquisition (ADR-006)")
 moth_app = typer.Typer(help="AudioMoth firmware and configuration over USB HID")
+history_app = typer.Typer(help="Capture history and coverage diagnostics")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
+app.add_typer(history_app, name="history")
 
 console = Console()
 
@@ -482,6 +484,104 @@ def moth_info() -> None:
             "[bold yellow]This is not USB-Microphone firmware. The device cannot act as "
             "a live microphone until AudioMoth-USB-Microphone is flashed.[/bold yellow]"
         )
+
+
+# ----------------------------------------------------------------------
+# history / coverage repair
+
+
+@history_app.command("reconcile-streams")
+def history_reconcile_streams(
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Write the corrections. Without this flag nothing is changed.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt when applying"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+    ratio_threshold: float = typer.Option(
+        0.9,
+        help=(
+            "A stream is suspect if frame_count implies less than this fraction "
+            "of its claimed wall-clock span."
+        ),
+    ),
+) -> None:
+    """Find and correct `audio_stream` rows whose claim disagrees with their own frames.
+
+    ADR-022: a stream row can claim `start_utc`/`end_utc` far apart while its
+    `frame_count` shows only a fraction of that span was actually captured -- the
+    live database's worst case claimed 32 hours and delivered 2.79. Capture
+    coverage is computed from these rows, so an uncorrected one makes the
+    coverage bar lie.
+
+    This command never writes anything unless `--apply` is given, and even then
+    the original `end_utc`/`end_reason` are preserved under `detail.reconciliation`
+    on the row rather than overwritten silently, so the correction is auditable.
+    It only ever touches rows that already have an `end_utc` -- a row still open
+    (`end_utc IS NULL`) may belong to a station running right now, and this
+    command has no way to know; those are `Station._close_orphaned_streams`'s
+    job, at that process's own next startup.
+
+    Only run this against a database no station process is actively writing to
+    the *same rows* for, i.e. not while capture is mid-stream on the row being
+    corrected -- closed rows are safe at any time.
+    """
+    from .db.session import create_all, init_engine, session_scope
+    from .history import apply_stream_reconciliation, find_suspect_streams
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    create_all()
+
+    with session_scope() as session:
+        suspects = find_suspect_streams(session, ratio_threshold=ratio_threshold)
+
+        if json_out:
+            console.print_json(json.dumps([item.to_dict() for item in suspects]))
+        elif not suspects:
+            console.print("[green]No suspect stream rows found.[/green]")
+        else:
+            table = Table(title=f"{len(suspects)} suspect stream row(s)")
+            table.add_column("stream_id")
+            table.add_column("source")
+            table.add_column("claimed")
+            table.add_column("frame-derived")
+            table.add_column("proposed end_utc")
+            for item in suspects:
+                table.add_row(
+                    str(item.stream_id),
+                    item.source_kind,
+                    f"{item.claimed_seconds / 3600:.2f}h",
+                    f"{item.frame_derived_seconds / 3600:.2f}h",
+                    item.proposed_end_utc.isoformat(),
+                )
+            console.print(table)
+            for item in suspects:
+                console.print(f"  • [dim]{item.stream_id}[/dim]: {item.reason}")
+
+        if not suspects:
+            return
+
+        if not apply:
+            console.print(
+                "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
+                "Re-run with --apply to correct these rows."
+            )
+            return
+
+        if not yes and not typer.confirm(
+            f"Apply {len(suspects)} correction(s) to the database now?", default=False
+        ):
+            console.print("[yellow]Aborted; nothing was changed.[/yellow]")
+            raise typer.Exit(1)
+
+        for item in suspects:
+            apply_stream_reconciliation(session, item)
+        console.print(f"[green]Corrected {len(suspects)} row(s).[/green]")
 
 
 # ----------------------------------------------------------------------
