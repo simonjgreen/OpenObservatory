@@ -234,3 +234,28 @@ station over MQTT), the alert rule engine with repetition and cooldown, and
 outgoing HMAC-signed webhooks are all still scoped-but-not-built — see
 `docs/delivery/IMPLEMENTATION_PLAN.md`'s Milestone 6 entry and
 `docs/api/API_AND_INTEGRATIONS.md`.
+
+
+## What is deliberately NOT published
+
+`activity-v1` fires on anything loud enough and names none of it — "acoustic
+event", no species, no taxonomic group. On this station that is roughly three
+quarters of all detections (154 of 200 consecutive rows sampled 2026-08-08).
+
+Those rows are true and are kept in the database. They are **not** sent to Home
+Assistant, because there every message is a state change and an entity history
+entry, and the identifications drown in the noise. The debug UI has hidden
+unidentified events by default since Milestone 2 for the same reason; MQTT now
+matches it.
+
+```
+OO_MQTT_PUBLISH_UNIDENTIFIED=true    # opt back in; default false
+```
+
+Withheld detections are counted, not silently dropped:
+`suppressed_unidentified_total` in `/api/v1/health` under `mqtt`.
+
+**Bat passes are not affected.** `ultrasonic-pass-v1` names a pass rather than a
+species, which is a positive claim about what happened rather than an absence of
+one, so passes are always published — still with no species and no score, per
+the honesty rules.

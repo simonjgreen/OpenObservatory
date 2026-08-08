@@ -323,6 +323,20 @@ class Settings(BaseSettings):
     #: `binary_sensor.<station>_bat_activity` is "on" for this long after the
     #: most recent bat pass, then reverts to "off" on its own.
     mqtt_bat_activity_window_s: float = 900.0
+    #: Publish detections that name nothing -- `activity-v1`'s "acoustic event"
+    #: and anything else with no species and no taxonomic group.
+    #:
+    #: Off by default, matching the debug UI, which has hidden unidentified
+    #: events by default since Milestone 2 for the same reason: they are the
+    #: overwhelming majority (154 of 200 consecutive rows sampled on the live
+    #: station, 2026-08-08) and they drown the identifications in Home
+    #: Assistant, where every message becomes a state change and an entity
+    #: history entry.
+    #:
+    #: Bat passes are NOT affected: `ultrasonic-pass-v1` names a pass rather
+    #: than a species, which is a positive claim about what happened, not an
+    #: absence of one.
+    mqtt_publish_unidentified: bool = False
 
     @field_validator("mqtt_qos")
     @classmethod

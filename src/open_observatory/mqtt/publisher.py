@@ -93,6 +93,9 @@ class MqttStats:
     #: MQTT/Home Assistant is a browsing surface like the debug UI's default
     #: views, so a synthetic or replay detection must not appear there either.
     suppressed_synthetic_total: int = 0
+    #: Detections that named nothing, withheld from Home Assistant
+    #: (settings.mqtt_publish_unidentified). Counted, not silent.
+    suppressed_unidentified_total: int = 0
     last_error: str | None = None
     last_connected_utc: str | None = None
     last_disconnected_utc: str | None = None
@@ -183,6 +186,7 @@ class MqttPublisher:
             "dropped_total": self.stats.dropped_total,
             "queued": self.stats.queued,
             "suppressed_synthetic_total": self.stats.suppressed_synthetic_total,
+            "suppressed_unidentified_total": self.stats.suppressed_unidentified_total,
             "last_error": self.stats.last_error,
             "last_connected_utc": self.stats.last_connected_utc,
             "last_disconnected_utc": self.stats.last_disconnected_utc,
@@ -370,11 +374,30 @@ class MqttPublisher:
             return
 
         data = event.get("data", {})
-        await self._publish(client, topics.detection, event, retain=False)
 
         plugin_id = data.get("detector", {}).get("plugin_id")
         taxonomic_group = data.get("taxonomic_group")
         is_bat = plugin_id == BAT_PLUGIN_ID or taxonomic_group == BAT_GROUP
+
+        # An "acoustic event" names nothing: no species, no taxonomic group.
+        # It is a true record that *something* was loud, and it stays in the
+        # database, but forwarding it to Home Assistant buries the actual
+        # identifications -- on this station it is roughly three quarters of
+        # all detections, and every one becomes a state change and an entity
+        # history entry. The debug UI has hidden these by default since
+        # Milestone 2 for exactly this reason; MQTT now matches it.
+        #
+        # A bat pass is not unidentified: it claims a pass occurred, which is
+        # a positive statement, so `is_bat` short-circuits this.
+        identified = bool(
+            is_bat or data.get("scientific_name") or data.get("common_name") or taxonomic_group
+        )
+        if not identified and not self.settings.mqtt_publish_unidentified:
+            self.stats.suppressed_unidentified_total += 1
+            log.debug("mqtt.suppressed_unidentified_detection", detector=plugin_id)
+            return
+
+        await self._publish(client, topics.detection, event, retain=False)
 
         self._roll_day_counters_if_needed()
 

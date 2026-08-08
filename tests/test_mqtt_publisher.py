@@ -266,6 +266,99 @@ class TestSyntheticSuppression:
         await publisher.stop()
 
 
+class TestUnidentifiedSuppression:
+    """`activity-v1` fires on roughly three quarters of everything this station
+    hears and names none of it. Those rows are true and stay in the database,
+    but in Home Assistant every one is a state change and an entity history
+    entry, which buries the actual identifications. The debug UI has hidden
+    unidentified events by default since Milestone 2; MQTT now matches."""
+
+    async def test_detection_naming_nothing_is_withheld_by_default(self) -> None:
+        settings = make_settings()
+        bus = EventBus()
+        broker = FakeBroker()
+        publisher = make_publisher(settings, bus, broker)
+        await publisher.start()
+        await asyncio.sleep(0.05)
+
+        detection_event(
+            bus,
+            plugin_id="activity-v1",
+            taxonomic_group=None,
+            display_name="acoustic event",
+            common_name=None,
+            scientific_name=None,
+        )
+        await asyncio.sleep(0.05)
+
+        assert broker.by_topic(f"openobservatory/{STATION_ID}/detection") == []
+        assert broker.by_topic(f"openobservatory/{STATION_ID}/events/detection") == []
+        assert publisher.snapshot()["suppressed_unidentified_total"] == 1
+        await publisher.stop()
+
+    async def test_identified_species_still_published(self) -> None:
+        """The whole point is that the signal survives the filtering."""
+        settings = make_settings()
+        bus = EventBus()
+        broker = FakeBroker()
+        publisher = make_publisher(settings, bus, broker)
+        await publisher.start()
+        await asyncio.sleep(0.05)
+
+        detection_event(bus)  # Tawny Owl, identified
+        await asyncio.sleep(0.05)
+
+        assert broker.by_topic(f"openobservatory/{STATION_ID}/detection") != []
+        assert publisher.snapshot()["suppressed_unidentified_total"] == 0
+        await publisher.stop()
+
+    async def test_bat_pass_is_not_treated_as_unidentified(self) -> None:
+        """A pass claims something positive -- that a bat went past -- even
+        though it names no species. It must not be filtered out as noise."""
+        settings = make_settings()
+        bus = EventBus()
+        broker = FakeBroker()
+        publisher = make_publisher(settings, bus, broker)
+        await publisher.start()
+        await asyncio.sleep(0.05)
+
+        detection_event(
+            bus,
+            plugin_id="ultrasonic-pass-v1",
+            taxonomic_group=None,
+            display_name="bat pass",
+            common_name=None,
+            scientific_name=None,
+        )
+        await asyncio.sleep(0.05)
+
+        assert broker.by_topic(f"openobservatory/{STATION_ID}/detection") != []
+        assert publisher.snapshot()["suppressed_unidentified_total"] == 0
+        await publisher.stop()
+
+    async def test_opt_in_restores_them(self) -> None:
+        settings = make_settings(mqtt_publish_unidentified=True)
+        bus = EventBus()
+        broker = FakeBroker()
+        publisher = make_publisher(settings, bus, broker)
+        await publisher.start()
+        await asyncio.sleep(0.05)
+
+        detection_event(
+            bus,
+            plugin_id="activity-v1",
+            taxonomic_group=None,
+            display_name="acoustic event",
+            common_name=None,
+            scientific_name=None,
+        )
+        await asyncio.sleep(0.05)
+
+        assert broker.by_topic(f"openobservatory/{STATION_ID}/detection") != []
+        assert publisher.snapshot()["suppressed_unidentified_total"] == 0
+        await publisher.stop()
+
+
 class TestHonestyConstraintsOnTheWire:
     async def test_bat_pass_has_no_species_or_score(self) -> None:
         settings = make_settings()
