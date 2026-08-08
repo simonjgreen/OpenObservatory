@@ -23,6 +23,12 @@ Three live channels, deliberately separate:
     proposal before the WebSocket path replaced it for latency; latency does
     not matter if nothing plays.
 
+``/api/v1/live/tune`` (POST)
+    Retunes the shared ultrasonic heterodyne oscillator without touching the
+    audio.wav stream -- the control path the WAV channel is otherwise missing,
+    since it has no socket to carry a `tune` frame. See the docstring on
+    ``post_live_tune`` below.
+
 Default binding is LAN-only and anonymous read is enabled for this debug slice —
 recorded honestly in ``docs/operations`` rather than implied to be secure. The
 authentication foundation is Milestone 4 work.
@@ -928,6 +934,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 broadcaster.remove_listener(listener)
 
         return StreamingResponse(body(), media_type="audio/wav", headers=headers)
+
+    @app.post(f"{API_PREFIX}/live/tune")
+    def post_live_tune(tune_hz: float = Query(...)) -> dict[str, Any]:
+        """Retune the live ultrasonic heterodyne monitor in place.
+
+        The chunked-WAV listen channel (ADR-019) has no socket to carry the
+        WebSocket's ``{"type": "tune", ...}`` frame back to the server, so a
+        `<audio>` client sweeping the dial has no in-place retune the way the
+        old WebSocket client did -- until now. This is that control path: a
+        tiny, idempotent HTTP call the client can fire on every slider tick
+        (throttled client-side) without touching the audio stream at all.
+
+        There is exactly one heterodyne oscillator per station (see
+        ``Station.set_ultrasonic_tune_hz``), shared by every ultrasonic
+        listener regardless of transport, so there is no "which stream" to
+        target -- exactly the same "last request wins for everyone" behaviour
+        the WebSocket's tune frame already has. Safe to call with no listener
+        connected at all (a no-op landing value is still returned) and safe to
+        call when the ultrasonic channel is unavailable for this station's
+        native rate (``available`` is false and ``reason`` explains why).
+        """
+        applied = station.set_ultrasonic_tune_hz(tune_hz)
+        heterodyne = station.heterodyne
+        return {
+            "tune_hz": applied,
+            "bandwidth_hz": heterodyne.bandwidth_hz if heterodyne is not None else None,
+            "available": heterodyne is not None,
+            "reason": None if heterodyne is not None else station.heterodyne_unavailable_reason,
+        }
 
     # -- static UI ------------------------------------------------------
 

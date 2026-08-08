@@ -97,6 +97,23 @@ export function buildLiveAudioWavUrl(
   return `${scheme}//${location.host}/api/v1/live/audio.wav${query ? `?${query}` : ''}`
 }
 
+/** Build the `/api/v1/live/tune` control URL — the in-place retune added
+ *  alongside the chunked-WAV stream (see `LiveAudioPlayer.setTuneHz`). Pure
+ *  and unit tested for the same reason the two URL builders above are. */
+export function buildLiveTuneUrl(
+  location: { protocol: string; host: string },
+  tuneHz: number,
+): string {
+  const scheme = location.protocol === 'https:' ? 'https:' : 'http:'
+  const params = new URLSearchParams({ tune_hz: String(Math.round(clampTuneHz(tuneHz))) })
+  return `${scheme}//${location.host}/api/v1/live/tune?${params.toString()}`
+}
+
+//: Coalesces rapid slider ticks into at most one in-flight request per
+//: window, while still sending immediately on the first tick so the dial
+//: feels responsive. See `LiveAudioPlayer.setTuneHz`.
+const TUNE_THROTTLE_MS = 80
+
 /** What `HTMLMediaElement` genuinely exposes, sampled on an interval. Nothing
  *  here is inferred or invented — see the module comment for why the previous
  *  Web-Audio-derived telemetry (output level, jitter-buffer depth, underrun
@@ -123,10 +140,16 @@ export class LiveAudioPlayer {
   private audioEl: HTMLAudioElement | null = null
   private channel: LiveAudioChannel = 'audible'
   private tuneHz = 45000
+  private sampleRate = 48000
   private volume = 1
   private stalls = 0
   private waits = 0
   private reportTimer: number | null = null
+  //: Trailing-edge throttle state for `setTuneHz`. `tuneThrottleTimer` is
+  //: non-null exactly while a cooldown is running; `pendingTuneHz` holds the
+  //: latest value requested during that cooldown, sent when it elapses.
+  private tuneThrottleTimer: number | null = null
+  private pendingTuneHz: number | null = null
 
   telemetry: AudioTelemetry | null = null
 
@@ -176,9 +199,10 @@ export class LiveAudioPlayer {
       }
       void probe.body?.cancel()
 
+      this.sampleRate = Number(probe.headers.get('X-Live-Sample-Rate') ?? 0) || this.sampleRate
       this.onHello?.({
         channel: this.channel,
-        sampleRate: Number(probe.headers.get('X-Live-Sample-Rate') ?? 0) || 0,
+        sampleRate: this.sampleRate,
         available: true,
         tuneHz: this.channel === 'ultrasonic'
           ? Number(probe.headers.get('X-Live-Tune-Hz') ?? this.tuneHz)
@@ -222,17 +246,66 @@ export class LiveAudioPlayer {
     }
   }
 
-  /** Retune the live heterodyne monitor. There is no in-place retune over
-   *  HTTP the way the old WebSocket supported (a `{"type": "tune", ...}`
-   *  message on the open socket): a chunked-WAV response is fixed to the
-   *  frequency it started with, so retuning means reconnecting at a new URL,
-   *  same as switching channel. A no-op on the audible channel or when idle. */
+  /** Retune the live heterodyne monitor in place, over `POST
+   *  /api/v1/live/tune` — the control path added alongside the chunked-WAV
+   *  stream (`docs/api/DEBUG_UI_TRANSPORT.md`, ADR-022) because the WAV
+   *  response has no socket to carry the old WebSocket's `{"type": "tune",
+   *  ...}` message. The audio.wav connection itself is never touched: no
+   *  stop, no reconnect, no gap. The server's heterodyne oscillator is
+   *  shared by the whole station, so retuning it is enough — every
+   *  ultrasonic listener, including this one, hears the new frequency on its
+   *  next chunk.
+   *
+   *  A range slider fires this on every tick while dragging — dozens of
+   *  times a second — so calls are throttled to at most one in-flight
+   *  request per `TUNE_THROTTLE_MS`, trailing-edge, so the final value the
+   *  slider settles on is always the last one sent even if intermediate
+   *  ticks are coalesced. A no-op on the audible channel. */
   setTuneHz(hz: number): void {
     const clamped = clampTuneHz(hz)
     this.tuneHz = clamped
-    if (this.channel !== 'ultrasonic' || !this.audioEl) return
-    const volume = this.volume
-    void this.stop().then(() => void this.start(volume, 'ultrasonic', clamped))
+    if (this.channel !== 'ultrasonic') return
+    this.pendingTuneHz = clamped
+    if (this.tuneThrottleTimer !== null) return // a send is already scheduled/cooling down
+    this.flushPendingTune()
+  }
+
+  private flushPendingTune(): void {
+    const hz = this.pendingTuneHz
+    this.pendingTuneHz = null
+    if (hz !== null) void this.postTuneHz(hz)
+    this.tuneThrottleTimer = window.setTimeout(() => {
+      this.tuneThrottleTimer = null
+      if (this.pendingTuneHz !== null) this.flushPendingTune()
+    }, TUNE_THROTTLE_MS)
+  }
+
+  private async postTuneHz(hz: number): Promise<void> {
+    try {
+      const response = await fetch(buildLiveTuneUrl(window.location, hz), { method: 'POST' })
+      if (!response.ok) return
+      const payload = (await response.json()) as {
+        tune_hz?: number
+        bandwidth_hz?: number
+        available?: boolean
+      }
+      // The server may have clamped this further (e.g. against the native
+      // stream's Nyquist); reflect what it actually landed on, same as the
+      // initial hello does.
+      if (typeof payload.tune_hz === 'number') {
+        this.tuneHz = payload.tune_hz
+        this.onHello?.({
+          channel: 'ultrasonic',
+          sampleRate: this.sampleRate,
+          available: payload.available ?? true,
+          tuneHz: payload.tune_hz,
+          bandwidthHz: payload.bandwidth_hz,
+        })
+      }
+    } catch {
+      // Best-effort: a dropped tune request just leaves the previous
+      // frequency in place; the next slider tick retries.
+    }
   }
 
   private report(): void {
@@ -264,6 +337,11 @@ export class LiveAudioPlayer {
       window.clearInterval(this.reportTimer)
       this.reportTimer = null
     }
+    if (this.tuneThrottleTimer !== null) {
+      window.clearTimeout(this.tuneThrottleTimer)
+      this.tuneThrottleTimer = null
+    }
+    this.pendingTuneHz = null
     const audio = this.audioEl
     this.audioEl = null
     this.telemetry = null

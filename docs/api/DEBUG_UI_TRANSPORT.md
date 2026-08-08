@@ -279,14 +279,48 @@ GET /api/v1/live/audio.wav?channel=ultrasonic
 GET /api/v1/live/audio.wav?channel=ultrasonic&tune_hz=45000
 ```
 
-`channel` and `tune_hz` mean exactly what they mean on the WebSocket path.
-Retuning while connected is **not** supported here — there is no channel to
-carry a `tune` frame back to the server over a one-way HTTP response, so
-changing the tuning frequency means reconnecting with a new `tune_hz`. If the
-ultrasonic channel is unavailable for this station's native rate, the request
-gets `503` with the same `heterodyne_unavailable_reason` the WebSocket's
-`hello.reason` would carry, rather than a stream that opens and never plays
-anything.
+`channel` and `tune_hz` mean exactly what they mean on the WebSocket path. If
+the ultrasonic channel is unavailable for this station's native rate, the
+request gets `503` with the same `heterodyne_unavailable_reason` the
+WebSocket's `hello.reason` would carry, rather than a stream that opens and
+never plays anything.
+
+Retuning while connected **is** supported, but not over this response — there
+is no channel to carry a `tune` frame back to the server over a one-way HTTP
+body. See `POST /api/v1/live/tune` below instead (ADR-022): the stream this
+endpoint opens is never reconnected by a retune, so sweeping the tuning dial
+does not restart playback.
+
+### `POST /api/v1/live/tune` — retuning the WAV path in place
+
+```
+POST /api/v1/live/tune?tune_hz=42000
+```
+
+Retunes the shared heterodyne oscillator exactly as the WebSocket's
+`{"type": "tune", "tune_hz": 42000}` frame does — because it calls the same
+`Station.set_ultrasonic_tune_hz` — but as a plain, stateless HTTP POST that
+needs no open control channel of its own. Since ADR-018 there is exactly one
+oscillator per station shared by every ultrasonic listener regardless of
+transport, so this call has no listener/session identifier: the last request
+wins for everyone, same as the WebSocket path.
+
+Response:
+
+```json
+{ "tune_hz": 42000.0, "bandwidth_hz": 5000.0, "available": true, "reason": null }
+```
+
+`tune_hz` is the value actually applied, which may be clamped from what was
+requested. `available` is `false` (with `reason` set, `tune_hz` still the
+clamped landing value) when the ultrasonic channel cannot run for this
+station's native rate — the call is harmless to make in that state, it just
+has nothing to retune yet.
+
+The debug UI's frequency slider calls this, throttled client-side to at most
+one in-flight request per 80 ms (trailing-edge, so the value the slider
+settles on is always eventually sent) — see `LiveAudioPlayer.setTuneHz` in
+`web/src/audio.ts`.
 
 ### Response
 
