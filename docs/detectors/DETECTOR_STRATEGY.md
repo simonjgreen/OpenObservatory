@@ -131,6 +131,7 @@ environment table in `TARGET_DIAGNOSTICS.md`).
 | `birdnet_min_confidence` | `0.12` |
 | `birdnet_window_stride_s` | `1.5` |
 | `birdnet_use_location_filter` | `False` |
+| `birdnet_plausibility_floor` | `0.0005` |
 | `range_threshold` (constructor default) | `0.03` |
 | `threshold_in_range` | `0.55` |
 | `threshold_uncommon` | `0.75` |
@@ -138,9 +139,13 @@ environment table in `TARGET_DIAGNOSTICS.md`).
 
 Plausibility is banded by whether the range/occurrence model considers a species likely at
 this station's location and week: species in range clear `threshold_in_range` (0.55),
-uncommon species must clear 0.75, and species the model considers out of range must clear
-0.90 before being reported at all. With no range model loaded, every candidate is judged
-against `threshold_in_range` only — there is no invented prior.
+uncommon species must clear 0.75, and species the model considers merely out of range must
+clear 0.90 before being reported at all. With no range model loaded, every candidate is
+judged against `threshold_in_range` only — there is no invented prior. Two further bands,
+added by ADR-032, sit outside that score-space ladder entirely: a species at or below
+`birdnet_plausibility_floor` (0.0005) is suppressed at any score, and a species the *loaded*
+range model is simply silent about (`occurrence is None`) is judged against
+`threshold_out_of_range`, not `threshold_in_range` — see "Known limitation" below.
 
 The shipped default is `birdnet_use_location_filter=False` with no coordinates, so out of
 the box every species is judged on confidence alone. At the development station the coordinates and
@@ -332,61 +337,61 @@ which model eventually uses it. The capability is not yet wired into `station.py
 shipped plugin declares itself deferred, so there is nothing for it to run against yet.
 `deferred_enabled` defaults to `False`.
 
-## Known limitation: the range model raises a bar, it does not draw a boundary
+## Known limitation: fixed for new detections; historical rows need repair (ADR-032)
 
-`BirdNetDetector._band_for` sorts each candidate into `in_range`, `uncommon` or
-`out_of_range` by the range model's occurrence probability and applies a
-different confidence threshold to each. It never excludes a species outright.
+Before ADR-032, `BirdNetDetector._band_for` sorted each candidate into `in_range`,
+`uncommon` or `out_of_range` by the range model's occurrence probability and applied a
+different confidence threshold to each, but never excluded a species outright, and
+treated a *missing* prior as the *easiest* case rather than the hardest. Measured on the
+live station's own database, 2026-08-08, with the location filter enabled and coordinates
+correct (the development station — **the range model itself works**: Common Woodpigeon
+0.995, European Goldfinch 0.781, Western House Martin 0.771, "Engine" 4e-06, so this was
+never a misconfiguration): a *Flammulated Owl* at `occurrence_probability` 8e-06 scored
+0.959 and was admitted, and 202 of 5833 named detections (3.5%) had `occurrence=None` and
+were judged against the *easiest* threshold rather than the strictest.
 
-Measured on the live station's own database, 2026-08-08, with the location
-filter enabled and coordinates correct. **The range model works** — Common
-Woodpigeon 0.995, European Goldfinch 0.781, Western House Martin 0.771, "Engine"
-4e-06 — so this is not a misconfiguration. Two defects sit on top of it.
+Both are now fixed in `birdnet.py`:
 
-### (a) A near-zero prior is overruled by an uncalibrated score
+**(a) Near-zero prior now suppresses outright, not just a higher bar.** BirdNET scores are
+not calibrated probabilities — enforced everywhere else in this codebase — so a high score
+on a species the range model puts at ~0 for this location and week is evidence the score
+carries no information for that species, not evidence of the bird. Raising 0.90 to 0.97
+would only move the boundary; a Eurasian Jackdaw at 0.617 and a Flammulated Owl at 0.959 are
+not separable by any single cutoff. `_band_for` now returns an `implausible` band with an
+unreachable (`math.inf`) threshold when `occurrence <= birdnet_plausibility_floor`
+(default `0.0005`), derived from the measured data: implausible owls sit at
+8e-06–1.6e-04, while a genuine, seasonally-uncommon Tawny Owl sits at 0.019253 — the floor
+keeps the Tawny Owl (`_band_for(0.019253, ...)` still lands in `out_of_range`, needing 0.90,
+which its measured 0.974 clears) and rejects the owls.
 
-`threshold_out_of_range` defaults to 0.90. Measured *Flammulated Owl*:
+**(b) A missing prior now gets the strictest bar, not the easiest.** `_band_for` takes an
+explicit `range_model_loaded` argument instead of inferring "no range model" from
+`occurrence is None`. With the range model loaded but silent about a species, the result is
+a `no_prior` band using `threshold_out_of_range` (0.90) — the strictest available, not
+`threshold_in_range` (0.55). With no range model loaded at all, the old uniform behaviour
+(`unfiltered`, `threshold_in_range`) is unchanged; that case is still defensible, since there
+is genuinely no plausibility information to act on.
 
-| occurrence_probability | score | admitted |
-|---|---|---|
-| 8e-06 | 0.959 | yes |
-| 1e-05 | 0.954 | yes |
-| 8e-06 | 0.931 | yes |
-| 8e-06 | 0.924 | yes |
+**Counters.** `_suppressed_out_of_range` previously incremented for every candidate that
+fell below its band's threshold, including `uncommon` ones, so it was not a count of
+suppressed *out-of-range* species. It is now split into
+`_suppressed_implausible_prior`, `_suppressed_no_prior`, `_suppressed_uncommon` and
+`_suppressed_out_of_range` (each counting exactly its own band), surfaced via
+`BirdNetDetector.plausibility_snapshot()` and as `oo_birdnet_suppressed_total{reason=...}`
+in `api/metrics.py`.
 
-The range model is saying "essentially impossible at this location and week" and
-losing to a number that is not a probability. BirdNET scores are not calibrated —
-enforced everywhere else in this codebase — so 0.96 on a species absent from the
-continent is evidence that *the score carries no information for that species*,
-not evidence of the bird. Because the conflict is in score-space, raising 0.90 to
-0.97 only moves the boundary; it cannot separate "quiet real bird" from
-"confident nonsense". A Eurasian Jackdaw at 0.617 and a Flammulated Owl at 0.959
-are not separable by any single cutoff.
-
-### (b) A *missing* prior gets the lowest bar, not the highest
-
-When occurrence is `None`, `_band_for` returns
-`("unfiltered", self._thresholds["in_range"])` — the **easiest** of the three
-thresholds. A species the range model cannot speak for is therefore treated as a
-garden regular. Measured: *Great Horned Owl* 0.917 and *Flammulated Owl* 0.876
-and 0.805, all with no prior; **202 of 5833 named detections (3.5%)** took this
-path.
-
-The reasoning in the comment — "with no range model there is no plausibility
-information, so apply the in-range bar uniformly rather than inventing a prior" —
-is right when the range model is absent altogether, and wrong when it is loaded
-and merely silent about one species. Those two situations are currently
-indistinguishable to `_band_for`, which is the actual flaw.
-
-### Also
-
-`_suppressed_out_of_range` increments for every candidate that fell below its
-band's threshold, including `uncommon` ones. It is not a count of suppressed
-out-of-range species and should not be read as one.
-
-Suppressing candidates whose occurrence probability is at or near zero is a
-different operation from raising their bar, and is the likelier fix for (a);
-distinguishing "no range model" from "no prior for this species" is the fix for
-(b). See `HANDOVER.md` section 6.3 item 0. This became urgent because the inside
-observer (ADR-023) now presents these on a wall in the operator's house with no
-score shown to hint at doubt.
+**What is not fixed by this change: the ~5833 already-persisted rows, three of them are
+consumers.** Going forward, an implausible candidate is suppressed by the detector before a
+row is ever created, so the API, the MQTT publisher and the ESP32 wall display are
+automatically consistent — there is nothing for any of them to filter. But the ~202
+historical rows already in the database were written under the old logic and still read as
+plain fact everywhere, including the living-room display. `oo detections
+reconcile-plausibility` (dry-run by default, `cli.py`) re-evaluates stored detections
+against the *current* range model and *floor*, and on `--apply` writes a
+`native_result.plausibility_review` block recording the finding — it never deletes a row or
+overwrites the original `native_result`, mirroring `oo history reconcile-streams`'s
+`detail.reconciliation` pattern. **This agent's territory did not include the API, the MQTT
+publisher or the ESP32 firmware**, so nothing yet reads `plausibility_review` to actually
+hide a flagged historical row from a consumer — that is a follow-up, tracked in
+`HANDOVER.md` §6.3 item 0, and until it lands, a flagged historical row is still visible
+everywhere it was before, just auditable as flagged in the database.

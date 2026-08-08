@@ -148,6 +148,30 @@ class TestStationEndpoints:
         ):
             assert metric in body, f"missing metric {metric}"
 
+    def test_birdnet_plausibility_metric_is_exposed_per_reason(self, settings) -> None:
+        """ADR-032: `/metrics` must carry the suppression counters even before
+
+        any window has been analysed -- the worker registers at startup
+        regardless of whether the (unbundled, ADR-006) model assets are
+        present, and `plausibility_snapshot()` starts at zero rather than
+        being absent.
+        """
+        configured = settings.model_copy(update={"source": "synthetic", "birdnet_enabled": True})
+        from open_observatory.config import set_settings
+
+        set_settings(configured)
+        app = create_app(configured)
+        with TestClient(app) as local_client:
+            body = local_client.get("/metrics").text
+        assert "oo_birdnet_suppressed_total" in body
+        for reason in (
+            "suppressed_implausible_prior",
+            "suppressed_no_prior",
+            "suppressed_out_of_range",
+            "suppressed_uncommon",
+        ):
+            assert f'reason="{reason}"' in body, f"missing reason label {reason}"
+
     def test_audio_devices_endpoint_lists_without_crashing(self, client) -> None:
         payload = client.get("/api/v1/audio/devices").json()
         assert "devices" in payload

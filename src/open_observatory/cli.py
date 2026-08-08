@@ -28,11 +28,13 @@ models_app = typer.Typer(help="Model asset acquisition (ADR-006)")
 moth_app = typer.Typer(help="AudioMoth firmware and configuration over USB HID")
 history_app = typer.Typer(help="Capture history and coverage diagnostics")
 clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
+detections_app = typer.Typer(help="Detection review and repair")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
 app.add_typer(history_app, name="history")
 app.add_typer(clips_app, name="clips")
+app.add_typer(detections_app, name="detections")
 
 console = Console()
 
@@ -584,6 +586,131 @@ def history_reconcile_streams(
         for item in suspects:
             apply_stream_reconciliation(session, item)
         console.print(f"[green]Corrected {len(suspects)} row(s).[/green]")
+
+
+@detections_app.command("reconcile-plausibility")
+def detections_reconcile_plausibility(
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Write the flags. Without this flag nothing is changed.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt when applying"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+    limit: int = typer.Option(
+        5000, help="Maximum stored BirdNET detections to re-evaluate, most recent first"
+    ),
+) -> None:
+    """Re-evaluate stored BirdNET detections against the current range model (ADR-032).
+
+    Historical fix for the two defects documented in
+    `docs/detectors/DETECTOR_STRATEGY.md`'s "Known limitation" section and
+    `HANDOVER.md` section 6.3 item 0: a near-zero occurrence prior that used to be
+    overruled by an uncalibrated score, and a missing prior that used to get the
+    *easiest* confidence bar instead of the strictest one. `detectors/birdnet.py`
+    now applies the fixed logic to every new detection; this command re-checks
+    detections already in the database against the *current* range model,
+    `birdnet_plausibility_floor` and band thresholds, and reports which ones would
+    not be admitted today.
+
+    This command never writes anything unless `--apply` is given, and even then it
+    never deletes a row or overwrites its `native_result` -- the finding is added
+    under a new `native_result.plausibility_review` key, preserving the original
+    detector output verbatim, so the correction is auditable (the same shape as
+    `oo history reconcile-streams`'s `detail.reconciliation`).
+
+    Flagging is not the same as hiding: no consumer (the `/api/v1/detections`
+    endpoint, the MQTT publisher, or the ESP32 wall display firmware) currently
+    checks `plausibility_review` to stop presenting a flagged row as an
+    observation. That is separate, tracked follow-up work, not done by this
+    command.
+
+    Requires station coordinates (`latitude`/`longitude`) and the BirdNET model
+    assets (`oo models fetch`) to be present, since the range model itself has to
+    be re-run to recompute an occurrence probability for each stored detection.
+    """
+    from . import models as model_registry
+    from .db.session import create_all, init_engine, session_scope
+    from .detectors.base import DetectorUnavailable
+    from .plausibility_repair import apply_plausibility_flag, find_implausible_detections
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    create_all()
+
+    if settings.latitude is None or settings.longitude is None:
+        console.print(
+            "[red]No station coordinates configured -- cannot re-evaluate against the "
+            "range model.[/red]"
+        )
+        raise typer.Exit(1)
+
+    model_dir = settings.birdnet_model_dir or model_registry.DEFAULT_MODEL_DIR
+
+    with session_scope() as session:
+        try:
+            findings = find_implausible_detections(
+                session,
+                model_dir=model_dir,
+                latitude=settings.latitude,
+                longitude=settings.longitude,
+                plausibility_floor=settings.birdnet_plausibility_floor,
+                limit=limit,
+            )
+        except DetectorUnavailable as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+
+        if json_out:
+            console.print_json(json.dumps([item.to_dict() for item in findings]))
+        elif not findings:
+            console.print("[green]No implausible detections found.[/green]")
+        else:
+            table = Table(title=f"{len(findings)} implausible detection(s)")
+            table.add_column("common_name")
+            table.add_column("event_start_utc")
+            table.add_column("score", justify="right")
+            table.add_column("stored band")
+            table.add_column("recomputed band")
+            for item in findings:
+                table.add_row(
+                    item.common_name or "",
+                    item.event_start_utc.isoformat(),
+                    f"{item.score:.3f}",
+                    item.stored_band or "",
+                    item.recomputed_band,
+                )
+            console.print(table)
+            for item in findings:
+                console.print(f"  • [dim]{item.detection_id}[/dim]: {item.reason}")
+
+        if not findings:
+            return
+
+        if not apply:
+            console.print(
+                "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
+                "Re-run with --apply to flag these rows."
+            )
+            return
+
+        if not yes and not typer.confirm(
+            f"Flag {len(findings)} detection(s) as implausible now?", default=False
+        ):
+            console.print("[yellow]Aborted; nothing was changed.[/yellow]")
+            raise typer.Exit(1)
+
+        for item in findings:
+            apply_plausibility_flag(session, item)
+        console.print(
+            f"[green]Flagged {len(findings)} row(s).[/green] Rows are kept, not deleted; "
+            "the original claim is preserved under native_result, and the finding is "
+            "recorded under native_result.plausibility_review. No consumer filters on "
+            "this flag yet -- see the command's own docstring."
+        )
 
 
 # ----------------------------------------------------------------------

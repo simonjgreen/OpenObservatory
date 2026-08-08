@@ -17,6 +17,17 @@ plausible here, this week". A confident-but-implausible identification is held t
 a much higher confidence bar than a garden regular, and the band that decision
 fell into is recorded on the detection so a reviewer can see why.
 
+ADR-032: a species the range model puts at or near zero for this location and
+week (below ``plausibility_floor``) is suppressed outright, at any score --
+BirdNET scores are not calibrated probabilities, so no score is strong enough
+evidence to overrule "essentially impossible here". A species the range model
+is loaded but silent about (``occurrence is None`` with the model present)
+gets the strictest bar, not the easiest one -- that is not the same situation
+as no range model being loaded at all, and `_band_for` takes both facts as
+separate arguments so it can tell them apart. See
+``docs/detectors/DETECTOR_STRATEGY.md``'s "Known limitation" section for the
+measured owls this was built to fix.
+
 Inference uses ``ai_edge_litert`` (the maintained successor to
 ``tflite-runtime``, which has no cp312 aarch64 wheel), falling back to
 ``tflite_runtime`` where that is what is installed.
@@ -25,6 +36,7 @@ Inference uses ``ai_edge_litert`` (the maintained successor to
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -83,6 +95,59 @@ def parse_label(label: str) -> tuple[str | None, str]:
         scientific, common = label.split("_", 1)
         return scientific.strip() or None, common.strip()
     return None, label.strip()
+
+
+def band_for(
+    occurrence: float | None,
+    *,
+    range_model_loaded: bool,
+    plausibility_floor: float,
+    common_prior: float,
+    range_threshold: float,
+    threshold_in_range: float,
+    threshold_uncommon: float,
+    threshold_out_of_range: float,
+) -> tuple[str, float]:
+    """Sort a candidate into a plausibility band and its confidence bar (ADR-032).
+
+    A free function, not just a method, so both :class:`BirdNetDetector` (the
+    live path) and ``oo detections reconcile-plausibility`` (the historical
+    repair CLI, ``cli.py``) apply exactly one definition of "implausible" --
+    the repair command has no ``BirdNetDetector`` instance to call a method
+    on, since it only needs the range model, not the classifier.
+
+    ``range_model_loaded`` and ``occurrence`` carry genuinely different
+    information and must not be collapsed into one. ``range_model_loaded``
+    says whether a prior exists to consult at all; ``occurrence`` is what that
+    prior said for this specific species, once it exists. The pre-ADR-032
+    logic took only ``occurrence`` and treated ``None`` as "no range model"
+    unconditionally, which meant a range model that was loaded but silent
+    about one species was indistinguishable from a range model that was never
+    loaded at all -- and got the *easiest* threshold as a result (defect (b)
+    in DETECTOR_STRATEGY.md's "Known limitation" section).
+    """
+    if not range_model_loaded:
+        # No range model at all: there is no plausibility information to act
+        # on, so apply the in-range bar uniformly rather than inventing a
+        # prior. This is the pre-ADR-032 behaviour, preserved.
+        return "unfiltered", threshold_in_range
+    if occurrence is None:
+        # The range model is loaded but has nothing to say about this
+        # species. That is not an endorsement, so it must not receive the
+        # easiest bar -- give it the strictest one available instead.
+        return "no_prior", threshold_out_of_range
+    if occurrence <= plausibility_floor:
+        # The range model is saying "essentially impossible here this week".
+        # BirdNET scores are not calibrated probabilities, so no score is
+        # evidence strong enough to overrule that -- this is a different
+        # operation from raising the bar (defect (a)); nothing clears an
+        # infinite bar.
+        return "implausible", math.inf
+    if occurrence >= common_prior:
+        return "in_range", threshold_in_range
+    if occurrence >= range_threshold:
+        return "uncommon", threshold_uncommon
+    return "out_of_range", threshold_out_of_range
 
 
 class _RangeModel:
@@ -149,6 +214,14 @@ class BirdNetDetector:
         threshold_in_range: float = 0.55,
         threshold_uncommon: float = 0.75,
         threshold_out_of_range: float = 0.90,
+        #: Occurrence probability at or below which a species is suppressed
+        #: outright, at any score -- see the module docstring's "Known
+        #: limitation" write-up in DETECTOR_STRATEGY.md and ADR-032. Measured
+        #: on the live station: implausible North American owls sit at
+        #: 8e-06-1e-05; a genuine, seasonally-uncommon Tawny Owl sits at
+        #: 0.019253. The default (5e-4) sits two orders of magnitude below the
+        #: Tawny Owl and well above the owls, with margin on both sides.
+        plausibility_floor: float = 0.0005,
         max_per_window: int = 5,
     ) -> None:
         self.model_dir = Path(model_dir)
@@ -165,6 +238,7 @@ class BirdNetDetector:
         self._use_location_filter = use_location_filter
         self._common_prior = common_prior
         self._range_threshold = range_threshold
+        self._plausibility_floor = plausibility_floor
         self._thresholds = {
             "in_range": threshold_in_range,
             "uncommon": threshold_uncommon,
@@ -181,7 +255,20 @@ class BirdNetDetector:
         self._range: _RangeModel | None = None
         self._timezone = UTC
         self._windows = 0
+        #: Candidates that fell below the strict ``out_of_range`` bar. Kept
+        #: separate from ``_suppressed_uncommon`` -- the old single counter
+        #: conflated the two, so it was not a count of out-of-range species
+        #: (DETECTOR_STRATEGY.md "Also" note).
         self._suppressed_out_of_range = 0
+        #: Candidates that fell below the ``uncommon`` bar.
+        self._suppressed_uncommon = 0
+        #: Candidates rejected outright because the range model puts them at
+        #: or below ``plausibility_floor`` for this location and week -- no
+        #: score admits these (defect (a)).
+        self._suppressed_implausible_prior = 0
+        #: Candidates the range model is loaded but silent about, so they
+        #: faced the strict bar rather than the easy one (defect (b)).
+        self._suppressed_no_prior = 0
         self._species_in_range = 0
         self._week = 0
 
@@ -303,6 +390,7 @@ class BirdNetDetector:
         week = birdnet_week(local_time)
         self._week = week
         prior: np.ndarray | None = None
+        range_model_loaded = self._range is not None
         if self._range is not None:
             prior = self._range.probabilities(week)
             self._species_in_range = int((prior >= self._range_threshold).sum())
@@ -315,11 +403,16 @@ class BirdNetDetector:
         detections: list[NativeDetection] = []
         for index in candidates:
             confidence = float(confidences[index])
-            occurrence = float(prior[index]) if prior is not None else None
-            band, threshold = self._band_for(occurrence)
+            occurrence: float | None = None
+            if prior is not None:
+                raw = float(prior[index])
+                # A loaded range model that is silent (NaN) about one species
+                # is not the same as no range model at all -- both are
+                # "missing", so both funnel through the same _band_for branch.
+                occurrence = None if math.isnan(raw) else raw
+            band, threshold = self._band_for(occurrence, range_model_loaded=range_model_loaded)
             if confidence < threshold:
-                if band != "in_range":
-                    self._suppressed_out_of_range += 1
+                self._count_suppressed(band)
                 continue
             scientific, common = self._parsed[index]
             detections.append(
@@ -355,16 +448,30 @@ class BirdNetDetector:
                 break
         return detections
 
-    def _band_for(self, occurrence: float | None) -> tuple[str, float]:
-        if occurrence is None:
-            # With no range model there is no plausibility information, so apply
-            # the in-range bar uniformly rather than inventing a prior.
-            return "unfiltered", self._thresholds["in_range"]
-        if occurrence >= self._common_prior:
-            return "in_range", self._thresholds["in_range"]
-        if occurrence >= self._range_threshold:
-            return "uncommon", self._thresholds["uncommon"]
-        return "out_of_range", self._thresholds["out_of_range"]
+    def _band_for(self, occurrence: float | None, *, range_model_loaded: bool) -> tuple[str, float]:
+        return band_for(
+            occurrence,
+            range_model_loaded=range_model_loaded,
+            plausibility_floor=self._plausibility_floor,
+            common_prior=self._common_prior,
+            range_threshold=self._range_threshold,
+            threshold_in_range=self._thresholds["in_range"],
+            threshold_uncommon=self._thresholds["uncommon"],
+            threshold_out_of_range=self._thresholds["out_of_range"],
+        )
+
+    def _count_suppressed(self, band: str) -> None:
+        if band == "implausible":
+            self._suppressed_implausible_prior += 1
+        elif band == "no_prior":
+            self._suppressed_no_prior += 1
+        elif band == "uncommon":
+            self._suppressed_uncommon += 1
+        elif band == "out_of_range":
+            self._suppressed_out_of_range += 1
+        # "in_range" / "unfiltered" candidates that fail their (low) bar are
+        # ordinary low-confidence rejections, not a plausibility judgement --
+        # not counted here, matching the old counter's scope.
 
     async def health(self) -> DetectorHealth:
         if self._interpreter is None:
@@ -379,10 +486,63 @@ class BirdNetDetector:
             detail += f", {self._species_in_range} species plausible here this week"
         else:
             detail += ", range model off (no station coordinates)"
+        # Split by reason, not a single misleading total (DETECTOR_STRATEGY.md
+        # "Also" note: the old counter included ``uncommon`` candidates and
+        # was not a count of suppressed out-of-range species).
+        if self._suppressed_implausible_prior:
+            detail += f", {self._suppressed_implausible_prior} suppressed (near-zero prior)"
+        if self._suppressed_no_prior:
+            detail += f", {self._suppressed_no_prior} suppressed (no prior for species)"
         if self._suppressed_out_of_range:
-            detail += f", {self._suppressed_out_of_range} suppressed as implausible"
+            detail += f", {self._suppressed_out_of_range} rejected (out-of-range bar not cleared)"
+        if self._suppressed_uncommon:
+            detail += f", {self._suppressed_uncommon} rejected (uncommon bar not cleared)"
         return DetectorHealth(available=True, state="ok", detail=detail)
+
+    def plausibility_snapshot(self) -> dict[str, int]:
+        """Per-reason suppression counts, for `api/metrics.py`'s Prometheus export.
+
+        Deliberately a plain method rather than a `DetectorPlugin` protocol
+        member (see `detectors/deferred.py`'s duck-typing precedent for
+        `self.deferred`): the other two shipped detectors have no equivalent
+        concept and should not need to grow a no-op stub to keep conforming.
+        """
+        return {
+            "suppressed_implausible_prior": self._suppressed_implausible_prior,
+            "suppressed_no_prior": self._suppressed_no_prior,
+            "suppressed_out_of_range": self._suppressed_out_of_range,
+            "suppressed_uncommon": self._suppressed_uncommon,
+        }
 
     async def shutdown(self) -> None:
         self._interpreter = None
         self._range = None
+
+
+def load_range_model_for_repair(
+    model_dir: Path, latitude: float, longitude: float, *, threads: int = 1
+) -> tuple[list[str], list[tuple[str | None, str]], _RangeModel]:
+    """Load labels and the range model only, for the ``oo detections
+
+    reconcile-plausibility`` repair CLI (``cli.py``). Deliberately skips the
+    classifier: the repair command re-evaluates *stored* detections against
+    the current range model and floor, it does not re-run inference, so the
+    much larger classifier weights are never needed. Raises
+    :class:`DetectorUnavailable` if either the range model or the labels file
+    is missing -- the same ADR-006 degrade-not-crash contract
+    :meth:`BirdNetDetector.initialise` uses.
+    """
+    missing = [name for name in (RANGE_FILE, LABELS_FILE) if not (model_dir / name).exists()]
+    if missing:
+        raise DetectorUnavailable(
+            f"BirdNET model assets not installed: {', '.join(missing)} missing from "
+            f"{model_dir}. Run 'oo models fetch' to download them."
+        )
+    labels = [
+        line
+        for line in (model_dir / LABELS_FILE).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    parsed = [parse_label(entry) for entry in labels]
+    range_model = _RangeModel(model_dir / RANGE_FILE, latitude, longitude, threads)
+    return labels, parsed, range_model
