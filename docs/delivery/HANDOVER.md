@@ -314,13 +314,34 @@ Milestone 5 (ultrasonic and bat support) is now complete — see §1 and
 - **A stream row is only closed on graceful shutdown.** `Station.start` now closes
   any left open by a previous process; without that, history treats them as still
   running and coverage exceeds 100%.
-- **The default thread pool is shared with the ALSA read.** `alsa_source.read`
-  uses `asyncio.to_thread`, so anything else using `to_thread` — clip writing,
-  retention sweeps, database inserts — competes for the same 8 worker threads on a
-  4-core Pi. Heavy clip writing delayed the capture read enough to overrun the ALSA
-  ring: 11 gaps and 8 overruns in five minutes. Evidence extraction and retention
-  now have their own single-thread executor. Anything else that does sustained disk
-  I/O needs the same treatment.
+- **The default thread pool is shared with everything except capture.** Anything
+  using `asyncio.to_thread` — clip writing, retention sweeps, database inserts,
+  health-event writes, every FastAPI `def` endpoint — competes for the same 8 worker
+  threads on a 4-core Pi, and SQLite is configured `busy_timeout=5000` so one
+  contended write can hold a worker for seconds. Evidence extraction and retention
+  got their own single-thread executor on 2026-08-05; `AlsaSource` got one
+  (`oo-capture`) on 2026-08-08. Anything else doing sustained disk I/O needs the
+  same treatment.
+- **Ring depth is the only slack the capture path has, and it was 80 ms.**
+  `AlsaSource` asked for `periods=8` at a 10 ms period, behind a 100 ms block: the
+  kernel could hold less audio than one read consumes. `/api/v1/health` was
+  publishing `buffer_size: 30720` next to `block_frames: 38400` the whole time and
+  nobody compared them. It is now sized from `capture_buffer_ms` (500 ms) and a ring
+  clamped below one block logs `capture.buffer_shallower_than_block`. See ADR-030.
+- **`grep -c capture.gap` overstates lost recording — measured at 2.7×.** Many gap
+  records lose nothing; a minority lose real audio. Worse, until 2026-08-08 an ALSA
+  overrun *skipped* the frame-loss estimate entirely, so `missing_frames=0` meant
+  "not measured", not "nothing lost" — and the uncredited deficit dragged
+  `rate_offset_ppm` to −245 against a true device offset near −43. Use
+  `gaps_with_loss` / `gaps_without_loss` from `/api/v1/health`.
+- **A stream row's `end_utc` is when the process noticed, not when audio stopped**,
+  and `frame_count` is written only on a graceful close. 48 of 49 rows on the station
+  carried `frame_count = 0`. The station now checkpoints frames into the open row
+  every 30 s, but old rows are still zero. Cross-check a span against `capture_gap`
+  and `detection` rows before believing it.
+- **`deploy/deploy.sh --no-web` deletes the Pi's `web/dist`.** The rsync uses
+  `--delete` and does not exclude it, so skipping the UI build removes the built UI
+  from the target. Build the web UI, or sync only what changed.
 - **A bottleneck can be load-bearing.** Evidence writing was awaited inline in
   `ultrasonic-pass-v1`'s own detector task, so it analysed 29 windows and dropped 69
   with a 42 s lag, even though its own inference p95 was 57 ms — the stall was

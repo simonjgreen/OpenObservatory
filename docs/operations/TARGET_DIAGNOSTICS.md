@@ -169,8 +169,9 @@ Sustained running as a systemd service:
 
 | Measurement | Result |
 |---|---|
-| Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero) |
+| Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero); **0.999945** over 44 min after the ring was deepened, 2026-08-08 |
 | Gaps / overruns | 0 |
+| ALSA ring | 192,000 frames = 500 ms (50 periods of 3840), negotiated. Was 30,720 = 80 ms behind a 100 ms block until 2026-08-08; see ADR-030 |
 | Device clock offset from nominal | **−43 ppm** |
 | Per-block hot-path CPU | **10.9 %** of one core, for capture + resample + both spectrograms + level telemetry. Was 9.5 % before the ultrasonic channel began max-combining four sub-windows per column; that 1.4 % buys full coverage of the audio instead of 45 %. |
 | Whole-process CPU | ~29 % of the 4-core machine with all three detectors running |
@@ -186,6 +187,54 @@ addressing audio, and why gap detection looks for a *step* in the
 frames-behind-wall-clock figure rather than an absolute value. An earlier version
 did not separate the two and reported a single overrun as a permanent −1439 ppm
 clock offset.
+
+A second version of the same mistake survived until 2026-08-08: frames lost during an
+ALSA overrun were never estimated at all, because the estimator was skipped whenever a
+discontinuity reason had already been set. Those uncredited frames looked exactly like
+a slow crystal, and the station reported **−245 to −270 ppm** through the afternoon of
+2026-08-08. After the fix, and with no losses to credit, it reads **−52 ppm**. Treat any
+`rate_offset_ppm` logged before 2026-08-08 15:00 UTC as contaminated.
+
+### USB topology, measured 2026-08-08
+
+The AudioMoth and the evidence SSD are on **different xHCI host controllers**, so
+they do not compete for bus scheduling:
+
+| Device | Bus | Controller | Negotiated speed |
+|---|---|---|---|
+| 384kHz AudioMoth USB Microphone | 002, port 1 | `1f00200000.usb` / `xhci-hcd.0` | **12 Mbit/s (full speed)** |
+| SanDisk Extreme Portable SSD | 004, port 2 | `1f00300000.usb` / `xhci-hcd.1` | **480 Mbit/s (high speed)** |
+
+Two things follow.
+
+**The AudioMoth runs at USB full speed and is near its ceiling.** Its isochronous IN
+endpoint declares `wMaxPacketSize 768 bytes` with `bInterval 1` — 768 bytes in every
+1 ms frame, which is exactly 384000 × 2 bytes per second. Full speed allows at most
+1023 bytes per isochronous endpoint per frame, so at 384 kHz this one device reserves
+**75%** of the entire full-speed isochronous budget. That is fine as long as nothing
+else shares the bus (nothing does), but it means there is no bus-side headroom to
+find: the device is full-speed only and cannot be moved to a faster port. Host-side
+slack — the depth of the ALSA ring — is the only lever available.
+
+**The SSD is in a USB 2.0 port.** It negotiated 480 Mbit/s on `usb4`, not 5 Gbit/s on
+`usb5`, so it is running at roughly a tenth of its capability. This does **not** affect
+capture — different controller, and the measured write rate of ~1.5 MB/s is trivial
+either way — but moving it to the blue USB 3.0 port **on the same side of the board**
+(the one that enumerates as `usb5`, still `xhci-hcd.1`) would give it its full speed at
+no risk. Do not move it to the other blue port: that one is `usb3` on `xhci-hcd.0`,
+which is the AudioMoth's controller, and would introduce exactly the contention that
+currently does not exist.
+
+Check both with:
+
+```bash
+lsusb -t                      # tree, with negotiated speed per device
+for d in /sys/bus/usb/devices/*/; do
+  [ -f "$d/speed" ] && printf '%s speed=%s product=%s\n' \
+    "$(basename "$d")" "$(cat "$d/speed")" "$(cat "$d/product" 2>/dev/null)"
+done
+readlink -f /sys/bus/usb/devices/usb2   # which controller a bus belongs to
+```
 
 ## Input level and gain
 

@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     preferred_formats: tuple[str, ...] = ("S16_LE", "S32_LE")
     capture_channels: int = 1
     capture_block_ms: int = 100
+    #: Depth of the kernel-side ALSA ring, and so the longest stall the capture
+    #: path can absorb before audio is lost. This was effectively 80 ms — shorter
+    #: than one 100 ms block — until 2026-08-08; see ADR-030. Deeper costs a few
+    #: hundred kilobytes and no latency, since a read still returns as soon as a
+    #: block's worth of frames exists.
+    capture_buffer_ms: float = 500.0
     native_ring_seconds: int = 120
     audible_ring_seconds: int = 120
     #: Reopen backoff bounds after a device disappears.

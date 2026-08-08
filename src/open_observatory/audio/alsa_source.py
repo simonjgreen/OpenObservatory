@@ -7,7 +7,16 @@ Design notes:
   ``plug``, which would resample behind our back and destroy the ultrasonic band
   we captured at 384 kHz to obtain.
 * Reads happen on a worker thread (ALSA's read is blocking) and are handed to the
-  event loop one capture block at a time.
+  event loop one capture block at a time. That thread is **ours alone**, not the
+  default ``asyncio.to_thread`` pool: on a 4-core Pi the default pool has 8
+  workers shared with database inserts, health-event writes and FastAPI's own
+  ``def`` endpoints, and a busy-timeout'd SQLite write can hold one for seconds.
+  Capture always wins, so it does not queue behind anything.
+* The ALSA ring is sized from ``buffer_ms``, deliberately much deeper than one
+  capture block. Ring depth is the *only* slack the capture path has: it is the
+  amount of audio the kernel can accumulate while nothing is reading. It costs a
+  few hundred kilobytes and adds **no** latency, because a read still returns as
+  soon as a block's worth of frames exists.
 * Frame accounting is authoritative. Gaps are estimated from the divergence
   between frames actually read and monotonic elapsed time, then reported as an
   explicit discontinuity rather than absorbed silently.
@@ -16,8 +25,10 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -59,6 +70,10 @@ class AlsaSource:
         #: ALSA period. Smaller periods give finer overrun granularity than the
         #: capture block itself, so several are accumulated per block.
         period_ms: float = 10.0,
+        #: Depth of the kernel-side ring, and therefore the longest stall the
+        #: capture path can absorb without losing audio. Must comfortably exceed
+        #: ``block_ms``; see :meth:`_periods_for_buffer`.
+        buffer_ms: float = 500.0,
     ) -> None:
         self._device_key = device_key
         self._preferred_rates = preferred_rates
@@ -66,6 +81,7 @@ class AlsaSource:
         self._channels = channels
         self._block_ms = block_ms
         self._period_ms = period_ms
+        self._buffer_ms = buffer_ms
 
         self.device: CaptureDevice | None = None
         self.info: StreamInfo
@@ -79,8 +95,19 @@ class AlsaSource:
         self._pending_discontinuity: DiscontinuityReason | None = DiscontinuityReason.STREAM_START
         self._pending_missing = 0
         self._closed = False
+        #: ALSA reported an overrun (EPIPE / -EPIPE short read). This counts
+        #: *events at the device*, not lost audio: see `missing_frames_total`
+        #: for the estimate of what those events actually cost.
         self.overrun_count = 0
         self.short_read_count = 0
+        #: Discontinuities split by whether any audio was actually lost. Both
+        #: log as `capture.gap`, and conflating them overstates the damage — but
+        #: so does assuming an overrun with an unmeasured cost lost nothing.
+        self.gaps_with_loss = 0
+        self.gaps_without_loss = 0
+        self.buffer_frames = 0
+        #: One thread, ours. See the module docstring.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oo-capture")
 
         # Frame-zero anchor, established from the *first block actually read*.
         # Opening and preparing an ALSA device plus filling its first buffer takes
@@ -99,8 +126,23 @@ class AlsaSource:
 
     # ------------------------------------------------------------------
 
+    def _periods_for_buffer(self) -> int:
+        """How many periods to request so the ring holds ``buffer_ms`` of audio.
+
+        Never fewer than enough for two whole capture blocks. The station shipped
+        with a flat ``periods=8``, which at a 10 ms period is an 80 ms ring behind
+        a 100 ms block — the kernel could hold *less* audio than one read consumes,
+        so the entire tolerance for a scheduling stall was under a tenth of a
+        second. Measured consequence on 2026-08-08: 24 gaps in 45 minutes, every
+        real loss between 0.10 s and 0.24 s, i.e. about one block each.
+        """
+        wanted = max(self._buffer_ms, 2.0 * self._block_ms)
+        return max(8, int(math.ceil(wanted / self._period_ms)))
+
     async def open(self) -> StreamInfo:
-        return await asyncio.to_thread(self._open_blocking)
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor, self._open_blocking
+        )
 
     def _open_blocking(self) -> StreamInfo:
         try:
@@ -141,7 +183,7 @@ class AlsaSource:
                         rate=rate,
                         format=fmt_const,
                         periodsize=period_frames,
-                        periods=8,
+                        periods=self._periods_for_buffer(),
                     )
                 except Exception as exc:
                     last_error = exc
@@ -180,6 +222,22 @@ class AlsaSource:
         self._frames_read = 0
         self._sequence = 0
 
+        # The negotiated ring is what actually protects us; the requested one is
+        # only a wish. ALSA is free to clamp `periods`, and a ring shallower than
+        # one block means a read consumes more audio than the kernel can hold.
+        self.buffer_frames = int(
+            negotiated.get("buffer_size", 0) or self._period_frames * self._periods_for_buffer()
+        )
+        if self.buffer_frames < self._block_frames:
+            log.warning(
+                "capture.buffer_shallower_than_block",
+                buffer_frames=self.buffer_frames,
+                block_frames=self._block_frames,
+                buffer_ms=round(self.buffer_frames * 1000.0 / rate, 1),
+                block_ms=round(self._block_frames * 1000.0 / rate, 1),
+                note="any scheduling stall shorter than one block can now lose audio",
+            )
+
         clock = ClockCorrelation.sample()
         self.info = StreamInfo(
             stream_id=uuid.uuid4(),
@@ -196,6 +254,8 @@ class AlsaSource:
                 "period_frames": self._period_frames,
                 "block_frames": self._block_frames,
                 "periods_per_block": periods_per_block,
+                "buffer_frames": self.buffer_frames,
+                "buffer_ms": round(self.buffer_frames * 1000.0 / rate, 1),
                 "negotiated": {k: v for k, v in negotiated.items() if isinstance(v, int | str)},
                 "advertised_rates": list(self.device.advertised_rates),
                 "usb_serial": self.device.usb_serial,
@@ -209,6 +269,7 @@ class AlsaSource:
             sample_format=sample_format,
             block_frames=self._block_frames,
             period_frames=self._period_frames,
+            buffer_frames=self.buffer_frames,
         )
 
     # ------------------------------------------------------------------
@@ -216,7 +277,9 @@ class AlsaSource:
     async def read(self) -> CaptureBlock | None:
         if self._closed:
             return None
-        return await asyncio.to_thread(self._read_blocking)
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor, self._read_blocking
+        )
 
     def _read_blocking(self) -> CaptureBlock | None:
         import alsaaudio
@@ -301,16 +364,33 @@ class AlsaSource:
 
         assert self._deficit_baseline is not None
         step = deficit - self._deficit_baseline
-        if step > self._block_frames and discontinuity is None:
+        if step > self._block_frames:
             # A step beyond a whole block is lost audio, not crystal drift.
-            discontinuity = DiscontinuityReason.OVERRUN
-            missing = int(step)
-            self.missing_frames_total += missing
+            #
+            # This estimate used to be gated on `discontinuity is None`, so a
+            # block on which ALSA had *already* raised EPIPE skipped it entirely
+            # and was published with `missing_frames=0`. That made an overrun —
+            # the one event most likely to have lost audio — the one event whose
+            # cost was never measured, and it read in the logs as a harmless
+            # gap. It also left the deficit uncredited, which dragged the
+            # observed-rate estimate down: -261 ppm measured against a true
+            # device offset near -43 ppm. Estimate the loss either way; the
+            # reason ALSA already gave us is the better label, so keep it.
+            if discontinuity is None:
+                discontinuity = DiscontinuityReason.OVERRUN
+            missing += int(step)
+            self.missing_frames_total += int(step)
             self._deficit_baseline = deficit
         else:
             # Track the slow component, so genuine crystal offset is absorbed
             # rather than reported forever as a gap.
             self._deficit_baseline += 0.01 * step
+
+        if discontinuity is not None and discontinuity != DiscontinuityReason.STREAM_START:
+            if missing > 0:
+                self.gaps_with_loss += 1
+            else:
+                self.gaps_without_loss += 1
 
         self._frames_read += int(pcm.shape[0])
         sequence = self._sequence
@@ -332,5 +412,15 @@ class AlsaSource:
         self._closed = True
         pcm, self._pcm = self._pcm, None
         if pcm is not None:
-            await asyncio.to_thread(pcm.close)
-        log.info("capture.closed", frames=self._frames_read, overruns=self.overrun_count)
+            await asyncio.get_running_loop().run_in_executor(self._executor, pcm.close)
+        log.info(
+            "capture.closed",
+            frames=self._frames_read,
+            overruns=self.overrun_count,
+            gaps_with_loss=self.gaps_with_loss,
+            gaps_without_loss=self.gaps_without_loss,
+            missing_frames=self.missing_frames_total,
+        )
+        # After the device is shut, nothing else may be submitted. Do not wait:
+        # a read blocked in the kernel would hold shutdown open indefinitely.
+        self._executor.shutdown(wait=False, cancel_futures=True)

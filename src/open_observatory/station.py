@@ -91,6 +91,13 @@ class CaptureCounters:
     blocks: int = 0
     frames: int = 0
     discontinuities: int = 0
+    #: `discontinuities` split by whether audio was actually lost. An ALSA
+    #: overrun and a lost tenth of a second are different events with the same
+    #: log line, and a triage that counts `capture.gap` lines cannot tell them
+    #: apart. Neither is harmless — a zero-loss overrun still means the ring came
+    #: within one period of underflowing — but only one of them costs recording.
+    gaps_with_loss: int = 0
+    gaps_without_loss: int = 0
     estimated_missing_frames: int = 0
     stream_restarts: int = 0
     open_failures: int = 0
@@ -338,6 +345,7 @@ class Station:
             preferred_formats=self.settings.preferred_formats,
             channels=self.settings.capture_channels,
             block_ms=self.settings.capture_block_ms,
+            buffer_ms=self.settings.capture_buffer_ms,
         )
         if setting == "alsa":
             return alsa
@@ -862,11 +870,19 @@ class Station:
         self.counters.discontinuities += 1
         self.counters.estimated_missing_frames += block.missing_frames
         self._stream_discontinuities += 1
+        lost_audio = block.missing_frames > 0
+        if lost_audio:
+            self.counters.gaps_with_loss += 1
+        else:
+            self.counters.gaps_without_loss += 1
         reason = str(block.discontinuity)
         duration_s = block.missing_frames / block.sample_rate if block.sample_rate else 0.0
         log.warning(
             "capture.gap",
             reason=reason,
+            # Explicit, because `grep -c capture.gap` counts both kinds and every
+            # triage in this project's history has over-read the result.
+            lost_audio=lost_audio,
             missing_frames=block.missing_frames,
             seconds=round(duration_s, 4),
         )
@@ -885,9 +901,26 @@ class Station:
             station_id=self.station_id,
         )
         if block.missing_frames > 0:
-            asyncio.get_running_loop().create_task(
+            # Fire and forget, because capture must not wait on a database — but
+            # *not* silently. A bare `create_task` swallows the exception into an
+            # unretrieved task, and a gap row that fails to insert is exactly the
+            # record you need later to work out what a stream really captured.
+            # The station has one stream row covering 08-07 03:38 to 08-08 11:36
+            # whose gap rows stop at 06:24 on the first day, while `capture.gap`
+            # was still being logged 29 hours later; a failing insert would look
+            # precisely like that, and nothing would have said so.
+            task = asyncio.get_running_loop().create_task(
                 asyncio.to_thread(self._insert_gap_row, block)
             )
+            task.add_done_callback(self._log_gap_row_result)
+
+    @staticmethod
+    def _log_gap_row_result(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error("capture.gap_row_failed", error=str(error), error_type=type(error).__name__)
 
     def _publish_levels(self, sample: Any, block: CaptureBlock) -> None:
         payload = sample.to_dict()
@@ -1376,10 +1409,20 @@ class Station:
             )
             # A heartbeat every tick, so a crash between now and the next graceful
             # close still leaves the row with a recent, honest `last_frame_at_utc`
-            # and frame count instead of nothing at all (ADR-024). One indexed
-            # single-row UPDATE every ~10 s is trivial next to a clip write, so
-            # this stays on the default executor like the other small writes
-            # below, not the dedicated evidence one.
+            # and frame count instead of nothing at all (ADR-024). Measured on the
+            # station 2026-08-08, 48 of 49 stream rows carried `frame_count = 0`,
+            # because every stream but one was ended by the orphan sweep after a
+            # kill or a crash rather than by a graceful close -- so anything
+            # computing capture coverage from those rows read "recorded nothing".
+            #
+            # This deliberately writes the *stream*-scoped counters, never
+            # `self.counters`, which are process-lifetime: a process that reopens
+            # the device mid-life would otherwise write a later stream's row with
+            # an earlier stream's frames added in. See `CaptureCounters`.
+            #
+            # One indexed single-row UPDATE every ~10 s is trivial next to a clip
+            # write, so this stays on the default executor like the other small
+            # writes below, not the dedicated evidence one.
             if self.stream is not None and self._stream_last_frame_utc is not None:
                 try:
                     await asyncio.to_thread(
@@ -1476,7 +1519,16 @@ class Station:
                 "expected_frames": expected_frames,
                 "continuity_ratio": continuity,
                 "discontinuities": self.counters.discontinuities,
+                # `discontinuities` is the sum of these two. Report the split, so
+                # nobody has to infer lost recording from a count of log lines.
+                "gaps_with_loss": self.counters.gaps_with_loss,
+                "gaps_without_loss": self.counters.gaps_without_loss,
                 "estimated_missing_frames": self.counters.estimated_missing_frames,
+                "estimated_missing_seconds": round(
+                    self.counters.estimated_missing_frames / stream.fmt.sample_rate, 4
+                )
+                if stream and stream.fmt.sample_rate
+                else 0.0,
                 "stream_restarts": self.counters.stream_restarts,
                 "open_failures": self.counters.open_failures,
                 "block_age_s": lag_s,
@@ -1488,7 +1540,11 @@ class Station:
                 or None,
                 "rate_offset_ppm": round(getattr(self.source, "rate_offset_ppm", None) or 0.0, 2)
                 or None,
+                # Events ALSA itself reported, which is *not* the same as gaps:
+                # one overrun can span several blocks, and a gap can be detected
+                # from frame accounting without ALSA raising anything at all.
                 "overruns": getattr(self.source, "overrun_count", None),
+                "alsa_buffer_frames": getattr(self.source, "buffer_frames", None) or None,
                 # Distinct from "detail" above, which is the capture *state* message.
                 # These were both called "detail" and the provenance dict silently
                 # overwrote the message, so /api/v1/health interpolated a whole dict

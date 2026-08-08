@@ -67,9 +67,29 @@ class PrometheusExporter:
             capture["discontinuities"],
         )
         self._set(
+            "oo_capture_gaps_with_loss_total",
+            "Discontinuities that cost recorded audio",
+            capture["gaps_with_loss"],
+        )
+        self._set(
+            "oo_capture_gaps_without_loss_total",
+            "Discontinuities where frame accounting shows no audio was lost",
+            capture["gaps_without_loss"],
+        )
+        self._set(
+            "oo_capture_alsa_overruns_total",
+            "Overruns reported by ALSA itself, which is not the same as gaps",
+            capture["overruns"] or 0,
+        )
+        self._set(
             "oo_capture_missing_frames_total",
             "Estimated frames lost to overruns and device resets",
             capture["estimated_missing_frames"],
+        )
+        self._set(
+            "oo_capture_alsa_buffer_frames",
+            "Negotiated ALSA ring depth; audio is lost if a stall exceeds it",
+            capture["alsa_buffer_frames"] or 0,
         )
         self._set(
             "oo_capture_continuity_ratio",
