@@ -246,9 +246,13 @@ class TestBirdNetAdapter:
 
     def test_plausibility_bands_raise_the_bar_for_implausible_species(self) -> None:
         detector = BirdNetDetector(model_dir="/nonexistent")
-        common = detector._band_for(0.4)
-        uncommon = detector._band_for(0.05)
-        absent = detector._band_for(0.001)
+        # Measured: a Tawny Owl prior (0.019253) sits above the plausibility
+        # floor but below range_threshold (0.03) -- it is "uncommon-and-then-
+        # some", not near zero, so it still lands in ``out_of_range`` and
+        # merely faces a high bar rather than outright suppression.
+        common = detector._band_for(0.4, range_model_loaded=True)
+        uncommon = detector._band_for(0.05, range_model_loaded=True)
+        absent = detector._band_for(0.019253, range_model_loaded=True)
         assert common[0] == "in_range"
         assert uncommon[0] == "uncommon"
         assert absent[0] == "out_of_range"
@@ -256,10 +260,129 @@ class TestBirdNetAdapter:
         assert common[1] < uncommon[1] < absent[1]
 
     def test_no_range_model_means_no_invented_prior(self) -> None:
+        """With no range model loaded at all, today's uniform behaviour holds."""
         detector = BirdNetDetector(model_dir="/nonexistent")
-        band, threshold = detector._band_for(None)
+        band, threshold = detector._band_for(None, range_model_loaded=False)
         assert band == "unfiltered"
         assert threshold == detector._thresholds["in_range"]
+
+    def test_missing_prior_with_range_model_loaded_gets_the_strict_bar(self) -> None:
+        """Defect (b): a species the *loaded* range model is silent about must
+        not receive the easiest (in_range) threshold -- it is not an
+        endorsement. Measured: Great Horned Owl and Flammulated Owl both took
+        this path with occ=None, 202 of 5833 named detections on the live
+        station.
+        """
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        band, threshold = detector._band_for(None, range_model_loaded=True)
+        assert band == "no_prior"
+        assert band != "unfiltered"
+        assert threshold != detector._thresholds["in_range"]
+        assert threshold == detector._thresholds["out_of_range"]
+
+    def test_near_zero_prior_is_suppressed_outright_flammulated_owl(self) -> None:
+        """Defect (a): Flammulated Owl, occurrence 8e-06, score 0.959 on the
+        live station -- admitted under the old out_of_range band (0.90). No
+        score can be trusted for a species the range model puts at ~0 here
+        this week, so this must be unreachable by any score, not just a
+        higher one.
+        """
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        band, threshold = detector._band_for(8e-06, range_model_loaded=True)
+        assert band == "implausible"
+        assert threshold > 0.959
+        assert threshold > 0.995  # no realistic score clears it
+
+    def test_tawny_owl_survives_the_floor(self) -> None:
+        """The discriminating case: the floor must keep a genuine, seasonally
+        uncommon species while rejecting a continentally-absent one. Measured:
+        Tawny Owl, occurrence 0.019253, score 0.974 on the live station.
+        """
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        band, threshold = detector._band_for(0.019253, range_model_loaded=True)
+        assert band != "implausible"
+        assert threshold <= 0.974
+
+    def test_eurasian_jackdaw_unaffected(self) -> None:
+        """A genuine, common local species (occurrence 0.772293, score 0.617
+        on the live station) must land exactly where it did before this
+        change.
+        """
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        band, threshold = detector._band_for(0.772293, range_model_loaded=True)
+        assert band == "in_range"
+        assert threshold == detector._thresholds["in_range"]
+        assert threshold <= 0.617
+
+    def test_plausibility_floor_default_sits_between_the_measured_cases(self) -> None:
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        assert 1e-05 < detector._plausibility_floor < 0.019253
+
+    async def test_analyse_end_to_end_suppresses_and_labels_bands(self) -> None:
+        """Wire the fixed ``_band_for`` into ``analyse`` with a stub
+        interpreter and a stub range model reproducing the exact measured
+        priors, so the whole path -- not just the pure function -- is
+        exercised.
+        """
+
+        class _StubInterpreter:
+            def __init__(self, logits: np.ndarray) -> None:
+                self._logits = logits
+
+            def set_tensor(self, index: int, value: object) -> None:
+                return None
+
+            def invoke(self) -> None:
+                return None
+
+            def get_tensor(self, index: int) -> np.ndarray:
+                return self._logits.reshape(1, -1)
+
+        class _StubRange:
+            def __init__(self, priors: np.ndarray) -> None:
+                self._priors = priors
+
+            def probabilities(self, week: int) -> np.ndarray:
+                return self._priors
+
+        import math
+
+        labels = [
+            "Otus flammeolus_Flammulated Owl",
+            "Strix aluco_Tawny Owl",
+            "Coloeus monedula_Eurasian Jackdaw",
+        ]
+        # sigmoid^-1 of the exact measured scores from the live station.
+        scores = [0.959, 0.974, 0.617]
+        logits = np.array([math.log(p / (1.0 - p)) for p in scores], dtype=np.float32)
+        priors = np.array([8e-06, 0.019253, 0.772293], dtype=np.float32)
+
+        detector = BirdNetDetector(model_dir="/nonexistent", min_confidence=0.1)
+        detector._labels = labels
+        detector._parsed = [parse_label(label) for label in labels]
+        detector._expected_samples = 48000 * 3
+        detector._interpreter = _StubInterpreter(logits)
+        detector._input_index = 0
+        detector._output_index = 0
+        detector._range = _StubRange(priors)
+
+        pcm = np.zeros(48000 * 3, dtype=np.float32)
+        window = make_window(pcm, 48000, detector.window_spec)
+
+        detections = await detector.analyse(window)
+
+        names = {d.common_name for d in detections}
+        assert "Flammulated Owl" not in names
+        assert "Tawny Owl" in names
+        assert "Eurasian Jackdaw" in names
+        assert detector._suppressed_implausible_prior == 1
+
+        tawny = next(d for d in detections if d.common_name == "Tawny Owl")
+        assert tawny.native_result["plausibility_band"] == "out_of_range"
+        assert tawny.native_result["occurrence_probability"] == pytest.approx(0.019253)
+
+        jackdaw = next(d for d in detections if d.common_name == "Eurasian Jackdaw")
+        assert jackdaw.native_result["plausibility_band"] == "in_range"
 
     def test_licence_metadata_is_declared(self) -> None:
         metadata = BirdNetDetector.metadata

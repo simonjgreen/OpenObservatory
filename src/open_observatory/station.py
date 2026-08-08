@@ -625,6 +625,7 @@ class Station:
                     sample_rate=settings.audible_sample_rate,
                     stride_s=settings.birdnet_window_stride_s,
                     min_confidence=settings.birdnet_min_confidence,
+                    plausibility_floor=settings.birdnet_plausibility_floor,
                     use_location_filter=(
                         settings.birdnet_use_location_filter
                         and settings.latitude is not None

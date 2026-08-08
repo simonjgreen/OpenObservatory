@@ -109,6 +109,15 @@ class Settings(BaseSettings):
     birdnet_window_stride_s: float = 1.5
     #: Optional latitude/longitude/week species filtering, when the model supports it.
     birdnet_use_location_filter: bool = False
+    #: ADR-032. Occurrence probability at or below which the range model's
+    #: verdict is treated as "not a candidate at any score", not just a higher
+    #: bar -- BirdNET scores are not calibrated probabilities, so no score can
+    #: overrule a near-zero prior. Measured on the live station: implausible
+    #: North American owls (Flammulated Owl, Great Horned Owl) sit at
+    #: 8e-06-1.6e-04; a genuine, seasonally-uncommon Tawny Owl sits at
+    #: 0.019253. The default sits comfortably between the two, with margin on
+    #: both sides -- it must keep the Tawny Owl and reject the owls.
+    birdnet_plausibility_floor: float = 0.0005
 
     detector_queue_depth: int = 16
 

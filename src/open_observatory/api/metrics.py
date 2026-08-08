@@ -237,6 +237,26 @@ class PrometheusExporter:
                     plugin_id=plugin,
                 )
 
+            # ADR-032: per-reason plausibility suppression counts. Duck-typed
+            # rather than added to the generic worker snapshot, matching the
+            # `self.deferred` precedent in `detectors/deferred.py` -- only
+            # BirdNET has this concept, and the other shipped detectors should
+            # not need a no-op stub to keep conforming.
+            for worker in self.station.workers:
+                if worker.plugin_id != plugin:
+                    continue
+                stats_fn = getattr(worker.plugin, "plausibility_snapshot", None)
+                if not callable(stats_fn):
+                    continue
+                for reason, count in stats_fn().items():
+                    self._set(
+                        "oo_birdnet_suppressed_total",
+                        "BirdNET candidates suppressed by plausibility, split by reason",
+                        count,
+                        plugin_id=plugin,
+                        reason=reason,
+                    )
+
         clips = snapshot["clips"]
         self._set("oo_clips_written_total", "Evidence clips written", clips["written"])
         self._set(
