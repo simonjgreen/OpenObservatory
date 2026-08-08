@@ -637,3 +637,127 @@ class TestHardwareReturnsAfterFallback:
         await asyncio.wait_for(task, timeout=2.0)
 
         assert calls["n"] >= 2, "must keep probing until the device reappears"
+
+
+class TestGapsAreSplitByWhetherAudioWasLost:
+    """`grep -c capture.gap` counts two different events and always has.
+
+    Many gap records carry `missing_frames=0`: ALSA reported an overrun but frame
+    accounting shows nothing was actually lost. A smaller number lose real audio —
+    measured at the development station on 2026-08-08, 9 of 24 gap lines in 45 minutes, for
+    1.16 s of recording. Counting log lines overstated the damage by 2.7x, and the
+    health endpoint could not tell the operator which was which.
+    """
+
+    def _block(self, missing_frames: int):
+        import numpy as np
+
+        from open_observatory.audio.contracts import (
+            CaptureBlock,
+            ClockCorrelation,
+            DiscontinuityReason,
+        )
+
+        return CaptureBlock(
+            stream_id=uuid.uuid4(),
+            sequence=0,
+            first_frame=0,
+            sample_rate=384000,
+            pcm=np.zeros(8, dtype="float32"),
+            monotonic_start_ns=0,
+            clock=ClockCorrelation.sample(),
+            discontinuity=DiscontinuityReason.OVERRUN,
+            missing_frames=missing_frames,
+        )
+
+    def _station(self):
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings())
+        # The gap *row* is another agent's territory and needs a database; these
+        # tests are about the counters, so keep the write out of the way.
+        station._insert_gap_row = lambda block: None  # type: ignore[method-assign]
+        return station
+
+    async def test_counters_separate_the_two_kinds(self) -> None:
+        station = self._station()
+        station._record_gap(self._block(0))
+        station._record_gap(self._block(0))
+        station._record_gap(self._block(42_505))
+        await asyncio.sleep(0.05)  # let the gap-row task finish
+
+        assert station.counters.discontinuities == 3
+        assert station.counters.gaps_without_loss == 2
+        assert station.counters.gaps_with_loss == 1
+        assert station.counters.estimated_missing_frames == 42_505
+
+    async def test_health_reports_the_split_and_the_seconds(self) -> None:
+        station = self._station()
+        station._record_gap(self._block(0))
+        station._record_gap(self._block(38_400))
+        await asyncio.sleep(0.05)
+
+        capture = station.status_snapshot()["capture"]
+        assert capture["gaps_with_loss"] == 1
+        assert capture["gaps_without_loss"] == 1
+        # Without a stream there is no rate to divide by, so this stays 0.0
+        # rather than guessing one.
+        assert capture["estimated_missing_frames"] == 38_400
+
+
+class TestStreamRowRecordsProgressBeforeItEnds:
+    """A crashed process must not leave a row claiming the stream recorded nothing.
+
+    `frame_count` and `discontinuity_count` used to be written only by
+    `_close_stream_row`, which runs on a graceful stop. Measured on the station on
+    2026-08-08: 48 of 49 `audio_stream` rows carried `frame_count = 0`, the single
+    exception being the one stream that ended through the supervisor's own error
+    path. Capture coverage computed from those rows reads zero for every session
+    that was ever killed or restarted.
+    """
+
+    async def test_checkpoint_writes_frames_to_the_open_row(self, settings) -> None:
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        assert isinstance(settings, Settings)
+        station = Station(settings)
+        written: list[tuple] = []
+        station._checkpoint_stream_row_blocking = (  # type: ignore[method-assign]
+            lambda stream_id, frames, discontinuities: written.append(
+                (stream_id, frames, discontinuities)
+            )
+        )
+        station._running = True
+        station.stream = SimpleNamespace(stream_id=uuid.uuid4())  # type: ignore[assignment]
+        station.counters.frames = 991_488_768
+        station.counters.discontinuities = 22
+
+        await station._checkpoint_stream_row()
+
+        assert written == [(station.stream.stream_id, 991_488_768, 22)]
+
+    async def test_checkpoint_is_a_no_op_with_no_open_stream(self, settings) -> None:
+        from open_observatory.station import Station
+
+        station = Station(settings)
+        station._running = True
+        station.stream = None
+        # Must not raise, and must not need a database.
+        await station._checkpoint_stream_row()
+
+    async def test_a_failing_checkpoint_does_not_propagate(self, settings) -> None:
+        from open_observatory.station import Station
+
+        station = Station(settings)
+
+        def boom(*args: object) -> None:
+            raise RuntimeError("database is locked")
+
+        station._checkpoint_stream_row_blocking = boom  # type: ignore[method-assign]
+        station._running = True
+        station.stream = SimpleNamespace(stream_id=uuid.uuid4())  # type: ignore[assignment]
+
+        # Bookkeeping must never be able to take capture down. Capture always wins.
+        await station._checkpoint_stream_row()

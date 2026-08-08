@@ -78,6 +78,13 @@ class CaptureCounters:
     blocks: int = 0
     frames: int = 0
     discontinuities: int = 0
+    #: `discontinuities` split by whether audio was actually lost. An ALSA
+    #: overrun and a lost tenth of a second are different events with the same
+    #: log line, and a triage that counts `capture.gap` lines cannot tell them
+    #: apart. Neither is harmless — a zero-loss overrun still means the ring came
+    #: within one period of underflowing — but only one of them costs recording.
+    gaps_with_loss: int = 0
+    gaps_without_loss: int = 0
     estimated_missing_frames: int = 0
     stream_restarts: int = 0
     open_failures: int = 0
@@ -299,6 +306,7 @@ class Station:
             preferred_formats=self.settings.preferred_formats,
             channels=self.settings.capture_channels,
             block_ms=self.settings.capture_block_ms,
+            buffer_ms=self.settings.capture_buffer_ms,
         )
         if setting == "alsa":
             return alsa
@@ -805,11 +813,19 @@ class Station:
     def _record_gap(self, block: CaptureBlock) -> None:
         self.counters.discontinuities += 1
         self.counters.estimated_missing_frames += block.missing_frames
+        lost_audio = block.missing_frames > 0
+        if lost_audio:
+            self.counters.gaps_with_loss += 1
+        else:
+            self.counters.gaps_without_loss += 1
         reason = str(block.discontinuity)
         duration_s = block.missing_frames / block.sample_rate if block.sample_rate else 0.0
         log.warning(
             "capture.gap",
             reason=reason,
+            # Explicit, because `grep -c capture.gap` counts both kinds and every
+            # triage in this project's history has over-read the result.
+            lost_audio=lost_audio,
             missing_frames=block.missing_frames,
             seconds=round(duration_s, 4),
         )
@@ -828,9 +844,26 @@ class Station:
             station_id=self.station_id,
         )
         if block.missing_frames > 0:
-            asyncio.get_running_loop().create_task(
+            # Fire and forget, because capture must not wait on a database — but
+            # *not* silently. A bare `create_task` swallows the exception into an
+            # unretrieved task, and a gap row that fails to insert is exactly the
+            # record you need later to work out what a stream really captured.
+            # The station has one stream row covering 08-07 03:38 to 08-08 11:36
+            # whose gap rows stop at 06:24 on the first day, while `capture.gap`
+            # was still being logged 29 hours later; a failing insert would look
+            # precisely like that, and nothing would have said so.
+            task = asyncio.get_running_loop().create_task(
                 asyncio.to_thread(self._insert_gap_row, block)
             )
+            task.add_done_callback(self._log_gap_row_result)
+
+    @staticmethod
+    def _log_gap_row_result(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error("capture.gap_row_failed", error=str(error), error_type=type(error).__name__)
 
     def _publish_levels(self, sample: Any, block: CaptureBlock) -> None:
         payload = sample.to_dict()
@@ -1211,6 +1244,37 @@ class Station:
             row.discontinuity_count = self.counters.discontinuities
             row.end_reason = reason[:64]
 
+    async def _checkpoint_stream_row(self) -> None:
+        """Write the running frame and discontinuity totals to the open stream row.
+
+        Cheap — one UPDATE every 30 s against a row that is already in cache —
+        and it is what makes a crashed stream's row say how much it recorded
+        instead of zero. The orphan sweep deliberately does not invent a frame
+        count; this makes sure it does not have to.
+        """
+        if self.stream is None or not self._running:
+            return
+        stream_id = self.stream.stream_id
+        frames = self.counters.frames
+        discontinuities = self.counters.discontinuities
+        try:
+            await asyncio.to_thread(
+                self._checkpoint_stream_row_blocking, stream_id, frames, discontinuities
+            )
+        except Exception:
+            # Progress bookkeeping must never take capture down with it.
+            log.exception("housekeeping.stream_checkpoint_failed")
+
+    def _checkpoint_stream_row_blocking(
+        self, stream_id: uuid.UUID, frames: int, discontinuities: int
+    ) -> None:
+        with session_scope() as session:
+            row = session.get(orm.AudioStream, stream_id)
+            if row is None or row.end_utc is not None:
+                return
+            row.frame_count = frames
+            row.discontinuity_count = discontinuities
+
     def _insert_gap_row(self, block: CaptureBlock) -> None:
         with session_scope() as session:
             session.add(
@@ -1248,6 +1312,15 @@ class Station:
             self.bus.emit(
                 EventType.STATION_STATUS, self.status_snapshot(), station_id=self.station_id
             )
+            # Checkpoint how much audio this stream has actually taken. Without
+            # this, `frame_count` and `discontinuity_count` are written *only* by
+            # `_close_stream_row` on a graceful stop — and measured on the station
+            # on 2026-08-08, 48 of 49 stream rows carried `frame_count = 0`,
+            # because every other stream was ended by the orphan sweep after a
+            # kill or a crash. Anything computing capture coverage from those
+            # rows was reading a row that says the stream recorded nothing.
+            if ticks % 3 == 0:
+                await self._checkpoint_stream_row()
             # Retention every 5 minutes, in a thread: it walks the clip tree, and a
             # slow filesystem must never stall capture. Without this the size budget
             # and expiry policy would be configuration that does nothing.
@@ -1320,7 +1393,16 @@ class Station:
                 "expected_frames": expected_frames,
                 "continuity_ratio": continuity,
                 "discontinuities": self.counters.discontinuities,
+                # `discontinuities` is the sum of these two. Report the split, so
+                # nobody has to infer lost recording from a count of log lines.
+                "gaps_with_loss": self.counters.gaps_with_loss,
+                "gaps_without_loss": self.counters.gaps_without_loss,
                 "estimated_missing_frames": self.counters.estimated_missing_frames,
+                "estimated_missing_seconds": round(
+                    self.counters.estimated_missing_frames / stream.fmt.sample_rate, 4
+                )
+                if stream and stream.fmt.sample_rate
+                else 0.0,
                 "stream_restarts": self.counters.stream_restarts,
                 "open_failures": self.counters.open_failures,
                 "block_age_s": lag_s,
@@ -1332,7 +1414,11 @@ class Station:
                 or None,
                 "rate_offset_ppm": round(getattr(self.source, "rate_offset_ppm", None) or 0.0, 2)
                 or None,
+                # Events ALSA itself reported, which is *not* the same as gaps:
+                # one overrun can span several blocks, and a gap can be detected
+                # from frame accounting without ALSA raising anything at all.
                 "overruns": getattr(self.source, "overrun_count", None),
+                "alsa_buffer_frames": getattr(self.source, "buffer_frames", None) or None,
                 # Distinct from "detail" above, which is the capture *state* message.
                 # These were both called "detail" and the provenance dict silently
                 # overwrote the message, so /api/v1/health interpolated a whole dict
