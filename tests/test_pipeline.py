@@ -539,12 +539,25 @@ class TestEvidenceIsOffTheDetectorPath:
         from open_observatory.station import DetectionRecord, Station
 
         station = Station(Settings(clips_enabled=True))
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         attached: list[str] = []
+        # Signalled from the executor thread, so the test waits on the work
+        # actually finishing rather than on a fixed duration. The previous
+        # version slept a flat 0.35 s against work that sleeps 0.25 s, leaving
+        # 100 ms of slack, and failed intermittently under full-suite load
+        # (observed twice on 2026-08-08). The property under test is that the
+        # work ran *off the producer's thread at all*; the immediate-handoff
+        # assertion below is what times the part that must be fast, so waiting
+        # longer here weakens nothing.
+        did_attach = asyncio.Event()
 
         def slow_attach(record: DetectionRecord, metadata: object) -> None:
             time.sleep(0.25)
             attached.append("done")
+            # `asyncio.Event` is not thread-safe and this runs in the evidence
+            # executor, not the loop thread.
+            loop.call_soon_threadsafe(did_attach.set)
 
         station._attach_evidence = slow_attach  # type: ignore[method-assign]
         station._evidence_task = asyncio.create_task(station._evidence_loop())
@@ -552,8 +565,8 @@ class TestEvidenceIsOffTheDetectorPath:
             for _ in range(4):
                 station._evidence_queue.put_nowait((object(), object()))  # type: ignore[arg-type]
             # Handing work over must be immediate: the producer is the detector.
-            assert asyncio.get_running_loop().time() - started < 0.05
-            await asyncio.sleep(0.35)
+            assert loop.time() - started < 0.05
+            await asyncio.wait_for(did_attach.wait(), timeout=5.0)
             assert attached, "evidence work must actually run in the background"
         finally:
             station._evidence_queue.put_nowait(None)
