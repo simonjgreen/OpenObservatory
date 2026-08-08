@@ -68,7 +68,7 @@ within one frame (20 µs), verified by test.
 |---|---|
 | BirdNET adapter | done, GLOBAL 6K V2.4 via `ai-edge-litert`, ~40× realtime on this Pi |
 | Documented model acquisition path | done — `oo models fetch`, checksummed manifest, licences shown before download |
-| Detector fixture self-test | done for `activity-v1` and `ultrasonic-pass-v1`; BirdNET's *logic* is tested but there is **no fixture test asserting a known species from a known recording** |
+| Detector fixture self-test | done for `activity-v1` and `ultrasonic-pass-v1`; BirdNET now also has one, `tests/test_birdnet_fixture.py` — see the exit-gate note below |
 | Normalised detection persistence | done |
 | Evidence clip manager | done, with a rate limit, size budget, disk reserve and retention sweep |
 | Minimal FastAPI list/detail endpoints | done, plus health, metrics, devices, streams, gaps, detectors, models, taxa activity, media, history and history windows |
@@ -78,10 +78,36 @@ within one frame (20 µs), verified by test.
 | Low-latency live listening | done, beyond plan — ~180 ms end to end |
 
 **Exit gate — known bird fixture produces expected candidate label and an aligned
-playable clip: partially met.** BirdNET produced real identifications on live audio
-within minutes (including *Columba palumbus*) with playable, aligned clips. That is
-a live demonstration, not the repeatable fixture test the gate asks for, because no
-licensed reference recording is committed to the repository.
+playable clip: met on this development machine (x86_64); not yet demonstrated on
+the target Pi 5 (aarch64).** `tests/test_birdnet_fixture.py`, added 2026-08-08, is
+the repeatable test the gate asks for. It uses a committed reference recording —
+`tests/fixtures/audio/erithacus_rubecula_XC441752.mp3`, a European Robin song from
+Xeno-canto (XC441752, recordist Jan Cibulka), individually licence-checked (CC BY-SA
+4.0, not the NC-SA terms many Xeno-canto recordings carry) and committed with its
+required attribution in `tests/fixtures/audio/ATTRIBUTION.md` and a checksummed
+`manifest.tsv` in the same shape as `models/manifest.tsv` (ADR-006). Unlike the
+BirdNET model assets, this is a short third-party recording whose own licence
+explicitly permits redistribution, so it is committed directly rather than fetched
+on demand.
+
+The test asserts both halves of the gate against the real, shipped model and range
+model, with the plausibility filtering from ADR-032 switched on and the development station's
+own coordinates: (1) "European Robin" / *Erithacus rubecula* appears among the
+candidates, with a real, in-range plausibility band, not a suppressed or
+strictly-gated one; (2) an evidence clip is written, is readable as 48 kHz audio, has
+a sane duration, and — checked at the frame level, not just by overlap — its samples
+match the source recording exactly at the clip's own recorded frame bounds (to within
+16-bit PCM quantisation). It skips cleanly, exactly like the existing BatDetect2 tests,
+when the (unbundled) BirdNET model assets or a TFLite runtime are absent.
+
+**What is not yet verified: a target-device run.** This agent had read-only access to
+the Pi only (another agent owned it exclusively for a live measurement session this
+session), so `python -m pytest tests/test_birdnet_fixture.py` has been run and passes
+on this x86_64 development machine, not on the aarch64 Pi 5. CLAUDE.md's rule that a
+detector is only "supported" once its fixture test passes on target architecture is
+therefore still open — the fixture and the test exist and are committed, but the
+target-architecture run is outstanding, tracked as the remaining piece of the
+Milestone 4.5 "committed fixture test" deliverable.
 
 ## Milestone 4 — Product dashboard and review — **foundation in place, not started**
 
@@ -110,6 +136,11 @@ single surface with two depths.
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
 mutually exclusive, because deploying restarts capture and voids the run.
+
+**Committed species fixture test: added 2026-08-08** (`tests/test_birdnet_fixture.py`,
+see the Milestone 3 exit-gate note above for what it asserts and its provenance). Not
+yet run on the target Pi 5 — see that note for why. The 72-hour soak, the full-hour
+drift run and `oo audio window-dump` remain untouched by this change.
 
 ## Milestone 5 — Ultrasonic and bat support — **complete**
 
