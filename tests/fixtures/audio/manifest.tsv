@@ -1,0 +1,9 @@
+# Test fixture audio manifest — same shape as models/manifest.tsv (ADR-006's
+# checksummed-manifest pattern), applied to a committed third-party recording
+# instead of a fetched-on-demand model asset. See ATTRIBUTION.md for full
+# provenance. tests/test_birdnet_fixture.py verifies this checksum before
+# using the file, so a corrupted or silently-swapped fixture fails loudly
+# rather than producing a misleading pass or fail.
+#
+# Columns: filename <TAB> sha256 <TAB> licence <TAB> url
+erithacus_rubecula_XC441752.mp3	21d116a92365cf6f753ef90f166eaeeebedf46300dd212a050cfdc28ce2d68ca	CC-BY-SA-4.0	https://xeno-canto.org/441752

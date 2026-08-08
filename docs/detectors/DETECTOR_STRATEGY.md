@@ -155,15 +155,24 @@ defaults and the running station legitimately differ here. Enabling it is not co
 before it was on, this station stored "Great Bittern" and "Spotted Crake" at 0.9
 confidence in a the development area garden.
 
-Fixture testing is partial. `tests/test_detectors.py` exercises BirdNET's logic — week
-calculation, label parsing, plausibility-band thresholds, licence metadata, missing-model
-handling — but there is no fixture test that runs inference on a known recording and
-asserts a known species. `docs/delivery/MILESTONE_STATUS.md` records this explicitly as the
-Milestone 3 exit gate being only partially met: a live demonstration produced a real
-identification (*Columba palumbus*, Common Woodpigeon) within minutes of starting, but that
-is not the repeatable fixture test the gate requires. Per this project's rule that a
-detector is only "supported" once an automated fixture test passes, `birdnet-v2.4` has not
-yet cleared that bar.
+Fixture testing: `tests/test_detectors.py` exercises BirdNET's logic — week calculation,
+label parsing, plausibility-band thresholds, licence metadata, missing-model handling.
+`tests/test_birdnet_fixture.py`, added 2026-08-08, is the fixture test that runs real
+inference on a known recording and asserts a known species: a committed, individually
+licence-checked European Robin recording (CC BY-SA 4.0, Xeno-canto XC441752 — see
+`tests/fixtures/audio/ATTRIBUTION.md`) is analysed at the development station's coordinates with
+ADR-032's plausibility filtering switched on, and the test asserts both that "European
+Robin" appears among the candidates in an unsuppressed plausibility band, and that the
+resulting evidence clip is playable and frame-aligned to where the call actually is in
+the source recording (checked by exact sample comparison at the clip's own recorded frame
+bounds, not just by overlap). It skips cleanly — like the BatDetect2 tests already do —
+when the (unbundled) model assets or a TFLite runtime are absent.
+
+That test has been run and passes on an x86_64 development machine, not yet on the
+target Pi 5 (aarch64). Per this project's rule that a detector is only "supported" once
+its fixture test passes on target architecture, `birdnet-v2.4` has a passing fixture test
+but has not yet cleared that bar on the actual device — see
+`docs/delivery/MILESTONE_STATUS.md`'s Milestone 3 exit-gate note.
 
 ### `ultrasonic-pass-v1` — replaces the BatDetect2 plan (ADR-013)
 
