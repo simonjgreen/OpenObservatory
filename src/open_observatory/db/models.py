@@ -200,6 +200,16 @@ class MediaAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: Set by the retention sweeper (``retention.py``) when it deletes the file
+    #: this row describes. The row itself is never deleted -- detection history
+    #: must keep working, just without audio -- so ``reclaimed_at`` is how a
+    #: history view or an operator distinguishes "gone" from "never existed",
+    #: and ``reclaim_reason`` (the tier name, e.g. ``"native"``, ``"watermark"``)
+    #: is how a wrongly-reclaimed clip can be explained after the fact.
+    reclaimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    reclaim_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class DetectionMedia(Base):

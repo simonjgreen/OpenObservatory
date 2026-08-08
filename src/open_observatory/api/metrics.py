@@ -235,6 +235,52 @@ class PrometheusExporter:
         self._set(
             "oo_storage_clip_bytes", "Bytes currently held in clips", storage["clip_bytes"]
         )
+        self._set(
+            "oo_storage_used_ratio",
+            "Fraction of the clip filesystem in use",
+            storage["disk_used_ratio"],
+        )
+
+        retention = snapshot["retention"]
+        self._set(
+            "oo_retention_watermark_ratio",
+            "Disk-used fraction above which oldest-first reclaim runs regardless of tier",
+            retention["watermark_ratio"],
+        )
+        self._set(
+            "oo_retention_sweep_duration_seconds",
+            "Wall-clock duration of the last retention sweep",
+            retention["last_sweep_duration_s"],
+        )
+        self._set(
+            "oo_retention_sweep_complete",
+            "1 when the last sweep finished within its batch budget with no backlog left",
+            1.0 if retention["last_sweep_complete"] else 0.0,
+        )
+        last_sweep_at = self.station.retention.last_sweep_at if self.station.retention else None
+        self._set(
+            "oo_retention_last_sweep_timestamp_seconds",
+            "Unix timestamp of the last retention sweep",
+            last_sweep_at.timestamp() if last_sweep_at else None,
+        )
+        self._set(
+            "oo_retention_exemplar_detections",
+            "Detections currently exempt from the 30-90 day cull as first- or best-of-species",
+            retention["exemplar_detections"],
+        )
+        for tier in ("native", "exemplar_only", "expired", "watermark"):
+            self._set(
+                "oo_retention_files_deleted_total",
+                "Clip files deleted by the retention sweeper",
+                retention["totals"].get(f"{tier}_deleted", 0),
+                tier=tier,
+            )
+            self._set(
+                "oo_retention_bytes_reclaimed_total",
+                "Clip bytes reclaimed by the retention sweeper",
+                retention["totals"].get(f"{tier}_bytes", 0),
+                tier=tier,
+            )
 
         self._set(
             "oo_live_audio_listeners",

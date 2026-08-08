@@ -64,6 +64,7 @@ from .detectors.ultrasonic import UltrasonicDetector
 from .events import EventBus, EventType
 from .live import LiveAudioBroadcaster
 from .normaliser import CanonicalDetection, ClaimViolation, Normaliser
+from .retention import RetentionSweeper
 from .schedule import NightSchedule
 from .segmenter import TransientAssetStore, WindowRouter
 
@@ -180,6 +181,19 @@ class Station:
             ultrasonic_heterodyne_bandwidth_hz=settings.ultrasonic_heterodyne_bandwidth_hz,
             ultrasonic_audible_max_s=settings.ultrasonic_audible_max_s,
             ultrasonic_audible_min_peak_hz=settings.ultrasonic_audible_min_peak_hz,
+        )
+        #: NVR-style tiered aging (ADR-022), separate from `self.clips` above:
+        #: this decides *which* clips a detection keeps as it ages, driven by
+        #: the database (kind, species, score), not a filesystem walk.
+        self.retention = RetentionSweeper(
+            clip_dir=settings.clip_dir,
+            session_factory=session_scope,
+            native_days=settings.retention_native_days,
+            audible_only_days=settings.retention_audible_only_days,
+            exemplar_only_days=settings.retention_exemplar_only_days,
+            watermark_ratio=settings.retention_watermark_ratio,
+            batch_size=settings.retention_batch_size,
+            batch_budget_s=settings.retention_batch_budget_s,
         )
 
         self.workers: list[DetectorWorker] = []
@@ -1377,20 +1391,27 @@ class Station:
                     )
                 except Exception:
                     log.exception("housekeeping.heartbeat_failed")
-            # Retention every 5 minutes, in a thread: it walks the clip tree, and a
-            # slow filesystem must never stall capture. Without this the size budget
-            # and expiry policy would be configuration that does nothing.
-            if ticks % 30 == 0:
+            # Retention every 10 seconds, in the evidence executor's dedicated
+            # thread: never the default pool, which capture's ALSA read also
+            # uses (ADR-021, ADR-026). Each call is bounded (batch size and a
+            # wall-clock budget), so a large backlog drains gradually across
+            # many ticks instead of stalling capture once.
+            if self.settings.retention_enabled:
                 try:
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(
-                        self._evidence_executor, self.clips.enforce_retention
+                        self._evidence_executor, self.retention.sweep
                     )
                 except Exception:
                     log.exception("housekeeping.retention_failed")
                 else:
-                    if result["expired_deleted"] or result["budget_deleted"]:
-                        self._emit_health("info", "clips.retention", result)
+                    if result.total_deleted:
+                        self._emit_health("info", "retention.swept", result.to_dict())
+                    if not result.complete:
+                        log.warning(
+                            "housekeeping.retention_not_keeping_up",
+                            **result.to_dict(),
+                        )
 
     # -- introspection --------------------------------------------------
 
@@ -1503,6 +1524,7 @@ class Station:
             },
             "clips": self.clips.snapshot(),
             "storage": self.clips.disk_usage(),
+            "retention": self.retention.snapshot(),
             "live_audio": self.live_audio.snapshot(),
             "live_audio_ultrasonic": {
                 **self.live_audio_ultrasonic.snapshot(),

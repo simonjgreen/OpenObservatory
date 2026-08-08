@@ -27,10 +27,12 @@ audio_app = typer.Typer(help="Audio device diagnostics")
 models_app = typer.Typer(help="Model asset acquisition (ADR-006)")
 moth_app = typer.Typer(help="AudioMoth firmware and configuration over USB HID")
 history_app = typer.Typer(help="Capture history and coverage diagnostics")
+clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
 app.add_typer(history_app, name="history")
+app.add_typer(clips_app, name="clips")
 
 console = Console()
 
@@ -586,6 +588,92 @@ def history_reconcile_streams(
 
 # ----------------------------------------------------------------------
 # system / serve
+
+
+@clips_app.command("retention")
+def clips_retention(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be deleted; delete nothing"
+    ),
+    limit: int = typer.Option(
+        50, help="Maximum decisions to print (the sweep itself is separately batch-bounded)"
+    ),
+) -> None:
+    """Run one tiered retention sweep and report what it did (or would do).
+
+    This deletes clip *files* irreversibly when not run with ``--dry-run``.
+    Detection metadata is never touched by this command, whichever mode it
+    runs in (ADR-022). Always run ``--dry-run`` first against a station you
+    care about.
+    """
+    from .db.session import create_all, init_engine, session_scope
+    from .retention import RetentionSweeper
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    create_all()
+
+    sweeper = RetentionSweeper(
+        clip_dir=settings.clip_dir,
+        session_factory=session_scope,
+        native_days=settings.retention_native_days,
+        audible_only_days=settings.retention_audible_only_days,
+        exemplar_only_days=settings.retention_exemplar_only_days,
+        watermark_ratio=settings.retention_watermark_ratio,
+        batch_size=settings.retention_batch_size,
+        batch_budget_s=settings.retention_batch_budget_s,
+    )
+    report = sweeper.sweep(dry_run=dry_run)
+
+    if dry_run:
+        console.print("[bold yellow]DRY RUN[/bold yellow] — nothing was deleted\n")
+
+    table = Table(title="Retention sweep")
+    table.add_column("tier")
+    table.add_column("files", justify="right")
+    table.add_column("bytes", justify="right")
+    for tier in ("native", "exemplar_only", "expired", "watermark"):
+        table.add_row(
+            tier,
+            str(report.tier_counts.get(tier, 0)),
+            f"{report.tier_bytes.get(tier, 0):,}",
+        )
+    console.print(table)
+    console.print(
+        f"exemplar detections (first/best-of-species, exempt through the "
+        f"{settings.retention_audible_only_days}-{settings.retention_exemplar_only_days}d tier): "
+        f"{report.exemplar_detections}"
+    )
+    if report.already_missing:
+        console.print(
+            f"[yellow]{report.already_missing} asset(s) were already gone from disk "
+            "(row present, file missing) — marked reclaimed without further I/O[/yellow]"
+        )
+    console.print(
+        f"disk used: {report.disk_used_ratio_before:.1%}"
+        f" -> {report.disk_used_ratio_after:.1%}"
+        if report.disk_used_ratio_before is not None and report.disk_used_ratio_after is not None
+        else "disk used: unknown"
+    )
+    console.print(f"duration: {report.duration_s:.3f}s  complete: {report.complete}")
+
+    if report.decisions:
+        detail = Table(title=f"Decisions (showing up to {limit})")
+        detail.add_column("tier")
+        detail.add_column("kind")
+        detail.add_column("bytes", justify="right")
+        detail.add_column("on disk")
+        detail.add_column("reason")
+        for decision in report.decisions[:limit]:
+            detail.add_row(
+                decision.tier,
+                decision.kind,
+                str(decision.bytes),
+                "yes" if decision.existed_on_disk else "no",
+                decision.reason,
+            )
+        console.print(detail)
 
 
 @app.command("system-report")

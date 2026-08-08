@@ -257,12 +257,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"clip storage {settings.clip_dir} is not a mount point: evidence would "
                 "be written to the system disk, which competes with capture for I/O"
             )
+        retention = snapshot["retention"]
+        storage = snapshot["storage"]
+        if (
+            settings.retention_enabled
+            and storage["disk_used_ratio"] is not None
+            and storage["disk_used_ratio"] > settings.retention_watermark_ratio
+            and not retention["last_sweep_complete"]
+        ):
+            problems.append(
+                f"disk usage {storage['disk_used_ratio']:.0%} exceeds the "
+                f"{settings.retention_watermark_ratio:.0%} watermark and the retention "
+                "sweep is not keeping up"
+            )
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
         return {
             "status": status,
             "problems": problems,
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "capture": capture,
+            "storage": {
+                "disk_used_ratio": storage["disk_used_ratio"],
+                "watermark_ratio": settings.retention_watermark_ratio,
+                "retention_sweep_keeping_up": retention["last_sweep_complete"],
+                "retention_last_sweep_at": retention["last_sweep_at"],
+            },
             "mqtt": mqtt_publisher.snapshot(),
         }
 
