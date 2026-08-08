@@ -1,5 +1,12 @@
 # Capture gaps and overruns: what was measured, what was fixed, what is still open
 
+> **2026-08-08, evening.** Gaps returned after seven branches were merged into
+> `main` and deployed at 17:13Z. They were caused by the retention sweep moving to
+> a 10 s cadence, and they were **not** losing any audio. Both statements are
+> measured; see "The regression of 2026-08-08 evening" at the end of this document,
+> and ADR-033. The ALSA-ring fix described below was not implicated and is not in
+> question.
+
 Rewritten 2026-08-08 (afternoon session) from the handover of the same day. The
 previous version listed four untested hypotheses. Three of them have now been tested
 on the live station. Everything below is measured on the Pi unless it is explicitly
@@ -299,3 +306,199 @@ The ring depth alone can be rolled back without reverting anything, by setting
 `OO_CAPTURE_BUFFER_MS=80` in `config/runtime.env` and restarting. Note that
 `_periods_for_buffer` floors the ring at two capture blocks, so 80 will still yield
 200 ms; reproducing the original 80 ms ring needs the code change reverted.
+
+---
+
+# The regression of 2026-08-08 evening
+
+Seven branches were merged into `main` and deployed at **17:13Z**. `capture.gap`
+came back immediately: zero in the 73 minutes before the deploy, ~1.9/min after it.
+MQTT was ruled out by the operator before this investigation started (same rate with
+the publisher off and on). The Pi was not loaded: load average 0.33–0.78, `oo` at
+18% CPU, 53.8 °C, `get_throttled=0x0`.
+
+## Finding 1: the retention sweep's 10 s cadence starved the event loop
+
+The merge moved `RetentionSweeper.sweep()` from every 5 minutes (`ticks % 30`) to
+every housekeeping tick. It runs in the evidence executor's own thread and bounds
+itself to `batch_size=200` / `batch_budget_s=1.5`, taking ~0.30 s per call.
+
+**Single-variable experiment**, `OO_RETENTION_ENABLED` the only thing changed
+between the two windows, same code, same `config/runtime.env` otherwise:
+
+| Window (UTC) | Retention | `capture.gap` | `estimated_missing_frames` | `overruns` | `rate_offset_ppm` | `loop.lag` events |
+|---|---|---|---|---|---|---|
+| 18:01–18:06 (5 min) | every 10 s | **8** (1.6/min) | 252,495 | 0 | **+2,680** | ~25 (5/min) |
+| 18:06–18:14 (7 min) | disabled | **0** | **0** | 0 | **−51.75** | 11 (1.6/min) |
+
+The fix is ADR-033: a `retention_interval_s` setting, default 300 s, rounded to the
+nearest tick. The pre-merge behaviour, restored behind a knob.
+
+### The fix, verified on the station
+
+Deployed 18:16:58Z, retention re-enabled, 15 minutes measured:
+
+| | 10 s cadence | disabled | **300 s cadence (the fix)** |
+|---|---|---|---|
+| Window | 5 min | 7 min | **15 min** |
+| `capture.gap` | 8 (1.6/min) | 0 | **2 (0.13/min)** |
+| `continuity_ratio` | — | — | **0.999869** |
+| ALSA `overruns` | 0 | 0 | **0** |
+| `loop_lag_max_s` | 0.140 | 0.140 | **0.142** |
+| `hot_path_cpu_ratio` | 0.1123 | — | **0.1059** |
+| `housekeeping_blocking_s` | 0.0012 | — | **0.0017** |
+
+**A 12× reduction, not elimination — and the residue proves the mechanism.** Both
+remaining gap records land on a retention sweep to the second: `last_sweep_at`
+18:31:41.595, `capture.gap` at 18:31:41.930; the other at 18:26:41.400, five minutes
+earlier. Every sweep costs ~120 ms of event-loop lag and roughly two sweeps in three
+trip the estimator. Pacing changes how often that happens, not what happens.
+
+Two further levers exist and neither was taken, because each belongs to somebody
+else's territory and neither is needed to close the regression:
+
+- **The sweep does no work at all right now** — `total_deleted=0`, every clip is
+  under seven days old, the disk is 6.3% full — and still costs 0.40 s of ORM
+  queries. A cheap precondition (oldest clip younger than `retention_native_days`
+  *and* disk below the watermark ⇒ return immediately) would make the common case
+  free. That is a change to `retention.py`, ADR-026's author's code.
+- **The estimator should not be firing at all**, since no audio is being lost — see
+  finding 2 below. Fixing that removes the visible symptom without touching
+  retention, but it is the wrong order: the loop stall is real whether or not it is
+  reported, and it would be reported by nothing else.
+
+## How it was isolated, in order — and what each step ruled *out*
+
+Three things were eliminated before retention was reached, each by measurement, and
+each elimination is worth as much as the finding:
+
+1. **The event loop really was being blocked, ~250 ms, on a ~10.4 s beat.** No
+   deploy needed for this one: a script on the Pi polled `/api/v1/station` every
+   50 ms for 3 minutes and timed the responses. Median 4.65 ms; thirteen outliers of
+   140–270 ms, spaced 10.4 s apart. The API handler runs on the event loop, so a
+   slow response is a blocked loop. **This is the cheapest possible first
+   measurement for any "capture is stalling" report and it needs nothing installed.**
+2. **`status_snapshot()` was innocent — 1.2 ms.** It was the obvious suspect: it
+   runs synchronously on the loop every tick, and it now carries retention, clip,
+   storage and detector sections. `snapshot_phase_s` (added permanently) puts a
+   number on every contributor; the largest was `_version()` at 0.6 ms. Nothing else
+   reached 0.1 ms. Reasoning would not have settled this — `clips.disk_usage()`
+   walks the clip tree, and looks far more expensive than it is because the walk is
+   cached for 30 s.
+3. **The whole synchronous part of the tick was innocent — 1.2 ms total**, and the
+   housekeeping loop's own sleep woke on time (`loop_lag_s` ≈ −0.0002). That is what
+   pointed at the *second half* of the tick, after the `bus.emit`: the ADR-024
+   heartbeat and the retention sweep, both awaited, both invisible to a metric that
+   only watches the sleep. The dedicated `loop.lag` watchdog — a task that sleeps
+   0.1 s in a loop and reports its overshoot — covers the whole tick and is what
+   produced the table above.
+
+## Why a dedicated thread did not protect capture
+
+This is the part that matters for the next person, because the architecture already
+looked correct. Retention has had its own executor since ADR-021 precisely so it
+could not queue in front of the ALSA read, and ADR-030 gave the read its own
+executor too. Neither helps here.
+
+The sweep is SQLAlchemy ORM work in Python, so it **holds the GIL**, and CPython
+returns the GIL to a waiting I/O-bound thread reluctantly. The event loop is that
+I/O-bound thread, and it still has to issue every `run_in_executor` capture read and
+consume its result. A read issued 130 ms late starts 130 ms late no matter how
+private its thread is. **An executor partitions queueing, not scheduling, and
+nothing partitions the GIL.** "Give it its own thread" is necessary and not
+sufficient; the test is whether the work is CPU-bound in Python.
+
+## Finding 2: `capture.gap lost_audio=True` was lying — no audio was lost
+
+Measured mid-regression, from one `/api/v1/station` reading:
+
+| | Frames | Seconds |
+|---|---|---|
+| `frames` actually captured | 92,505,600 | — |
+| `expected_frames` from elapsed time | 92,526,900 | — |
+| **Real deficit** | **21,300** | **0.055** |
+| `estimated_missing_frames` claimed | 252,495 | 0.657 |
+| `overruns` (ALSA EPIPE) | **0** | — |
+
+The station claimed to have lost twelve times more audio than it was actually
+behind, and ALSA never reported a ring overflow at all. It could not have: the
+500 ms ring from ADR-030 absorbs a 130 ms stall and then catches up, which is
+exactly what it was widened to do.
+
+The cause is in `_read_blocking`. The deficit-step estimator credits any step of
+more than one block in `expected_frames − frames_read` as lost audio *immediately*,
+and labels it `reason=overrun` even when ALSA said nothing. Against an 80 ms ring
+that inference was sound — a step that big really had overflowed. Against a 500 ms
+ring it is not, because the frames are still in the kernel and arrive on the next
+read. Each stall therefore mints one phantom gap.
+
+**This also resolves the nonsense `rate_offset_ppm`.** It is not a second bug and
+not a hardware fault: phantom frames are added to `presented` in the observed-rate
+calculation, and 252,495/92,505,600 = 2,729 ppm — the +2,680 ppm that was read. With
+retention disabled and no stalls, the same station read **−51.75 ppm**, against the
+true device offset of −43 ppm in `TARGET_DIAGNOSTICS.md`.
+
+**Not fixed here**, deliberately: correcting the estimator means changing the
+afternoon session's work while its author is not around to check it, and once
+finding 1 is fixed the estimator stops firing anyway. The fix is to confirm a
+deficit step against the following few blocks before crediting it, and to reserve
+`reason=overrun` for a step ALSA actually reported. Until then, read
+`capture.gap lost_audio=True` as **"the read was late"**, and cross-check
+`estimated_missing_frames` against `expected_frames − frames` before believing it.
+
+## Traps this round produced
+
+- **`journalctl --since/--until` takes LOCAL time; the station logs UTC.** BST is
+  UTC+1, so an hour's worth of conclusions can be drawn about the wrong window. This
+  was got wrong once today and produced the opposite answer. Always print both.
+- **`retention.snapshot()` used to hardcode `"enabled": true`** whatever the setting
+  said, because `RetentionSweeper` does not know whether anyone calls it. Fixed —
+  the station now overrides it — but if you are on an older build, verify a
+  retention experiment against `last_sweep_at`, not against `enabled`.
+- **A `loop_lag` metric taken across a task's own `sleep` misses everything that
+  task does after waking.** The first version of this instrumentation measured only
+  the sleep overshoot, reported ~0, and would have exonerated housekeeping entirely.
+  Lag has to be watched by a task that does nothing else.
+- **`grep -c capture.gap` still overstates lost recording**, now for a second and
+  larger reason on top of the one recorded above: with a 500 ms ring, most gaps cost
+  nothing at all.
+
+## What is still open after this round
+
+- **The deficit-step estimator over-credits**, finding 2 above. Not fixed.
+- **A residual ~1.6 event/min of 60–120 ms event-loop lag on a 30 s beat**, present
+  with retention disabled, producing no gaps. Unattributed. `clips.disk_usage()`
+  caches its clip-tree walk for exactly 30 s and is the obvious candidate, but that
+  is inference — it measured 0.0 ms on the sample taken, which is what a cache hit
+  looks like.
+- Everything in the previous "What is still open" section: no 72-hour soak, no
+  isolation of hypothesis 4, the missing gap row of 10:55:24Z.
+
+## Rollback and smoke test for the ADR-033 change
+
+The change is confined to `src/`, with no schema change and no new dependency. The
+cadence can be reverted with no deploy at all:
+
+```bash
+# Restore the every-tick behaviour without touching code:
+echo 'OO_RETENTION_INTERVAL_S=10' >> ~/open-observatory/config/runtime.env
+sudo systemctl restart open-observatory
+# Or disable retention entirely:
+echo 'OO_RETENTION_ENABLED=false' >> ~/open-observatory/config/runtime.env
+```
+
+Smoke test on the target, after several minutes of running:
+
+```bash
+ssh observer@station.example
+curl -s localhost:8080/api/v1/station | python3 -m json.tool | grep -E \
+  'loop_lag_max_s|loop_lag_events|housekeeping_blocking_s|continuity_ratio|overruns'
+# Expect: housekeeping_blocking_s < 0.01, overruns 0, continuity_ratio >= 0.9990.
+# loop_lag_max_s around 0.14 is the current normal and is NOT yet zero.
+
+# Remember: journalctl takes LOCAL time, the log lines are UTC.
+sudo journalctl -u open-observatory --since "-15 min" | grep -c capture.gap   # expect 0-2
+sudo journalctl -u open-observatory --since "-15 min" | grep loop.lag | tail
+curl -s localhost:8080/api/v1/station | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["snapshot_phase_s"])'
+```

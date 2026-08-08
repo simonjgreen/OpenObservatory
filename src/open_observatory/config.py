@@ -177,6 +177,14 @@ class Settings(BaseSettings):
     #: Wall-clock budget per sweep call. A sweep that would exceed this stops
     #: partway through and picks up where it left off next tick.
     retention_batch_budget_s: float = 1.5
+    #: How often the sweep runs, in seconds, rounded up to the nearest 10 s
+    #: housekeeping tick. Measured on the live station 2026-08-08: sweeping on
+    #: every tick cost 1.6 false `capture.gap` records per minute, because a
+    #: ~0.30 s sweep in the evidence thread starves the event loop for 55-150 ms
+    #: and the loop still has to issue and consume every capture read (ADR-033).
+    #: Deletion is not urgent -- the watermark reclaim has days of headroom at
+    #: any plausible fill rate -- so the sweep is paced instead.
+    retention_interval_s: float = 300.0
 
     # ---- making ultrasound listenable ------------------------------------
     #: How to render an ultrasonic event into something a human can hear.
