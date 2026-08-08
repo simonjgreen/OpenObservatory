@@ -539,6 +539,59 @@ class TestLiveChannels:
             time.sleep(0.2)
         assert released, "listener was not released after the client disconnected"
 
+    def test_live_tune_endpoint_retunes_the_shared_oscillator_without_disturbing_an_open_listener(
+        self, client
+    ) -> None:
+        """`POST /api/v1/live/tune` is the retune control the chunked-WAV path is
+        missing (ADR-022) -- but the oscillator it retunes is shared
+        station-wide across every ultrasonic listener regardless of transport
+        (ADR-018), so this is exercised here against an already-open
+        WebSocket listener rather than the WAV response directly.
+
+        This is a genuine substitution, not a weaker one: starlette's
+        synchronous `TestClient` fully drains an HTTP endpoint's ASGI call
+        before `client.stream(...)` returns at all (see
+        `_TestClientTransport.handle_request` in `starlette/testclient.py`,
+        which blocks on `portal.call(self.app, ...)` until the app coroutine
+        itself returns), so it cannot represent a still-open connection to a
+        never-ending generator like `live_audio_wav`'s body -- attempting it
+        hangs the test process forever, confirmed against this repo's
+        `test_audio_wav_streams_a_valid_riff_header_then_pcm` on an unmodified
+        checkout too, so this is a pre-existing TestClient limitation, not a
+        regression. The WebSocket TestClient genuinely supports a still-open,
+        concurrently-driven connection (it runs the app on a background
+        thread against real queues rather than draining to completion), so it
+        can actually prove the thing that matters: a retune request lands on
+        the shared oscillator and the open connection is never reconnected --
+        exactly the code path (`Station.set_ultrasonic_tune_hz`) the WAV
+        endpoint's own connect-time `tune_hz` handling already shares.
+        """
+        with client.websocket_connect("/api/v1/live/audio?channel=ultrasonic&tune_hz=30000") as socket:
+            hello = socket.receive_json()
+            assert hello["tune_hz"] == pytest.approx(30000.0, abs=1.0)
+            socket.receive_bytes()  # already flowing before the retune
+
+            tune_response = client.post("/api/v1/live/tune?tune_hz=60000")
+            assert tune_response.status_code == 200
+            payload = tune_response.json()
+            assert payload["tune_hz"] == pytest.approx(60000.0, abs=1.0)
+            assert payload["bandwidth_hz"] > 0
+            assert payload["available"] is True
+
+            # Still the same open socket -- no reconnect, no new hello frame --
+            # and the station-wide oscillator it shares with the WAV path has
+            # moved.
+            socket.receive_bytes()
+            heterodyne = client.get("/api/v1/station").json()["live_audio_ultrasonic"]["heterodyne"]
+            assert heterodyne["tune_hz"] == pytest.approx(60000.0, abs=1.0)
+
+    def test_live_tune_endpoint_clamps_out_of_range_requests(self, client) -> None:
+        response = client.post("/api/v1/live/tune?tune_hz=999999")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tune_hz"] < 999999
+        assert payload["available"] is True
+
 
 class TestDebugSurface:
     def test_pipeline_debug_includes_recent_events(self, client) -> None:

@@ -201,8 +201,11 @@ export default function App() {
     (value: number) => {
       const clamped = clampTuneHz(value)
       setTuneHz(clamped)
-      // Retuning also means a new URL, so this reconnects too — the player
-      // handles that internally (see `LiveAudioPlayer.setTuneHz`).
+      // Retunes the server-side heterodyne in place over `POST
+      // /api/v1/live/tune` — the audio.wav stream itself is never touched, so
+      // sweeping the slider does not reconnect or gap. See
+      // `LiveAudioPlayer.setTuneHz`, which also throttles this: a range
+      // input fires on every drag tick.
       if (player.playing && audioChannel === 'ultrasonic') player.setTuneHz(clamped)
     },
     [player, audioChannel],
