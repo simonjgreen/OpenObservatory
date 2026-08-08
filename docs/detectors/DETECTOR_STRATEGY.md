@@ -331,3 +331,28 @@ still no BatDetect2 adapter, per ADR-017, and this capability makes no assumptio
 which model eventually uses it. The capability is not yet wired into `station.py`: no
 shipped plugin declares itself deferred, so there is nothing for it to run against yet.
 `deferred_enabled` defaults to `False`.
+
+## Known limitation: the range model raises a bar, it does not draw a boundary
+
+`BirdNetDetector._band_for` sorts each candidate into `in_range`, `uncommon` or
+`out_of_range` by the range model's occurrence probability, and applies a
+different confidence threshold to each — `threshold_out_of_range` defaults to
+0.90. It never excludes a species outright.
+
+Measured on the live station on 2026-08-08, with the location filter enabled and
+coordinates correct: **Western Screech-Owl at 0.96**, and **Flammulated Owl**
+separately, both persisted as detections at the development station. Neither
+occurs in the UK. Both cleared the 0.90 out-of-range bar.
+
+The banding assumes a high classifier score implies high certainty. BirdNET
+scores are not calibrated probabilities — a fact this codebase enforces
+everywhere else — so a 0.96 on a species that does not occur on this continent
+is evidence that *the score carries no information for that species*, not
+evidence of the bird. Because the failure is in score-space, raising the
+threshold cannot fix it; it only moves it.
+
+Suppressing candidates whose occurrence probability is at or near zero is a
+different operation from raising their bar, and is the likelier fix. See
+`HANDOVER.md` §6.3 item 0 for the full options and for why this became urgent:
+the inside observer (ADR-023) now presents these on a wall in the operator's
+house, with no score displayed to hint at doubt.

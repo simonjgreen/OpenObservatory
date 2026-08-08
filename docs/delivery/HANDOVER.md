@@ -220,6 +220,47 @@ useful addition and is not currently planned.
 
 ### 6.3 Fix the things I know are wrong or unfinished
 
+0. **North American owls are being reported at the development station, and they now reach a
+   screen in the operator's house.** Measured 2026-08-08 on the live station:
+   *Western Screech-Owl* at score **0.96**, and *Flammulated Owl* separately, both
+   above threshold. Neither occurs in the UK. This is the same family of problem as
+   the *Grey-winged Inca-Finch* records in §3a, but it is **not** the same cause —
+   these are on genuine `alsa` audio, not synthetic, so ADR-020's filter does not
+   hide them.
+
+   The location filter was **on** and correctly configured
+   (`OO_BIRDNET_USE_LOCATION_FILTER=true`, 51.4769/−0.0005). It did not stop this,
+   *by design*: `BirdNetDetector._band_for` does not suppress implausible species,
+   it puts them in an `out_of_range` band with a higher confidence bar —
+   `threshold_out_of_range`, default **0.90**. A 0.96 walks straight through.
+
+   The design assumes a high classifier score means high certainty. It does not:
+   BirdNET scores are not calibrated probabilities, which this repository
+   otherwise enforces carefully. 0.96 on a species absent from the continent is
+   evidence the *score is meaningless for that species*, not evidence of an owl.
+   A bar set in score-space cannot separate them, so raising 0.90 to 0.97 would
+   only move the problem.
+
+   Options, in the order I would consider them:
+   - **Suppress rather than re-threshold** when occurrence is at or near zero.
+     A species the range model puts at ~0 for this location and week is not a
+     candidate at any score, and that is a different statement from "needs a
+     higher score".
+   - Keep the record but stop presenting it as an observation, the way ADR-020
+     already does for synthetic-source rows — the honest half-measure.
+   - Re-check the week index passed to the range model. A wrong week would make
+     the priors wrong globally, and would be worth excluding before tuning
+     anything.
+
+   Note also that `_suppressed_out_of_range` counts every candidate that fell
+   below its band's threshold, including `uncommon` ones — so it is not a count
+   of *suppressed out-of-range* species and should not be read as one.
+
+   **Why this is now urgent rather than cosmetic:** the inside observer (ADR-023)
+   puts detections above 0.75 on a wall in the operator's living room, with no
+   score shown. An implausible species there reads as a plain factual claim that
+   a screech-owl was in the garden.
+
 4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
    needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
    app-packet format for writing configuration is not implemented here. **Warn
@@ -386,4 +427,10 @@ until the acceptance criteria pass a 72-hour soak. Specifically avoid claiming:
   measured and deliberately not adopted for real-time inference (ADR-017), and its
   offline cascade (§1a) is evaluated, not adopted, per the same ADR;
 - that the 33-36 kHz cluster this station reports is Myotis — offline classification
-  is suggestive (6 of 8 clips) but low-confidence and contradicted once; unresolved.
+  is suggestive (6 of 8 clips) but low-confidence and contradicted once; unresolved;
+- that the species list this station reports is filtered to what actually occurs
+  here. It is not. The range model raises the confidence bar for implausible
+  species, it does not exclude them, and *Western Screech-Owl* (0.96) and
+  *Flammulated Owl* both cleared it on live audio on 2026-08-08. See §6.3 item 0.
+  A high BirdNET score on a species absent from the continent is evidence that the
+  score is meaningless for that species, not evidence of the bird.
