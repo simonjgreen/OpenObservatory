@@ -11,6 +11,7 @@ import contextlib
 import time
 import uuid
 from itertools import pairwise
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -570,3 +571,69 @@ class TestEvidenceIsOffTheDetectorPath:
         # awaited. Capture always wins.
         with pytest.raises(asyncio.QueueFull):
             station._evidence_queue.put_nowait((object(), object()))  # type: ignore[arg-type]
+
+
+class TestHardwareReturnsAfterFallback:
+    """Graceful degradation has to include coming back.
+
+    On 2026-08-08 the AudioMoth's mode switch was moved to USB/OFF, so it stopped
+    presenting an ALSA card. `auto` correctly fell back to the synthetic scene and
+    correctly reported itself degraded — and then never looked again, because the
+    synthetic source never ends and the capture supervisor only rebuilds once a
+    source has ended. Reattaching the microphone did nothing until the service was
+    restarted by hand.
+    """
+
+    async def test_no_watch_when_already_on_hardware(self) -> None:
+        from open_observatory.audio.contracts import SourceKind
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings(source="auto"))
+        info = SimpleNamespace(source_kind=SourceKind.ALSA)
+
+        assert station._start_hardware_watch(object(), info) is None
+
+    async def test_no_watch_when_synthetic_was_chosen_deliberately(self) -> None:
+        from open_observatory.audio.contracts import SourceKind
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        # An operator who asked for synthetic must not be switched to hardware
+        # underneath them.
+        station = Station(Settings(source="synthetic"))
+        info = SimpleNamespace(source_kind=SourceKind.SYNTHETIC)
+
+        assert station._start_hardware_watch(object(), info) is None
+
+    async def test_returning_device_ends_the_synthetic_source(self, monkeypatch) -> None:
+        from open_observatory import station as station_module
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings(source="auto", hardware_recheck_s=0.01))
+        station._running = True
+        closed = asyncio.Event()
+
+        class FakeSource:
+            async def close(self) -> None:
+                closed.set()
+
+        device = SimpleNamespace(stable_device_key="usb-16d0:06f3:0384_X", card_name="AudioMoth")
+        calls = {"n": 0}
+
+        def fake_find_device(key):
+            calls["n"] += 1
+            # Absent for the first couple of probes, then reattached.
+            return device if calls["n"] >= 2 else None
+
+        monkeypatch.setattr(station_module, "find_device", fake_find_device)
+
+        task = asyncio.create_task(station._hardware_watch_loop(FakeSource()))
+        await asyncio.wait_for(closed.wait(), timeout=2.0)
+        # The loop returns of its own accord once it has handed control back, so
+        # await it rather than cancelling: a cancel here would leave the in-flight
+        # probe thread dangling and say nothing about whether the loop terminates.
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert calls["n"] >= 2, "must keep probing until the device reappears"

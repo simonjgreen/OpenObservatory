@@ -52,10 +52,8 @@ interface ListenProps {
   status: AudioStatus
   telemetry: AudioTelemetry | null
   volume: number
-  monitorGainDb: number
   onToggle: () => void
   onVolume: (value: number) => void
-  onMonitorGain: (value: number) => void
   detail?: string
   channel: LiveAudioChannel
   onChannel: (channel: LiveAudioChannel) => void
@@ -64,14 +62,16 @@ interface ListenProps {
   hello: AudioHelloInfo | null
 }
 
+//: HTMLMediaElement.readyState, spelled out because "readyState 2" means
+//: nothing to someone glancing at the control.
+const READY_STATE_LABELS = ['no data', 'metadata', 'current frame', 'playable', 'buffered']
+
 export function ListenControl({
   status,
   telemetry,
   volume,
-  monitorGainDb,
   onToggle,
   onVolume,
-  onMonitorGain,
   detail,
   channel,
   onChannel,
@@ -160,65 +160,39 @@ export function ListenControl({
               onChange={(event) => onVolume(Number(event.target.value))}
             />
           </label>
-          <label
-            className="volume"
-            title="Monitor make-up gain. A quiet garden sits near -45 dBFS, which is inaudible on laptop speakers at unity, so the live feed needs lifting to be useful. A limiter after this stops loud events becoming painful."
-          >
-            <span aria-hidden>+dB</span>
-            <input
-              type="range"
-              min={0}
-              max={48}
-              step={1}
-              value={monitorGainDb}
-              onChange={(event) => onMonitorGain(Number(event.target.value))}
-            />
-            <span className="mono">{monitorGainDb}</span>
-          </label>
-          {/* Proof that audio is reaching the speakers, not just the browser. */}
-          <div
-            className="output-meter"
-            title="RMS of what is actually reaching the speakers, after gain and limiting"
-          >
-            <span
-              className="output-fill"
-              style={{
-                width: `${Math.max(0, Math.min(100, ((telemetry?.outputRmsDbfs ?? -70) + 70) * (100 / 70)))}%`,
-              }}
-            />
-          </div>
+          {/*
+           * Playback runs through a plain <audio> element rather than Web
+           * Audio (diagnosed dead — silent output on all Web Audio routes —
+           * on at least one real laptop; see audio.ts), so there is no
+           * client-side output meter, jitter-buffer depth, or underrun count
+           * to show here any more. What follows is exactly what
+           * HTMLMediaElement exposes, honestly labelled. Signal level is
+           * still visible from the server-side level meters above.
+           */}
           <div className="listen-telemetry mono">
-            {telemetry && telemetry.contextState !== 'running' && (
-              <span className="warn-text" title="The browser has not allowed playback to start">
-                context {telemetry.contextState}
-              </span>
-            )}
-            <span title="Level reaching the speakers. If this moves and you hear nothing, check the system volume and output device.">
-              out {telemetry ? telemetry.outputRmsDbfs.toFixed(0) : '—'} dBFS
+            <span title="HTMLMediaElement.readyState — how much of the current playback position is available">
+              {telemetry ? READY_STATE_LABELS[telemetry.readyState] ?? telemetry.readyState : '—'}
             </span>
-            <span title="Audio waiting in the jitter buffer before playback">
-              buffer {telemetry ? telemetry.bufferedMs.toFixed(0) : '—'} ms
-            </span>
-            <span title="Latency the browser's audio device adds on top of the jitter buffer">
-              device {telemetry ? telemetry.contextLatencyMs.toFixed(0) : '—'} ms
+            <span title="Seconds of audio already buffered ahead of the play position">
+              buffered {telemetry ? telemetry.bufferedAheadS.toFixed(1) : '—'} s
             </span>
             <span
-              className={telemetry && telemetry.underruns > 0 ? 'warn-text' : 'dim'}
-              title="Times the buffer ran dry — increase the target latency if this climbs"
+              className={telemetry && telemetry.waits > 0 ? 'warn-text' : 'dim'}
+              title="Times playback paused for lack of data (the 'waiting' event)"
             >
-              under {telemetry?.underruns ?? 0}
+              waits {telemetry?.waits ?? 0}
             </span>
-            {telemetry && telemetry.overflows > 0 && (
-              <span className="dim" title="Chunks dropped to converge back to the target latency — expected, and how the feed stays live">
-                trim {telemetry.overflows}
-              </span>
-            )}
-            {telemetry && telemetry.resyncs > 0 && (
+            {telemetry && telemetry.stalls > 0 && (
               <span
                 className="warn-text"
-                title="Cursor re-seated after a backlog; stale audio was skipped"
+                title="Times the browser was fetching data but none arrived (the 'stalled' event)"
               >
-                resync {telemetry.resyncs}
+                stalls {telemetry.stalls}
+              </span>
+            )}
+            {telemetry?.paused && (
+              <span className="warn-text" title="The browser has paused playback">
+                paused
               </span>
             )}
           </div>

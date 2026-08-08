@@ -17,8 +17,49 @@ Regenerate with `oo audio probe --json --write docs/operations/probe.json`.
 | Python | 3.12.3 (system interpreter) |
 | Memory | 7.8 GiB |
 | Cores | 4 |
-| Storage | 235 GB SD card, no USB SSD attached |
+| Storage | 235 GB SD card (OS, database, application) plus a 465.8 GB USB SSD mounted at `data/clips` for evidence (see below) |
 | CPU temperature at idle | 39 °C, `throttled=0x0` |
+
+## Evidence storage: USB SSD, mounted over `data/clips`
+
+Added 2026-08-08 (ADR-021). A SanDisk Extreme Portable SSD, 465.8 GB, connected over
+UAS as `/dev/sda`, replaces the SD card as the destination for evidence clips. The SD
+card could not sustain a busy bat night's write load (roughly 15 MB per pass across
+four clips, 15 GB in one night against a 20 GB budget already exceeded) while also
+serving ALSA reads through the same shared thread pool.
+
+| | |
+|---|---|
+| Device | `/dev/sda`, SanDisk Extreme Portable SSD, 465.8 GB, UAS |
+| Partition | single ext4 partition, label `oo-clips` |
+| UUID | `005ab10e-7a3b-4b7d-baa0-07b9aeacddc5` |
+| Formatting | `-m 1` (1% reserved, not the ext4 default of 5%, since this volume holds no system files) |
+| Mount point | `/home/observer/open-observatory/data/clips` |
+| `/etc/fstab` options | `defaults,noatime,nofail,x-systemd.device-timeout=10` |
+| Database | stays on the SD card — small, and the SD card is the system disk that is always present |
+
+The disk previously held an unrelated Ubuntu amd64 installer and was wiped before
+use. 21 GB of existing clips were migrated across; the old directory is retained at
+`data/clips.sdcard-backup` pending deletion, not yet removed. A clip recorded the day
+before the migration was verified afterwards to still download as a valid 384 kHz WAV
+through `GET /api/v1/media/{id}` — `media_asset.storage_uri` holds absolute paths, so
+mounting the new device at the existing path made the migration a no-op for the
+database rather than requiring 17,273 rows to be rewritten.
+
+**Operational consequence: the mount must exist before the service starts.** The
+systemd unit runs in a mount namespace (`ProtectHome=read-only`,
+`ReadWritePaths=/home/observer/open-observatory/data`), so a filesystem mounted on the
+host *after* the service has started is not visible inside it — the service must be
+restarted, not just have the mount appear, for the SSD to take effect.
+`OO_CLIPS_REQUIRE_MOUNT=true` (`clips_require_mount` in `Settings`) makes
+`/api/v1/health` report the problem by name when `data/clips` is not a mount point,
+rather than silently falling back to writing evidence onto the SD card. See ADR-021
+for the full reasoning, including why the database was deliberately left off the SSD.
+
+With the SSD in place the throttles imposed to protect the SD card were lifted in
+`config/runtime.env`: `OO_CLIP_MAX_PER_MINUTE` restored from 6 to 20,
+`OO_ULTRASONIC_AUDIBLE_METHOD` restored from `heterodyne` to `both`, and
+`OO_CLIP_MAX_TOTAL_GB` raised from 20 to 300 (against 458 GB usable). `OO_ULTRASONIC_SCHEDULE=night` remains set.
 
 ## AudioMoth
 
@@ -41,6 +82,38 @@ device uid           : 2453800264933F8F
 ```
 
 Read this at any time with `oo audiomoth info` (switch must be in `USB/OFF`).
+**`oo audiomoth info` still succeeds when the switch is in `USB/OFF`** — it talks to
+the HID interface, which is present in that position — so a successful
+`oo audiomoth info` is not evidence that streaming capture will work. The diagnostic
+signal for "switch in the wrong position" is `oo audiomoth info` succeeding while
+`oo audio probe`/live capture cannot find an ALSA card at all: `USB/OFF` presents no
+ALSA card of any kind, only HID. See the incident below.
+
+### Incident, 2026-08-08: switch left in `USB/OFF`, no automatic recovery
+
+The mode switch was moved to `USB/OFF` (most likely while adjusting gain — see
+"Input level and gain" below), which drops the ALSA card entirely and switches the USB
+identity from `16d0:06f3` (streaming) to `10c4:0002` (HID only). Live capture failed at
+`AlsaCaptureError: ALSA read failed: File descriptor in bad state` — the device
+changing USB identity under a file descriptor the capture process still held open.
+
+`OO_SOURCE=auto` correctly fell back to the synthetic source and correctly reported
+itself degraded in `/api/v1/health`, but it **never recovered on its own**:
+`SyntheticSource` never ends, and the capture supervisor only rebuilds a source once
+the current one ends, so a reattached or corrected microphone went unnoticed until
+someone restarted the service by hand. Roughly a day of recording was lost. Detectors
+kept running against the synthetic scene throughout and persisted detections — 5 bird
+detections labelled *Grey-winged Inca-Finch* and 515 acoustic events — into the live
+database, indistinguishable from genuine ones until ADR-020's view-level filter.
+
+**Fix:** `hardware_recheck_s` (default 30 s, `src/open_observatory/config.py`) makes
+the station periodically re-probe for the real device while running on the *fallback*
+synthetic source specifically — never when synthetic was chosen deliberately (e.g.
+`OO_SOURCE=synthetic` for a demo) — so a corrected switch position or reattached cable
+is picked up without a manual restart. This recovery behaviour is not itself recorded
+as an ADR (it is a bugfix, not an architectural deviation); ADR-020 covers the
+separate, related decision to exclude synthetic-source detections from browsing
+views by default (`source_kind`/`is_live_source` on every detection).
 
 ### Negotiated capture profile
 
@@ -130,7 +203,11 @@ and is counted in `oo_audio_clipping_ratio`.
 **Reducing gain requires the device, not this software.** Move the switch to
 `USB/OFF` (which stops capture) and use the AudioMoth USB Microphone app. The HID
 protocol for changing gain is not implemented here; `oo audiomoth info` reads
-identity only. See `AUDIOMOTH_FIRMWARE.md`.
+identity only. See `AUDIOMOTH_FIRMWARE.md`. **This is the same switch position that
+caused the 2026-08-08 incident above** — moving it to adjust gain is a plausible
+explanation for how the switch was left there. Anyone doing this should expect
+capture to stop for the duration and should confirm the switch is back in `DEFAULT`
+(streaming) afterwards, not rely on the automatic recovery alone.
 
 ## Software environment
 
@@ -203,6 +280,18 @@ The worst-case 818 ms inter-arrival is Wi-Fi jitter, not a pipeline stall. The c
 interpolates scroll position between bursts and clamps that interpolation to about
 one burst, so a stall parks the display rather than letting it drift out of step.
 
+**Live audio playback moved off this WebSocket path by default, 2026-08-08
+(ADR-019).** The figures above are for the WebSocket channel, `/api/v1/live/audio`,
+which is unchanged and still used by other clients (a phone, without issue). The
+debug UI's GO LIVE button now instead points a plain `<audio>` element at
+`GET /api/v1/live/audio.wav`, a chunked-WAV HTTP stream, because Web Audio produced
+no audible output on the operator's laptop by any route tried, while a plain
+`<audio>` element and YouTube in the same browser both worked. See ADR-019 for the
+full diagnosis. One consequence: the +24 dB monitor make-up gain the old client
+applied has no replacement on this path, and a calm garden sits near −45 dBFS (see
+"Input level and gain" above) — if this proves too quiet in practice, the fix is
+server-side gain on the stream, not a client-side audio node.
+
 ## Known limitations recorded honestly
 
 - **Range model: off by default in the repository, on at this station.** The shipped
@@ -221,6 +310,13 @@ one burst, so a stall parks the display rather than letting it drift out of step
   is presentational — the stored record still carries no species label, and the
   question mark is mandatory. Seeing a candidate name in the UI does not mean this
   constraint has been relaxed.
+- **Whether this station's 33-36 kHz cluster is genuinely Myotis is unresolved.**
+  Offline BatDetect2 classification of the station's own clips (see
+  `scripts/classify_clips_batdetect2.py`, ADR-017) leaned Myotis on 6 of 8 clips, but
+  at low confidence (0.20-0.30), and produced one confident contradiction: 0.77 for
+  *Pipistrellus pygmaeus* on a 34 kHz call, when soprano pipistrelle actually peaks
+  near 55 kHz. The AudioMoth's hot gain (see above) is a plausible confound. This
+  needs more clips and a human ear on the audible renderings, not a code change.
 - **72-hour soak test not run.** The acceptance criteria require it before the
   system may be described as complete.
 - **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),

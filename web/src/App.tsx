@@ -56,9 +56,6 @@ export default function App() {
   const [audioTelemetry, setAudioTelemetry] = useState<AudioTelemetry | null>(null)
   const [audioDetail, setAudioDetail] = useState<string | undefined>()
   const [volume, setVolume] = useState(0.9)
-  // The live mic runs near -45 dBFS in a quiet garden, so unity monitoring is
-  // effectively silent on laptop speakers. Default to a useful listening level.
-  const [monitorGainDb, setMonitorGainDb] = useState(24)
   // Audible is the unconditional default: pressing GO LIVE must always listen
   // to the audible mix unless the operator explicitly switches.
   const [audioChannel, setAudioChannel] = useState<LiveAudioChannel>('audible')
@@ -169,8 +166,6 @@ export default function App() {
           setAudioDetail(detail)
         },
         (telemetry) => setAudioTelemetry(telemetry),
-        0.9,
-        120,
         (hello) => {
           setAudioHello(hello)
           // The server may have clamped an out-of-range request; reflect what
@@ -188,9 +183,9 @@ export default function App() {
     else void player.start(volume, audioChannel, tuneHz)
   }, [player, volume, audioChannel, tuneHz])
 
-  // Switching channel while playing reconnects — the socket's channel is
-  // fixed for its lifetime (ADR-012: exactly one writer per socket, selected
-  // once at connect), so there is nothing to "switch" on the open socket.
+  // Switching channel means pointing the `<audio>` element at a new URL, so
+  // this always reconnects while playing — there is no in-place channel
+  // switch over a chunked-WAV stream.
   const changeChannel = useCallback(
     (value: LiveAudioChannel) => {
       setAudioChannel(value)
@@ -206,8 +201,8 @@ export default function App() {
     (value: number) => {
       const clamped = clampTuneHz(value)
       setTuneHz(clamped)
-      // Live retune over the open socket when already listening — no
-      // reconnect needed for this one, per the transport doc.
+      // Retuning also means a new URL, so this reconnects too — the player
+      // handles that internally (see `LiveAudioPlayer.setTuneHz`).
       if (player.playing && audioChannel === 'ultrasonic') player.setTuneHz(clamped)
     },
     [player, audioChannel],
@@ -217,14 +212,6 @@ export default function App() {
     (value: number) => {
       setVolume(value)
       player.setVolume(value)
-    },
-    [player],
-  )
-
-  const changeMonitorGain = useCallback(
-    (value: number) => {
-      setMonitorGainDb(value)
-      player.setMonitorGainDb(value)
     },
     [player],
   )
@@ -268,10 +255,8 @@ export default function App() {
           status={audioStatus}
           telemetry={audioTelemetry}
           volume={volume}
-          monitorGainDb={monitorGainDb}
           onToggle={toggleAudio}
           onVolume={changeVolume}
-          onMonitorGain={changeMonitorGain}
           detail={audioDetail}
           channel={audioChannel}
           onChannel={changeChannel}

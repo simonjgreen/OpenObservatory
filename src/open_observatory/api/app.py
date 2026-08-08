@@ -1,15 +1,27 @@
 """FastAPI control plane and the live WebSocket the debug UI runs on.
 
-Two live channels, deliberately separate:
+Three live channels, deliberately separate:
 
 ``/api/v1/live``
     Spectrogram columns (binary), telemetry and pipeline events (JSON). Every
     viewer sees identical data because the server computes it once.
 
 ``/api/v1/live/audio``
-    Raw int16 PCM for the "GO LIVE" listen button. Kept apart so that opening it
-    costs nothing until someone actually presses the button, and so a listener
-    that falls behind loses audio without disturbing the visual feed.
+    Raw int16 PCM for the "GO LIVE" listen button over a WebSocket, decoded by
+    an AudioWorklet on the client. Kept apart so that opening it costs nothing
+    until someone actually presses the button, and so a listener that falls
+    behind loses audio without disturbing the visual feed.
+
+``/api/v1/live/audio.wav``
+    The same audio, as a chunked WAV stream for a plain ``<audio>`` element.
+    This is the fallback for browsers where Web Audio produces no output at
+    all — observed on a laptop with an insecure-context page (so
+    ``AudioContext``/``AudioWorklet`` cannot be used properly) and a 44.1 kHz
+    hardware default: an oscillator through ``context.destination`` was
+    silent, but a WAV through a plain media element was audible on the same
+    machine. See ``docs/architecture/GAP_REPORT.md`` — this was the original
+    proposal before the WebSocket path replaced it for latency; latency does
+    not matter if nothing plays.
 
 Default binding is LAN-only and anonymous read is enabled for this debug slice —
 recorded honestly in ``docs/operations`` rather than implied to be secure. The
@@ -21,6 +33,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import os
+import struct
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -31,7 +45,7 @@ from typing import Any
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -215,6 +229,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for detector in snapshot["detectors"]:
             if detector["state"] in ("error", "degraded"):
                 problems.append(f"detector {detector['plugin_id']}: {detector['state']}")
+        if settings.clips_require_mount and not os.path.ismount(settings.clip_dir):
+            problems.append(
+                f"clip storage {settings.clip_dir} is not a mount point: evidence would "
+                "be written to the system disk, which competes with capture for I/O"
+            )
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
         return JSONResponse(
             {
@@ -389,6 +408,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         plugin_id: str | None = None,
         identified_only: bool = False,
         min_score: float = Query(0.0, ge=0.0, le=1.0),
+        #: A detection persists honestly whatever stream produced it (station.py's
+        #: synthetic fallback is itself correct behaviour), but a browsing view must
+        #: not present a test scene as an observed bird. Off by default; explicit
+        #: opt-in keeps the data reachable for diagnostics.
+        include_synthetic: bool = False,
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
         resolved: history_queries.Range | None = None
@@ -396,7 +420,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved = history_queries.resolve_named_range(window, settings.timezone)
             since, until = resolved.start, resolved.end
 
-        query = select(orm.Detection).order_by(orm.Detection.event_start_utc.desc())
+        query = select(orm.Detection, orm.AudioStream.source_kind).outerjoin(
+            orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id
+        )
         if since is not None:
             query = query.where(orm.Detection.event_start_utc >= since)
         if until is not None:
@@ -411,28 +437,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             query = query.where(orm.Detection.score >= min_score)
         if plugin_id:
             query = query.join(orm.Detector).where(orm.Detector.plugin_id == plugin_id)
-        rows = session.scalars(query.limit(limit)).all()
+
+        excluded_count = 0
+        if not include_synthetic:
+            # Same predicates, source condition flipped, counted before the limit is
+            # applied — otherwise the count would describe the page, not the window.
+            excluded_count = (
+                session.execute(
+                    select(func.count()).select_from(
+                        query.where(
+                            history_queries.is_not_live(orm.AudioStream.source_kind)
+                        ).subquery()
+                    )
+                ).scalar_one()
+                or 0
+            )
+            query = query.where(history_queries.is_live(orm.AudioStream.source_kind))
+
+        query = query.order_by(orm.Detection.event_start_utc.desc()).limit(limit)
+        rows = session.execute(query).all()
         return {
-            "detections": [_detection_payload(row) for row in rows],
+            "detections": [
+                _detection_payload(detection, source_kind=source_kind)
+                for detection, source_kind in rows
+            ],
             "range": resolved.to_dict() if resolved else None,
             # So the client can tell "that is all of them" from "that is the first
             # page", which changes what an apparently quiet night means.
             "truncated": len(rows) >= limit,
+            "include_synthetic": include_synthetic,
+            "excluded_synthetic_count": excluded_count,
         }
 
     @app.get(f"{API_PREFIX}/detections/{{detection_id}}")
-    def get_detection(detection_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
-        row = session.get(orm.Detection, _uuid(detection_id))
+    def get_detection(
+        detection_id: str,
+        include_synthetic: bool = False,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        row = session.execute(
+            select(orm.Detection, orm.AudioStream.source_kind)
+            .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
+            .where(orm.Detection.id == _uuid(detection_id))
+        ).first()
         if row is None:
             raise HTTPException(status_code=404, detail="detection not found")
-        return _detection_payload(row, include_native=True)
+        detection, source_kind = row
+        if not include_synthetic and source_kind != history_queries.LIVE_SOURCE_KIND:
+            # Not a 200-with-a-flag: the detail view is reached by ID (from a list
+            # that already excludes this by default), so the honest answer to "why
+            # can't I find it" is the same 404 the list would have implied, plus the
+            # reason, rather than a payload the caller did not ask to see.
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "detection not found in the default (live-only) view; it was "
+                    f"captured from a {source_kind or 'unknown'} stream, not the "
+                    "microphone. Retry with include_synthetic=true to see it."
+                ),
+            )
+        return _detection_payload(detection, include_native=True, source_kind=source_kind)
 
     @app.get(f"{API_PREFIX}/taxa/activity")
     def taxa_activity(
-        hours: int = Query(24, ge=1, le=168), session: Session = Depends(get_session)
+        hours: int = Query(24, ge=1, le=168),
+        include_synthetic: bool = False,
+        session: Session = Depends(get_session),
     ) -> dict[str, Any]:
         since = datetime.now(UTC) - timedelta(hours=hours)
-        rows = session.execute(
+        query = (
             select(
                 orm.Detection.taxonomic_group,
                 orm.Detection.common_name,
@@ -442,14 +515,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 func.max(orm.Detection.score).label("best_score"),
                 func.max(orm.Detection.event_start_utc).label("last_seen"),
             )
+            .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
             .where(orm.Detection.event_start_utc >= since)
-            .group_by(
+        )
+
+        excluded_count = 0
+        if not include_synthetic:
+            excluded_count = (
+                session.execute(
+                    select(func.count(orm.Detection.id))
+                    .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
+                    .where(
+                        orm.Detection.event_start_utc >= since,
+                        history_queries.is_not_live(orm.AudioStream.source_kind),
+                    )
+                ).scalar_one()
+                or 0
+            )
+            query = query.where(history_queries.is_live(orm.AudioStream.source_kind))
+
+        rows = session.execute(
+            query.group_by(
                 orm.Detection.taxonomic_group,
                 orm.Detection.common_name,
                 orm.Detection.scientific_name,
                 orm.Detection.detector_label,
-            )
-            .order_by(func.count().desc())
+            ).order_by(func.count().desc())
         ).all()
         entries = []
         for row in rows:
@@ -482,6 +573,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "since_utc": _iso(since),
             "hours": hours,
             "entries": entries,
+            "include_synthetic": include_synthetic,
+            "excluded_synthetic_count": excluded_count,
         }
 
     @app.get(f"{API_PREFIX}/history")
@@ -492,6 +585,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bucket_seconds: int | None = Query(None, ge=10, le=86400),
         min_score: float = Query(0.0, ge=0.0, le=1.0),
         include_unidentified: bool = True,
+        include_synthetic: bool = False,
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
         """Everything needed to browse a past window without shipping every row.
@@ -500,6 +594,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeline and the species list are both aggregated in SQL. Capture coverage is
         included because an empty night is otherwise ambiguous — nothing called, or
         nothing was listening — and those mean very different things.
+
+        Synthetic/replay detections are excluded from the timeline and species views
+        by default (LIVE_SOURCE_KIND): they are real rows, honestly produced by the
+        detector fallback path, but not evidence of an animal. `coverage` is
+        unaffected — it already reports `seconds_from_microphone` separately from
+        total coverage and is not a wildlife view.
         """
         resolved = (
             history_queries.Range(since, until or datetime.now(UTC), "custom")
@@ -509,18 +609,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "range": resolved.to_dict(),
             "timezone": settings.timezone,
+            "include_synthetic": include_synthetic,
             "timeline": history_queries.timeline(
                 session,
                 resolved,
                 bucket_seconds=bucket_seconds,
                 min_score=min_score,
                 include_unidentified=include_unidentified,
+                include_synthetic=include_synthetic,
             ),
             "species": history_queries.species_summary(
-                session, resolved, min_score=min_score, include_unidentified=False
+                session,
+                resolved,
+                min_score=min_score,
+                include_unidentified=False,
+                include_synthetic=include_synthetic,
             ),
             "unidentified": history_queries.species_summary(
-                session, resolved, min_score=min_score, include_unidentified=True, limit=5
+                session,
+                resolved,
+                min_score=min_score,
+                include_unidentified=True,
+                limit=5,
+                include_synthetic=include_synthetic,
             )
             if include_unidentified
             else [],
@@ -755,6 +866,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             log.exception("live_audio_socket.tune_reader_error")
 
+    @app.get(f"{API_PREFIX}/live/audio.wav")
+    async def live_audio_wav(
+        request: Request,
+        channel: str = Query("audible", pattern="^(audible|ultrasonic)$"),
+        tune_hz: float | None = Query(None),
+    ) -> Response:
+        """Chunked-WAV fallback for the GO LIVE button.
+
+        Mirrors ``/live/audio``'s plumbing exactly: the same broadcaster, the
+        same bounded per-listener queue and drop policy, and the same "no
+        heterodyne work with zero listeners" invariant — a listener is only
+        ever attached once the channel is confirmed available. The one
+        difference is the transport: continuous 16-bit PCM behind a WAV header,
+        so a plain ``<audio>`` element can decode it without Web Audio.
+        """
+        ultrasonic = channel == "ultrasonic"
+        broadcaster = station.live_audio_ultrasonic if ultrasonic else station.live_audio
+
+        if ultrasonic and tune_hz is not None:
+            station.set_ultrasonic_tune_hz(tune_hz)
+
+        available = not ultrasonic or station.heterodyne is not None
+        if not available:
+            raise HTTPException(
+                status_code=503,
+                detail=station.heterodyne_unavailable_reason or "ultrasonic channel unavailable",
+            )
+
+        headers = {
+            "Cache-Control": "no-store",
+            "X-Live-Sample-Rate": str(broadcaster.sample_rate),
+        }
+        if ultrasonic and station.heterodyne is not None:
+            headers["X-Live-Tune-Hz"] = str(station.heterodyne.tune_hz)
+            headers["X-Live-Bandwidth-Hz"] = str(station.heterodyne.bandwidth_hz)
+
+        listener = broadcaster.add_listener(label=f"http-wav:{channel}")
+        # Anything queued before this request starts actually consuming is
+        # stale, exactly as for the WebSocket's handshake delay.
+        listener.drain()
+
+        async def body() -> AsyncIterator[bytes]:
+            try:
+                yield _wav_stream_header(sample_rate=broadcaster.sample_rate)
+                while True:
+                    # A client that has gone away should release its listener
+                    # promptly rather than waiting for the queue to notice —
+                    # for the ultrasonic channel that listener is the only
+                    # thing keeping the heterodyne running.
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        payload = await asyncio.wait_for(listener.queue.get(), timeout=1.0)
+                    except TimeoutError:
+                        continue
+                    if payload is None:
+                        return
+                    yield payload
+            finally:
+                broadcaster.remove_listener(listener)
+
+        return StreamingResponse(body(), media_type="audio/wav", headers=headers)
+
     # -- static UI ------------------------------------------------------
 
     if settings.web_dist.is_dir():
@@ -787,7 +961,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def _detection_payload(row: orm.Detection, *, include_native: bool = False) -> dict[str, Any]:
+def _detection_payload(
+    row: orm.Detection, *, include_native: bool = False, source_kind: str | None = None
+) -> dict[str, Any]:
     display_name, title_hint = display_title(
         common_name=row.common_name,
         scientific_name=row.scientific_name,
@@ -817,6 +993,10 @@ def _detection_payload(row: orm.Detection, *, include_native: bool = False) -> d
         "source_start_frame": row.source_start_frame,
         "source_end_frame": row.source_end_frame,
         "stream_id": str(row.stream_id),
+        #: Honest even when include_synthetic=true surfaced this row: the caller
+        #: asked to see it, not to be told it was real.
+        "source_kind": source_kind,
+        "is_live_source": source_kind == history_queries.LIVE_SOURCE_KIND,
         "detector": {
             "plugin_id": row.detector.plugin_id,
             "plugin_version": row.detector.plugin_version,
@@ -843,6 +1023,44 @@ def _detection_payload(row: orm.Detection, *, include_native: bool = False) -> d
     if include_native:
         payload["native_result"] = row.native_result
     return payload
+
+
+#: Conventional placeholder for a WAV chunk size that cannot be known in
+#: advance. Every browser and media player treats it as "read until the
+#: connection closes" rather than a malformed file.
+_WAV_UNKNOWN_SIZE = 0xFFFFFFFF
+
+
+def _wav_stream_header(*, sample_rate: int, channels: int = 1, bits_per_sample: int = 16) -> bytes:
+    """A canonical 44-byte PCM WAV header for a stream of unknown, effectively
+    endless length.
+
+    ``clips.py`` writes finished, seekable clip files via ``soundfile``, which
+    needs the true length up front and has no equivalent for an open-ended
+    stream — so this is hand-built rather than reused, matching what
+    ``soundfile``/libsndfile itself writes for 16-bit PCM mono except for the
+    two size fields, which use ``_WAV_UNKNOWN_SIZE``.
+    """
+    block_align = channels * bits_per_sample // 8
+    byte_rate = sample_rate * block_align
+    return (
+        b"RIFF"
+        + struct.pack("<I", _WAV_UNKNOWN_SIZE)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<IHHIIHH",
+            16,  # fmt chunk size
+            1,  # PCM
+            channels,
+            sample_rate,
+            byte_rate,
+            block_align,
+            bits_per_sample,
+        )
+        + b"data"
+        + struct.pack("<I", _WAV_UNKNOWN_SIZE)
+    )
 
 
 def _iso(value: datetime | None) -> str | None:

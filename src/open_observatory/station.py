@@ -335,7 +335,14 @@ class Station:
                 self.stream = info
                 await self._on_stream_open(info)
                 backoff = self.settings.reopen_backoff_min_s
-                await self._capture_loop(source)
+                watcher = self._start_hardware_watch(source, info)
+                try:
+                    await self._capture_loop(source)
+                finally:
+                    if watcher is not None:
+                        watcher.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await watcher
                 reason = "source_exhausted"
             except asyncio.CancelledError:
                 raise
@@ -355,6 +362,51 @@ class Station:
             log.info("station.reopening", backoff_s=round(backoff, 2))
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, self.settings.reopen_backoff_max_s)
+
+    def _start_hardware_watch(self, source: Any, info: StreamInfo) -> asyncio.Task[None] | None:
+        """Watch for the real microphone returning, while on the synthetic fallback.
+
+        `auto` falling back to a synthetic scene is deliberate: the station stays
+        observable with no microphone attached, and says loudly that it is not
+        live. What it did *not* do was ever look again. The synthetic source never
+        ends, so the capture supervisor — which only rebuilds after a source ends —
+        never got another chance to choose. Reattaching the microphone therefore
+        did nothing until someone restarted the service, which on 2026-08-08 meant
+        a day of synthetic audio after the AudioMoth's mode switch was moved.
+
+        Graceful degradation has to include coming back.
+        """
+        if self.settings.source != "auto" or info.source_kind == SourceKind.ALSA:
+            return None
+        if self.settings.hardware_recheck_s <= 0:
+            return None
+        return asyncio.create_task(self._hardware_watch_loop(source), name="hardware-watch")
+
+    async def _hardware_watch_loop(self, source: Any) -> None:
+        while self._running:
+            await asyncio.sleep(self.settings.hardware_recheck_s)
+            try:
+                device = await asyncio.to_thread(find_device, self.settings.audio_device)
+            except Exception:
+                log.exception("hardware_watch.probe_failed")
+                continue
+            if device is None:
+                continue
+            log.info(
+                "hardware_watch.device_returned",
+                device_key=device.stable_device_key,
+                label=device.card_name,
+            )
+            self._emit_health(
+                "info",
+                "capture.device_returned",
+                {"device_key": device.stable_device_key, "label": device.card_name},
+            )
+            # Ending the synthetic source is what hands control back to the
+            # supervisor, which rebuilds and prefers real hardware.
+            with contextlib.suppress(Exception):
+                await source.close()
+            return
 
     async def _on_stream_open(self, info: StreamInfo) -> None:
         rate = info.fmt.sample_rate

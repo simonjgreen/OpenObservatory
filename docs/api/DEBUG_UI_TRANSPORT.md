@@ -4,7 +4,11 @@ The API specification only commits to SSE for detection updates. A real-time
 spectrogram and a live listen button need more than that, so this document
 records what was added and why, rather than leaving it implicit in the code.
 
-Two WebSocket channels, deliberately separate.
+Three channels: two WebSockets, deliberately separate (ADR-012), plus a
+chunked-WAV HTTP stream added by ADR-019 as the default playback path after
+Web Audio proved silent on a real laptop. ADR-012's single-writer rule still
+governs both WebSockets and is unaffected by the WAV addition, which has no
+socket and so no writer to serialise.
 
 ## `GET /api/v1/live` — visual channel
 
@@ -213,6 +217,12 @@ capture loop.
 
 ### Client playback, and why not an AudioWorklet
 
+**This section describes the WebSocket path's client, which this UI no longer uses
+by default — see ADR-019 and the chunked-WAV section below.** It is retained
+because the WebSocket channel itself is retained (a phone client still uses it),
+and because the reasoning about why an `AudioWorklet` was never an option here still
+applies to anything built against this channel in future.
+
 `AudioWorklet` is only exposed in a **secure context**. The debug UI is served over
 plain HTTP from a LAN address, and only `localhost` gets the secure-context
 exemption, so `context.audioWorklet` is `undefined` on the real deployment. A
@@ -244,6 +254,91 @@ laptop speakers at unity. The client applies adjustable make-up gain (default
 +24 dB) followed by a limiter, so the feed is usable without a loud close event
 becoming painful. This gain is monitoring only and never affects what is analysed,
 stored or measured.
+
+## `GET /api/v1/live/audio.wav` — chunked-WAV listen channel
+
+Added by ADR-019 after Web Audio playback proved completely silent on a real
+laptop (Chrome 150, Ubuntu, 44.1 kHz hardware output) despite every
+transport- and decoder-level signal reporting healthy — the WebSocket
+delivered chunks, the client's Web Audio telemetry showed `out -18 dBFS`,
+`buffer 112 ms`, `under 0`, and the `AudioContext` reported
+`state: "running"`, yet nothing came out of the speakers by any Web Audio
+route. This is now the debug UI's **default** GO LIVE path, played through a
+plain `<audio>` element rather than decoded by Web Audio. `/api/v1/live/audio`
+above is unchanged and still in use — a phone client never had this problem.
+
+Same broadcaster, same bounded per-listener queue and drop policy, and the
+same "no heterodyne work with zero listeners" invariant as the WebSocket
+channel — a listener is only attached once the channel is confirmed
+available. The only difference is the transport.
+
+```
+GET /api/v1/live/audio.wav
+GET /api/v1/live/audio.wav?channel=audible      # equivalent (default)
+GET /api/v1/live/audio.wav?channel=ultrasonic
+GET /api/v1/live/audio.wav?channel=ultrasonic&tune_hz=45000
+```
+
+`channel` and `tune_hz` mean exactly what they mean on the WebSocket path.
+Retuning while connected is **not** supported here — there is no channel to
+carry a `tune` frame back to the server over a one-way HTTP response, so
+changing the tuning frequency means reconnecting with a new `tune_hz`. If the
+ultrasonic channel is unavailable for this station's native rate, the request
+gets `503` with the same `heterodyne_unavailable_reason` the WebSocket's
+`hello.reason` would carry, rather than a stream that opens and never plays
+anything.
+
+### Response
+
+No JSON hello frame — there is nothing to carry one over a plain HTTP
+response — so the equivalent information is in response headers, present
+before the body starts streaming:
+
+| Header | Meaning |
+|---|---|
+| `Cache-Control: no-store` | Never cache a live stream |
+| `X-Live-Sample-Rate` | The broadcaster's output rate (48000) |
+| `X-Live-Tune-Hz` | Ultrasonic only: the tuning actually applied, possibly clamped from what was requested |
+| `X-Live-Bandwidth-Hz` | Ultrasonic only: the kept bandwidth either side of the tuning frequency |
+
+### Body: the endless-header convention
+
+The body opens with a hand-built 44-byte canonical PCM WAV header
+(`_wav_stream_header` in `api/app.py`) — RIFF chunk size and `data` chunk size
+both set to `0xFFFFFFFF`, the conventional placeholder a decoder reads as "size
+unknown, keep playing" rather than a real byte count, because the true length
+is unknowable for a stream with no end. Everything else in the header matches
+what `soundfile`/libsndfile itself writes for 16-bit PCM mono at the
+broadcaster's sample rate. After the header, the body is continuous 16-bit
+little-endian mono PCM, chunked exactly as the WebSocket path chunks it, for
+as long as the client stays connected.
+
+### Listener lifecycle on disconnect
+
+The handler polls `request.is_disconnected()` between chunks (1 s timeout on
+the queue read, so this check runs at least once a second even during a lull)
+and releases the listener the moment it's true, rather than waiting for the
+queue to notice — for the ultrasonic channel that listener is the only thing
+keeping the heterodyne computation running at all, so a slow client-side
+teardown would otherwise keep it computing for nobody. As on the WebSocket
+path, anything queued between connection and the point the response actually
+starts consuming is drained before the first chunk is sent, because a live
+feed should begin at *now*.
+
+### What was lost moving off Web Audio, and why it wasn't faked
+
+`web/src/audio.ts`'s `AudioTelemetry` no longer reports `out dBFS`,
+`buffer ms` or `underruns` — those were measured inside Web Audio nodes that
+this path does not have. It reports what `HTMLMediaElement` genuinely
+exposes instead: `readyState`/`networkState`, seconds buffered ahead of the
+play cursor, and `stalled`/`waiting` event counts. The **+24 dB monitor
+make-up gain is also gone** and has no client-side replacement — a plain
+`<audio>` element has no gain stage, only the browser's volume control — so a
+quiet garden near −45 dBFS is quieter on this path than it was on the old
+one. Server-side gain applied to the stream itself is the fix if that proves
+a problem in practice; a client-side Web Audio `GainNode` is not an option,
+because it reintroduces the exact failure this endpoint exists to route
+around.
 
 ## Making ultrasound audible in evidence clips
 

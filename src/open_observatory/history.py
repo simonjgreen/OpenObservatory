@@ -28,6 +28,33 @@ from .display import display_title
 #: Groups that name an organism, as opposed to describing an unattributed sound.
 IDENTIFIED_GROUPS = ("bird", "bat")
 
+#: The only ``audio_stream.source_kind`` that represents a real microphone.
+#: ``synthetic`` and ``replay`` streams are genuine records of what a detector did
+#: -- useful for testing, never deleted -- but they are not evidence of an animal.
+#: The incident that prompted this: an AudioMoth left in USB/OFF made `OO_SOURCE=auto`
+#: fall back to the synthetic dawn-chorus scene, and five "Grey-winged Inca-Finch"
+#: detections (a South American species) sat indistinguishable from real ones in
+#: every view. coverage() above already draws this line for *seconds*
+#: (``seconds_from_microphone``); the rest of this module draws the same line for
+#: *rows*, so a query result cannot make the same mistake a summary statistic did.
+LIVE_SOURCE_KIND = "alsa"
+
+
+def is_live(column: ColumnElement) -> ColumnElement:
+    """True for a genuine microphone stream, false for synthetic/replay/unknown."""
+    return column == LIVE_SOURCE_KIND
+
+
+def is_not_live(column: ColumnElement) -> ColumnElement:
+    """The complement of :func:`is_live`, including a missing/NULL source_kind.
+
+    Plain ``!=`` would silently drop NULLs (SQL three-valued logic), which here
+    would mean a detection whose stream row cannot be found is shown by default
+    instead of hidden -- the wrong way round for a filter whose job is to keep
+    unproven rows out of the wildlife-facing views.
+    """
+    return (column != LIVE_SOURCE_KIND) | column.is_(None)
+
 
 @dataclass(frozen=True, slots=True)
 class Range:
@@ -143,6 +170,26 @@ def _in_range(query: Select, window: Range) -> Select:
     )
 
 
+def excluded_synthetic_count(session: Session, window: Range, *, min_score: float = 0.0) -> int:
+    """How many detections in this window a default (``include_synthetic=False``)
+    call to timeline()/species_summary() would hide.
+
+    Filtering the wildlife views by source is only honest if the exclusion is
+    reported somewhere -- an operator wondering why a detection they watched
+    happen is missing from history must be able to find out why, rather than
+    just notice a gap and assume the detector missed it.
+    """
+    query = _in_range(
+        select(func.count(orm.Detection.id)).outerjoin(
+            orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id
+        ),
+        window,
+    ).where(is_not_live(orm.AudioStream.source_kind))
+    if min_score > 0:
+        query = query.where(orm.Detection.score >= min_score)
+    return session.execute(query).scalar_one()
+
+
 def timeline(
     session: Session,
     window: Range,
@@ -150,11 +197,13 @@ def timeline(
     bucket_seconds: int | None = None,
     min_score: float = 0.0,
     include_unidentified: bool = True,
+    include_synthetic: bool = False,
 ) -> dict[str, object]:
     """Detection counts per time bucket, split by taxonomic group.
 
     This is the shape of a night: when activity started, when it peaked, whether
-    anything was happening at 03:00.
+    anything was happening at 03:00. By default that shape must be made of real
+    detections only -- see LIVE_SOURCE_KIND.
     """
     seconds = bucket_seconds or choose_bucket_seconds(window.seconds)
     bucket = bucket_expression(session.get_bind().dialect, orm.Detection.event_start_utc, seconds)
@@ -165,13 +214,15 @@ def timeline(
             orm.Detection.taxonomic_group.label("group"),
             func.count().label("detections"),
             func.max(orm.Detection.score).label("best_score"),
-        ),
+        ).outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id),
         window,
     )
     if min_score > 0:
         query = query.where(orm.Detection.score >= min_score)
     if not include_unidentified:
         query = query.where(orm.Detection.taxonomic_group.in_(IDENTIFIED_GROUPS))
+    if not include_synthetic:
+        query = query.where(is_live(orm.AudioStream.source_kind))
     rows = session.execute(query.group_by("bucket", "group").order_by("bucket")).all()
 
     buckets: dict[int, dict[str, object]] = {}
@@ -192,6 +243,11 @@ def timeline(
             "Counts of detections, not of animals. One bird calling repeatedly "
             "produces many detections."
         ),
+        "excluded_synthetic_count": (
+            0
+            if include_synthetic
+            else excluded_synthetic_count(session, window, min_score=min_score)
+        ),
     }
 
 
@@ -202,8 +258,14 @@ def species_summary(
     limit: int = 40,
     min_score: float = 0.0,
     include_unidentified: bool = False,
+    include_synthetic: bool = False,
 ) -> list[dict[str, object]]:
-    """What was detected in the window, once per distinct label, with its extent."""
+    """What was detected in the window, once per distinct label, with its extent.
+
+    Excludes synthetic/replay detections by default (see LIVE_SOURCE_KIND): this is
+    presented as a list of things heard, and a detector running against a test
+    scene has not heard anything.
+    """
     query = _in_range(
         select(
             orm.Detection.taxonomic_group.label("group"),
@@ -215,13 +277,17 @@ def species_summary(
             func.max(orm.Detection.score).label("best_score"),
             func.min(orm.Detection.event_start_utc).label("first_seen"),
             func.max(orm.Detection.event_start_utc).label("last_seen"),
-        ).join(orm.Detector, orm.Detection.detector_id == orm.Detector.id),
+        )
+        .join(orm.Detector, orm.Detection.detector_id == orm.Detector.id)
+        .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id),
         window,
     )
     if min_score > 0:
         query = query.where(orm.Detection.score >= min_score)
     if not include_unidentified:
         query = query.where(orm.Detection.taxonomic_group.in_(IDENTIFIED_GROUPS))
+    if not include_synthetic:
+        query = query.where(is_live(orm.AudioStream.source_kind))
 
     rows = session.execute(
         query.group_by(
@@ -314,7 +380,7 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
     # of a twelve hour night — a number that cannot be true and so is worse than
     # no number at all.
     covered = _merged_seconds([(a, b) for a, b, _ in intervals])
-    live = _merged_seconds([(a, b) for a, b, kind in intervals if kind == "alsa"])
+    live = _merged_seconds([(a, b) for a, b, kind in intervals if kind == LIVE_SOURCE_KIND])
 
     gap_rows = session.execute(
         select(

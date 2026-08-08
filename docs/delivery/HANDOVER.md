@@ -1,8 +1,13 @@
 # Handover: state, decisions, and what to do next
 
 Written at the end of the first implementation session, 2026-08-04, against the
-live station at `station.example`. Read `MILESTONE_STATUS.md` for progress against
-the plan; this file is the operational and engineering context a successor needs.
+live station at `station.example`; revised 2026-08-08 to cover Milestone 5's
+completion, an AudioMoth outage and its fix, live playback being rebuilt onto a
+different transport, and evidence storage moving to a USB SSD. Read
+`MILESTONE_STATUS.md` for progress against the plan; this file is the operational
+and engineering context a successor needs. Read ADR-019, ADR-020 and ADR-021 in
+`docs/architecture/ADRS.md` for the full reasoning behind 2026-08-08's changes —
+this file cross-references them rather than restating them.
 
 ---
 
@@ -10,14 +15,35 @@ the plan; this file is the operational and engineering context a successor needs
 
 The station captures live 384 kHz mono audio from an AudioMoth on a Pi 5, derives a
 48 kHz audible stream with verified zero group delay, cuts immutable time-addressed
-windows to three detectors' own specifications, normalises and persists detections,
-writes checksummed evidence clips (including audible renderings of ultrasound), and
-serves a real-time debug UI over two WebSocket channels — in scrolling or waterfall
-orientation, with unidentified events hidden by default — plus a history mode for
-browsing what was persisted. 161 Python tests and 38 frontend tests pass on the
-target; ruff is clean. It runs as a systemd unit and survives reboots. It is **not
-complete**: no 72-hour soak, no authentication, no product dashboard, and one
-Milestone 3 exit gate only partially met.
+windows to detectors' own specifications, normalises and persists detections, writes
+checksummed evidence clips (including audible renderings of ultrasound) to a USB SSD,
+and serves a real-time debug UI over two WebSocket channels plus a plain-HTTP audio
+stream — in scrolling or waterfall orientation, with unidentified and non-live-source
+events hidden by default — plus a history mode for browsing what was persisted. 197
+Python tests and 49 frontend tests pass on the target; ruff is clean. It runs as a
+systemd unit and survives reboots. Milestone 5 (ultrasonic and bat support) is
+complete: a bat pass detector runs live, gated to night by a solar scheduler,
+and BatDetect2 was benchmarked on the target and deliberately *not* adopted as a
+live detector — see §1a. It is **not complete** as a whole system: no 72-hour soak,
+no authentication, no product dashboard, and one Milestone 3 exit gate only
+partially met.
+
+## 1a. The cascade finding — the most reusable idea from Milestone 5
+
+BatDetect2 cannot follow a live 384 kHz stream (0.52x realtime, ADR-017), but it does
+not have to. `ultrasonic-pass-v1` runs at 36-40x realtime and decides *when*
+something happened; the expensive classifier only ever sees the few seconds already
+flagged as a pass. Measured on this station's own clips, trimmed to 1.5 s centred on
+the pass, BatDetect2 costs 2.1 s of inference per pass — so 1015 passes on the night
+of 2026-08-05 is about 36 minutes of classifier work for a whole night, not hours.
+Trimming is where the saving lives: an untrimmed 6 s evidence clip is mostly pre-roll
+silence and costs four times as much. `scripts/classify_clips_batdetect2.py`
+implements this cascade as a standalone offline tool — it reads stored clips and
+prints a comparison, and does not write to the database. It is not wired into the
+live pipeline as a registered detector plugin; `DeferredDetectorWorker` exists as the
+general mechanism that could carry it (`detectors/deferred.py`), but nothing uses it
+yet. Whether to promote the offline script into a live, queued adapter is an open
+decision, not a technical blocker — see ADR-017's 2026-08-05 update for the numbers.
 
 ## 2. How to operate it
 
@@ -33,11 +59,23 @@ cd ~/open-observatory && .venv/bin/oo audio probe
 .venv/bin/python -m pytest -q
 ```
 
-UI: `http://station.example:8080`. API: `/api/v1/…`. Metrics: `/metrics`.
+UI: `http://station.example:8080`. API: `/api/v1/…`. Metrics: `/metrics`. Live
+listening now defaults to `GET /api/v1/live/audio.wav` (a plain `<audio>` element),
+not the WebSocket channel — see ADR-019 and
+`docs/operations/DEPLOYMENT_AND_OPERATIONS.md`.
 
 **`config/runtime.env` on the Pi is not in version control** and holds the station
 name, coordinates and any device override. `deploy.sh` excludes it — it must stay
-excluded, because `rsync --delete` deleted it once already.
+excluded, because `rsync --delete` deleted it once already. As of 2026-08-08 it also
+sets `OO_CLIPS_REQUIRE_MOUNT=true` and the clip/rendering limits restored after the
+move to a USB SSD — see `docs/operations/DEPLOYMENT_AND_OPERATIONS.md`.
+
+**Evidence clips now live on a USB SSD mounted at `data/clips`, not the SD card**
+(ADR-021). The mount must exist before the service starts — it runs inside a systemd
+mount namespace — so mounting or replugging the SSD always needs
+`sudo systemctl restart open-observatory` afterwards. `OO_CLIPS_REQUIRE_MOUNT=true`
+makes a missing mount a named, visible degradation in `/api/v1/health` rather than a
+silent write to the SD card.
 
 ## 3. The ten bugs found by measuring, and why they matter
 
@@ -70,6 +108,38 @@ and near-total failure in the actual browser, because on loopback sends complete
 fast to ever overlap. Any future work on the live channels must be measured from a
 real client over the real link.
 
+## 3a. The 2026-08-08 microphone incident — the most important operational lesson
+
+The AudioMoth's mode switch was moved to `USB/OFF`, most likely while adjusting its
+gain (see `TARGET_DIAGNOSTICS.md`). In that position it enumerates as USB ID
+`10c4:0002` (HID only) and presents **no ALSA card at all**; `oo audiomoth info`
+still works in that state, because it talks to the HID interface — which is itself
+the diagnostic trap: a working `oo audiomoth info` is not evidence that streaming
+capture will work. Streaming mode is a different USB identity, `16d0:06f3`.
+
+- Live capture failed with `AlsaCaptureError: ALSA read failed: File descriptor in
+  bad state` — the device changing USB identity under a file descriptor the capture
+  process still had open.
+- The station fell back to the synthetic source and correctly reported itself
+  degraded, but **never recovered on its own**: `SyntheticSource` never ends, and the
+  capture supervisor only rebuilds a source once the current one ends. Recovery
+  needed a manual restart. Roughly a day of recording was lost.
+- Detectors kept running on synthetic audio throughout and persisted 5 bird
+  detections as *Grey-winged Inca-Finch* (a South American species with no plausible
+  presence here) plus 515 acoustic events into the real database, indistinguishable
+  from genuine records until ADR-020's fix.
+
+**Two fixes, at different layers:**
+
+1. `hardware_recheck_s` (default 30 s, `src/open_observatory/config.py`) makes the
+   station periodically re-probe for the real device while running on the *fallback*
+   synthetic source specifically — never when synthetic was chosen deliberately — so
+   a corrected switch position is picked up without a manual restart.
+2. ADR-020: every endpoint that presents detections as observations excludes rows
+   whose `source_kind` is not `alsa` by default (`include_synthetic=true` to see
+   them). Rows are kept, not deleted — they are a true record of detector behaviour
+   on synthetic input, useful for testing — but hidden from browsing views.
+
 ## 4. Architecture decisions a successor must not accidentally undo
 
 - **One process owns the microphone.** Everything else consumes windows. Do not add
@@ -90,14 +160,19 @@ real client over the real link.
   detector cannot report a probability, and a synthetic source is announced loudly
   everywhere including `/api/v1/health`.
 
-Deviations from the seed spec are ADR-007 to ADR-015 in
-`docs/architecture/ADRS.md`: SQLite in developer mode, native systemd instead of
-Compose, in-process event bus instead of Redis Streams, an owned activity detector
-as the first plugin, the debug UI as an observability surface rather than the
-product dashboard, the two-channel live transport and its single-writer rule, the
-ultrasonic pass detector as a second owned plugin, the audible rendering of
-ultrasonic evidence, and — the one with a real consequence — running with anonymous
-read access and no authentication until Milestone 4.
+Deviations from the seed spec are ADR-007 onwards in `docs/architecture/ADRS.md`:
+SQLite in developer mode, native systemd instead of Compose, in-process event bus
+instead of Redis Streams, an owned activity detector as the first plugin, the debug
+UI as an observability surface rather than the product dashboard, the two-channel
+live transport and its single-writer rule, the ultrasonic pass detector as a second
+owned plugin, the audible rendering of ultrasonic evidence, and — the one with a real
+consequence — running with anonymous read access and no authentication until
+Milestone 4. Three more were added 2026-08-08: ADR-019 (live playback moved off Web
+Audio to a chunked-WAV HTTP stream, because Web Audio produced no audible output on
+the operator's own laptop by any route), ADR-020 (non-live detections excluded from
+browsing views by default, written in response to the microphone incident in §3a),
+and ADR-021 (evidence clips moved to a USB SSD mounted over the existing `data/clips`
+path, because the SD card could not sustain a busy bat night's write load).
 
 ## 5. Known-good measured figures (regressions should be judged against these)
 
@@ -116,6 +191,8 @@ read access and no authentication until Milestone 4.
 | Ultrasonic detector | p95 54–104 ms, ~36–40× realtime |
 | Activity detector | p95 13–16 ms, ~95× realtime, fires on ~9% of windows |
 | BirdNET plausibility | week 29, 139 species plausible at the development station |
+| BatDetect2 (measured, not adopted live) | p95 968 ms per 0.5 s clip, 0.52× realtime, +459 MB RSS |
+| BatDetect2 cascade (offline, trimmed 1.5 s clips) | 2.1 s inference per pass; ~36 min classifier work for 1015 passes in one night |
 
 ## 6. Immediate next steps, in the order I would do them
 
@@ -143,20 +220,29 @@ useful addition and is not currently planned.
 
 ### 6.3 Fix the things I know are wrong or unfinished
 
-4. **Reduce the AudioMoth gain.** The input clips on loud nearby events. This needs
-   the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
-   app-packet format for writing configuration is not implemented here. Either
-   implement it (see `AudioMoth-USB-Microphone-App` for the packet layout) or do it
-   by hand and record the new setting in `TARGET_DIAGNOSTICS.md`.
-5. **Add a night scheduler.** The ultrasonic detector currently runs 24 hours a
-   day. The technical spec wants civil dusk to civil dawn plus a margin, and the
-   `solar.py` approach from the earlier OutdoorAcousticEvents prototype is a
-   reasonable starting point.
-6. **Review the ultrasonic detector's false-positive rate.** On a windy or
-   handling-noisy evening it reports "bat pass" for broadband transients. Detections
-   at 18–21 kHz are ambiguous between noctule and bush-cricket. The audible
-   renderings now make these checkable by ear; use them to tune
-   `min_snr_db`, `min_pulses_per_pass` and the band.
+4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
+   needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
+   app-packet format for writing configuration is not implemented here. **Warn
+   whoever does this that capture stops for the duration** — moving the switch to
+   `USB/OFF` is exactly what caused the incident in §3a, and the automatic recovery
+   in `hardware_recheck_s` only helps once the switch is back in `DEFAULT`. Either
+   implement the HID write path (see `AudioMoth-USB-Microphone-App` for the packet
+   layout) or do it by hand and record the new setting in `TARGET_DIAGNOSTICS.md`.
+5. **Decide whether to promote the BatDetect2 cascade from an offline script to a
+   live, queued detector.** The speed case is now made (§1a): 36 minutes of
+   classifier work for a whole night's passes. `DeferredDetectorWorker` already
+   exists as the mechanism (`detectors/deferred.py`, `deferred_enabled` setting);
+   nothing currently registers a plugin against it. What is not settled is accuracy:
+   see item 6.
+6. **Review the ultrasonic detector's false-positive rate, and resolve the Myotis
+   question.** On a windy or handling-noisy evening it reports "bat pass" for
+   broadband transients. Offline BatDetect2 classification of the station's own
+   33-36 kHz cluster leaned Myotis on 6 of 8 clips but at low confidence
+   (0.20-0.30), and produced one confident contradiction — 0.77 for *Pipistrellus
+   pygmaeus* on a 34 kHz call, when soprano pipistrelle actually peaks near 55 kHz.
+   The hot AudioMoth gain (item 4) is a plausible confound. This needs a human
+   listening to the audible renderings, not a code change; use them to tune
+   `min_snr_db`, `min_pulses_per_pass` and the band as well.
 7. **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI and
    only the resampler check exists.
 8. **Cover the history endpoints at the HTTP level.** `tests/test_history.py` tests
@@ -174,14 +260,14 @@ useful addition and is not currently planned.
 
 ### 6.4 Then the plan's own next milestones
 
+Milestone 5 (ultrasonic and bat support) is now complete — see §1 and
+`MILESTONE_STATUS.md`. What remains of the plan:
+
 11. **Milestone 4**: product dashboard, review workflow, retention UI, and the
    authentication foundation. ADR-015 records the deferred authentication as a
    deviation with a real security consequence; this milestone is what closes it. Note the `review` table exists and nothing writes to
    it. Keep the debug UI separate (ADR-011).
-9. **Milestone 5 proper**: BatDetect2 evaluation and benchmark on this Pi. The
-   window contract and native stream are already in place, so this is an adapter
-   plus a decision about whether real-time inference is sustainable.
-10. **Milestone 6**: MQTT publisher and Home Assistant discovery. Cheap, because
+12. **Milestone 6**: MQTT publisher and Home Assistant discovery. Cheap, because
     the event envelope is already the published one — a publisher subscribing to
     the existing bus needs no contract changes.
 
@@ -193,9 +279,12 @@ useful addition and is not currently planned.
   `create_all()` is used, which is fine for SQLite but not a migration path).
 - **Redis Streams.** ADR-009's `EventBus` protocol is the seam. The bounded queues
   and drop counters already model the back-pressure a real transport imposes.
-- **USB SSD.** Currently running on the SD card with a 20 GB clip budget. A
-  continuous archive is explicitly out of scope, but a soak test plus retained
-  evidence will grow.
+- **USB SSD: done (2026-08-08, ADR-021).** Evidence clips now live on a 465.8 GB
+  SanDisk Extreme Portable SSD mounted at `data/clips`; the SD card's old clip
+  directory is retained at `data/clips.sdcard-backup` pending deletion — that
+  deletion is a small remaining cleanup item. The database deliberately stays on
+  the SD card. A continuous native-rate audio archive remains explicitly out of
+  scope regardless of available space (see §6.2).
 
 ## 7. Traps worth knowing about
 
@@ -225,19 +314,35 @@ useful addition and is not currently planned.
   ring: 11 gaps and 8 overruns in five minutes. Evidence extraction and retention
   now have their own single-thread executor. Anything else that does sustained disk
   I/O needs the same treatment.
-- **A bottleneck can be load-bearing.** The ultrasonic detector was stalling on
-  inline clip writes and dropping 70% of its windows, which was *also* throttling
-  clip production. Fixing the stall tripled evidence volume and exposed an SD-card
-  I/O limit that had never been reached. Expect the next constraint to appear when
-  you remove one.
-- **Clip volume on a busy bat night is the binding storage constraint.** Roughly
-  15 MB per pass across four clips, 15 GB in one night, against a 20 GB budget. The
-  station now renders heterodyne only rather than heterodyne plus time expansion
-  (`OO_ULTRASONIC_AUDIBLE_METHOD=heterodyne`) and caps `OO_CLIP_MAX_PER_MINUTE=6`.
-  Both are in `runtime.env` and reversible. The durable fix is the USB SSD.
+- **A bottleneck can be load-bearing.** Evidence writing was awaited inline in
+  `ultrasonic-pass-v1`'s own detector task, so it analysed 29 windows and dropped 69
+  with a 42 s lag, even though its own inference p95 was 57 ms — the stall was
+  entirely in the write, not the model. Routed through a bounded queue instead: 76
+  analysed, 0 dropped, lag 0.14 s. Fixing that stall tripled evidence volume and
+  exposed an SD-card I/O limit that had never been reached — the limit that
+  eventually justified the USB SSD (ADR-021). Expect the next constraint to appear
+  when you remove one.
+- **Clip volume on a busy bat night is the binding storage constraint — and it was
+  fixed at the device, not by throttling.** Roughly 15 MB per pass across four
+  clips, 15 GB in one night, against a 20 GB SD-card budget that was already
+  exceeded. The temporary mitigation was heterodyne-only rendering
+  (`OO_ULTRASONIC_AUDIBLE_METHOD=heterodyne`) and `OO_CLIP_MAX_PER_MINUTE=6`; as of
+  2026-08-08 (ADR-021) evidence moved to a 465.8 GB USB SSD and both throttles were
+  lifted — `OO_ULTRASONIC_AUDIBLE_METHOD=both`, `OO_CLIP_MAX_PER_MINUTE=20`,
+  `OO_CLIP_MAX_TOTAL_GB=300`. If a future station shows the same symptom before its
+  SSD is fitted, the same temporary settings are the known-good stopgap.
 - **`pytest` escalates `DeprecationWarning` to an error** by configuration. That is
   deliberate — it is what forced the FastAPI lifespan migration — but it means a
   dependency deprecation will fail the suite.
+- **`oo audiomoth info` succeeding is not evidence that capture will work.** It
+  talks to the HID interface, which is present even in `USB/OFF` — the position that
+  has no ALSA card at all. §3a's incident was diagnosed by this exact confusion.
+- **A mount created while the service is running is invisible to it.** The systemd
+  unit runs in a mount namespace (`ProtectHome=read-only`,
+  `ReadWritePaths=/home/observer/open-observatory/data`). Mounting or replugging the
+  USB SSD at `data/clips` always needs
+  `sudo systemctl restart open-observatory` afterwards — `mount`/`df` showing it on
+  the host is not sufficient. See ADR-021.
 
 ## 8. What must not be claimed
 
@@ -248,4 +353,9 @@ until the acceptance criteria pass a 72-hour soak. Specifically avoid claiming:
   `ultrasonic-pass-v1` detects passes, not species;
 - that scores are probabilities, unless the detector declares calibration;
 - that levels are sound pressure levels — no calibration procedure exists;
-- that bat support is complete — there is no classifier and no night scheduler.
+- that bat support includes species identification — a night scheduler and pulse-
+  train pass detector run live, but there is no live classifier: BatDetect2 was
+  measured and deliberately not adopted for real-time inference (ADR-017), and its
+  offline cascade (§1a) is evaluated, not adopted, per the same ADR;
+- that the 33-36 kHz cluster this station reports is Myotis — offline classification
+  is suggestive (6 of 8 clips) but low-confidence and contradicted once; unresolved.

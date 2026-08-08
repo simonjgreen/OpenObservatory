@@ -36,13 +36,27 @@ Source of truth for what is implemented: `src/open_observatory/api/app.py`.
 - `GET /debug/events`
 - `WS /live`
 - `WS /live/audio`
+- `GET /live/audio.wav`
 
 Also implemented, outside the `/api/v1` prefix: `GET /metrics` (Prometheus
 exposition format, disabled via `metrics_enabled=false`).
 
-The two WebSocket endpoints are documented in detail in
+The two WebSocket endpoints and the WAV endpoint are documented in detail in
 `DEBUG_UI_TRANSPORT.md`; see also ADR-012 in `docs/architecture/ADRS.md` for
-the decision to use WebSocket rather than SSE for the live channel.
+the decision to use WebSocket rather than SSE for the live channel, and
+ADR-019 for why `GET /live/audio.wav` was added and made the debug UI's
+default listen path — Web Audio produced no audible output at all on a real
+laptop, for reasons unrelated to the transport, and a plain `<audio>` element
+against a chunked WAV stream did work on the same machine. `WS /live/audio` is
+unchanged and still used by clients (a phone) that never had that problem.
+`GET /live/audio.wav` takes the same `channel` (`audible` default,
+`ultrasonic`) and `tune_hz` query parameters as the WebSocket path, streams a
+44-byte WAV header with both size fields set to `0xFFFFFFFF` (the endless-
+stream convention) followed by continuous 16-bit little-endian mono PCM,
+answers `503` if the ultrasonic channel is unavailable for this station's
+native rate, and carries `Cache-Control: no-store` plus `X-Live-Sample-Rate`
+(and, on the ultrasonic channel, `X-Live-Tune-Hz`/`X-Live-Bandwidth-Hz`)
+response headers in place of the WebSocket's JSON hello frame.
 
 ### Endpoints — planned, not implemented
 
@@ -80,6 +94,39 @@ artefacts.
 | `plugin_id` | string | Filter to detections from one detector plugin. |
 | `identified_only` | bool, default `false` | Restrict to taxonomic groups considered identified. |
 | `min_score` | float, 0.0–1.0, default 0.0 | |
+| `include_synthetic` | bool, default `false` | See below. |
+
+Also present on `GET /detections/{id}` and `GET /taxa/activity`
+(`include_synthetic`, same default and meaning), and on `GET /history`
+(`include_synthetic`, applied to the `timeline`, `species` and `unidentified`
+sections only — `coverage` is unaffected, see below).
+
+### `include_synthetic` and `excluded_synthetic_count` — implemented, ADR-020
+
+Every endpoint above that presents detections as observations excludes rows
+whose stream's `source_kind` is not `alsa` (i.e. not from the physical
+microphone — this covers both the `synthetic` fallback source and `replay` of
+a fixture file) unless the caller passes `include_synthetic=true`. This is a
+default, not a delete: the rows are stored regardless, because they are an
+honest record of detector behaviour and useful for testing, but a browsing
+view must not present a test scene as an observation. `GET /detections` and
+`GET /taxa/activity` report `include_synthetic` and
+`excluded_synthetic_count` alongside their results, so an empty result is
+distinguishable from a genuinely quiet night. `GET /detections/{id}` on an
+excluded row returns `404` with a detail explaining why and how to retrieve it
+(`include_synthetic=true`), rather than `200` with data the caller didn't ask
+to see. Detection payloads also carry `source_kind` and a derived
+`is_live_source` boolean regardless of which mode was requested.
+`GET /history`'s `coverage` block is deliberately exempt from this filter: it
+already separates `seconds_from_microphone` from total coverage and exists to
+answer "was the microphone listening", which synthetic-exclusion would
+obscure rather than clarify. Motivating incident: the AudioMoth's USB mode
+switch was moved to `USB/OFF` on 2026-08-05, the station correctly fell back
+to a synthetic source and correctly reported itself degraded, but detectors
+kept running against synthetic audio and persisted 5 bird detections
+(*Grey-winged Inca-Finch*, implausible at this station) plus 515 acoustic
+events indistinguishable from genuine records in every browsing view that
+existed at the time.
 
 ## Event stream
 

@@ -100,7 +100,43 @@ def seeded(settings):
         for index in range(40):
             detection(index, "acoustic_event", None, 0.3)
 
-    return {"station_id": station_id, "base": base}
+        # A stream the AudioMoth fell back to because it presented no ALSA card --
+        # the incident this module's filtering exists for. Same window, same
+        # detector, high score: nothing about the row itself looks wrong, which is
+        # exactly why the source has to be checked rather than the content.
+        synthetic_stream_id = uuid.uuid4()
+        session.add(
+            orm.AudioStream(
+                id=synthetic_stream_id,
+                source_kind="synthetic",
+                start_utc=base,
+                end_utc=base + timedelta(hours=2),
+                start_monotonic_ns=0,
+                sample_rate=48000,
+                sample_format="S16_LE",
+            )
+        )
+        session.add(
+            orm.Detection(
+                id=uuid.uuid4(),
+                station_id=station_id,
+                detector_id=detector_id,
+                stream_id=synthetic_stream_id,
+                window_id=uuid.uuid4(),
+                event_start_utc=base + timedelta(minutes=5),
+                event_end_utc=base + timedelta(minutes=5, seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label="Grey-winged Inca-Finch",
+                common_name="Grey-winged Inca-Finch",
+                scientific_name="Incaspiza ortizi",
+                rank="species",
+                taxonomic_group="bird",
+                score=0.99,
+            )
+        )
+
+    return {"station_id": station_id, "base": base, "synthetic_stream_id": synthetic_stream_id}
 
 
 class TestNamedRanges:
@@ -312,3 +348,79 @@ class TestCoverage:
         assert result["seconds_captured"] == 0
         assert result["fraction_captured"] == 0
         assert result["streams"] == []
+
+
+class TestSourceFiltering:
+    """The AudioMoth USB/OFF incident: a synthetic fallback stream's detections
+    (five "Grey-winged Inca-Finch" rows in the real database) must never be
+    presented as observed wildlife, but must remain reachable on request.
+    """
+
+    def _window(self, seeded) -> history.Range:
+        return history.Range(seeded["base"], seeded["base"] + timedelta(hours=2), "t")
+
+    def test_timeline_excludes_synthetic_by_default(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            result = history.timeline(session, window, bucket_seconds=3600)
+        # Without the synthetic row, the first hour's bird count is the 5 Robins
+        # and 3 Woodpigeons from the "alsa" stream only.
+        assert result["buckets"][0]["groups"]["bird"]["detections"] == 8
+
+    def test_timeline_includes_synthetic_on_request(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            result = history.timeline(
+                session, window, bucket_seconds=3600, include_synthetic=True
+            )
+        assert result["buckets"][0]["groups"]["bird"]["detections"] == 9
+
+    def test_timeline_reports_the_excluded_count(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            excluded = history.timeline(session, window)["excluded_synthetic_count"]
+        assert excluded == 1
+
+    def test_timeline_reports_zero_excluded_when_included(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            excluded = history.timeline(session, window, include_synthetic=True)[
+                "excluded_synthetic_count"
+            ]
+        assert excluded == 0
+
+    def test_species_summary_excludes_synthetic_species_by_default(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            rows = history.species_summary(session, window)
+        assert "Grey-winged Inca-Finch" not in {row["display_name"] for row in rows}
+
+    def test_species_summary_includes_synthetic_species_on_request(self, seeded) -> None:
+        window = self._window(seeded)
+        with session_scope() as session:
+            rows = history.species_summary(session, window, include_synthetic=True)
+        by_name = {row["display_name"]: row for row in rows}
+        assert by_name["Grey-winged Inca-Finch"]["detections"] == 1
+        assert by_name["Grey-winged Inca-Finch"]["best_score"] == pytest.approx(0.99, abs=1e-6)
+
+    def test_live_stream_detections_are_unaffected_either_way(self, seeded) -> None:
+        """The point of this fix is that genuine detections never move."""
+        window = self._window(seeded)
+        with session_scope() as session:
+            excluding = {
+                r["display_name"]: r["detections"]
+                for r in history.species_summary(session, window)
+            }
+            including = {
+                r["display_name"]: r["detections"]
+                for r in history.species_summary(session, window, include_synthetic=True)
+            }
+        assert excluding["European Robin"] == including["European Robin"] == 5
+        assert excluding["Common Woodpigeon"] == including["Common Woodpigeon"] == 3
+
+    def test_excluded_synthetic_count_respects_the_score_filter(self, seeded) -> None:
+        """The synthetic row scores 0.99, so a high min_score must still find it."""
+        window = self._window(seeded)
+        with session_scope() as session:
+            assert history.excluded_synthetic_count(session, window, min_score=0.95) == 1
+            assert history.excluded_synthetic_count(session, window, min_score=0.999) == 0

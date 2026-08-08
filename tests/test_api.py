@@ -47,6 +47,29 @@ def client(settings):
 
 
 class TestStationEndpoints:
+    def test_health_reports_clip_storage_that_is_not_its_own_device(self, settings) -> None:
+        """The SSD going missing must be loud, not silent.
+
+        Evidence clips live on a USB SSD mounted over the clips directory
+        (ADR-021). If that mount is absent the station keeps capturing -- capture
+        always wins -- but it would be writing multi-megabyte clips to the SD card
+        alongside capture, which is exactly what caused ALSA overruns on
+        2026-08-08. Degrading quietly would reintroduce that with nobody looking.
+        """
+        configured = settings.model_copy(update={"source": "synthetic", "clips_require_mount": True})
+        from open_observatory.config import set_settings
+
+        set_settings(configured)
+        app = create_app(configured)
+        with TestClient(app) as local_client:
+            body = local_client.get("/api/v1/health").json()
+
+        # Not asserting the exact status: it is "degraded" while capturing and
+        # "critical" before the first block arrives, which is a startup race and
+        # not the point. The point is that the problem is named.
+        assert body["status"] != "ok"
+        assert any("not a mount point" in problem for problem in body["problems"]), body["problems"]
+
     def test_health_reports_synthetic_source_honestly(self, client) -> None:
         payload = client.get("/api/v1/health").json()
         assert payload["capture"]["state"] == "capturing"
@@ -145,12 +168,20 @@ class TestStationEndpoints:
 
 class TestDetections:
     def test_detections_are_produced_persisted_and_served(self, client) -> None:
-        """The whole vertical slice, end to end."""
+        """The whole vertical slice, end to end.
+
+        The `client` fixture runs the real pipeline against the synthetic source
+        (no ALSA hardware in CI), so every detection it produces is exactly the
+        kind the default view now hides -- include_synthetic=true is what makes
+        this an end-to-end test of persistence rather than of the new filter.
+        """
         import time
 
         detections: list = []
         for _ in range(60):
-            detections = client.get("/api/v1/detections?limit=50").json()["detections"]
+            detections = client.get(
+                "/api/v1/detections?limit=50&include_synthetic=true"
+            ).json()["detections"]
             if detections:
                 break
             time.sleep(0.5)
@@ -161,8 +192,11 @@ class TestDetections:
         assert first["source_end_frame"] > first["source_start_frame"]
         assert 0.0 <= first["score"] <= 1.0
         assert first["detector"]["plugin_id"]
+        # Honestly labelled, even though the caller opted in to seeing it.
+        assert first["source_kind"] == "synthetic"
+        assert first["is_live_source"] is False
 
-        detail = client.get(f"/api/v1/detections/{first['id']}").json()
+        detail = client.get(f"/api/v1/detections/{first['id']}?include_synthetic=true").json()
         assert detail["id"] == first["id"]
         # The detector's own output is preserved verbatim.
         assert detail["native_result"]
@@ -184,7 +218,7 @@ class TestDetections:
         bat_rows: list = []
         for _ in range(60):
             rows = client.get(
-                "/api/v1/detections?limit=200&plugin_id=ultrasonic-pass-v1"
+                "/api/v1/detections?limit=200&plugin_id=ultrasonic-pass-v1&include_synthetic=true"
             ).json()["detections"]
             bat_rows = [row for row in rows if row["taxonomic_group"] == "bat"]
             if bat_rows:
@@ -207,7 +241,7 @@ class TestDetections:
 
         for _ in range(40):
             rows = client.get(
-                "/api/v1/detections?limit=200&plugin_id=activity-v1"
+                "/api/v1/detections?limit=200&plugin_id=activity-v1&include_synthetic=true"
             ).json()["detections"]
             if rows:
                 break
@@ -226,7 +260,10 @@ class TestDetections:
 
         found = None
         for _ in range(60):
-            for row in client.get("/api/v1/detections?limit=100").json()["detections"]:
+            rows = client.get(
+                "/api/v1/detections?limit=100&include_synthetic=true"
+            ).json()["detections"]
+            for row in rows:
                 if row["media"]:
                     found = row
                     break
@@ -248,7 +285,7 @@ class TestDetections:
         assert client.get("/api/v1/detections/not-a-uuid").status_code == 400
 
     def test_taxa_activity_summarises(self, client) -> None:
-        payload = client.get("/api/v1/taxa/activity?hours=24").json()
+        payload = client.get("/api/v1/taxa/activity?hours=24&include_synthetic=true").json()
         assert "entries" in payload
         for entry in payload["entries"]:
             assert entry["detections"] >= 1
@@ -260,6 +297,80 @@ class TestDetections:
         assert streams
         assert streams[0]["sample_rate"] == 192000
         assert "gaps" in client.get("/api/v1/gaps").json()
+
+
+class TestSourceFiltering:
+    """The station in this fixture only ever runs the synthetic source (there is
+    no ALSA hardware in CI), so every detection it produces is exactly the kind
+    that must not be presented as an observation by default -- this is the
+    regression suite for the USB/OFF incident, exercised through the real API.
+    """
+
+    def _wait_for_a_detection(self, client) -> dict:
+        import time
+
+        for _ in range(60):
+            rows = client.get(
+                "/api/v1/detections?limit=50&include_synthetic=true"
+            ).json()["detections"]
+            if rows:
+                return rows[0]
+            time.sleep(0.5)
+        raise AssertionError("the synthetic dawn chorus produced no detections at all")
+
+    def test_detections_list_hides_synthetic_by_default(self, client) -> None:
+        self._wait_for_a_detection(client)
+        payload = client.get("/api/v1/detections?limit=50").json()
+        assert payload["detections"] == []
+        assert payload["include_synthetic"] is False
+        # Silently empty would look identical to a quiet night; the count is what
+        # lets an operator tell the two apart.
+        assert payload["excluded_synthetic_count"] > 0
+
+    def test_detections_list_shows_synthetic_when_asked(self, client) -> None:
+        self._wait_for_a_detection(client)
+        payload = client.get("/api/v1/detections?limit=50&include_synthetic=true").json()
+        assert payload["detections"]
+        assert payload["include_synthetic"] is True
+        assert payload["excluded_synthetic_count"] == 0
+        assert all(row["source_kind"] == "synthetic" for row in payload["detections"])
+
+    def test_detection_detail_404s_for_synthetic_by_default(self, client) -> None:
+        found = self._wait_for_a_detection(client)
+        response = client.get(f"/api/v1/detections/{found['id']}")
+        assert response.status_code == 404
+        # An operator hitting this from a bookmarked/shared link must be able to
+        # tell "hidden because synthetic" apart from "never existed".
+        assert "include_synthetic" in response.json()["detail"]
+
+    def test_detection_detail_visible_with_override(self, client) -> None:
+        found = self._wait_for_a_detection(client)
+        response = client.get(f"/api/v1/detections/{found['id']}?include_synthetic=true")
+        assert response.status_code == 200
+        assert response.json()["id"] == found["id"]
+
+    def test_taxa_activity_hides_synthetic_and_reports_the_count(self, client) -> None:
+        self._wait_for_a_detection(client)
+        payload = client.get("/api/v1/taxa/activity?hours=24").json()
+        assert payload["entries"] == []
+        assert payload["excluded_synthetic_count"] > 0
+
+    def test_history_hides_synthetic_and_reports_the_count(self, client) -> None:
+        self._wait_for_a_detection(client)
+        payload = client.get("/api/v1/history?window=last-24h").json()
+        assert payload["species"] == []
+        assert payload["timeline"]["excluded_synthetic_count"] > 0
+
+    def test_history_shows_synthetic_when_asked(self, client) -> None:
+        self._wait_for_a_detection(client)
+        payload = client.get("/api/v1/history?window=last-24h&include_synthetic=true").json()
+        assert payload["timeline"]["excluded_synthetic_count"] == 0
+        total = sum(
+            group["detections"]
+            for bucket in payload["timeline"]["buckets"]
+            for group in bucket["groups"].values()
+        )
+        assert total > 0
 
 
 class TestLiveChannels:
@@ -348,6 +459,85 @@ class TestLiveChannels:
             time.sleep(0.2)
             heterodyne = client.get("/api/v1/station").json()["live_audio_ultrasonic"]["heterodyne"]
             assert heterodyne["tune_hz"] == pytest.approx(60000.0, abs=1.0)
+
+    def test_audio_wav_streams_a_valid_riff_header_then_pcm(self, client) -> None:
+        with client.stream("GET", "/api/v1/live/audio.wav") as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "audio/wav"
+            assert response.headers["cache-control"] == "no-store"
+            assert int(response.headers["x-live-sample-rate"]) == 48000
+
+            chunks = response.iter_bytes()
+            body = b""
+            while len(body) < 144:
+                body += next(chunks)
+
+            (
+                riff_id,
+                riff_size,
+                wave_id,
+                fmt_id,
+                fmt_size,
+                audio_format,
+                num_channels,
+                sample_rate,
+                byte_rate,
+                block_align,
+                bits_per_sample,
+                data_id,
+                data_size,
+            ) = struct.unpack("<4sI4s4sIHHIIHH4sI", body[:44])
+            assert riff_id == b"RIFF"
+            assert wave_id == b"WAVE"
+            assert fmt_id == b"fmt "
+            assert fmt_size == 16
+            assert audio_format == 1  # PCM
+            assert num_channels == 1
+            assert sample_rate == 48000
+            assert bits_per_sample == 16
+            assert byte_rate == sample_rate * block_align
+            assert data_id == b"data"
+            # Endless stream: the conventional "unknown length" placeholder.
+            assert riff_size == 0xFFFFFFFF
+            assert data_size == 0xFFFFFFFF
+
+            # Some real PCM follows the header, and it is a whole number of
+            # 16-bit frames.
+            pcm = body[44:]
+            assert len(pcm) >= 100
+            assert len(pcm) % 2 == 0
+
+    def test_audio_wav_ultrasonic_channel_honours_tune_hz(self, client) -> None:
+        with client.stream(
+            "GET", "/api/v1/live/audio.wav?channel=ultrasonic&tune_hz=42000"
+        ) as response:
+            assert response.status_code == 200
+            assert float(response.headers["x-live-tune-hz"]) == pytest.approx(42000.0, abs=1.0)
+            assert float(response.headers["x-live-bandwidth-hz"]) > 0
+            next(response.iter_bytes())  # header
+            next(response.iter_bytes())  # at least one PCM chunk
+
+    def test_audio_wav_disconnect_releases_the_broadcaster_listener(self, client) -> None:
+        import time
+
+        with client.stream("GET", "/api/v1/live/audio.wav") as response:
+            chunks = response.iter_bytes()
+            next(chunks)  # header
+            next(chunks)  # a PCM chunk, so the listener has definitely attached
+            assert client.get("/api/v1/station").json()["live_audio"]["listeners"] >= 1
+
+        # The `with` block above closed the response; the server should notice
+        # the disconnect and release the listener rather than leaking it (for
+        # the ultrasonic channel, a leaked listener would keep the heterodyne
+        # running for nobody).
+        deadline = time.monotonic() + 5.0
+        released = False
+        while time.monotonic() < deadline:
+            if client.get("/api/v1/station").json()["live_audio"]["listeners"] == 0:
+                released = True
+                break
+            time.sleep(0.2)
+        assert released, "listener was not released after the client disconnected"
 
 
 class TestDebugSurface:

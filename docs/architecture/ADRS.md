@@ -344,3 +344,158 @@ bandwidth and is reused unchanged, exactly as briefed.
 channel unavailable (`hello.available: false`, with a reason) rather than silently
 approximating a fractional ratio — AudioMoth's one hardware profile on this project's
 target is 384 kHz, so this is a defensive fallback, not an expected path.
+
+## ADR-019: Live playback moved off Web Audio to a chunked-WAV stream, because Web Audio was silent on the operator's own laptop
+
+**Decision:** Add `GET /api/v1/live/audio.wav`, streaming a 44-byte WAV header with
+both size fields set to `0xFFFFFFFF` — the conventional placeholder for a stream of
+unknown, effectively endless length — followed by continuous 16-bit little-endian
+mono PCM at the broadcaster's sample rate. The debug UI's GO LIVE button now points a
+plain `<audio>` element at this endpoint by default. `/api/v1/live/audio`, the
+WebSocket channel from ADR-012, is unchanged and still serves other clients — a phone
+uses it and had no problem to fix.
+
+**Reason:** Diagnosed empirically, not guessed, in the operator's own browser.
+Listening worked on an iPhone and was completely silent on the laptop (Chrome 150,
+Ubuntu, hardware output 44.1 kHz). The transport was proven fine first: the server
+reported one listener connected, and the client's own Web Audio telemetry reported
+`out -18 dBFS`, `buffer 112 ms`, `under 0` — a graph that believed it was producing
+audible sound. The Web Audio graph was correctly wired
+(`gain -> limiter -> analyser -> context.destination`) and its `AudioContext`, built
+at 48 kHz, reported `state: "running"`. None of that mattered: an oscillator routed
+through `context.destination` was inaudible, and so was the same graph routed through
+`createMediaStreamDestination()` into an `<audio srcObject>`. Web Audio produced no
+audible output by any route on that machine. A generated WAV played through a plain
+`<audio>` element *was* audible, as was YouTube in the same browser — media-element
+playback works there; Web Audio does not. The chunked-WAV endpoint routes around
+Web Audio entirely rather than debugging it further, because there was no remaining
+node in that graph left to suspect.
+
+**Consequences, recorded rather than smoothed over:**
+
+- The page is served over plain HTTP to a LAN IP, so `window.isSecureContext` is
+  false, `navigator.mediaDevices` is undefined, and `AudioWorklet` was already
+  unavailable before today (see `DEBUG_UI_TRANSPORT.md`'s discussion of why the
+  original WebSocket client scheduled `AudioBuffer`s on an explicit cursor instead of
+  using a worklet). That pre-existing constraint shaped the original design and is
+  worth restating here, because it is adjacent to but not the cause of today's bug —
+  the worklet was never in use on either path.
+- **All client-side audio telemetry (`out dBFS`, `buffer ms`, underruns) is gone.**
+  It was measured *inside* Web Audio nodes, which no longer exist in this path, and
+  was not ported across because there is nothing genuine to port: an
+  `HTMLMediaElement` exposes no per-sample level and no explicit jitter buffer. It
+  was replaced with what the element actually reports —
+  `readyState`/`networkState`, seconds buffered ahead of the play cursor, and counts
+  of `stalled`/`waiting` events — in `web/src/audio.ts`'s `AudioTelemetry`. Nothing
+  is fabricated to fill the gap.
+- **The +24 dB monitor make-up gain is also gone**, and has no replacement yet. A
+  calm garden sits near −45 dBFS, so that gain was doing real work, and the plain
+  `<audio>` element has no gain stage of its own — only the browser's own volume
+  control. If the WAV path proves too quiet in practice, the fix is server-side gain
+  applied to the stream before it reaches the broadcaster, not a client-side node,
+  because any Web Audio node reintroduces exactly the failure this ADR routes
+  around.
+- The response carries `Cache-Control: no-store` and `X-Live-Sample-Rate`, plus
+  `X-Live-Tune-Hz`/`X-Live-Bandwidth-Hz` on the ultrasonic channel, since there is no
+  JSON hello frame over plain HTTP to carry that information instead. See
+  `DEBUG_UI_TRANSPORT.md` for the full header and lifecycle description.
+
+**The lesson worth generalising, because it will recur:** every meter the old client
+displayed was measured *inside* the failing subsystem, upstream of where the signal
+was actually lost, so it confidently reported health while producing silence. A
+transport-layer check (listener count, one) and a decoder-layer check
+(`out dBFS`) both passed while the final hop — Web Audio's connection to this
+machine's actual output device — was silently broken. A meter that cannot observe
+the failure is worse than no meter, because it actively suggests there is nothing
+left to check.
+
+## ADR-020: Detections from non-live sources are excluded from browsing views by default
+
+**Decision:** Every endpoint that presents detections as observations —
+`GET /api/v1/detections`, `GET /api/v1/detections/{id}`, `GET /api/v1/taxa/activity`,
+and the timeline/species/unidentified sections of `GET /api/v1/history` — excludes
+rows whose stream's `source_kind` is not `alsa` unless the caller passes
+`include_synthetic=true`. Excluded list/aggregate responses report
+`include_synthetic` and `excluded_synthetic_count` alongside the results, so an empty
+result is distinguishable from a quiet night rather than looking identical to one.
+`GET /api/v1/detections/{id}` on an excluded row returns `404` with an explanatory
+detail (`include_synthetic=true` to retrieve it) rather than a silent `200`, because
+the detail view is reached from a list that already excludes it by default, so the
+honest answer to "why can't I find it" is the same 404 the list implied. `history`'s
+`coverage` block is deliberately unaffected by this filter: it already separates
+`seconds_from_microphone` from total coverage and is not a wildlife view, so
+excluding synthetic rows from it would hide, not surface, the fact that the
+microphone was absent.
+
+Rows are still stored, not discarded — they are a true record of what the detector
+did, and useful for testing — but they carry `source_kind` and a derived
+`is_live_source` boolean so every consumer can make the same distinction without
+re-deriving it. "Live" means `source_kind == "alsa"` specifically
+(`history.LIVE_SOURCE_KIND`); "non-live" is everything else, which includes
+`replay` as well as `synthetic` — a fixture WAV replayed for testing is exactly as
+misleading in a browsing view as the synthetic tone generator is, and both are
+excluded by the same predicate (`history.is_not_live`, which also treats a
+`NULL`/missing `source_kind` as non-live rather than assuming it is genuine).
+
+**Reason:** On 2026-08-05 the AudioMoth's mode switch was moved to `USB/OFF`, so it
+stopped presenting an ALSA card. `OO_SOURCE=auto` correctly fell back to the
+synthetic scene and correctly reported itself degraded in `/api/v1/health`, but
+detectors kept running against synthetic audio and their detections were persisted
+alongside genuine ones with no visible distinction. The live database gained 5 bird
+detections attributed to *Grey-winged Inca-Finch* — a South American species with no
+plausible presence at this station — plus 515 acoustic events, and both were
+indistinguishable from real records in the history and species views. Deleting the
+rows would have destroyed a true record of detector behaviour on synthetic input,
+which is useful for exactly the kind of regression testing ADR-010's `activity-v1`
+exists for; the fix is at the presentation layer, not the storage layer.
+
+**Constraint:** Any new endpoint that lists or aggregates detections for a human to
+read as observations must apply the same `is_live`/`is_not_live` predicate and
+report `excluded_synthetic_count`. An endpoint that aggregates without this filter
+and without the count is a regression of this ADR, not a stylistic choice.
+
+## ADR-021: Evidence clips live on their own device, mounted over the clips directory
+
+**Decision:** Evidence clips are stored on a dedicated USB SSD, mounted at
+`data/clips` — the path they already occupied. The SQLite database stays on the SD
+card. `clips_require_mount` makes the station report itself degraded, by name, when
+that mount is absent, rather than quietly writing evidence to the system disk.
+
+**Reason — the SD card could not sustain the write load.** A busy bat night writes
+roughly 15 MB per pass across four clips: 15 GB in one night, against a 20 GB
+budget already exceeded. Worse, it was competing with capture: ALSA reads go through
+`asyncio.to_thread`, so clip writes and the capture read share the default thread
+pool, and on 2026-08-08 that produced 11 gaps and 8 overruns in five minutes with
+continuity down to 0.997. Isolating evidence onto its own executor helped but could
+not overcome the device.
+
+**Why mounted over the existing path rather than relocated.** `media_asset.storage_uri`
+holds **absolute** paths, across 17,273 assets. Moving the files anywhere else would
+have orphaned every existing evidence link or required rewriting all of them.
+Mounting the new device at the path the data already used made the migration a
+no-op for the database: verified afterwards by fetching a clip recorded the previous
+day through `/api/v1/media/{id}`, which returned a valid 384 kHz WAV.
+
+**Why the database stays on the SD card.** It is small, and the SD card is the
+system disk, which is always present. If the SSD is unplugged the station keeps
+capturing, detecting, and serving history — it simply cannot write new evidence.
+That confines the failure to the component that can best absorb it.
+
+**Why the service does not depend on the mount.** A `RequiresMountsFor` dependency
+would stop the station from starting at all if the SSD were missing, and capture
+always wins. The station therefore starts regardless and reports the problem in
+`/api/v1/health`, in the same spirit as the synthetic-source fallback: keep
+recording, and say loudly what is wrong. `nofail` in `/etc/fstab` matches this.
+
+**Constraint — the mount must exist before the service starts.** The unit runs in a
+systemd mount namespace (`ProtectHome=read-only`, with `ReadWritePaths` covering
+`data`), so a mount created on the host *after* the service starts is not visible
+inside it. Mounting the SSD while the station is running requires a restart before
+it takes effect, and the health check is what makes that state visible rather than
+silent.
+
+**Consequence:** the throttles imposed to protect the SD card were lifted — clips
+per minute restored from 6 to 20, ultrasonic rendering restored from heterodyne-only
+to both heterodyne and time expansion, and the budget raised from 20 GB to 300 GB
+against 458 GB of storage. The full analysis view of every bat pass is available
+again.

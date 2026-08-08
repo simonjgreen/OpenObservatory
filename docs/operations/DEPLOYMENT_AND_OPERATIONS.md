@@ -24,6 +24,8 @@ server. There is no message broker; the event bus is in-process (ADR-009).
   config/
     runtime.env                      operator-owned, NOT in the repo, NOT synced by rsync --delete
   data/                               ReadWritePaths for the systemd unit
+    clips/                           evidence clips — a mounted USB SSD since 2026-08-08, see below
+    clips.sdcard-backup/             pre-migration clips left on the SD card, retained pending deletion
   web/dist/                          built UI assets, served by the API process
 ```
 
@@ -157,6 +159,20 @@ systemd tracks the unit's cgroup, not a string match against argv.
 `GET /api/v1/health` on port 8080 is what `deploy.sh` polls after a restart.
 It is also the right first check after any manual `systemctl restart`.
 
+### Live listening: two transports, since ADR-019
+
+The debug UI's GO LIVE button plays audio from `GET /api/v1/live/audio.wav` by
+default — a plain `<audio>` element against a chunked WAV stream (44-byte header,
+size fields `0xFFFFFFFF`, continuous 16-bit PCM). This replaced a Web Audio graph
+that was silent on the operator's own laptop for reasons diagnosed but not fully
+explained (ADR-019) — media-element playback worked on the same machine where Web
+Audio, by any routing, did not. The original WebSocket channel,
+`/api/v1/live/audio`, is unchanged and still used by other clients (a phone, without
+issue). If a quiet garden (around −45 dBFS) proves too quiet over the new path,
+the fix is server-side gain applied to the stream before broadcast, not a
+client-side Web Audio node — the +24 dB monitor make-up gain the old client applied
+is gone and has no replacement yet.
+
 ### Updating
 
 1. `./deploy/deploy.sh` (add `--no-web` if only Python changed, `--no-deps`
@@ -247,6 +263,31 @@ Do not deploy this Compose file. It will not run as checked in.
   the udev rule installed by `deploy.sh` for this.
 - NTP enabled; the station operates internally in UTC and presents local time
   using the configured IANA timezone.
+- The USB SSD at `data/clips` must be mounted **before** `systemctl start
+  open-observatory` runs — see "Evidence storage" below. There is no
+  provisioning script for a fresh host's `/etc/fstab` entry; it was added by
+  hand during commissioning and is not idempotent tooling.
+
+### Evidence storage: the USB SSD must be mounted before the service starts
+
+Since 2026-08-08 (ADR-021), evidence clips are written to a USB SSD mounted at
+`data/clips`, not the SD card — see `docs/operations/TARGET_DIAGNOSTICS.md` for the
+device details (partition, UUID, `fstab` line). The database stays on the SD card.
+
+This has one operational consequence that is easy to get wrong: **the systemd unit
+runs in a mount namespace** (`ProtectHome=read-only` with
+`ReadWritePaths=/home/observer/open-observatory/data`), so a filesystem mounted on the
+host *while the service is already running* is not visible inside it. Mounting (or
+remounting, or replugging) the SSD always requires
+`sudo systemctl restart open-observatory` afterwards to take effect — the mount
+appearing in `mount`/`df` on the host is not sufficient.
+
+`OO_CLIPS_REQUIRE_MOUNT=true` (`clips_require_mount` in `Settings`, off by default)
+makes `/api/v1/health` report degraded, by name, when `data/clips` is not currently a
+mount point, instead of silently falling back to writing evidence onto the SD card.
+Set it once the SSD is commissioned on a given host. The service itself never
+refuses to start over a missing mount — capture always wins, per the existing
+synthetic-source fallback pattern — it only reports the problem loudly.
 
 ## Configuration
 
@@ -276,6 +317,24 @@ Setting any of these currently has no effect on the running service. This is
 reported here as found, not fixed, per the scope of this document; the
 Postgres/Redis/MQTT lines in the example file describe the deferred Compose
 target above and appear to have been left in the template unintentionally.
+
+### the development station station's `runtime.env`, as it now stands
+
+Because `runtime.env` is gitignored (see above), its actual contents are not visible
+from the repository. As of the 2026-08-08 storage work, the station's copy sets, in
+addition to its identity and coordinates:
+
+| Key | Value | Why |
+|---|---|---|
+| `OO_CLIPS_REQUIRE_MOUNT` | `true` | report degraded rather than silently write evidence to the SD card if the SSD is ever unmounted |
+| `OO_CLIP_MAX_PER_MINUTE` | `20` | restored to the `Settings` default now the SSD can sustain it; was temporarily `6` while still on the SD card |
+| `OO_ULTRASONIC_AUDIBLE_METHOD` | `both` | restored to the `Settings` default (time-expansion and heterodyne); was temporarily `heterodyne` only |
+| `OO_CLIP_MAX_TOTAL_GB` | `300` | raised from the `Settings` default of `20` against 458 GB of usable SSD space |
+| `OO_ULTRASONIC_SCHEDULE` | `night` | unchanged by this work — gates the ultrasonic detector to civil dusk-dawn |
+
+If these are ever reduced again, it will be for the same reason they were reduced
+before: the storage device underneath `data/clips` cannot sustain the write rate.
+Check `du -sh data/clips` and the SSD's free space before assuming that.
 
 ## Soak testing
 

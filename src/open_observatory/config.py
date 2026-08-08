@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     data_dir: Path = REPO_ROOT / "data"
     database_dsn: str = ""
     clip_retention_days: int = 30
+    #: True when evidence clips live on their own device (a USB SSD), so health can
+    #: say so when the mount is missing. Writing clips to the SD card alongside
+    #: capture is what caused ALSA overruns on 2026-08-08; falling back to it
+    #: silently would reintroduce that without anyone noticing. Capture still wins:
+    #: the station keeps recording, it just reports itself degraded.
+    clips_require_mount: bool = False
 
     # ---- capture ----------------------------------------------------------
     source: SourceKind = "auto"
@@ -49,6 +55,13 @@ class Settings(BaseSettings):
     native_ring_seconds: int = 120
     audible_ring_seconds: int = 120
     #: Reopen backoff bounds after a device disappears.
+    #: While running on the *fallback* synthetic source, how often to look for the
+    #: real device coming back. Without this the station degrades gracefully and
+    #: then never recovers: the synthetic source never ends, so the capture
+    #: supervisor never rebuilds and a reattached microphone goes unnoticed until
+    #: someone restarts the service. Measured on 2026-08-08, that cost a day of
+    #: recording after the AudioMoth's mode switch was moved.
+    hardware_recheck_s: float = 30.0
     reopen_backoff_min_s: float = 1.0
     reopen_backoff_max_s: float = 30.0
 

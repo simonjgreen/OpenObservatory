@@ -111,10 +111,15 @@ Unfinished gates rather than new scope: the 72-hour soak, a committed species fi
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
 mutually exclusive, because deploying restarts capture and voids the run.
 
-## Milestone 5 — Ultrasonic and bat support — **partial, beyond plan**
+## Milestone 5 — Ultrasonic and bat support — **complete**
 
 Brought forward because the device turned out to capture at 384 kHz, which makes
-the native stream genuinely useful rather than theoretical.
+the native stream genuinely useful rather than theoretical. **Exit gate met
+2026-08-05**: a known bat fixture is processed on the target device
+(`tests/test_batdetect2.py`), provenance is retained in
+`results/batdetect2-pi5.json`, and capture continuity was unaffected (0.999318,
+0 overruns). The bat adapter is deliberately *not* built: the benchmark measured
+BatDetect2 at 0.52x realtime, below the threshold, and ADR-017 records that.
 
 | Deliverable | State |
 |---|---|
@@ -124,7 +129,7 @@ the native stream genuinely useful rather than theoretical.
 | Pi 5 benchmark report | **done** — BatDetect2 measured on the target: p95 968 ms per 0.5 s clip, **0.52× realtime in isolation**, +459 MB RSS. Against BirdNET at ~40× and the pass detector at ~36–40×. Verdict: not sustainable for real-time inference |
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
-| Deferred mode | **not built, and now known to be required *if* BatDetect2 is adopted** — the benchmark settles the question it was waiting on. Not built tonight because adoption is not settled: the speed verdict is clear, the accuracy picture is not |
+| Deferred mode | **the generic `DeferredDetectorWorker` mechanism exists** (`detectors/deferred.py`) but no BatDetect2 plugin is registered against it. The cascade it would enable has instead been proven **offline**: `scripts/classify_clips_batdetect2.py` runs BatDetect2 against clips `ultrasonic-pass-v1` already flagged, and measured on this station's own clips (trimmed to 1.5 s centred on the pass) it costs 2.1 s of inference per pass — about 36 minutes of classifier work for the 1015 passes of a full night. See ADR-017's 2026-08-05 update. Whether to wire this into the live pipeline as a registered plugin, versus leaving it a manual/offline tool, is not decided |
 | Feeding-buzz flagging | **done** — a run of short inter-pulse intervals that is also well below the train's own median, which is what distinguishes a terminal collapse from a bat calling fast throughout. `min_interval_ms` is emitted on every pass so a wrong threshold can be re-judged from stored data |
 | Frequency-band candidate titles | **done** — presentational only; the stored record keeps `label = "bat pass"` and no species name, and the normaliser's guard is asserted by test |
 | Sub-bin peak frequency | **done** — the pulse FFT has 3 kHz bins at 384 kHz and the candidate band edges fall between bin centres, so peaks were being assigned to a species group by quantisation. Parabolic interpolation fixes it; live, the station's 35–36 kHz cluster survives as a genuine 35.3–36.2 kHz signal |
