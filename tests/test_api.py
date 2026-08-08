@@ -605,7 +605,7 @@ class TestDebugSurface:
         events = client.get("/api/v1/debug/events?limit=50").json()["events"]
         assert events
         for event in events:
-            # 1.0 -> 1.1: MQTT (Milestone 6, ADR-022) fixed the schema's
+            # 1.0 -> 1.1: MQTT (Milestone 6, ADR-025) fixed the schema's
             # additionalProperties:false gap that dropped `rank` and
             # `taxonomic_group`; see schemas/detection-event.schema.json.
             assert event["schema_version"] == "1.1"
