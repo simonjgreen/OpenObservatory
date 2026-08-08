@@ -8,9 +8,11 @@ import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
 import { DetectionDrawer } from './components/DetectionDrawer'
 import { History } from './components/History'
+import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
 import { RetentionPanel } from './components/RetentionPanel'
 
+import { useAuth } from './hooks/useAuth'
 import { useClock } from './hooks/useClock'
 import { useHistoryBrowser } from './hooks/useHistoryBrowser'
 import { useLiveAudio } from './hooks/useLiveAudio'
@@ -36,6 +38,7 @@ import { useViewMode } from './hooks/useViewMode'
  *  drawer, and view/diagnostics depth.
  */
 export default function App() {
+  const auth = useAuth()
   const clock = useClock()
   const live = useLiveConnection()
   const spectrogramControls = useSpectrogramControls(live.specs)
@@ -47,6 +50,21 @@ export default function App() {
 
   const timeZone = live.status?.station.timezone ?? 'UTC'
   const diagnosing = view.depth === 'diagnose'
+
+  // ADR-034: while auth is probing (`'checking'`), render nothing rather
+  // than flashing the full app or the login form -- both are wrong for
+  // roughly one request's worth of time. `'anonymous'` (auth_enabled=false,
+  // the shipped default) falls through to the app exactly as before this
+  // feature existed.
+  if (auth.status === 'checking') {
+    return <div className="app-loading" />
+  }
+  if (auth.status === 'login-required') {
+    return <Login auth={auth} />
+  }
+  if (auth.status === 'authenticated' && auth.mustChangePassword) {
+    return <ChangePasswordGate auth={auth} />
+  }
 
   return (
     <div className="app">
@@ -92,6 +110,15 @@ export default function App() {
           onTuneHz={audio.changeTuneHz}
           hello={audio.hello}
         />
+        {auth.status === 'authenticated' && (
+          <button
+            className="logout-button"
+            title={`Signed in as ${auth.username ?? 'operator'}`}
+            onClick={() => auth.logout()}
+          >
+            sign out
+          </button>
+        )}
       </Header>
 
       <OperatorSummary status={live.status} />

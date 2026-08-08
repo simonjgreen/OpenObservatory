@@ -241,6 +241,78 @@ class HealthEvent(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class User(Base):
+    """A local operator account (Milestone 4, ADR-034).
+
+    Exactly the fields a single-station appliance needs: no roles, no
+    groups, no org model -- this is authentication, not authorisation.
+    ``password_hash`` is always an Argon2id PHC string
+    (``$argon2id$v=19$...``), produced by :mod:`open_observatory.auth`;
+    nothing in this codebase ever stores or logs the plaintext.
+    """
+
+    __tablename__ = "user"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    #: Set on the bootstrap account and after an administrative reset; the
+    #: login endpoint still succeeds (so the operator is never simply locked
+    #: out) but the client is told to route straight to the change-password
+    #: form rather than the app.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthSession(Base):
+    """A browser session backing an `HttpOnly` cookie.
+
+    The cookie carries a high-entropy opaque token; only its SHA-256 is
+    stored here, so a stolen database dump cannot be replayed as a session
+    any more than a stolen one could be turned back into a password. This is
+    a fast, unsalted hash deliberately -- the token itself already has
+    ~256 bits of entropy from :func:`secrets.token_urlsafe`, so it needs no
+    slow KDF, and a session lookup happens on every authenticated request.
+    """
+
+    __tablename__ = "auth_session"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Free text, for an operator glancing at "what is logged in right now"
+    #: in a future admin view. Never parsed, never trusted for anything.
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+
+class ApiToken(Base):
+    """A long-lived, revocable credential for a machine client.
+
+    Same hashed-at-rest treatment as :class:`AuthSession`. ``token_prefix``
+    (the first 8 characters of the token, stored in the clear) lets a token
+    be looked up without a full-table scan while the value that actually
+    authenticates -- the hash of the whole token -- never leaves this row.
+    An operator names each token at creation (``name``) so a future "why
+    does the display keep showing as logged in" question has an answer.
+    """
+
+    __tablename__ = "api_token"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    token_prefix: Mapped[str] = mapped_column(String(16), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Review(Base):
     """Append-only. Current status is derived from the latest valid review."""
 

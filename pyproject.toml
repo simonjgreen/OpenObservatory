@@ -30,6 +30,11 @@ dependencies = [
   # off by default). Pure-Python wheel, no native build step, so unlike the
   # `alsa`/`birdnet` extras there is no reason to make it opt-in.
   "aiomqtt==2.3.0",
+  # Password hashing for the Milestone 4 auth foundation (ADR-034). Argon2id,
+  # winner of the 2015 Password Hashing Competition and OWASP's current
+  # recommendation; cost parameters are pinned separately in config.py so a
+  # future library upgrade cannot silently change station security posture.
+  "argon2-cffi==23.1.0",
 ]
 
 [project.optional-dependencies]

@@ -6,7 +6,15 @@
  *  (status, events, detections) is surfaced as state.
  */
 
+import { notifyAuthRequired } from './api'
 import type { ColumnBatch, Detection, Envelope, StationStatus } from './types'
+
+/** Close code the server sends when `auth_enabled` is true and the socket's
+ *  handshake carried no valid session/token (`api/app.py`'s `_ws_principal`
+ *  check on `/live` and `/live/audio`). Not a registered/reserved code --
+ *  chosen in the private-use range (4000-4999) reserved for applications by
+ *  RFC 6455 -- and picked to echo the HTTP 401 this mirrors. */
+const CLOSE_CODE_AUTH_REQUIRED = 4401
 
 const HEADER_BYTES = 16
 const FRAME_SPECTROGRAM = 1
@@ -124,10 +132,23 @@ export class LiveConnection {
 
     socket.onerror = () => this.handlers.onConnectionChange('error')
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
       if (this.keepAlive !== null) {
         window.clearInterval(this.keepAlive)
         this.keepAlive = null
+      }
+      if (event.code === CLOSE_CODE_AUTH_REQUIRED) {
+        // Reconnecting on a fixed backoff into a session that just expired
+        // would just repeat the same rejection forever while looking, to
+        // the operator, like an ordinary connection hiccup. Report it
+        // honestly instead (the same signal a 401 from a plain fetch
+        // reports) and let `useAuth` put the login view back up; a fresh
+        // `connect()` after a successful login is a normal remount, not a
+        // reconnect loop.
+        this.closedByUs = true
+        this.handlers.onConnectionChange('closed', 'authentication required')
+        notifyAuthRequired()
+        return
       }
       this.handlers.onConnectionChange('closed')
       if (this.closedByUs) return

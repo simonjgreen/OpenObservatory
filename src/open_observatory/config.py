@@ -8,10 +8,10 @@ cloud default.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 SourceKind = Literal["auto", "alsa", "replay", "synthetic"]
 
@@ -288,6 +288,75 @@ class Settings(BaseSettings):
 
     metrics_enabled: bool = True
 
+    # ---- authentication (Milestone 4, closes ADR-015) ----------------------
+    #: Off by default so an upgrade never locks an operator out of their own
+    #: station unattended -- turning this on is a deliberate operator action,
+    #: not a side effect of pulling new code. See ADR-034. While off, the
+    #: station behaves exactly as it always has: anonymous read AND write on
+    #: the LAN. `/api/v1/health` reports this loudly (``auth.enabled: false``)
+    #: and a warning is logged once at startup so it is not silently the
+    #: case.
+    auth_enabled: bool = False
+    #: GET-only paths that stay reachable with no credential even when
+    #: ``auth_enabled`` is true. Exists for exactly one reason: the ESP32
+    #: wall display (``firmware/inside-observer``) polls these two paths
+    #: every ``pollSeconds`` with no way to carry a credential, and it cannot
+    #: be reflashed as part of closing this ADR (see ADR-034). `/api/v1/health`
+    #: and `/metrics` are separately hardcoded as always-public in `api/app.py`
+    #: -- `deploy.sh`'s health check and a Prometheus scraper have no login
+    #: flow either -- so this list only needs to cover what is left.
+    #: `Annotated[..., NoDecode]`: pydantic-settings otherwise tries to
+    #: JSON-decode every tuple-typed field's raw env/dotenv string *before*
+    #: this class's own `_split_csv` validator ever runs, and a plain
+    #: comma-separated value like `/a,/b` is not valid JSON -- discovered
+    #: while adding this field: the same failure (`SettingsError` at
+    #: startup) already exists for `preferred_sample_rates`,
+    #: `preferred_formats` and `clip_plugins` whenever they are actually set
+    #: via the environment, pre-dating this change. `NoDecode` opts this one
+    #: field out of that broken path so it is safe to set from
+    #: `config/runtime.env`; the other three are left as found, since fixing
+    #: them is outside this change's territory.
+    auth_public_read_paths: Annotated[tuple[str, ...], NoDecode] = ("/api/v1/detections",)
+    #: Minimum password length enforced at account creation and password
+    #: change. NIST 800-63B's floor; no composition rules on top of it, which
+    #: is also 800-63B guidance -- composition rules push people toward
+    #: predictable substitutions, length does not.
+    auth_password_min_length: int = 12
+    #: Argon2id cost parameters, pinned exactly like every other dependency
+    #: in this project rather than left at whatever `argon2-cffi` ships as
+    #: its default this release. These match that library's own recommended
+    #: defaults as of the pinned version (OWASP guidance for Argon2id: >=2
+    #: iterations, >=19 MiB memory, parallelism matched to available cores)
+    #: -- copied explicitly, not inherited silently, so a future library
+    #: upgrade cannot change station security posture without the diff
+    #: showing it.
+    auth_argon2_time_cost: int = 3
+    auth_argon2_memory_cost_kib: int = 65536
+    auth_argon2_parallelism: int = 4
+    #: Session cookie lifetime. Long-lived deliberately: this is a local
+    #: appliance an operator glances at, not a banking site.
+    auth_session_ttl_hours: float = 24.0 * 14
+    auth_session_cookie_name: str = "oo_session"
+    #: `Secure` requires HTTPS or the browser silently refuses to ever send
+    #: the cookie back -- and this station is served over plain HTTP on a LAN
+    #: by default (no TLS component exists anywhere in this codebase).
+    #: Defaulting `Secure=true` here would not make the cookie safer; it
+    #: would make login appear to succeed and then silently never
+    #: authenticate any subsequent request, which is worse than being honest
+    #: about the gap. See ADR-034. Set true only once a reverse proxy or
+    #: similar terminates TLS in front of this station.
+    auth_cookie_secure: bool = False
+    #: Login attempts allowed per client IP inside the window below before
+    #: `/api/v1/auth/login` starts returning 429. Deliberately coarse
+    #: (in-process, per-worker, reset on restart) -- see ADR-034 for why a
+    #: heavier limiter was not built for a single-operator LAN appliance.
+    auth_login_rate_limit_attempts: int = 5
+    auth_login_rate_limit_window_s: float = 60.0
+    #: Username the first-run bootstrap account is created under when
+    #: `auth_enabled` is true and no user exists yet. The password is never
+    #: this or any other fixed value -- see `auth.bootstrap_admin_if_needed`.
+    auth_bootstrap_username: str = "operator"
+
     # ---- MQTT / Home Assistant (Milestone 6) -------------------------------
     #: Off by default: an operator who upgrades an existing station gets no new
     #: network traffic, no new failure mode, until they opt in. Never required
@@ -353,7 +422,13 @@ class Settings(BaseSettings):
             raise ValueError(f"mqtt_qos must be 0, 1 or 2, got {value}")
         return value
 
-    @field_validator("preferred_sample_rates", "preferred_formats", "clip_plugins", mode="before")
+    @field_validator(
+        "preferred_sample_rates",
+        "preferred_formats",
+        "clip_plugins",
+        "auth_public_read_paths",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):

@@ -893,3 +893,65 @@ code {
   .suggestion { grid-template-columns: 40px 1fr 60px; }
   .timeline-row { grid-template-columns: 56px 16px 1fr 28px; }
 }
+
+/* ---- authentication (ADR-034) ------------------------------------------
+ * Login and forced-password-change gate. Reuses the app's own colour
+ * tokens rather than introducing a second palette for what is, on the
+ * happy path, a screen an operator sees once. */
+.app-loading {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: var(--space-4, 16px);
+}
+
+.login-card {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+}
+
+.login-card h1 {
+  font-size: var(--text-xl);
+  margin: 0;
+}
+
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.login-card input {
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  min-height: 36px;
+}
+
+.login-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.login-note {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.logout-button {
+  font-size: var(--text-xs);
+}
