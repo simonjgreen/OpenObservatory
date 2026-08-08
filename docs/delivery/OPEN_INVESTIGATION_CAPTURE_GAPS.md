@@ -22,7 +22,37 @@ Both are fixed (ADR-022). The ring is now sized from `capture_buffer_ms` (500 ms
 default) and the estimate runs either way, with gaps reported split into
 `gaps_with_loss` and `gaps_without_loss`.
 
-<!-- MEASUREMENT-TABLE -->
+## Result, measured on the live station
+
+Two windows of comparable length, same afternoon, same station, same
+`config/runtime.env` — the code was the only variable:
+
+| | Before (44.8 min) | After (44.3 min) |
+|---|---|---|
+| Window (UTC) | 13:08:50 → 13:53:40 | 14:39:00 → 15:23:19 |
+| ALSA ring | 30,720 frames (80 ms, 8 periods) | 192,000 frames (500 ms, 50 periods) |
+| Continuity | 0.999376 | **0.999945** |
+| `capture.gap` records | 24 | **0** |
+| — with real audio lost | 9 | **0** |
+| — with nothing lost | 15 | **0** |
+| ALSA overruns (EPIPE) | 14 | **0** |
+| Audio lost | 1.16 s | **0** |
+| Per-block hot-path CPU | 10.6% of one core | 10.55% of one core |
+| Reported device offset | −245 to −270 ppm | **−52 ppm** |
+
+Zero gaps and zero overruns is the figure `HANDOVER.md` records for normal running and
+which the station had stopped achieving. Continuity of 0.999945 is *above* the
+known-good band of 0.9990–0.9997. Hot-path CPU is unchanged, which is the expected
+result: a deeper kernel ring does no extra work, it only tolerates more delay.
+
+The device offset moving from −245 ppm to −52 ppm is a second, independent confirmation
+that the estimator was wrong rather than the hardware: the true measured offset recorded
+in `TARGET_DIAGNOSTICS.md` is −43 ppm, and uncredited lost frames were what dragged the
+figure five times below it.
+
+**This is a 44-minute daytime window, not a soak.** It is not evidence that the problem
+cannot return under a busy night's load. See "What is still open".
+
 
 ## What was measured, in order
 
@@ -226,9 +256,46 @@ occurrence will say so instead of vanishing.
 ## What is still open
 
 - **Whether 500 ms is enough** under a genuinely busy bat night, which is when evidence
-  writing, three detectors and clip rendering all peak together. The measurement below
+  writing, three detectors and clip rendering all peak together. The measurement above
   is a daytime one. If gaps return, the ring is the first thing to widen
   (`OO_CAPTURE_BUFFER_MS`), and the next structural step — a free-running reader thread
   feeding an internal queue — is described and deliberately deferred in ADR-022.
 - **The missing gap row of 2026-08-08 10:55:24Z**, above. Inference only.
+- **Hypothesis 4 was never isolated.** The restored rendering settings were left in
+  place on purpose so the code was the only variable. They may still cost something at
+  the margin; the CPU-load experiment says load matters. Nobody has measured them alone.
 - **No 72-hour soak has run.** These are 45-minute windows.
+
+## Smoke test on the target
+
+```bash
+ssh observer@station.example
+curl -s localhost:8080/api/v1/health | python3 -m json.tool | head -40
+# Expect, after several minutes of running:
+#   alsa_buffer_frames  192000        (500 ms; must exceed block_frames 38400)
+#   gaps_with_loss      0
+#   gaps_without_loss   0
+#   overruns            0
+#   continuity_ratio    >= 0.9990
+#   rate_offset_ppm     around -43 to -55, not -200-something
+sudo journalctl -u open-observatory --since "-30 min" | grep 'lost_audio=True' | wc -l
+curl -s localhost:8080/metrics | grep oo_capture_
+```
+
+`capture.buffer_shallower_than_block` in the log at open means ALSA clamped the ring
+below one block and the original failure mode is back.
+
+## Rollback
+
+The change is confined to `src/`, with no schema change and no new dependency.
+
+```bash
+git revert 3db9092
+rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
+ssh observer@station.example sudo systemctl restart open-observatory
+```
+
+The ring depth alone can be rolled back without reverting anything, by setting
+`OO_CAPTURE_BUFFER_MS=80` in `config/runtime.env` and restarting. Note that
+`_periods_for_buffer` floors the ring at two capture blocks, so 80 will still yield
+200 ms; reproducing the original 80 ms ring needs the code change reverted.

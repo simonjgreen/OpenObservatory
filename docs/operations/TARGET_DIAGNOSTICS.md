@@ -169,8 +169,9 @@ Sustained running as a systemd service:
 
 | Measurement | Result |
 |---|---|
-| Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero) |
+| Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero); **0.999945** over 44 min after the ring was deepened, 2026-08-08 |
 | Gaps / overruns | 0 |
+| ALSA ring | 192,000 frames = 500 ms (50 periods of 3840), negotiated. Was 30,720 = 80 ms behind a 100 ms block until 2026-08-08; see ADR-022 |
 | Device clock offset from nominal | **−43 ppm** |
 | Per-block hot-path CPU | **10.9 %** of one core, for capture + resample + both spectrograms + level telemetry. Was 9.5 % before the ultrasonic channel began max-combining four sub-windows per column; that 1.4 % buys full coverage of the audio instead of 45 %. |
 | Whole-process CPU | ~29 % of the 4-core machine with all three detectors running |
@@ -186,6 +187,13 @@ addressing audio, and why gap detection looks for a *step* in the
 frames-behind-wall-clock figure rather than an absolute value. An earlier version
 did not separate the two and reported a single overrun as a permanent −1439 ppm
 clock offset.
+
+A second version of the same mistake survived until 2026-08-08: frames lost during an
+ALSA overrun were never estimated at all, because the estimator was skipped whenever a
+discontinuity reason had already been set. Those uncredited frames looked exactly like
+a slow crystal, and the station reported **−245 to −270 ppm** through the afternoon of
+2026-08-08. After the fix, and with no losses to credit, it reads **−52 ppm**. Treat any
+`rate_offset_ppm` logged before 2026-08-08 15:00 UTC as contaminated.
 
 ### USB topology, measured 2026-08-08
 
