@@ -335,24 +335,58 @@ shipped plugin declares itself deferred, so there is nothing for it to run again
 ## Known limitation: the range model raises a bar, it does not draw a boundary
 
 `BirdNetDetector._band_for` sorts each candidate into `in_range`, `uncommon` or
-`out_of_range` by the range model's occurrence probability, and applies a
-different confidence threshold to each — `threshold_out_of_range` defaults to
-0.90. It never excludes a species outright.
+`out_of_range` by the range model's occurrence probability and applies a
+different confidence threshold to each. It never excludes a species outright.
 
-Measured on the live station on 2026-08-08, with the location filter enabled and
-coordinates correct: **Western Screech-Owl at 0.96**, and **Flammulated Owl**
-separately, both persisted as detections at the development station. Neither
-occurs in the UK. Both cleared the 0.90 out-of-range bar.
+Measured on the live station's own database, 2026-08-08, with the location
+filter enabled and coordinates correct. **The range model works** — Common
+Woodpigeon 0.995, European Goldfinch 0.781, Western House Martin 0.771, "Engine"
+4e-06 — so this is not a misconfiguration. Two defects sit on top of it.
 
-The banding assumes a high classifier score implies high certainty. BirdNET
-scores are not calibrated probabilities — a fact this codebase enforces
-everywhere else — so a 0.96 on a species that does not occur on this continent
-is evidence that *the score carries no information for that species*, not
-evidence of the bird. Because the failure is in score-space, raising the
-threshold cannot fix it; it only moves it.
+### (a) A near-zero prior is overruled by an uncalibrated score
+
+`threshold_out_of_range` defaults to 0.90. Measured *Flammulated Owl*:
+
+| occurrence_probability | score | admitted |
+|---|---|---|
+| 8e-06 | 0.959 | yes |
+| 1e-05 | 0.954 | yes |
+| 8e-06 | 0.931 | yes |
+| 8e-06 | 0.924 | yes |
+
+The range model is saying "essentially impossible at this location and week" and
+losing to a number that is not a probability. BirdNET scores are not calibrated —
+enforced everywhere else in this codebase — so 0.96 on a species absent from the
+continent is evidence that *the score carries no information for that species*,
+not evidence of the bird. Because the conflict is in score-space, raising 0.90 to
+0.97 only moves the boundary; it cannot separate "quiet real bird" from
+"confident nonsense". A Eurasian Jackdaw at 0.617 and a Flammulated Owl at 0.959
+are not separable by any single cutoff.
+
+### (b) A *missing* prior gets the lowest bar, not the highest
+
+When occurrence is `None`, `_band_for` returns
+`("unfiltered", self._thresholds["in_range"])` — the **easiest** of the three
+thresholds. A species the range model cannot speak for is therefore treated as a
+garden regular. Measured: *Great Horned Owl* 0.917 and *Flammulated Owl* 0.876
+and 0.805, all with no prior; **202 of 5833 named detections (3.5%)** took this
+path.
+
+The reasoning in the comment — "with no range model there is no plausibility
+information, so apply the in-range bar uniformly rather than inventing a prior" —
+is right when the range model is absent altogether, and wrong when it is loaded
+and merely silent about one species. Those two situations are currently
+indistinguishable to `_band_for`, which is the actual flaw.
+
+### Also
+
+`_suppressed_out_of_range` increments for every candidate that fell below its
+band's threshold, including `uncommon` ones. It is not a count of suppressed
+out-of-range species and should not be read as one.
 
 Suppressing candidates whose occurrence probability is at or near zero is a
-different operation from raising their bar, and is the likelier fix. See
-`HANDOVER.md` §6.3 item 0 for the full options and for why this became urgent:
-the inside observer (ADR-023) now presents these on a wall in the operator's
-house, with no score displayed to hint at doubt.
+different operation from raising their bar, and is the likelier fix for (a);
+distinguishing "no range model" from "no prior for this species" is the fix for
+(b). See `HANDOVER.md` section 6.3 item 0. This became urgent because the inside
+observer (ADR-023) now presents these on a wall in the operator's house with no
+score shown to hint at doubt.

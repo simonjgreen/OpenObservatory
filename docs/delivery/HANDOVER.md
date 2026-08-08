@@ -229,10 +229,33 @@ useful addition and is not currently planned.
    hide them.
 
    The location filter was **on** and correctly configured
-   (`OO_BIRDNET_USE_LOCATION_FILTER=true`, 51.4769/−0.0005). It did not stop this,
-   *by design*: `BirdNetDetector._band_for` does not suppress implausible species,
-   it puts them in an `out_of_range` band with a higher confidence bar —
-   `threshold_out_of_range`, default **0.90**. A 0.96 walks straight through.
+   (`OO_BIRDNET_USE_LOCATION_FILTER=true`, 51.4769/−0.0005), and **the range model
+   itself is working**. Priors read straight from the station database are sane:
+   Common Woodpigeon 0.995, European Goldfinch 0.781, Western House Martin 0.771,
+   and "Engine" 4e-06. This is not a wrong-coordinates problem.
+
+   There are **two distinct defects**, both measured on the live database:
+
+   **(a) A near-zero prior only raises a bar, and the bar is in the wrong space.**
+   `BirdNetDetector._band_for` does not suppress implausible species; it puts them
+   in an `out_of_range` band with `threshold_out_of_range`, default **0.90**.
+   Measured: *Flammulated Owl* at `occurrence_probability` **8e-06** with score
+   **0.959**, and again at 1e-05 with 0.954, 8e-06 with 0.931, 8e-06 with 0.924.
+   The range model is saying "essentially impossible here" and being overruled by
+   a number that is not a probability.
+
+   **(b) A *missing* prior gets the LOWEST bar, not the highest.** When occurrence
+   is `None`, `_band_for` returns `("unfiltered", self._thresholds["in_range"])` —
+   the in-range threshold, which is the easiest of the three. So a species the
+   range model cannot speak for is treated as though it were a garden regular.
+   Measured: *Great Horned Owl* score 0.917 `occ=None`; *Flammulated Owl* 0.876
+   and 0.805, both `occ=None`. **202 of 5833 named detections (3.5%) took this
+   path.** The comment there reasons "with no range model there is no plausibility
+   information, so apply the in-range bar uniformly rather than inventing a
+   prior" — reasonable when the range model is absent entirely, wrong when it is
+   present and merely silent about one species.
+
+   Note (b) is the more clearly-wrong of the two and the cheaper to fix.
 
    The design assumes a high classifier score means high certainty. It does not:
    BirdNET scores are not calibrated probabilities, which this repository
