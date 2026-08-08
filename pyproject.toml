@@ -15,6 +15,13 @@ dependencies = [
   "numpy==2.2.1",
   "soundfile==0.13.0",
   "typer==0.15.1",
+  # Pinned, not left to typer's own `click>=8.0.0` range. click 8.2 changed
+  # `Parameter.make_metavar()` to require a `ctx` argument; typer 0.15.1 still
+  # calls it with none, so any fresh install resolving click >=8.2 makes every
+  # `oo ... --help` die with a TypeError before printing anything. Found on
+  # 2026-08-08 with click 8.4.2 -- on this laptop AND on the live station, so
+  # the operator CLI documented in HANDOVER.md was already broken there.
+  "click==8.1.8",
   "rich==13.9.4",
   "structlog==24.4.0",
   "prometheus-client==0.21.1",
