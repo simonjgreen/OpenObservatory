@@ -58,6 +58,7 @@ from ..db import models as orm
 from ..db.session import create_all, get_session, init_engine
 from ..display import detection_flags, display_title
 from ..events import EventType
+from ..mqtt import MqttPublisher
 from ..station import Station
 from .metrics import PrometheusExporter
 
@@ -185,13 +186,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     hub = LiveHub()
     exporter = PrometheusExporter(station)
     station.set_spectrogram_sink(lambda columns: hub.broadcast_binary(columns.to_binary()))
+    # Milestone 6 (ADR-022): subscribes to station.bus, the same seam every other
+    # consumer uses. Off by default (mqtt_enabled=False) and never awaited from the
+    # capture path -- see mqtt/publisher.py's module docstring for the full set of
+    # guarantees (bounded queue, no shared thread pool, bounded reconnect backoff).
+    mqtt_publisher = MqttPublisher(
+        settings,
+        station.bus,
+        station_id_provider=lambda: str(station.station_id) if station.station_id else None,
+        health_provider=lambda: _health_payload(),
+        capture_status_provider=lambda: station.status_snapshot()["capture"],
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await station.start()
+        await mqtt_publisher.start()
         try:
             yield
         finally:
+            await mqtt_publisher.stop()
             await station.stop()
 
     app = FastAPI(
@@ -215,8 +229,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_station() -> dict[str, Any]:
         return station.status_snapshot()
 
-    @app.get(f"{API_PREFIX}/health")
-    def get_health() -> JSONResponse:
+    def _health_payload() -> dict[str, Any]:
+        """Shared by GET /health and the MQTT publisher's periodic health sensor,
+        so `binary_sensor.<station>_station_healthy` in Home Assistant means
+        exactly what the API endpoint means -- including synthetic-source
+        degradation -- rather than a second, drifting notion of "healthy"."""
         snapshot = station.status_snapshot()
         capture = snapshot["capture"]
         problems: list[str] = []
@@ -235,15 +252,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "be written to the system disk, which competes with capture for I/O"
             )
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
-        return JSONResponse(
-            {
-                "status": status,
-                "problems": problems,
-                "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "capture": capture,
-            },
-            status_code=200 if status != "critical" else 503,
-        )
+        return {
+            "status": status,
+            "problems": problems,
+            "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "capture": capture,
+            "mqtt": mqtt_publisher.snapshot(),
+        }
+
+    @app.get(f"{API_PREFIX}/health")
+    def get_health() -> JSONResponse:
+        payload = _health_payload()
+        return JSONResponse(payload, status_code=200 if payload["status"] != "critical" else 503)
 
     @app.get(f"{API_PREFIX}/system")
     def get_system() -> dict[str, Any]:
@@ -254,7 +274,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.metrics_enabled:
             raise HTTPException(status_code=404, detail="metrics disabled")
         body, content_type = exporter.render()
-        return Response(content=body, media_type=content_type)
+        mqtt_body, _ = mqtt_publisher.render_metrics()
+        return Response(content=body + b"\n" + mqtt_body, media_type=content_type)
 
     # -- audio devices --------------------------------------------------
 

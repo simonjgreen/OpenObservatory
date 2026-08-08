@@ -147,50 +147,61 @@ The wire contract is `schemas/detection-event.schema.json`; treat that file as
 authoritative rather than any example reproduced here, because a previous
 inline example in this document had drifted from it.
 
-**Known open gap:** the schema sets `additionalProperties: false` and does not
-include `rank` or `taxonomic_group`, both of which internal detection records
-carry (see `detection` in `DATA_MODEL.md`). Events on the wire therefore drop
-those two fields; this has not yet been reconciled.
+**Fixed in schema_version 1.1 (Milestone 6).** The gap recorded here through
+1.0 — `additionalProperties: false` with `rank` and `taxonomic_group` missing,
+even though every internal detection record carries them (see `detection` in
+`DATA_MODEL.md`) — is closed. The schema now describes the full envelope
+(`schema_version`, `event_id`, `event_type`, `occurred_at`, `station_id`,
+`data`) rather than just the inner record, because the MQTT publisher made
+that envelope the first shape something outside this repository depends on.
+`data` includes `rank`, `taxonomic_group` and the `media` array the WebSocket
+and MQTT paths both already send. `tests/test_mqtt_schema.py` validates a real
+emitted `detection.created` event against the schema so this cannot drift
+again unnoticed. See ADR-022.
 
-## MQTT — planned, not implemented
+## MQTT — implemented, disabled by default
 
-No code in this repository publishes to MQTT. The design below is retained as
-intent.
+`src/open_observatory/mqtt/` subscribes to the existing `EventBus`
+(`station.bus`) and republishes `detection.created` (and a periodic health
+snapshot, capture/detector state, and per-station metrics) over MQTT with
+Home Assistant discovery. Off by default (`OO_MQTT_ENABLED=false`); every
+setting is in `config/runtime.env` (see `config.py`'s MQTT section) and never
+hardcoded. See `docs/operations/HOME_ASSISTANT.md` for topics, entities, setup
+and verification with `mosquitto_sub`, and ADR-022 for the design.
 
-Default root: `openobservatory/{station_id}`
+Topic layout (`{prefix}` defaults to `openobservatory/{station_id}`):
 
-Topics:
+- `{prefix}/status/availability` retained, LWT `offline`
+- `{prefix}/status/capture` retained JSON
+- `{prefix}/status/health` retained JSON
+- `{prefix}/detection` non-retained JSON (the envelope above)
+- `{prefix}/metrics/species_today` retained
+- `{prefix}/metrics/bat_passes_tonight` retained
+- `homeassistant/.../config` retained MQTT Discovery payloads
 
-- `status/availability` retained
-- `status/capture` retained
-- `status/detectors/{detector_id}` retained
-- `metrics/species_today` retained
-- `metrics/capture_continuity` retained
-- `detection` non-retained JSON
-- `alert` non-retained JSON
-- `health/event` non-retained JSON
+Publishing never blocks capture: the publisher consumes from a bounded
+per-subscriber queue on the bus (the same drop-oldest, drop-counted policy
+every other consumer uses) and reconnects with bounded exponential backoff
+when the broker is unreachable. Broker/credential state is surfaced at
+`GET /api/v1/health` (`mqtt` block) and as `oo_mqtt_*` Prometheus metrics.
 
-Telemetry input mappings are configured as topic + JSONPath/value/unit
-mappings.
+Not implemented: environmental telemetry ingestion, the alert rule engine,
+and HMAC webhooks (still planned, see below and the original Milestone 6
+scope in `IMPLEMENTATION_PLAN.md`).
 
-## Home Assistant discovery — planned, not implemented
+## Home Assistant discovery — implemented
 
-No discovery-publishing code exists. Intent, once MQTT is implemented:
-publish discovery entities for:
-
-- station availability;
-- capture state;
-- uninterrupted capture duration;
-- last species;
-- last detection time;
-- species count today;
-- disk free;
-- microphone level/clipping;
-- each detector state and lag;
-- high-severity health event count.
-
-Do not create one permanent entity per detected species by default; this
-becomes unwieldy.
+Discovery entities are published retained under `{discovery_prefix}/.../config`
+(default `homeassistant`, matching HA's default) the first time the publisher
+connects, grouped under one HA device via the `device` block. Entities:
+`sensor.<slug>_last_detection`, `sensor.<slug>_species_today`,
+`sensor.<slug>_bat_passes_tonight`, `binary_sensor.<slug>_bat_activity`,
+`binary_sensor.<slug>_station_healthy`, and an `event` platform entity per
+station for detection notifications in automations. No numeric score is ever
+published as `device_class: probability`, and bat detections never carry a
+species name — see the full entity table and the calibration caveat in
+`docs/operations/HOME_ASSISTANT.md`. One entity per detected species is
+deliberately not created, per the original design intent below.
 
 ## MCP server — planned, not implemented
 

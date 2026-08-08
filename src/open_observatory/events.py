@@ -24,7 +24,14 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = "1.0"
+#: Bumped 1.0 -> 1.1 when the MQTT publisher (Milestone 6) became the first
+#: consumer outside this repository: schemas/detection-event.schema.json had
+#: additionalProperties:false and omitted `rank` and `taxonomic_group`, which
+#: every internal detection record actually carries (HANDOVER.md section 6.3
+#: item 9). A silent widening would have been invisible to in-process
+#: consumers but broken any external MQTT/webhook validator that trusted the
+#: 1.0 schema strictly, so the version number moves instead. See ADR-022.
+SCHEMA_VERSION = "1.1"
 
 
 class EventType:
