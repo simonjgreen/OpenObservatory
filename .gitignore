@@ -26,3 +26,8 @@ dist/
 web/dist/
 tsbuildinfo
 *.tsbuildinfo
+
+# Local virtualenvs and agent worktrees
+.venv/
+venv/
+.claude/worktrees/
