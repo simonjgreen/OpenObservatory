@@ -281,10 +281,16 @@ class TestUnidentifiedSuppression:
         await publisher.start()
         await asyncio.sleep(0.05)
 
+        # `taxonomic_group="acoustic_event"` is what activity-v1 ACTUALLY sends,
+        # read off the live station. An earlier version of this test passed
+        # None here, which let a real bug ship: the publisher treated any
+        # non-null group as an identification, so every acoustic event was
+        # forwarded and `suppressed_unidentified_total` stayed at 0 in
+        # production while this test went green.
         detection_event(
             bus,
             plugin_id="activity-v1",
-            taxonomic_group=None,
+            taxonomic_group="acoustic_event",
             display_name="acoustic event",
             common_name=None,
             scientific_name=None,
@@ -347,7 +353,7 @@ class TestUnidentifiedSuppression:
         detection_event(
             bus,
             plugin_id="activity-v1",
-            taxonomic_group=None,
+            taxonomic_group="acoustic_event",
             display_name="acoustic event",
             common_name=None,
             scientific_name=None,

@@ -389,9 +389,17 @@ class MqttPublisher:
         #
         # A bat pass is not unidentified: it claims a pass occurred, which is
         # a positive statement, so `is_bat` short-circuits this.
-        identified = bool(
-            is_bat or data.get("scientific_name") or data.get("common_name") or taxonomic_group
-        )
+        # Deliberately does NOT consult `taxonomic_group`. `activity-v1` sets it
+        # to the sentinel `"acoustic_event"`, which is truthy, so treating a
+        # non-null group as an identification let every acoustic event straight
+        # through -- measured on the live station: 779 messages published and
+        # `suppressed_unidentified_total` still 0, while 45 of the 60 most
+        # recent detections were acoustic events.
+        #
+        # A group without a name is not an identification anyway. A species
+        # name is; and a bat pass is covered by `is_bat` above, which reads the
+        # plugin id as well as the group.
+        identified = bool(is_bat or data.get("scientific_name") or data.get("common_name"))
         if not identified and not self.settings.mqtt_publish_unidentified:
             self.stats.suppressed_unidentified_total += 1
             log.debug("mqtt.suppressed_unidentified_detection", detector=plugin_id)
