@@ -25,6 +25,29 @@ lost audio. A smaller number lose real frames (one at 42,505 frames ≈ 0.11 s, 
 log lines overstates the number of events that actually lost audio. **Any triage should
 separate the two**; the current `/api/v1/health` counters do not.
 
+## How much recording was actually lost is unresolved
+
+Earlier in this session I told the operator "roughly a day". That is **not** supported
+cleanly by the data and should be re-derived, not repeated:
+
+- The last `alsa` stream row claims `start_utc` 2026-08-07 03:38:54 and `end_utc`
+  2026-08-08 11:36:36, ending with
+  `AlsaCaptureError: ALSA read failed: File descriptor in bad state`.
+- But its `frame_count` is 3,852,212,352 frames, which at 384 kHz is only **2.79 hours**
+  of audio across a 32-hour window.
+- And there are **no detections on any live stream between 2026-08-07 20:00 and
+  2026-08-08 12:00**.
+
+Those three facts do not reconcile. Either the stream row was left open across a period
+when capture was not actually delivering frames, or frames were lost on a scale the gap
+counters did not record. `HANDOVER.md` already documents a related trap — stream rows
+left unclosed by killed processes, which once made capture coverage read 1302% — so a
+stale row is the more likely explanation, but it has not been confirmed.
+
+**This matters beyond bookkeeping**: capture coverage in the history view is computed
+from these rows, so if they are wrong, the coverage bar is wrong, and the coverage bar
+is the thing that distinguishes a quiet night from a dead microphone.
+
 ## What has been ruled out or made unlikely
 
 - **SD-card write bandwidth.** Clips now go to a dedicated SSD. Gaps persist.

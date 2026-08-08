@@ -437,7 +437,7 @@ misleading in a browsing view as the synthetic tone generator is, and both are
 excluded by the same predicate (`history.is_not_live`, which also treats a
 `NULL`/missing `source_kind` as non-live rather than assuming it is genuine).
 
-**Reason:** On 2026-08-05 the AudioMoth's mode switch was moved to `USB/OFF`, so it
+**Reason:** On 2026-08-08 the AudioMoth's mode switch was moved to `USB/OFF`, so it
 stopped presenting an ALSA card. `OO_SOURCE=auto` correctly fell back to the
 synthetic scene and correctly reported itself degraded in `/api/v1/health`, but
 detectors kept running against synthetic audio and their detections were persisted
@@ -465,8 +465,10 @@ that mount is absent, rather than quietly writing evidence to the system disk.
 roughly 15 MB per pass across four clips: 15 GB in one night, against a 20 GB
 budget already exceeded. Worse, it was competing with capture: ALSA reads go through
 `asyncio.to_thread`, so clip writes and the capture read share the default thread
-pool, and on 2026-08-08 that produced 11 gaps and 8 overruns in five minutes with
-continuity down to 0.997. Isolating evidence onto its own executor helped but could
+pool, and on **2026-08-05** that produced 11 gaps and 8 overruns in five minutes with
+continuity down to 0.997. Note that moving evidence to the SSD on 2026-08-08 did
+**not** eliminate overruns — see `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`.
+The device was a real constraint, but it was not the whole cause. Isolating evidence onto its own executor helped but could
 not overcome the device.
 
 **Why mounted over the existing path rather than relocated.** `media_asset.storage_uri`
