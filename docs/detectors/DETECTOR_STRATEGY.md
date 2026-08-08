@@ -168,11 +168,11 @@ the source recording (checked by exact sample comparison at the clip's own recor
 bounds, not just by overlap). It skips cleanly — like the BatDetect2 tests already do —
 when the (unbundled) model assets or a TFLite runtime are absent.
 
-That test has been run and passes on an x86_64 development machine, not yet on the
-target Pi 5 (aarch64). Per this project's rule that a detector is only "supported" once
-its fixture test passes on target architecture, `birdnet-v2.4` has a passing fixture test
-but has not yet cleared that bar on the actual device — see
-`docs/delivery/MILESTONE_STATUS.md`'s Milestone 3 exit-gate note.
+That test passes **on the target Pi 5 (aarch64)**, run there on 2026-08-08 against the
+station's own fetched model assets (3 passed in 6.83 s). Per this project's rule that a
+detector is only "supported" once its fixture test passes on target architecture,
+`birdnet-v2.4` now clears that bar. See `docs/delivery/MILESTONE_STATUS.md`'s Milestone 3
+exit-gate note for the full output and the stride caveat.
 
 ### `ultrasonic-pass-v1` — replaces the BatDetect2 plan (ADR-013)
 

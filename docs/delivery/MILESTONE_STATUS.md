@@ -78,8 +78,7 @@ within one frame (20 µs), verified by test.
 | Low-latency live listening | done, beyond plan — ~180 ms end to end |
 
 **Exit gate — known bird fixture produces expected candidate label and an aligned
-playable clip: met on this development machine (x86_64); not yet demonstrated on
-the target Pi 5 (aarch64).** `tests/test_birdnet_fixture.py`, added 2026-08-08, is
+playable clip: MET, on the target Pi 5 (aarch64), 2026-08-08.** `tests/test_birdnet_fixture.py`, added 2026-08-08, is
 the repeatable test the gate asks for. It uses a committed reference recording —
 `tests/fixtures/audio/erithacus_rubecula_XC441752.mp3`, a European Robin song from
 Xeno-canto (XC441752, recordist Jan Cibulka), individually licence-checked (CC BY-SA
@@ -100,14 +99,26 @@ match the source recording exactly at the clip's own recorded frame bounds (to w
 16-bit PCM quantisation). It skips cleanly, exactly like the existing BatDetect2 tests,
 when the (unbundled) BirdNET model assets or a TFLite runtime are absent.
 
-**What is not yet verified: a target-device run.** This agent had read-only access to
-the Pi only (another agent owned it exclusively for a live measurement session this
-session), so `python -m pytest tests/test_birdnet_fixture.py` has been run and passes
-on this x86_64 development machine, not on the aarch64 Pi 5. CLAUDE.md's rule that a
-detector is only "supported" once its fixture test passes on target architecture is
-therefore still open — the fixture and the test exist and are committed, but the
-target-architecture run is outstanding, tracked as the remaining piece of the
-Milestone 4.5 "committed fixture test" deliverable.
+**Target-device run: done.** Run on the Pi 5 itself after the 2026-08-08 deploy,
+against the station's own fetched BirdNET assets and `ai-edge-litert`:
+
+```
+tests/test_birdnet_fixture.py::TestBirdNetKnownRecording
+  test_the_fixed_date_and_location_keep_the_species_plausible   PASSED
+  test_known_recording_produces_the_expected_candidate_label    PASSED
+  test_evidence_clip_is_playable_and_aligned_to_the_call        PASSED
+3 passed in 6.83s
+```
+
+CLAUDE.md's rule that a detector is only "supported" once its fixture test passes on
+target architecture is therefore satisfied for `birdnet-v2.4`. The test was written
+on x86_64 and run here unchanged; nothing in it is architecture-specific, which is
+the point of committing the recording rather than depending on live audio.
+
+Note the test deliberately uses a denser analysis stride (0.25 s) than production
+(`birdnet_window_stride_s`, 1.5 s): a 6.68 s clip can otherwise have the call fall
+entirely between two windows, which would make the assertion flaky rather than
+wrong.
 
 ## Milestone 4 — Product dashboard and review — **foundation in place, not started**
 
