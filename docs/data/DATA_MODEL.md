@@ -178,6 +178,10 @@ Columns as implemented:
 - byte length
 - SHA-256
 - created/expires timestamps
+- reclaimed_at nullable — set by the retention sweeper (ADR-022) when it
+  deletes the underlying file; the row itself is never deleted
+- reclaim_reason nullable — which tier reclaimed it (`native`,
+  `exemplar_only`, `expired`, `watermark`)
 - detail JSON
 
 ### detection_media — Implemented
@@ -287,7 +291,14 @@ Planned only (would apply if the corresponding table is built):
 - analysis windows: minutes/hours, removed after all leases complete (planned
   — no `analysis_window` table exists yet, see above);
 - rolling raw PCM: memory-only by default;
-- evidence clips: 30 days default, confirmed/interesting may be pinned;
-- detections/reviews: indefinite by default;
+- evidence clips: **tiered aging, not a flat 30 days** (ADR-022,
+  `src/open_observatory/retention.py`) — native (full-rate) clip and its
+  audible rendering both survive 0–7 days; 7–30 days keeps the audible
+  rendering only; 30–90 days keeps only the first-ever and best-of-species
+  clip; 90+ days deletes everything. Independently of all of that, disk usage
+  above an 85%-default watermark reclaims the oldest surviving clips first,
+  regardless of tier. Every threshold is a `Settings` field;
+- detections/reviews: **indefinite, unconditionally** — no tier or watermark
+  in `retention.py` ever deletes a `detection` row or mutates its columns;
 - detailed metrics: 30–90 days depending store;
 - logs: 14 days default.

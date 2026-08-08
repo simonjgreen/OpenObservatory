@@ -37,6 +37,7 @@ dev = [
   "httpx==0.28.1",
   "ruff==0.8.6",
   "mypy==1.14.1",
+  "hypothesis==6.123.2",
 ]
 
 [project.scripts]

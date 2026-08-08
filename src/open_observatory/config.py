@@ -144,6 +144,34 @@ class Settings(BaseSettings):
     #: so evidence writing can never threaten the database (technical spec §12).
     clip_min_free_gb: float = 5.0
 
+    # ---- storage retention (NVR-style tiering) -----------------------------
+    #: Detection metadata (species, timestamps, scores, capture coverage) is
+    #: never subject to this policy and is kept forever -- only the clip
+    #: *bytes* age out. See ADR-022 and `retention.py`.
+    retention_enabled: bool = True
+    #: Age at which the native, full-rate WAV is deleted. The audible
+    #: rendering (playback derivative / audible_ultrasonic) survives past this
+    #: point -- only ``evidence_native`` assets are affected.
+    retention_native_days: int = 7
+    #: Age at which everything except the first-ever and best-of-species clip
+    #: is deleted. Below this age, every detection keeps its audible clip;
+    #: above it, only exemplar detections do.
+    retention_audible_only_days: int = 30
+    #: Age at which even the exemplar clips are deleted. Detection rows are
+    #: never deleted by this or any other tier.
+    retention_exemplar_only_days: int = 90
+    #: Continuous oldest-first reclaim kicks in above this fraction of the
+    #: clip filesystem used, regardless of tier or exemplar status -- the
+    #: NVR "overwrite oldest before the disk fills" behaviour the operator
+    #: asked for.
+    retention_watermark_ratio: float = 0.85
+    #: Bounded work per `RetentionSweeper.sweep()` call, so a large backlog
+    #: drains over many housekeeping ticks instead of one long stall.
+    retention_batch_size: int = 200
+    #: Wall-clock budget per sweep call. A sweep that would exceed this stops
+    #: partway through and picks up where it left off next tick.
+    retention_batch_budget_s: float = 1.5
+
     # ---- making ultrasound listenable ------------------------------------
     #: How to render an ultrasonic event into something a human can hear.
     #:
