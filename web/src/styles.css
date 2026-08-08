@@ -24,9 +24,56 @@
   --bat: #c39bff;
   --event: #6fb4ff;
   --radius: 8px;
+  --radius-sm: 5px;
+  --radius-lg: 12px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* ---- spacing scale ----
+   * A 4px base with a light geometric progression. Every new surface below
+   * (operator summary, diagnostics disclosure, retention, export, review)
+   * is built from these instead of one-off pixel values. The pre-existing
+   * component CSS above this comment predates the scale and is not migrated
+   * wholesale here — see ADR-024: that is real, separately-scoped work, not
+   * something to rush alongside behaviour changes. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* ---- type scale ----
+   * A ~1.2 ratio, anchored on the 13px body size already in use so existing
+   * text does not jump. Two families only: --sans for prose and controls,
+   * --mono for anything numeric or machine-shaped (this project's existing
+   * convention, kept). */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  --line-height-tight: 1.25;
+  --line-height-base: 1.45;
+  --line-height-loose: 1.6;
+
+  color-scheme: dark;
 }
+
+/* This is an ambient, dark-by-default instrument the operator leaves open
+ * next to a spectrogram at dusk (see the module comment above); it is not
+ * redesigned for a light theme. What genuinely matters for daylight/phone
+ * use — target size, contrast, and never assuming JS `prefers-color-scheme`
+ * detection — is handled without a second palette: `color-scheme: dark`
+ * above tells the browser's own chrome (scrollbars, form controls) to render
+ * dark rather than mismatched-light, which is the concrete accessibility gap
+ * a light-mode rewrite would otherwise be fixing. */
 
 * { box-sizing: border-box; }
 
