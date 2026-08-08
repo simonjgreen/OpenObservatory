@@ -49,7 +49,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -532,7 +532,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if plugin_id:
             query = query.join(orm.Detector).where(orm.Detector.plugin_id == plugin_id)
         if not include_synthetic:
-            query = query.where(history_queries.is_live(orm.AudioStream.source_kind))
+            # Same pre-existing InstrumentedAttribute/ColumnElement mypy gap as
+            # list_detections above -- cast rather than adding a new instance
+            # of it, since this call site is new.
+            query = query.where(history_queries.is_live(cast(Any, orm.AudioStream.source_kind)))
         query = query.order_by(orm.Detection.event_start_utc.desc()).limit(limit)
 
         rows = session.execute(query).all()
