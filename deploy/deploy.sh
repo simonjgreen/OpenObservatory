@@ -37,8 +37,21 @@ if [[ "$BUILD_WEB" == 1 ]]; then
 fi
 
 echo "==> syncing source to $HOST:$REMOTE_DIR"
+# With --no-web we do not rebuild `web/dist`, and it is gitignored -- so in a
+# fresh clone or a git worktree it does not exist locally at all, and
+# `--delete` would remove the *working* UI from the station. A code-only
+# redeploy must leave whatever UI is already there alone.
+WEB_EXCLUDE=()
+if [[ "$BUILD_WEB" != 1 ]]; then
+    WEB_EXCLUDE=(--exclude 'web/dist')
+fi
+
 rsync -a --delete \
     --exclude '.git' \
+    `# Agent worktrees live here and are full checkouts with their own venvs.` \
+    `# Syncing them would push gigabytes of duplicate source to the Pi.` \
+    --exclude '.claude' \
+    "${WEB_EXCLUDE[@]}" \
     --exclude 'data' \
     `# Per-station operator configuration: station name, coordinates, device key.` \
     `# It is gitignored, so it does not exist in the source tree and --delete would` \
