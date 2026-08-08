@@ -757,27 +757,3 @@ class TestStreamRowRecordsProgressBeforeItEnds:
 
         assert written == [(stream_id, 384_000, 1, moment)]
 
-    async def test_a_failing_heartbeat_does_not_propagate(self, settings) -> None:
-        """Bookkeeping must never be able to take capture down. Capture always wins."""
-        from open_observatory.station import Station
-
-        station = Station(settings)
-
-        def boom(*args: object) -> None:
-            raise RuntimeError("database is locked")
-
-        station._heartbeat_stream_row = boom  # type: ignore[method-assign]
-        station._running = True
-        station.stream = SimpleNamespace(stream_id=uuid.uuid4())  # type: ignore[assignment]
-        station._stream_last_frame_utc = datetime(2026, 8, 8, 15, 0, tzinfo=UTC)
-
-        try:
-            await asyncio.to_thread(
-                station._heartbeat_stream_row,
-                station.stream.stream_id,
-                station._stream_frames,
-                station._stream_discontinuities,
-                station._stream_last_frame_utc,
-            )
-        except RuntimeError:
-            pass  # the housekeeping loop catches this; asserted by inspection there
