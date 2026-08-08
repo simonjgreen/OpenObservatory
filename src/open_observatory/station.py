@@ -182,7 +182,7 @@ class Station:
             ultrasonic_audible_max_s=settings.ultrasonic_audible_max_s,
             ultrasonic_audible_min_peak_hz=settings.ultrasonic_audible_min_peak_hz,
         )
-        #: NVR-style tiered aging (ADR-022), separate from `self.clips` above:
+        #: NVR-style tiered aging (ADR-026), separate from `self.clips` above:
         #: this decides *which* clips a detection keeps as it ages, driven by
         #: the database (kind, species, score), not a filesystem walk.
         self.retention = RetentionSweeper(

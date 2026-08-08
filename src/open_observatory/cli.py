@@ -603,7 +603,7 @@ def clips_retention(
 
     This deletes clip *files* irreversibly when not run with ``--dry-run``.
     Detection metadata is never touched by this command, whichever mode it
-    runs in (ADR-022). Always run ``--dry-run`` first against a station you
+    runs in (ADR-026). Always run ``--dry-run`` first against a station you
     care about.
     """
     from .db.session import create_all, init_engine, session_scope
