@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { formatDetectionTitle } from './detectionTitle'
+import { ExportLinks } from './ExportLinks'
 
 export interface HistoryRange {
   start_utc: string
@@ -192,6 +193,8 @@ export function History({
             clear focus
           </button>
         )}
+        <span className="grow" />
+        <ExportLinks windowName={windowName} focus={focused} />
       </div>
 
       {payload && (

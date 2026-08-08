@@ -684,7 +684,6 @@ the reason underneath). All three are visible from across the room.
   exclusion. The display requests `include_synthetic=false` explicitly rather than
   relying on the default.
 
-
 ## ADR-024: Capture coverage is bounded by delivered frames, not by a stream row's own claim
 
 **Decision:** `history.coverage()` no longer trusts `audio_stream.start_utc`/`end_utc`
@@ -988,3 +987,109 @@ its own docstring), so a fresh SQLite database picks the columns up automaticall
 a live deployment with an existing database needs an explicit `ALTER TABLE` before
 this code runs against it, which is a deploy-time concern for whoever performs
 that deploy, not something decided here.
+
+
+## ADR-027: A spacing/type scale for the web UI, applied to new surfaces rather than migrated wholesale
+
+**Decision:** `web/src/styles.css` gains a token layer — an 8-step spacing scale
+(`--space-1`..`--space-8`, 4px base) and an 8-step type scale (`--text-2xs`..`--text-2xl`,
+anchored on the existing 13px body size) — alongside the pre-existing 18 colour/radius/font
+custom properties. Every surface built for Milestone 4 (`OperatorSummary`, the diagnostics
+toggle, `ExportLinks`, `RetentionPanel`, the review controls, the mobile breakpoint) is
+built exclusively from these tokens. The ~700 lines of component CSS that predate this
+work — spectrogram, suggestions list, event log, history chart, drawer — are **not**
+migrated to the scale in this change.
+
+**Reason:** ADRS.md's own honest assessment of Milestone 4's starting point was "a
+colour-token header over ad-hoc component CSS, no spacing or type scale," and fixing that
+is explicitly named as a foundation task, not a tidy-up. But a wholesale migration of 700
+lines of working, visually-tuned CSS — much of it density-tuned for a spectrogram and
+timeline that read correctly at specific pixel values — is a large, high-risk, low-reward
+diff to run alongside behavioural changes (state extraction, disclosure, export). The
+scale exists and is proven correct on real new surfaces; retrofitting it onto the old
+surfaces is real, separately-reviewable follow-up work, not a rename.
+
+**Constraint:** No new CSS added after this ADR may introduce a one-off pixel value for
+spacing or font size where a token fits. `--radius`, `--radius-sm`, `--radius-lg` and the
+existing colour tokens are unchanged and continue to be the source of truth for colour.
+
+**Deliberately out of scope: a light theme.** The UI stays dark-by-default — it is an
+ambient instrument left open next to a spectrogram at dusk (the module comment on
+`styles.css` predates this ADR and is still accurate), and a second palette was not asked
+for. `color-scheme: dark` is set on `:root` so the browser's own chrome (scrollbars, native
+form controls) matches rather than mismatching light-on-dark, which is the concrete gap a
+light theme would otherwise be closing.
+
+## ADR-028: Operator/diagnostic disclosure implemented as one depth toggle, not a second route
+
+**Decision:** ADR-016 promoted the debug UI to be the product dashboard's foundation
+rather than a surface to be replaced, and named the gap: no progressive disclosure existed
+between "everything" and "nothing." This is implemented as a single `useViewMode` hook
+holding one value, `'operate' | 'diagnose'`, synced to `?view=` via
+`history.replaceState`. `operate` (the default) shows `OperatorSummary`'s four
+plain-language cards, the spectrogram with its channel/window/overlay controls, the
+species list, and `RetentionPanel`. `diagnose` additionally reveals `Header`'s raw stat
+row, the spectrogram's tuning controls (palette/floor/ceiling/orientation) and level
+meters, and the `CapturePanel`/`DetectorPanel`/`StoragePanel`/`EventLog` columns that used
+to be the whole page.
+
+**Reason:** A second route (e.g. `/diagnostics`) would duplicate the live WebSocket
+connection, the spectrogram canvases and their registered sinks, and the detection list —
+exactly the "two applications sharing a repository" ADR-016 rejected. A single boolean held
+above one component tree, gating what renders, keeps one connection, one set of canvases,
+one detection list; only the JSX branches on depth.
+
+**What "diagnostic" means here, concretely:** the header's continuity/gaps/block-age/
+hot-path/link stats, spectrogram palette and black/white point tuning, the native/audible
+level meters, and the four pipeline-internals panels. Everything else — the synthetic-audio
+warning, the spectrogram itself, the species list, storage headroom, review — is
+operator-facing in both depths, per ADR-016's "promotion, not replacement."
+
+**Constraint carried forward from ADR-011:** a diagnostic number is never the sole backing
+for a product claim. `OperatorSummary`'s cards are computed independently in
+`state/operatorHealth.ts` from the same `StationStatus` fields the diagnostics panels
+read — not derived *from* the diagnostics panels' rendered output — so hiding diagnostics
+never hides the reasoning behind a card's tone.
+
+**Verified:** manually, in a real Chrome tab (`claude-in-chrome`) against a local station
+running `oo serve --source synthetic`, at both a desktop and a 390×844 mobile viewport;
+`?view=diagnose` survives a reload. Not verified: a second human operator's read of the
+copy, or the same test over a real Wi-Fi link to the Pi (see the report's "not verified"
+section).
+
+## ADR-029: Retention UI built against an assumed API shape; review workflow shipped minimally
+
+**Decision, retention:** `RetentionPanel` calls `GET /api/v1/retention/status` against a
+shape documented in the component's own header comment (tiers by age, bytes/clip counts
+per tier, an `eligible_for_deletion` total, `disk_reclaim_threshold`, `dry_run`), matching
+the tiering already decided for this session (0–7d native+audible, 7–30d audible-only,
+30–90d first/best-per-species, 90d+ deleted; continuous oldest-first reclaim above 85%
+disk). The endpoint does not exist yet — another agent owns the retention backend this
+session — so the component fetches, and on any non-2xx or network failure degrades to "Not
+available yet," rather than throwing or showing stale/fabricated numbers. No control to
+trigger a run is exposed: the recorded decision was a `--dry-run` **CLI** flag, an
+operational affordance, not a button that could be mis-clicked on an always-on station
+display.
+
+**Decision, review:** the `review` table existed with nothing writing to it. This adds the
+minimal round trip — `POST /api/v1/detections/{id}/review` (body: `status` ∈
+`{confirmed, rejected}`, optional `note`) and `GET .../review` for the latest state —
+wired to two buttons in `DetectionDrawer`. Every call **inserts**, matching `orm.Review`'s
+own docstring ("append-only; current status is derived from the latest valid review");
+`supersedes_review_id` is set to the prior row when one exists. `corrected_taxon_id` is
+always written `None` — correcting a misidentified taxon is a materially different feature
+(it implies a re-training or re-labelling pipeline downstream) and is left for a future
+ADR rather than half-built here.
+
+**Reason both are minimal:** the brief ranked these below the design-system/state-
+extraction/disclosure foundation work, and said so explicitly for retention ("do NOT build
+the retention backend... leave a clean seam") and implicitly for review ("lower priority
+... if you have capacity"). Both are real, tested, working code — not stubs — scoped
+tightly to what a seam and a minimal workflow require.
+
+**Confirm before relying on this:** the retention response shape above is this agent's
+best-effort prediction from the recorded tiering decision, not a contract the other agent
+agreed to. Whoever lands the retention backend should either match it or tell the UI's next
+maintainer what actually shipped; `RetentionPanel`'s degrade-gracefully path means a shape
+mismatch fails safe (shows "not available") rather than silently, but it will still need a
+one-time reconciliation pass.

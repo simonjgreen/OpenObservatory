@@ -5,10 +5,59 @@
  *  surprising identification can be argued with rather than just believed.
  */
 
+import { useEffect, useState } from 'react'
 import type { Detection, MediaRef } from '../types'
 import { formatDetectionTitle } from './detectionTitle'
 import { formatHz } from './Spectrogram'
 import { glyphFor } from './Suggestions'
+
+interface ReviewState {
+  status: 'confirmed' | 'rejected'
+  note: string
+  created_at: string | null
+}
+
+/** Minimal review workflow (Milestone 4, lower priority than the foundation
+ *  work): confirm or reject a detection, writing to the `review` table via
+ *  `POST /api/v1/detections/{id}/review`. Fetches the latest review on open
+ *  so a previously-reviewed detection shows its status rather than looking
+ *  untouched. */
+function useReview(detectionId: string | null) {
+  const [review, setReview] = useState<ReviewState | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setReview(null)
+    if (!detectionId) return
+    let cancelled = false
+    fetch(`/api/v1/detections/${detectionId}/review`)
+      .then((response) => (response.ok ? response.json() : { review: null }))
+      .then((data) => !cancelled && setReview(data.review ?? null))
+      .catch(() => !cancelled && setReview(null))
+    return () => {
+      cancelled = true
+    }
+  }, [detectionId])
+
+  const submit = (status: 'confirmed' | 'rejected') => {
+    if (!detectionId) return
+    setSaving(true)
+    fetch(`/api/v1/detections/${detectionId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+      .then((data) => setReview(data))
+      .catch(() => {
+        // Left as-is: the button state itself communicates failure (still
+        // shows "confirm"/"reject" rather than a checked state).
+      })
+      .finally(() => setSaving(false))
+  }
+
+  return { review, saving, submit }
+}
 
 const MEDIA_LABELS: Record<string, string> = {
   evidence_native: 'Authoritative recording',
@@ -56,6 +105,7 @@ interface Props {
 }
 
 export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
+  const { review, saving, submit } = useReview(detection?.id ?? null)
   if (!detection) return null
   const start = new Date(detection.event_start_utc)
   const format = new Intl.DateTimeFormat('en-GB', {
@@ -134,6 +184,32 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           </dd>
         </div>
       </dl>
+
+      <div className="subsection review-controls">
+        <h3>Review</h3>
+        <div className="review-buttons">
+          <button
+            className={`review-btn confirm ${review?.status === 'confirmed' ? 'on' : ''}`}
+            disabled={saving}
+            onClick={() => submit('confirmed')}
+          >
+            ✓ confirm
+          </button>
+          <button
+            className={`review-btn reject ${review?.status === 'rejected' ? 'on' : ''}`}
+            disabled={saving}
+            onClick={() => submit('rejected')}
+          >
+            ✕ reject
+          </button>
+          {review && (
+            <span className="dim review-status">
+              last reviewed: {review.status}
+              {review.created_at ? ` at ${new Date(review.created_at).toLocaleString()}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
 
       {detection.media.length > 0 ? (
         <div className="subsection">

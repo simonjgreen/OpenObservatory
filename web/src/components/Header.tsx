@@ -13,6 +13,10 @@ interface Props {
   connection: ConnectionState
   clock: Date
   localTimeZone: string
+  /** ADR-016/024: diagnostic numbers (continuity, gaps, hot-path CPU, the
+   *  socket link state) stay behind this — a product claim is never backed
+   *  by a raw pipeline figure the operator has no context to read. */
+  showDiagnostics?: boolean
   children?: React.ReactNode
 }
 
@@ -25,7 +29,14 @@ function uptime(seconds: number): string {
   return `${minutes}m ${Math.floor(seconds % 60)}s`
 }
 
-export function Header({ status, connection, clock, localTimeZone, children }: Props) {
+export function Header({
+  status,
+  connection,
+  clock,
+  localTimeZone,
+  showDiagnostics = true,
+  children,
+}: Props) {
   const capture = status?.capture
   const synthetic = capture ? !capture.is_live_hardware : false
   const timeFormat = new Intl.DateTimeFormat('en-GB', {
@@ -65,6 +76,7 @@ export function Header({ status, connection, clock, localTimeZone, children }: P
         </div>
       )}
 
+      {showDiagnostics && (
       <div className="stat-row">
         <Stat
           label="continuity"
@@ -115,6 +127,7 @@ export function Header({ status, connection, clock, localTimeZone, children }: P
           hint="Browser to station WebSocket"
         />
       </div>
+      )}
 
       <div className="topbar-right">
         {children}
