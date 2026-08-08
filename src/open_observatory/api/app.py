@@ -38,12 +38,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
 import dataclasses
+import io
 import os
 import struct
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -474,6 +476,113 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "include_synthetic": include_synthetic,
             "excluded_synthetic_count": excluded_count,
         }
+
+    @app.get(f"{API_PREFIX}/detections/export")
+    def export_detections(
+        format: str = Query("csv", pattern="^(csv|json)$"),
+        limit: int = Query(5000, ge=1, le=20000),
+        since: datetime | None = None,
+        until: datetime | None = None,
+        window: str | None = None,
+        group: str | None = None,
+        plugin_id: str | None = None,
+        identified_only: bool = False,
+        min_score: float = Query(0.0, ge=0.0, le=1.0),
+        include_synthetic: bool = False,
+        session: Session = Depends(get_session),
+    ) -> Response:
+        """CSV/JSON export for the operator UI's history view (Milestone 4
+        acceptance criteria) and offline analysis. Shares `list_detections`'s
+        filters exactly — same `window`/`since`/`until`/`group`/`plugin_id`/
+        `min_score`/`include_synthetic` semantics, including the honest
+        default of excluding synthetic-source detections — so "export what
+        I'm looking at" is true rather than approximate. A higher `limit`
+        default than the list endpoint (5000 vs 500): an export is a
+        deliberate one-off request, not a page a UI paints repeatedly.
+        """
+        resolved: history_queries.Range | None = None
+        if since is None and window:
+            resolved = history_queries.resolve_named_range(window, settings.timezone)
+            since, until = resolved.start, resolved.end
+
+        query = select(orm.Detection, orm.AudioStream.source_kind).outerjoin(
+            orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id
+        )
+        if since is not None:
+            query = query.where(orm.Detection.event_start_utc >= since)
+        if until is not None:
+            query = query.where(orm.Detection.event_start_utc < until)
+        if identified_only:
+            query = query.where(
+                orm.Detection.taxonomic_group.in_(history_queries.IDENTIFIED_GROUPS)
+            )
+        if group:
+            query = query.where(orm.Detection.taxonomic_group == group)
+        if min_score > 0:
+            query = query.where(orm.Detection.score >= min_score)
+        if plugin_id:
+            query = query.join(orm.Detector).where(orm.Detector.plugin_id == plugin_id)
+        if not include_synthetic:
+            query = query.where(history_queries.is_live(orm.AudioStream.source_kind))
+        query = query.order_by(orm.Detection.event_start_utc.desc()).limit(limit)
+
+        rows = session.execute(query).all()
+        records = [_detection_payload(detection, source_kind=source_kind) for detection, source_kind in rows]
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+        if format == "json":
+            return JSONResponse(
+                {"detections": records, "count": len(records), "exported_at": _iso(datetime.now(UTC))},
+                headers={
+                    "Content-Disposition": f'attachment; filename="detections-{stamp}.json"'
+                },
+            )
+
+        # CSV: flattened to the fields a spreadsheet-literate operator wants.
+        # Score is exported as a bare number with the same column header used
+        # elsewhere ("score", never "confidence" or "probability") — the
+        # honesty rule (BirdNET scores are not calibrated probabilities)
+        # applies to a CSV column exactly as much as it applies to a screen.
+        fieldnames = [
+            "id",
+            "event_start_utc",
+            "event_end_utc",
+            "duration_s",
+            "taxonomic_group",
+            "display_name",
+            "common_name",
+            "scientific_name",
+            "score",
+            "calibrated_probability",
+            "peak_frequency_hz",
+            "detector_plugin_id",
+            "detector_calibrated",
+            "source_kind",
+            "is_live_source",
+        ]
+
+        def render() -> Iterator[str]:
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            yield buffer.getvalue()
+            for record in records:
+                buffer.seek(0)
+                buffer.truncate(0)
+                writer.writerow(
+                    {
+                        **record,
+                        "detector_plugin_id": record["detector"]["plugin_id"],
+                        "detector_calibrated": record["detector"]["calibrated"],
+                    }
+                )
+                yield buffer.getvalue()
+
+        return StreamingResponse(
+            render(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="detections-{stamp}.csv"'},
+        )
 
     @app.get(f"{API_PREFIX}/detections/{{detection_id}}")
     def get_detection(
