@@ -237,6 +237,57 @@ class Settings(BaseSettings):
 
     metrics_enabled: bool = True
 
+    # ---- MQTT / Home Assistant (Milestone 6) -------------------------------
+    #: Off by default: an operator who upgrades an existing station gets no new
+    #: network traffic, no new failure mode, until they opt in. Never required
+    #: for core capture/detection/review/query per the operating brief.
+    mqtt_enabled: bool = False
+    mqtt_host: str = "localhost"
+    mqtt_port: int = 1883
+    mqtt_tls: bool = False
+    #: Skip broker certificate verification. Only meaningful with mqtt_tls;
+    #: for a self-signed cert on a LAN broker during setup. Off by default —
+    #: silently accepting any certificate defeats the point of TLS.
+    mqtt_tls_insecure: bool = False
+    #: Never hardcoded, never committed: set via config/runtime.env, which is
+    #: gitignored, same as every other secret in this project.
+    mqtt_username: str | None = None
+    mqtt_password: str | None = None
+    mqtt_client_id: str = "open-observatory"
+    #: `{prefix}/{station_id}/...` is the actual topic root; see mqtt/publisher.py.
+    mqtt_topic_prefix: str = "openobservatory"
+    mqtt_qos: int = 1
+    #: State topics (availability, capture, health, discovery configs) are
+    #: retained so a client connecting after the fact — including HA itself
+    #: on restart — sees current state without waiting for the next event.
+    #: `detection` and `alert` are never retained regardless of this flag.
+    mqtt_retain_state: bool = True
+    mqtt_discovery_enabled: bool = True
+    #: HA's own default; matches an operator's HA instance with no configuration.
+    mqtt_discovery_prefix: str = "homeassistant"
+    #: Bounded per-subscriber queue on the EventBus (events.py), same drop-
+    #: oldest-and-count policy as every other consumer. Sized larger than the
+    #: live detector queues because MQTT is not a live view — a broker outage
+    #: of a few minutes should not lose a night's detections outright.
+    mqtt_queue_depth: int = 256
+    mqtt_reconnect_min_s: float = 1.0
+    mqtt_reconnect_max_s: float = 60.0
+    mqtt_keepalive_s: int = 30
+    #: How often the health/capture/metric sensors are (re)published even
+    #: without a triggering event, so a stale broker session is visibly stale
+    #: rather than silently frozen on old retained values.
+    mqtt_health_publish_interval_s: float = 15.0
+    #: `binary_sensor.<station>_bat_activity` is "on" for this long after the
+    #: most recent bat pass, then reverts to "off" on its own.
+    mqtt_bat_activity_window_s: float = 900.0
+
+    @field_validator("mqtt_qos")
+    @classmethod
+    def _validate_qos(cls, value: int) -> int:
+        if value not in (0, 1, 2):
+            raise ValueError(f"mqtt_qos must be 0, 1 or 2, got {value}")
+        return value
+
     @field_validator("preferred_sample_rates", "preferred_formats", "clip_plugins", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:

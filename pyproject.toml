@@ -19,6 +19,10 @@ dependencies = [
   "structlog==24.4.0",
   "prometheus-client==0.21.1",
   "psutil==6.1.1",
+  # Async MQTT client for the Milestone 6 publisher (config.py: mqtt_enabled,
+  # off by default). Pure-Python wheel, no native build step, so unlike the
+  # `alsa`/`birdnet` extras there is no reason to make it opt-in.
+  "aiomqtt==2.3.0",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +41,9 @@ dev = [
   "httpx==0.28.1",
   "ruff==0.8.6",
   "mypy==1.14.1",
+  # Validates real emitted events against schemas/detection-event.schema.json
+  # (tests/test_mqtt_schema.py) so the envelope cannot drift unnoticed again.
+  "jsonschema==4.23.0",
 ]
 
 [project.scripts]

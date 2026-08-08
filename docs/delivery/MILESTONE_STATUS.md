@@ -155,9 +155,28 @@ interpolation fix, so they are not an artefact, but distinguishing a Myotis from
 mislabelled pipistrelle needs the audible renderings reviewed by ear. That is what
 the false-positive review deliverable is for, and it needs a human.
 
-## Milestone 6 — MQTT and Home Assistant — **not started**
+## Milestone 6 — MQTT and Home Assistant — **partially implemented, not verified on target**
 
-The event envelope is already the published one, so a publisher is additive.
+Built and unit/integration tested off-target (see below): the MQTT publisher
+(`src/open_observatory/mqtt/`), Home Assistant MQTT Discovery, and the
+`schema_version` 1.1 fix to `schemas/detection-event.schema.json` that closes
+HANDOVER.md section 6.3 item 9 (see ADR-025). Off by default
+(`mqtt_enabled=false`); no operator credentials exist anywhere in this
+repository. Verified against a locally-run mosquitto container
+(`tests/test_mqtt_integration.py`) and 51 other unit tests with fake/mocked
+clients (`tests/test_mqtt_*.py`) — **not** against the operator's actual Home
+Assistant broker, which this agent was deliberately not given the address or
+credentials for, and **not** deployed to the Pi. `docs/operations/HOME_ASSISTANT.md`
+lists exactly what the operator needs to provide (broker host, port,
+auth/TLS) to go live.
+
+**Not implemented**, as scoped by `IMPLEMENTATION_PLAN.md`'s Milestone 6 entry:
+environmental telemetry ingestion, the alert rule engine with repetition and
+cooldown, and HMAC-signed outgoing webhooks. Exit gate ("Home Assistant shows
+station health and receives a test detection/alert") is therefore only
+partly met, and only off-target: the publisher and discovery half is done and
+tested; the operator has not yet pointed a real Home Assistant instance at it,
+and no alert has been sent because the alert engine does not exist yet.
 
 ## Milestone 7 — MCP, export and hardening — **not started**
 

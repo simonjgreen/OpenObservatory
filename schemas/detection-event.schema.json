@@ -2,42 +2,85 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openobservatory.local/schemas/detection-event.schema.json",
   "title": "DetectionEvent",
+  "description": "Wire envelope for a detection.created event as published on the in-process EventBus (src/open_observatory/events.py) and re-published verbatim to MQTT and the live WebSocket. This is the ENVELOPE, not just the detection record: 'data' carries the same object CanonicalDetection.to_dict() plus DetectionRecord.media produces, unchanged, so nothing downstream needs a translation step (ADR-009, ADR-025). schema_version 1.1 corrects a gap present since 1.0: 'rank' and 'taxonomic_group' are fields every internal detection record carries and are now included, closing HANDOVER.md section 6.3 item 9. This is a schema_version bump, not a silent widening, because a strict consumer validating against 1.0 would have rejected these fields under additionalProperties:false.",
   "type": "object",
-  "required": ["schema_version", "event_id", "station_id", "detector", "interval", "score", "native_result"],
+  "required": ["schema_version", "event_id", "event_type", "occurred_at", "station_id", "data"],
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"enum": ["1.0", "1.1"]},
     "event_id": {"type": "string", "format": "uuid"},
-    "station_id": {"type": "string", "format": "uuid"},
-    "detector": {
+    "event_type": {"const": "detection.created"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "station_id": {"type": ["string", "null"], "format": "uuid"},
+    "data": {
       "type": "object",
-      "required": ["plugin_id", "plugin_version", "model_id", "model_version"],
+      "required": [
+        "id",
+        "detector",
+        "stream_id",
+        "window_id",
+        "event_start_utc",
+        "event_end_utc",
+        "source_start_frame",
+        "source_end_frame",
+        "taxonomic_group",
+        "score",
+        "native_result"
+      ],
       "properties": {
-        "plugin_id": {"type": "string"},
-        "plugin_version": {"type": "string"},
-        "model_id": {"type": "string"},
-        "model_version": {"type": "string"},
-        "model_sha256": {"type": ["string", "null"]}
-      },
-      "additionalProperties": false
-    },
-    "interval": {
-      "type": "object",
-      "required": ["start_utc", "end_utc", "source_start_frame", "source_end_frame"],
-      "properties": {
-        "start_utc": {"type": "string", "format": "date-time"},
-        "end_utc": {"type": "string", "format": "date-time"},
+        "id": {"type": "string", "format": "uuid"},
+        "detector": {
+          "type": "object",
+          "required": ["plugin_id", "plugin_version", "model_id", "model_version"],
+          "properties": {
+            "plugin_id": {"type": "string"},
+            "plugin_version": {"type": "string"},
+            "model_id": {"type": "string"},
+            "model_version": {"type": "string"},
+            "model_sha256": {"type": ["string", "null"]}
+          },
+          "additionalProperties": false
+        },
+        "stream_id": {"type": "string", "format": "uuid"},
+        "window_id": {"type": "string", "format": "uuid"},
+        "event_start_utc": {"type": "string", "format": "date-time"},
+        "event_end_utc": {"type": "string", "format": "date-time"},
+        "duration_s": {"type": "number", "minimum": 0},
         "source_start_frame": {"type": "integer", "minimum": 0},
-        "source_end_frame": {"type": "integer", "minimum": 1}
+        "source_end_frame": {"type": "integer", "minimum": 1},
+        "label": {"type": ["string", "null"]},
+        "display_name": {"type": ["string", "null"]},
+        "title_hint": {"type": ["string", "null"]},
+        "common_name": {"type": ["string", "null"]},
+        "scientific_name": {"type": ["string", "null"]},
+        "canonical_taxon_id": {"type": ["string", "null"]},
+        "rank": {"type": ["string", "null"]},
+        "taxonomic_group": {"type": "string"},
+        "score": {"type": "number"},
+        "calibrated_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "peak_frequency_hz": {"type": ["number", "null"]},
+        "native_result": {"type": "object"},
+        "media": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "url"],
+            "properties": {
+              "id": {"type": "string"},
+              "kind": {"type": "string"},
+              "role": {"type": ["string", "null"]},
+              "description": {"type": ["string", "null"]},
+              "sample_rate": {"type": ["integer", "null"]},
+              "duration_s": {"type": ["number", "null"]},
+              "byte_length": {"type": ["integer", "null"]},
+              "sha256": {"type": ["string", "null"]},
+              "url": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
-    },
-    "label": {"type": ["string", "null"]},
-    "canonical_taxon_id": {"type": ["string", "null"]},
-    "common_name": {"type": ["string", "null"]},
-    "scientific_name": {"type": ["string", "null"]},
-    "score": {"type": "number"},
-    "calibrated_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-    "native_result": {"type": "object"}
+    }
   },
   "additionalProperties": false
 }
