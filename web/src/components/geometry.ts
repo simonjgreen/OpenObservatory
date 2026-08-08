@@ -126,15 +126,29 @@ export interface RingTransformInput {
   /** Device pixels — this matrix is applied instead of a devicePixelRatio scale. */
   deviceWidth: number
   deviceHeight: number
-  /** Columns of history being shown. */
-  columns: number
+  /** Columns implied by the *selected window* (windowSeconds / hop_s) — this, and
+   *  only this, sets the pixels-per-column scale. It must never be derived from how
+   *  many columns happen to be buffered: doing that was the bug where a
+   *  partially-filled window rendered stretched to fill the canvas, then visibly
+   *  "bunched up" to true scale as the buffer filled. A column's width is a
+   *  property of its duration and the selected window, not of how much history has
+   *  arrived yet.
+   */
+  windowColumns: number
+  /** Columns actually being blitted this frame. Equal to `windowColumns` once the
+   *  ring has filled; smaller right after a window change or a fresh connection,
+   *  in which case the undrawn remainder of the window is left as background —
+   *  audio that has not arrived, not audio stretched to hide that fact.
+   */
+  columnsDrawn: number
   /** Frequency bins per column, i.e. the ring canvas's height. */
   bins: number
   /** Sub-column interpolation: columns of scroll owed since the last batch. */
   shiftColumns: number
 }
 
-/** Matrix that blits the `(columns × bins)` ring canvas for one orientation.
+/** Matrix that blits the `(columnsDrawn × bins)` slice of the ring canvas for one
+ *  orientation, at the fixed scale implied by `windowColumns`.
  *
  *  The ring is stored once, in one orientation — column index increasing with time,
  *  row 0 holding the highest frequency — and presented either way by transform
@@ -143,32 +157,42 @@ export interface RingTransformInput {
  *  `drawImage` still does the work on the GPU.
  *
  *  Source pixel `(u, row)` maps to the screen, where `u` counts from the oldest
- *  visible column and `row` counts down from the highest frequency.
+ *  *drawn* column (0) up to `columnsDrawn`, and `row` counts down from the highest
+ *  frequency. The drawn slice is anchored to the live edge (the right in `scroll`,
+ *  the top in `waterfall`); when `columnsDrawn < windowColumns` the far end is left
+ *  blank rather than the slice being rescaled to cover the whole axis.
  */
 export function ringTransform(input: RingTransformInput): Matrix {
-  const { orientation, deviceWidth, deviceHeight, columns, bins, shiftColumns } = input
-  const perColumnX = deviceWidth / Math.max(1, columns)
-  const perColumnY = deviceHeight / Math.max(1, columns)
+  const { orientation, deviceWidth, deviceHeight, windowColumns, columnsDrawn, bins, shiftColumns } =
+    input
+  const perColumnX = deviceWidth / Math.max(1, windowColumns)
+  const perColumnY = deviceHeight / Math.max(1, windowColumns)
   const perBinX = deviceWidth / Math.max(1, bins)
   const perBinY = deviceHeight / Math.max(1, bins)
 
   if (orientation === 'scroll') {
     // x grows with time, y grows downwards with the ring's rows, so the highest
-    // frequency (row 0) lands at the top. Interpolation slides content left; the
-    // few pixels it uncovers at the right edge are time for which no audio has
-    // arrived yet, which is the honest thing to show there.
-    return [perColumnX, 0, 0, perBinY, -shiftColumns * perColumnX, 0]
+    // frequency (row 0) lands at the top. The drawn slice's newest edge
+    // (source x = columnsDrawn) is anchored at the right, minus whatever
+    // interpolation is owed; the few pixels that uncovers at the right edge are
+    // time for which no audio has arrived yet, which is the honest thing to show
+    // there. If the buffer isn't full yet, the slice's oldest edge simply lands
+    // short of the left edge, leaving the true gap blank instead of stretching to
+    // fill it.
+    return [perColumnX, 0, 0, perBinY, deviceWidth - (shiftColumns + columnsDrawn) * perColumnX, 0]
   }
   // Transpose: the ring's time axis drives screen y (newest at the top, older
   // downwards) and its row axis drives screen x (row 0, the highest frequency, at
-  // the right). Interpolation slides content down, uncovering a sliver at the top.
+  // the right). Interpolation slides content down, uncovering a sliver at the top;
+  // an unfilled buffer leaves a gap at the bottom rather than being stretched to
+  // reach it.
   return [
     0,
     -perColumnY,
     -perBinX,
     0,
     deviceWidth,
-    deviceHeight + shiftColumns * perColumnY,
+    (shiftColumns + columnsDrawn) * perColumnY,
   ]
 }
 

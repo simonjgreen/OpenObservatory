@@ -262,50 +262,63 @@ export function Spectrogram({
         canvas.height = Math.round(cssHeight * dpr)
       }
 
-      const columnsWanted = Math.min(
-        Math.max(1, Math.round(windowSeconds / spec.hop_s)),
-        Math.min(ring.width, totalColumnsRef.current || 1),
-      )
-      const start = (writeXRef.current - columnsWanted + ring.width * 2) % ring.width
+      // windowColumns is the number of columns the *selected window* implies —
+      // it sets the pixels-per-column scale and never changes with how much
+      // history has actually arrived. columnsDrawn is how many columns actually
+      // exist to blit right now, which is smaller right after a window change or
+      // a fresh connection. Rescaling the scale term to columnsDrawn (as this
+      // used to do) is exactly the reported bug: a partially-filled window would
+      // render stretched to fill the canvas, then visibly "bunch up" to true
+      // scale as more data arrived.
+      const windowColumns = Math.max(1, Math.round(windowSeconds / spec.hop_s))
+      const columnsDrawn = Math.min(windowColumns, ring.width, totalColumnsRef.current)
+      const start = (writeXRef.current - columnsDrawn + ring.width * 2) % ring.width
 
       context.setTransform(1, 0, 0, 1, 0, 0)
       context.imageSmoothingEnabled = false
       context.fillStyle = palette === 'merlin' ? '#f7f7f5' : '#05060a'
       context.fillRect(0, 0, canvas.width, canvas.height)
 
-      // One affine matrix presents the ring in whichever orientation is selected —
-      // `waterfall` needs a transpose, which is a reflection about the diagonal and
-      // so still a single GPU blit rather than a second copy of the history.
-      //
-      // It also carries the sub-column interpolation: columns arrive in bursts of
-      // ~4 every 100 ms, and drawing them flush to the live edge makes the image
-      // lurch ten times a second instead of gliding.
-      context.setTransform(
-        ...ringTransform({
-          orientation,
-          deviceWidth: canvas.width,
-          deviceHeight: canvas.height,
-          columns: columnsWanted,
-          bins: ring.height,
-          shiftColumns: elapsedColumns(),
-        }),
-      )
+      if (columnsDrawn > 0) {
+        // One affine matrix presents the ring in whichever orientation is
+        // selected — `waterfall` needs a transpose, which is a reflection about
+        // the diagonal and so still a single GPU blit rather than a second copy
+        // of the history. Because the scale is fixed by windowColumns rather
+        // than columnsDrawn, a partially-filled window draws at true scale
+        // anchored to the live edge, with the unfilled remainder left as
+        // background instead of being stretched to hide it.
+        //
+        // It also carries the sub-column interpolation: columns arrive in
+        // bursts of ~4 every 100 ms, and drawing them flush to the live edge
+        // makes the image lurch ten times a second instead of gliding.
+        context.setTransform(
+          ...ringTransform({
+            orientation,
+            deviceWidth: canvas.width,
+            deviceHeight: canvas.height,
+            windowColumns,
+            columnsDrawn,
+            bins: ring.height,
+            shiftColumns: elapsedColumns(),
+          }),
+        )
 
-      // Two blits at most: the ring may wrap between `start` and the write head.
-      // Destination coordinates are in source units, so the matrix does the work.
-      if (start + columnsWanted <= ring.width) {
-        context.drawImage(
-          ring, start, 0, columnsWanted, ring.height, 0, 0, columnsWanted, ring.height,
-        )
-      } else {
-        const firstRun = ring.width - start
-        context.drawImage(ring, start, 0, firstRun, ring.height, 0, 0, firstRun, ring.height)
-        context.drawImage(
-          ring, 0, 0, columnsWanted - firstRun, ring.height,
-          firstRun, 0, columnsWanted - firstRun, ring.height,
-        )
+        // Two blits at most: the ring may wrap between `start` and the write head.
+        // Destination coordinates are in source units, so the matrix does the work.
+        if (start + columnsDrawn <= ring.width) {
+          context.drawImage(
+            ring, start, 0, columnsDrawn, ring.height, 0, 0, columnsDrawn, ring.height,
+          )
+        } else {
+          const firstRun = ring.width - start
+          context.drawImage(ring, start, 0, firstRun, ring.height, 0, 0, firstRun, ring.height)
+          context.drawImage(
+            ring, 0, 0, columnsDrawn - firstRun, ring.height,
+            firstRun, 0, columnsDrawn - firstRun, ring.height,
+          )
+        }
+        context.setTransform(1, 0, 0, 1, 0, 0)
       }
-      context.setTransform(1, 0, 0, 1, 0, 0)
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
