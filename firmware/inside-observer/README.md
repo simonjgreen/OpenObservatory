@@ -265,10 +265,30 @@ of this board:
 
 | Symptom | Fix |
 |---|---|
-| Colours photo-negative | remove `-D TFT_INVERSION_ON` |
+| Colours photo-negative | flip the inversion flag in `platformio.ini` (`TFT_INVERSION_OFF` ⇄ `TFT_INVERSION_ON`) |
 | Red and blue swapped | remove `-D TFT_RGB_ORDER=TFT_BGR` |
 | Garbled / no image, and `RDID4` is not `..93 41 ..` | you have the ST7789 revision (two USB ports): use `-D ST7789_DRIVER -D TFT_INVERSION_OFF -D TFT_RGB_ORDER=TFT_BGR` [3] |
 | Touch lands in the wrong place | portal → *Touch orientation* → swap/flip. Raw coordinates are logged on every press: `[touch] raw=(x,y) z=.. -> screen=(x,y)` |
+
+### Verified on the operator's own unit, 2026-08-08
+
+Both of the things the boot self-test *cannot* prove have now been confirmed by
+a human looking at and touching the screen:
+
+* **Colour.** The unit is **not** inverted. The build initially trusted TFT_eSPI
+  discussion #3018, which reports inversion for some ESP32-2432S028R revisions,
+  and rendered dark navy text on pale blue — precisely the intended near-black
+  background and warm off-white text inverted. `TFT_INVERSION_OFF` is correct
+  here. BGR order was already right: had it also been wrong, the inverted text
+  would have read dark brown/red rather than navy.
+* **Touch.** The raw-to-screen mapping is correct as shipped, using the
+  published calibration for this board. No swap or flip is needed on this unit.
+
+The GRAM readback self-test proves the SPI link works in both directions and
+that the controller stores what it is sent; it says nothing about how the
+controller drives the glass, which is why the colour question needed eyes.
+Panel *identity*, by contrast, is measured, not assumed: `RDID4` (0xD3) returns
+`0x..9341`.
 
 The boot self-test writes five known colours into the panel's GRAM and reads
 them back:
