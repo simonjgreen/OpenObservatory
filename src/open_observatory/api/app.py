@@ -62,9 +62,10 @@ from sqlalchemy.orm import Session
 from .. import history as history_queries
 from .. import models as model_registry
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
+from ..auth import AuthError, AuthService, Principal
 from ..config import Settings, get_settings
 from ..db import models as orm
-from ..db.session import create_all, get_session, init_engine
+from ..db.session import create_all, get_session, init_engine, session_scope
 from ..display import detection_flags, display_title
 from ..events import EventType
 from ..mqtt import MqttPublisher
@@ -75,6 +76,22 @@ log = structlog.get_logger(__name__)
 
 API_PREFIX = "/api/v1"
 
+#: Reachable with no credential regardless of `auth_enabled` or the
+#: configurable `auth_public_read_paths` allow-list -- these are not operator
+#: choices. `/metrics` is excluded from the auth gate separately, below,
+#: because it never matches the `API_PREFIX` the gate checks.
+#:
+#: `/health`: `deploy/deploy.sh` polls this after every restart with no
+#: credential and no login flow; requiring auth here would make every future
+#: deploy hang or fail (see ADR-034).
+#: `/auth/login`: reaching it is the only way out of being logged out.
+#: `/auth/logout`: idempotent and self-service (it can only ever act on the
+#: credential the caller already presents), kept reachable so a stale or
+#: expired session can always be cleared client-side.
+_ALWAYS_PUBLIC_PATHS = frozenset(
+    {f"{API_PREFIX}/health", f"{API_PREFIX}/auth/login", f"{API_PREFIX}/auth/logout"}
+)
+
 
 class ReviewIn(BaseModel):
     """Body for `POST /api/v1/detections/{id}/review` — the minimal review
@@ -82,6 +99,28 @@ class ReviewIn(BaseModel):
 
     status: str = Field(pattern="^(confirmed|rejected)$")
     note: str = Field(default="", max_length=2000)
+
+
+class LoginIn(BaseModel):
+    """Body for `POST /api/v1/auth/login`. Never logged -- see `auth.py`."""
+
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=400)
+
+
+class PasswordChangeIn(BaseModel):
+    """Body for `POST /api/v1/auth/password`. Requires the current password,
+    not just a valid session, so a hijacked-but-unlocked browser tab cannot
+    lock the real operator out by changing it unchallenged."""
+
+    current_password: str = Field(min_length=1, max_length=400)
+    new_password: str = Field(min_length=1, max_length=400)
+
+
+class ApiTokenCreateIn(BaseModel):
+    """Body for `POST /api/v1/auth/tokens`."""
+
+    name: str = Field(min_length=1, max_length=120)
 
 
 class LiveClient:
@@ -202,6 +241,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     station = Station(settings)
     hub = LiveHub()
     exporter = PrometheusExporter(station)
+    auth_service = AuthService(settings)
     station.set_spectrogram_sink(lambda columns: hub.broadcast_binary(columns.to_binary()))
     # Milestone 6 (ADR-025): subscribes to station.bus, the same seam every other
     # consumer uses. Off by default (mqtt_enabled=False) and never awaited from the
@@ -217,6 +257,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if settings.auth_enabled:
+            with session_scope() as db:
+                generated_password = auth_service.bootstrap_admin_if_needed(db)
+            if generated_password is not None:
+                # Printed, not just logged: this is the only time the
+                # operator ever sees it, and structlog's configured level
+                # (or a non-interactive log shipper) should not be able to
+                # swallow it. Still goes through structlog too, at WARNING,
+                # so it lands in whatever log the rest of this session does.
+                print(
+                    "\n"
+                    "==================================================================\n"
+                    f"  Open Observatory: created account '{settings.auth_bootstrap_username}'\n"
+                    f"  Generated password (shown once): {generated_password}\n"
+                    "  You will be required to change it on first login.\n"
+                    "==================================================================\n",
+                    # `flush=True`: stdout is block-buffered (not a tty) under
+                    # uvicorn/systemd, so without this the banner can sit in an
+                    # ~8 KiB buffer indefinitely -- observed while testing this
+                    # feature, where it simply never appeared in the captured
+                    # log until the process later wrote enough other output to
+                    # flush the buffer. A one-time secret must be visible the
+                    # moment it is printed, not eventually.
+                    flush=True,
+                )
+        else:
+            log.warning(
+                "auth.disabled",
+                note=(
+                    "auth_enabled is false: the API and UI are reachable with no "
+                    "credential from anything on this network. Set OO_AUTH_ENABLED=true "
+                    "to close this. See ADR-015/ADR-034."
+                ),
+            )
         await station.start()
         await mqtt_publisher.start()
         try:
@@ -239,6 +313,223 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.station = station
     app.state.hub = hub
+    app.state.auth_service = auth_service
+
+    # -- authentication ---------------------------------------------------
+
+    def _bearer_token(request: Request) -> str | None:
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            return header[7:].strip()
+        return None
+
+    def _resolve_principal(request: Request, session: Session) -> Principal | None:
+        """Session cookie or bearer token, in that order. A request carrying
+        both is unusual (only a hand-crafted client would do it) but the
+        cookie -- the browser's own credential -- takes precedence so a
+        stray `Authorization` header from some other tool cannot silently
+        override who the browser itself is logged in as."""
+        cookie = request.cookies.get(settings.auth_session_cookie_name)
+        if cookie:
+            principal = auth_service.resolve_session(session, cookie)
+            if principal is not None:
+                return principal
+        token = _bearer_token(request)
+        if token:
+            return auth_service.resolve_api_token(session, token)
+        return None
+
+    def get_optional_principal(
+        request: Request, session: Session = Depends(get_session)
+    ) -> Principal | None:
+        return _resolve_principal(request, session)
+
+    def require_principal(
+        principal: Principal | None = Depends(get_optional_principal),
+    ) -> Principal:
+        """For endpoints that manage *your own account* (password, tokens):
+        these always require proof of identity, independent of whether
+        `auth_enabled` is currently gating the rest of the API -- an
+        operator testing the feature before flipping the switch should not
+        be able to silently manage a token store as nobody in particular."""
+        if principal is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        return principal
+
+    @app.middleware("http")
+    async def _enforce_auth(request: Request, call_next: Any) -> Response:
+        """The blanket gate. Off entirely while `auth_enabled` is false, so
+        an operator who has not turned this on sees literally no behaviour
+        change (ADR-034) -- not even a cookie is inspected.
+
+        `_ALWAYS_PUBLIC_PATHS` and, for GET only, `auth_public_read_paths`
+        (default: the ESP32 wall display's `/api/v1/detections` poll) are
+        exempt. Everything else under `API_PREFIX` needs a valid session or
+        API token. Static UI assets and `/metrics` never match `API_PREFIX`
+        and are untouched by this function.
+        """
+        path = request.url.path
+        if (
+            settings.auth_enabled
+            and path.startswith(API_PREFIX)
+            and path not in _ALWAYS_PUBLIC_PATHS
+            and not (request.method == "GET" and path in settings.auth_public_read_paths)
+        ):
+            with session_scope() as session:
+                principal = _resolve_principal(request, session)
+            if principal is None:
+                log.info("auth.request_rejected", path=path, method=request.method)
+                return JSONResponse({"detail": "authentication required"}, status_code=401)
+            request.state.principal = principal
+        return await call_next(request)
+
+    @app.post(f"{API_PREFIX}/auth/login")
+    def post_auth_login(
+        body: LoginIn, request: Request, response: Response, session: Session = Depends(get_session)
+    ) -> dict[str, Any]:
+        client_key = request.client.host if request.client else "unknown"
+        auth_service.login_limiter.sweep()
+        allowed, retry_after = auth_service.login_limiter.allow(client_key)
+        if not allowed:
+            auth_service.metrics.login_rate_limited.inc()
+            log.warning("auth.login_rate_limited", client=client_key)
+            raise HTTPException(
+                status_code=429,
+                detail="too many login attempts; try again shortly",
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+        try:
+            # .username/.password are never logged -- only the client key and
+            # the outcome are, on both the success and failure paths below.
+            user = auth_service.authenticate(session, username=body.username, password=body.password)
+        except AuthError:
+            auth_service.metrics.login_failure.inc()
+            log.warning("auth.login_failed", client=client_key)
+            raise HTTPException(status_code=401, detail="invalid username or password") from None
+        auth_service.login_limiter.reset(client_key)
+        auth_service.metrics.login_success.inc()
+        token, row = auth_service.create_session(
+            session, user=user, user_agent=request.headers.get("user-agent", "")
+        )
+        log.info("auth.login_succeeded", client=client_key, username=user.username)
+        response.set_cookie(
+            settings.auth_session_cookie_name,
+            token,
+            max_age=int(settings.auth_session_ttl_hours * 3600),
+            httponly=True,
+            samesite="lax",
+            secure=settings.auth_cookie_secure,
+            path="/",
+        )
+        return {
+            "username": user.username,
+            "must_change_password": user.must_change_password,
+            "expires_utc": _iso(row.expires_at),
+        }
+
+    @app.post(f"{API_PREFIX}/auth/logout")
+    def post_auth_logout(
+        request: Request, response: Response, session: Session = Depends(get_session)
+    ) -> dict[str, Any]:
+        cookie = request.cookies.get(settings.auth_session_cookie_name)
+        if cookie:
+            auth_service.revoke_session(session, cookie)
+        response.delete_cookie(settings.auth_session_cookie_name, path="/")
+        return {"logged_out": True}
+
+    @app.get(f"{API_PREFIX}/auth/me")
+    def get_auth_me(principal: Principal | None = Depends(get_optional_principal)) -> dict[str, Any]:
+        """Always reachable directly (never in `_ALWAYS_PUBLIC_PATHS`, but
+        also never gated: when `auth_enabled` is true and there is no valid
+        credential, `_enforce_auth` above already returned 401 before this
+        body ever runs). The UI's login-vs-app decision is entirely: did
+        this request succeed."""
+        if principal is None:
+            return {"authenticated": False, "auth_enabled": settings.auth_enabled}
+        return {
+            "authenticated": True,
+            "auth_enabled": settings.auth_enabled,
+            "username": principal.username,
+            "method": principal.method,
+            "must_change_password": principal.must_change_password,
+        }
+
+    @app.post(f"{API_PREFIX}/auth/password")
+    def post_auth_password(
+        body: PasswordChangeIn,
+        principal: Principal = Depends(require_principal),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        user = session.get(orm.User, principal.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        try:
+            auth_service.change_password(
+                session,
+                user=user,
+                current_password=body.current_password,
+                new_password=body.new_password,
+            )
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"changed": True}
+
+    @app.get(f"{API_PREFIX}/auth/tokens")
+    def list_auth_tokens(
+        principal: Principal = Depends(require_principal),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        user = session.get(orm.User, principal.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        return {
+            "tokens": [
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "token_prefix": row.token_prefix,
+                    "created_at": _iso(row.created_at),
+                    "last_used_at": _iso(row.last_used_at),
+                    "revoked": row.revoked_at is not None,
+                }
+                for row in auth_service.list_api_tokens(session, user=user)
+            ]
+        }
+
+    @app.post(f"{API_PREFIX}/auth/tokens")
+    def create_auth_token(
+        body: ApiTokenCreateIn,
+        principal: Principal = Depends(require_principal),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        user = session.get(orm.User, principal.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        token, row = auth_service.create_api_token(session, user=user, name=body.name)
+        log.info("auth.token_created", username=user.username, name=row.name, token_id=str(row.id))
+        return {
+            "id": str(row.id),
+            "name": row.name,
+            #: Shown exactly once. Neither this value nor its hash's plaintext
+            #: origin is ever logged or persisted anywhere else.
+            "token": token,
+            "created_at": _iso(row.created_at),
+        }
+
+    @app.delete(f"{API_PREFIX}/auth/tokens/{{token_id}}")
+    def revoke_auth_token(
+        token_id: str,
+        principal: Principal = Depends(require_principal),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        user = session.get(orm.User, principal.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        ok = auth_service.revoke_api_token(session, user=user, token_id=_uuid(token_id))
+        if not ok:
+            raise HTTPException(status_code=404, detail="token not found")
+        log.info("auth.token_revoked", username=user.username, token_id=token_id)
+        return {"revoked": True}
 
     # -- station and health --------------------------------------------
 
@@ -281,6 +572,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"{settings.retention_watermark_ratio:.0%} watermark and the retention "
                 "sweep is not keeping up"
             )
+        # ADR-034: visible rather than silent. `auth_enabled: false` is the
+        # shipped default and is never itself a `problems` entry -- an
+        # operator who has not opted in should see a status of exactly what
+        # they always saw, not a station that reports itself degraded out of
+        # the box. An operator who *has* opted in but is locked out (no
+        # active account reachable at all, e.g. every user disabled) is a
+        # real misconfiguration and is surfaced as one.
+        auth_info: dict[str, Any] = {"enabled": settings.auth_enabled}
+        if settings.auth_enabled:
+            with session_scope() as auth_session:
+                active_users = auth_service.active_user_count(auth_session)
+            auth_info["active_users"] = active_users
+            if active_users == 0:
+                problems.append(
+                    "auth_enabled is true but no active user accounts exist; the "
+                    "station is locked out of its own API. Restart with "
+                    "OO_AUTH_ENABLED=false to regain access, or restore a user row."
+                )
+
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
         return {
             "status": status,
@@ -294,6 +604,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "retention_last_sweep_at": retention["last_sweep_at"],
             },
             "mqtt": mqtt_publisher.snapshot(),
+            "auth": auth_info,
         }
 
     @app.get(f"{API_PREFIX}/health")
@@ -378,7 +689,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="metrics disabled")
         body, content_type = exporter.render()
         mqtt_body, _ = mqtt_publisher.render_metrics()
-        return Response(content=body + b"\n" + mqtt_body, media_type=content_type)
+        auth_body, _ = auth_service.metrics.render()
+        return Response(content=body + b"\n" + mqtt_body + b"\n" + auth_body, media_type=content_type)
 
     # -- audio devices --------------------------------------------------
 
@@ -984,9 +1296,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # -- live channels --------------------------------------------------
 
+    def _ws_principal(socket: WebSocket) -> Principal | None:
+        """Cookie or bearer token off a WebSocket handshake. A browser sends
+        its cookies on the upgrade request automatically (same-origin, like
+        any other same-origin fetch), so a logged-in tab needs no code of
+        its own to carry the session onto these sockets."""
+        with session_scope() as session:
+            cookie = socket.cookies.get(settings.auth_session_cookie_name)
+            if cookie:
+                principal = auth_service.resolve_session(session, cookie)
+                if principal is not None:
+                    return principal
+            header = socket.headers.get("authorization", "")
+            if header.lower().startswith("bearer "):
+                return auth_service.resolve_api_token(session, header[7:].strip())
+        return None
+
     @app.websocket(f"{API_PREFIX}/live")
     async def live_socket(socket: WebSocket) -> None:
         await socket.accept()
+        if settings.auth_enabled and _ws_principal(socket) is None:
+            log.info("auth.ws_rejected", path=API_PREFIX + "/live")
+            await socket.send_json({"type": "error", "detail": "authentication required"})
+            await socket.close(code=4401)
+            return
         client = LiveClient(socket)
         subscription = station.bus.subscribe(maxsize=256, label="live-ws")
         writer = asyncio.create_task(client.run(), name="live-writer")
@@ -1076,6 +1409,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         invariant that the visual channel already relies on holds here too.
         """
         await socket.accept()
+        if settings.auth_enabled and _ws_principal(socket) is None:
+            log.info("auth.ws_rejected", path=API_PREFIX + "/live/audio")
+            await socket.send_json({"type": "error", "detail": "authentication required"})
+            await socket.close(code=4401)
+            return
         ultrasonic = channel == "ultrasonic"
         broadcaster = station.live_audio_ultrasonic if ultrasonic else station.live_audio
         listener = broadcaster.add_listener(label=f"browser:{channel}")

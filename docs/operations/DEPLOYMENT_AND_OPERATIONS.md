@@ -336,6 +336,84 @@ If these are ever reduced again, it will be for the same reason they were reduce
 before: the storage device underneath `data/clips` cannot sustain the write rate.
 Check `du -sh data/clips` and the SSD's free space before assuming that.
 
+## Authentication (ADR-034, closes ADR-015)
+
+**Off by default.** `OO_AUTH_ENABLED` (`auth_enabled` in `Settings`) defaults
+to `false`. On a fresh install or an upgrade of an existing station, nothing
+changes until an operator sets it explicitly — the station keeps the
+anonymous read/write behaviour it has always had. `GET /api/v1/health`'s
+`auth` object always reports `{"enabled": false}` while it is off (never
+omitted), and a structured `auth.disabled` warning is logged once at every
+startup, so this is visible rather than merely documented.
+
+**Turning it on.**
+
+```
+OO_AUTH_ENABLED=true
+```
+
+in `config/runtime.env`, then restart the service. On the next startup with
+no existing accounts, one is created (`OO_AUTH_BOOTSTRAP_USERNAME`, default
+`operator`) with a random password **printed once** to the service's stdout
+— `journalctl -u open-observatory -n 60` immediately after the restart that
+enables auth is the only place to find it. It is never written to this
+repository, `config/example.env`, or any other file. The web UI forces a
+password change on that account's first login; a machine client that logs in
+via `POST /api/v1/auth/login` directly and ignores `must_change_password` in
+the response is not currently blocked from continuing to use the generated
+password (see ADR-034's bootstrap note).
+
+**What this does and does not protect against — stated exactly, not
+generously.** It stops another device or person on the same LAN from
+reading or changing station state with no credential at all, which is the
+gap ADR-015 recorded as a "real security consequence." It does **not**
+protect a session cookie or an API token from anything that can observe LAN
+traffic: this station is served over plain HTTP, and nothing in this
+codebase terminates TLS. `auth_cookie_secure` (`OO_AUTH_COOKIE_SECURE`)
+defaults to `false` for exactly that reason — marking the session cookie
+`Secure` on a non-HTTPS origin makes the browser silently refuse to ever
+send it back, which turns a working login into one that appears to succeed
+and then authenticates nothing. Only set `OO_AUTH_COOKIE_SECURE=true` once a
+reverse proxy or similar is terminating TLS in front of this station on this
+network path. Until then, treat a session cookie or API token exactly like
+the plaintext HTTP that carries it: readable by anything already positioned
+on the LAN, same as ADR-015 always implied.
+
+**The ESP32 wall display's exemption.** `firmware/inside-observer` polls
+`GET /api/v1/detections` and `GET /api/v1/health` with no way to carry a
+credential and cannot be reflashed as part of an ordinary station upgrade.
+Both of those paths (plus `GET /metrics`, scraped by Prometheus with no
+login flow of its own) stay reachable with **no credential** even when auth
+is enabled — `/api/v1/health` and `/metrics` unconditionally, and
+`GET /api/v1/detections` via the configurable `auth_public_read_paths`
+setting (default: exactly that one path, GET only). This means recent
+detections (species, timestamps, scores — not clip audio, not station
+coordinates, not history/export/anything else) remain readable by anything
+on the LAN even with auth turned on, until a future firmware update adds
+bearer-token support and `auth_public_read_paths` is cleared. See ADR-034
+for the full trade-off and the firmware follow-up this implies.
+
+**`deploy/deploy.sh` is unaffected.** Its health-check loop polls
+`http://127.0.0.1:8080/api/v1/health` with no credential; that endpoint is
+hardcoded into the auth gate's always-public set independent of any
+setting, specifically so this script keeps working unchanged whether or not
+`auth_enabled` is on.
+
+**API tokens for other machine clients** (scripts, a future firmware
+revision, monitoring) are created by an authenticated operator via
+`POST /api/v1/auth/tokens` (through the web UI once implemented there, or
+directly against the API with a valid session cookie) and sent as
+`Authorization: Bearer <token>` on subsequent requests. Each token is shown
+in full exactly once at creation and stored server-side only as a SHA-256
+hash; `DELETE /api/v1/auth/tokens/{id}` revokes one immediately.
+
+**Rollback.** Set `OO_AUTH_ENABLED=false` and restart — the station returns
+to anonymous access immediately; no data is lost (the `user`/`auth_session`/
+`api_token` tables are simply no longer consulted). If an operator manages
+to lock themselves out while auth is on (lost password, no working session),
+the same rollback restores access; `oo config` on the target confirms the
+setting took effect.
+
 ## Soak testing
 
 The acceptance criteria require a continuous 72-hour soak test on the target

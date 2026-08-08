@@ -5,6 +5,7 @@
  *  that both `History` and `Suggestions` read from `App`. */
 
 import { useEffect, useState } from 'react'
+import { apiFetch } from '../api'
 import type { Detection } from '../types'
 import type { HistoryRange } from '../components/History'
 
@@ -47,8 +48,14 @@ export function useHistoryBrowser(): HistoryBrowser {
     } else {
       params.set('window', historyWindow)
     }
-    fetch(`/api/v1/detections?${params}`)
-      .then((response) => response.json())
+    apiFetch(`/api/v1/detections?${params}`)
+      .then((response) => {
+        // A 401 here already reached `useAuth` via `apiFetch`'s own 401
+        // handling (the login view is about to replace this one); this
+        // view just needs to not misreport it as "an empty window".
+        if (!response.ok) throw new Error(`detections fetch failed: ${response.status}`)
+        return response.json()
+      })
       .then((data) => {
         if (cancelled) return
         setHistoryDetections(data.detections ?? [])
