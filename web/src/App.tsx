@@ -1,428 +1,256 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useState } from 'react'
 
-import {
-  LiveAudioPlayer,
-  clampTuneHz,
-  type AudioHelloInfo,
-  type AudioStatus,
-  type AudioTelemetry,
-  type LiveAudioChannel,
-} from './audio'
-import { LiveConnection, type ConnectionState, type HelloPayload } from './live'
-import type { ColumnBatch, Detection, Envelope, SpectrogramSpec, StationStatus } from './types'
+import type { Detection } from './types'
 import { Header } from './components/Header'
-import { Spectrogram, type Palette } from './components/Spectrogram'
-import { orderPanels, type Orientation } from './components/geometry'
+import { Spectrogram } from './components/Spectrogram'
 import { Suggestions } from './components/Suggestions'
 import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
 import { DetectionDrawer } from './components/DetectionDrawer'
-import { History, type HistoryRange } from './components/History'
+import { History } from './components/History'
+import { OperatorSummary } from './components/OperatorSummary'
+import { RetentionPanel } from './components/RetentionPanel'
 
-const MAX_DETECTIONS = 600
-const MAX_EVENTS = 400
+import { useClock } from './hooks/useClock'
+import { useHistoryBrowser } from './hooks/useHistoryBrowser'
+import { useLiveAudio } from './hooks/useLiveAudio'
+import { useLiveConnection } from './hooks/useLiveConnection'
+import { useSpectrogramControls } from './hooks/useSpectrogramControls'
+import { useViewMode } from './hooks/useViewMode'
 
+/** Top level of the station UI.
+ *
+ *  ADR-016/024: one application, two depths. `useViewMode` decides which —
+ *  "operate" is the calm default (`OperatorSummary` plus the spectrogram and
+ *  species list), "diagnose" additionally reveals the pipeline internals
+ *  (`CapturePanel`/`DetectorPanel`/`StoragePanel`/`EventLog`, and the
+ *  header's raw stat row) that used to be the whole page. Nothing is
+ *  deleted — see ADR-011's retained constraint — it is reorganised behind an
+ *  explicit toggle instead of shown unconditionally.
+ *
+ *  Everything that used to be direct `useState` here (about 25 hooks, per
+ *  ADR-016/024's prerequisite note) now lives in `hooks/*`, grouped by
+ *  concern: the live socket, spectrogram display controls, history
+ *  browsing, and the audio monitor. This component is left holding only
+ *  what genuinely crosses those concerns — the selected detection for the
+ *  drawer, and view/diagnostics depth.
+ */
 export default function App() {
-  const [status, setStatus] = useState<StationStatus | null>(null)
-  const [specs, setSpecs] = useState<SpectrogramSpec[]>([])
-  const [detections, setDetections] = useState<Detection[]>([])
-  const [events, setEvents] = useState<Envelope[]>([])
-  const [connection, setConnection] = useState<ConnectionState>('connecting')
+  const clock = useClock()
+  const live = useLiveConnection()
+  const spectrogramControls = useSpectrogramControls(live.specs)
+  const history = useHistoryBrowser()
+  const audio = useLiveAudio()
+  const view = useViewMode()
+
   const [selected, setSelected] = useState<Detection | null>(null)
-  const [clock, setClock] = useState(() => new Date())
 
-  const [palette, setPalette] = useState<Palette>('observatory')
-  const [windowSeconds, setWindowSeconds] = useState(30)
-  // Defaults chosen from a measured distribution of real garden audio on the
-  // target: p1 sat at -84 dBFS and the loudest peaks at -41, so with the server's
-  // -95..-15 dB encoding the useful signal occupies roughly 0.14 to 0.68.
-  const [blackPoint, setBlackPoint] = useState(0.13)
-  const [whitePoint, setWhitePoint] = useState(0.72)
-  const [showDetections, setShowDetections] = useState(true)
-  const [orientation, setOrientation] = useState<Orientation>('scroll')
-
-  // Live shows the socket's session; history reads what was persisted, so a page
-  // opened at breakfast can still browse the night.
-  const [mode, setMode] = useState<'live' | 'history'>('live')
-  const [historyWindow, setHistoryWindow] = useState('last-night')
-  const [historyRange, setHistoryRange] = useState<HistoryRange | null>(null)
-  const [focus, setFocus] = useState<{ fromUtc: string; toUtc: string } | null>(null)
-  const [historyDetections, setHistoryDetections] = useState<Detection[]>([])
-  const [historyTruncated, setHistoryTruncated] = useState(false)
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [activeChannel, setActiveChannel] = useState<number | 'both'>('both')
-
-  const [audioStatus, setAudioStatus] = useState<AudioStatus>('idle')
-  const [audioTelemetry, setAudioTelemetry] = useState<AudioTelemetry | null>(null)
-  const [audioDetail, setAudioDetail] = useState<string | undefined>()
-  const [volume, setVolume] = useState(0.9)
-  // Audible is the unconditional default: pressing GO LIVE must always listen
-  // to the audible mix unless the operator explicitly switches.
-  const [audioChannel, setAudioChannel] = useState<LiveAudioChannel>('audible')
-  const [tuneHz, setTuneHz] = useState(45000)
-  const [audioHello, setAudioHello] = useState<AudioHelloInfo | null>(null)
-  //: Mirrors the suggestion list's default; also drives the history aggregation.
-  const [hideUnidentifiedHistory] = useState(true)
-
-  // Spectrogram sinks are held in a ref: batches arrive dozens of times a second
-  // and must reach the canvases without a React render.
-  const sinksRef = useRef(new Map<number, Set<(batch: ColumnBatch) => void>>())
-  const skewRef = useRef(0)
-  const connectionRef = useRef<LiveConnection | null>(null)
-
-  const register = useCallback((channel: number, sink: (batch: ColumnBatch) => void) => {
-    const sinks = sinksRef.current
-    if (!sinks.has(channel)) sinks.set(channel, new Set())
-    sinks.get(channel)!.add(sink)
-    return () => {
-      sinks.get(channel)?.delete(sink)
-    }
-  }, [])
-
-  useEffect(() => {
-    const live = new LiveConnection({
-      onColumns: (batch) => {
-        const sinks = sinksRef.current.get(batch.channel)
-        if (!sinks) return
-        for (const sink of sinks) sink(batch)
-      },
-      onStatus: (next) => {
-        setStatus(next)
-        setSpecs((current) =>
-          // Only replace when the channel set actually changes, so re-anchoring
-          // the canvases does not throw away scroll history on every status tick.
-          current.length === next.spectrograms.length &&
-          current.every(
-            (spec, index) =>
-              spec.channel === next.spectrograms[index].channel &&
-              spec.bins === next.spectrograms[index].bins &&
-              spec.sample_rate === next.spectrograms[index].sample_rate,
-          )
-            ? current
-            : next.spectrograms,
-        )
-      },
-      onDetection: (detection) =>
-        setDetections((current) => {
-          if (current.some((existing) => existing.id === detection.id)) return current
-          const next = [...current, detection]
-          return next.length > MAX_DETECTIONS ? next.slice(-MAX_DETECTIONS) : next
-        }),
-      onEvent: (event) =>
-        setEvents((current) => {
-          // Per-second level telemetry would swamp the log; it drives the meters.
-          if (event.event_type === 'capture.levels' || event.event_type === 'station.status') {
-            return current
-          }
-          const next = [event, ...current]
-          return next.length > MAX_EVENTS ? next.slice(0, MAX_EVENTS) : next
-        }),
-      onConnectionChange: (state) => setConnection(state),
-      onHello: (hello: HelloPayload) => {
-        skewRef.current = live.clockSkewS
-        setSpecs(hello.spectrograms)
-      },
-    })
-    connectionRef.current = live
-    live.connect()
-    return () => live.close()
-  }, [])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(new Date()), 500)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  useEffect(() => {
-    if (mode !== 'history') return
-    let cancelled = false
-    setHistoryLoading(true)
-    const params = new URLSearchParams({ limit: '500' })
-    if (focus) {
-      params.set('since', focus.fromUtc)
-      params.set('until', focus.toUtc)
-    } else {
-      params.set('window', historyWindow)
-    }
-    fetch(`/api/v1/detections?${params}`)
-      .then((response) => response.json())
-      .then((data) => {
-        if (cancelled) return
-        setHistoryDetections(data.detections ?? [])
-        setHistoryTruncated(Boolean(data.truncated))
-      })
-      .catch(() => !cancelled && setHistoryDetections([]))
-      .finally(() => !cancelled && setHistoryLoading(false))
-    return () => {
-      cancelled = true
-    }
-  }, [mode, historyWindow, focus])
-
-  const player = useMemo(
-    () =>
-      new LiveAudioPlayer(
-        (state, detail) => {
-          setAudioStatus(state)
-          setAudioDetail(detail)
-        },
-        (telemetry) => setAudioTelemetry(telemetry),
-        (hello) => {
-          setAudioHello(hello)
-          // The server may have clamped an out-of-range request; reflect what
-          // it actually landed on rather than what was asked for.
-          if (hello.tuneHz !== undefined) setTuneHz(hello.tuneHz)
-        },
-      ),
-    [],
-  )
-
-  useEffect(() => () => void player.stop(), [player])
-
-  const toggleAudio = useCallback(() => {
-    if (player.playing) void player.stop()
-    else void player.start(volume, audioChannel, tuneHz)
-  }, [player, volume, audioChannel, tuneHz])
-
-  // Switching channel means pointing the `<audio>` element at a new URL, so
-  // this always reconnects while playing — there is no in-place channel
-  // switch over a chunked-WAV stream.
-  const changeChannel = useCallback(
-    (value: LiveAudioChannel) => {
-      setAudioChannel(value)
-      setAudioHello(null)
-      if (player.playing) {
-        void player.stop().then(() => void player.start(volume, value, tuneHz))
-      }
-    },
-    [player, volume, tuneHz],
-  )
-
-  const changeTuneHz = useCallback(
-    (value: number) => {
-      const clamped = clampTuneHz(value)
-      setTuneHz(clamped)
-      // Retunes the server-side heterodyne in place over `POST
-      // /api/v1/live/tune` — the audio.wav stream itself is never touched, so
-      // sweeping the slider does not reconnect or gap. See
-      // `LiveAudioPlayer.setTuneHz`, which also throttles this: a range
-      // input fires on every drag tick.
-      if (player.playing && audioChannel === 'ultrasonic') player.setTuneHz(clamped)
-    },
-    [player, audioChannel],
-  )
-
-  const changeVolume = useCallback(
-    (value: number) => {
-      setVolume(value)
-      player.setVolume(value)
-    },
-    [player],
-  )
-
-  const timeZone = status?.station.timezone ?? 'UTC'
-
-  // Ordered so the panels' frequency axes form one continuous run across the page.
-  // Which way round that is depends on the orientation, so the rule lives in
-  // geometry.ts where both directions are tested.
-  const orderedSpecs = useMemo(() => orderPanels(specs, orientation), [specs, orientation])
-  const visibleSpecs = orderedSpecs.filter(
-    (spec) => activeChannel === 'both' || spec.channel === activeChannel,
-  )
-  // A waterfall needs vertical room, because time runs down it rather than across.
-  const heroHeight =
-    orientation === 'waterfall'
-      ? visibleSpecs.length > 1 ? 420 : 620
-      : visibleSpecs.length > 1 ? 250 : 420
+  const timeZone = live.status?.station.timezone ?? 'UTC'
+  const diagnosing = view.depth === 'diagnose'
 
   return (
     <div className="app">
       <Header
-        status={status}
-        connection={connection}
+        status={live.status}
+        connection={live.connection}
         clock={clock}
         localTimeZone={timeZone}
+        showDiagnostics={diagnosing}
       >
         <div className="segmented mode-switch">
-          <button className={mode === 'live' ? 'on' : ''} onClick={() => setMode('live')}>
+          <button
+            className={history.mode === 'live' ? 'on' : ''}
+            onClick={() => history.setMode('live')}
+          >
             LIVE
           </button>
           <button
-            className={mode === 'history' ? 'on' : ''}
-            onClick={() => setMode('history')}
+            className={history.mode === 'history' ? 'on' : ''}
+            onClick={() => history.setMode('history')}
             title="Browse persisted detections and evidence from earlier, including overnight"
           >
             HISTORY
           </button>
         </div>
+        <button
+          className={`diagnostics-toggle ${diagnosing ? 'on' : ''}`}
+          onClick={() => view.toggle()}
+          title="Pipeline internals: frame counts, queue depth, drop counters, detector lag. Never a substitute for the measurements above it."
+        >
+          {diagnosing ? 'diagnostics: on' : 'diagnostics'}
+        </button>
         <ListenControl
-          status={audioStatus}
-          telemetry={audioTelemetry}
-          volume={volume}
-          onToggle={toggleAudio}
-          onVolume={changeVolume}
-          detail={audioDetail}
-          channel={audioChannel}
-          onChannel={changeChannel}
-          tuneHz={tuneHz}
-          onTuneHz={changeTuneHz}
-          hello={audioHello}
+          status={audio.status}
+          telemetry={audio.telemetry}
+          volume={audio.volume}
+          onToggle={audio.toggle}
+          onVolume={audio.changeVolume}
+          detail={audio.detail}
+          channel={audio.channel}
+          onChannel={audio.changeChannel}
+          tuneHz={audio.tuneHz}
+          onTuneHz={audio.changeTuneHz}
+          hello={audio.hello}
         />
       </Header>
 
-      {mode === 'history' ? (
+      <OperatorSummary status={live.status} />
+
+      {history.mode === 'history' ? (
         <History
           timeZone={timeZone}
-          windowName={historyWindow}
-          focused={focus}
-          includeUnidentified={!hideUnidentifiedHistory}
-          onWindowChange={(name, range) => {
-            if (name !== historyWindow) {
-              setHistoryWindow(name)
-              setFocus(null)
-            }
-            if (range) setHistoryRange(range)
-          }}
-          onFocus={(fromUtc, toUtc) => {
-            const wholeWindow =
-              historyRange !== null &&
-              fromUtc === historyRange.start_utc &&
-              toUtc === historyRange.end_utc
-            setFocus(wholeWindow ? null : { fromUtc, toUtc })
-          }}
+          windowName={history.historyWindow}
+          focused={history.focus}
+          includeUnidentified={!history.hideUnidentifiedHistory}
+          onWindowChange={history.onWindowChange}
+          onFocus={history.onFocus}
         />
       ) : (
-      <div className={`hero ${orientation === 'waterfall' ? 'hero-waterfall' : ''}`}>
-        <div className="hero-controls">
-          <div className="segmented">
-            <button
-              className={activeChannel === 'both' ? 'on' : ''}
-              onClick={() => setActiveChannel('both')}
-            >
-              both
-            </button>
-            {/* Same order as the stack, so the picker cannot contradict it. */}
-            {orderedSpecs.map((spec) => (
+        <div className={`hero ${spectrogramControls.orientation === 'waterfall' ? 'hero-waterfall' : ''}`}>
+          <div className="hero-controls">
+            <div className="segmented">
               <button
-                key={spec.channel}
-                className={activeChannel === spec.channel ? 'on' : ''}
-                onClick={() => setActiveChannel(spec.channel)}
+                className={spectrogramControls.activeChannel === 'both' ? 'on' : ''}
+                onClick={() => spectrogramControls.setActiveChannel('both')}
               >
-                {spec.name}
+                both
               </button>
+              {/* Same order as the stack, so the picker cannot contradict it. */}
+              {spectrogramControls.orderedSpecs.map((spec) => (
+                <button
+                  key={spec.channel}
+                  className={spectrogramControls.activeChannel === spec.channel ? 'on' : ''}
+                  onClick={() => spectrogramControls.setActiveChannel(spec.channel)}
+                >
+                  {spec.name}
+                </button>
+              ))}
+            </div>
+
+            <label>
+              history
+              <select
+                value={spectrogramControls.windowSeconds}
+                onChange={(event) => spectrogramControls.setWindowSeconds(Number(event.target.value))}
+              >
+                {[10, 20, 30, 60, 120, 300].map((value) => (
+                  <option key={value} value={value}>
+                    {value < 60 ? `${value}s` : `${value / 60}m`}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {diagnosing && (
+              <>
+                <label title="Scroll puts time across the page with now at the right, which reads rhythm well. Waterfall puts frequency across and time down the page with now at the top, which reads the shape of the band well.">
+                  view
+                  <select
+                    value={spectrogramControls.orientation}
+                    onChange={(event) =>
+                      spectrogramControls.setOrientation(event.target.value as typeof spectrogramControls.orientation)
+                    }
+                  >
+                    <option value="scroll">scroll</option>
+                    <option value="waterfall">waterfall</option>
+                  </select>
+                </label>
+
+                <label>
+                  palette
+                  <select
+                    value={spectrogramControls.palette}
+                    onChange={(event) =>
+                      spectrogramControls.setPalette(event.target.value as typeof spectrogramControls.palette)
+                    }
+                  >
+                    <option value="observatory">observatory</option>
+                    <option value="merlin">Merlin grey</option>
+                    <option value="ice">ice</option>
+                  </select>
+                </label>
+
+                <label title="Level mapped to the darkest colour. Raise it to push the noise floor to black.">
+                  floor
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.9}
+                    step={0.01}
+                    value={spectrogramControls.blackPoint}
+                    onChange={(event) => spectrogramControls.setBlackPoint(Number(event.target.value))}
+                  />
+                  <span className="mono">{spectrogramControls.blackPoint.toFixed(2)}</span>
+                </label>
+
+                <label title="Level mapped to the brightest colour. Lower it to bring out quiet detail.">
+                  ceiling
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.01}
+                    value={spectrogramControls.whitePoint}
+                    onChange={(event) => spectrogramControls.setWhitePoint(Number(event.target.value))}
+                  />
+                  <span className="mono">{spectrogramControls.whitePoint.toFixed(2)}</span>
+                </label>
+              </>
+            )}
+
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={spectrogramControls.showDetections}
+                onChange={(event) => spectrogramControls.setShowDetections(event.target.checked)}
+              />
+              overlay detections
+            </label>
+
+            <span className="grow" />
+            {diagnosing && (
+              <div className="meters">
+                <LevelMeter label="native" sample={live.status?.levels.native ?? null} />
+                <LevelMeter label="audible" sample={live.status?.levels.audible ?? null} />
+              </div>
+            )}
+          </div>
+
+          {spectrogramControls.visibleSpecs.length === 0 && (
+            <div className="spectrogram placeholder" style={{ height: spectrogramControls.heroHeight }}>
+              waiting for the first audio columns…
+            </div>
+          )}
+          <div className={spectrogramControls.orientation === 'waterfall' ? 'spectrogram-row' : undefined}>
+            {spectrogramControls.visibleSpecs.map((spec) => (
+              <Spectrogram
+                key={`${spec.channel}-${spec.bins}-${spec.sample_rate}`}
+                spec={spec}
+                register={live.register}
+                detections={live.detections}
+                palette={spectrogramControls.palette}
+                windowSeconds={spectrogramControls.windowSeconds}
+                blackPoint={spectrogramControls.blackPoint}
+                whitePoint={spectrogramControls.whitePoint}
+                showDetections={spectrogramControls.showDetections}
+                orientation={spectrogramControls.orientation}
+                height={spectrogramControls.heroHeight}
+              />
             ))}
           </div>
-
-          <label>
-            history
-            <select
-              value={windowSeconds}
-              onChange={(event) => setWindowSeconds(Number(event.target.value))}
-            >
-              {[10, 20, 30, 60, 120, 300].map((value) => (
-                <option key={value} value={value}>
-                  {value < 60 ? `${value}s` : `${value / 60}m`}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label title="Scroll puts time across the page with now at the right, which reads rhythm well. Waterfall puts frequency across and time down the page with now at the top, which reads the shape of the band well.">
-            view
-            <select
-              value={orientation}
-              onChange={(event) => setOrientation(event.target.value as Orientation)}
-            >
-              <option value="scroll">scroll</option>
-              <option value="waterfall">waterfall</option>
-            </select>
-          </label>
-
-          <label>
-            palette
-            <select value={palette} onChange={(event) => setPalette(event.target.value as Palette)}>
-              <option value="observatory">observatory</option>
-              <option value="merlin">Merlin grey</option>
-              <option value="ice">ice</option>
-            </select>
-          </label>
-
-          <label title="Level mapped to the darkest colour. Raise it to push the noise floor to black.">
-            floor
-            <input
-              type="range"
-              min={0}
-              max={0.9}
-              step={0.01}
-              value={blackPoint}
-              onChange={(event) => setBlackPoint(Number(event.target.value))}
-            />
-            <span className="mono">{blackPoint.toFixed(2)}</span>
-          </label>
-
-          <label title="Level mapped to the brightest colour. Lower it to bring out quiet detail.">
-            ceiling
-            <input
-              type="range"
-              min={0.1}
-              max={1}
-              step={0.01}
-              value={whitePoint}
-              onChange={(event) => setWhitePoint(Number(event.target.value))}
-            />
-            <span className="mono">{whitePoint.toFixed(2)}</span>
-          </label>
-
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={showDetections}
-              onChange={(event) => setShowDetections(event.target.checked)}
-            />
-            overlay detections
-          </label>
-
-          <span className="grow" />
-          <div className="meters">
-            <LevelMeter label="native" sample={status?.levels.native ?? null} />
-            <LevelMeter label="audible" sample={status?.levels.audible ?? null} />
-          </div>
         </div>
-
-        {visibleSpecs.length === 0 && (
-          <div className="spectrogram placeholder" style={{ height: heroHeight }}>
-            waiting for the first audio columns…
-          </div>
-        )}
-        <div className={orientation === 'waterfall' ? 'spectrogram-row' : undefined}>
-        {visibleSpecs.map((spec) => (
-          <Spectrogram
-            key={`${spec.channel}-${spec.bins}-${spec.sample_rate}`}
-            spec={spec}
-            register={register}
-            detections={detections}
-            palette={palette}
-            windowSeconds={windowSeconds}
-            blackPoint={blackPoint}
-            whitePoint={whitePoint}
-            showDetections={showDetections}
-            orientation={orientation}
-            height={heroHeight}
-          />
-        ))}
-        </div>
-      </div>
       )}
 
-      <main className="columns">
+      <main className={`columns ${diagnosing ? '' : 'columns-operate'}`}>
         <div className="column left">
           <Suggestions
-            detections={mode === 'history' ? historyDetections : detections}
+            detections={history.mode === 'history' ? history.historyDetections : live.detections}
             caption={
-              mode === 'history'
-                ? historyLoading
+              history.mode === 'history'
+                ? history.historyLoading
                   ? 'loading…'
-                  : `${historyDetections.length}${historyTruncated ? '+' : ''} in ${
-                      focus ? 'focused slice' : historyRange?.label ?? 'window'
+                  : `${history.historyDetections.length}${history.historyTruncated ? '+' : ''} in ${
+                      history.focus ? 'focused slice' : history.historyRange?.label ?? 'window'
                     }`
                 : null
             }
@@ -430,15 +258,21 @@ export default function App() {
             onSelect={setSelected}
             selectedId={selected?.id ?? null}
           />
+          {!diagnosing && <RetentionPanel />}
         </div>
-        <div className="column middle">
-          {status && <CapturePanel status={status} />}
-          {status && <DetectorPanel detectors={status.detectors} />}
-          {status && <StoragePanel status={status} />}
-        </div>
-        <div className="column right">
-          <EventLog events={events} localTimeZone={timeZone} />
-        </div>
+        {diagnosing && (
+          <>
+            <div className="column middle">
+              {live.status && <CapturePanel status={live.status} />}
+              {live.status && <DetectorPanel detectors={live.status.detectors} />}
+              {live.status && <StoragePanel status={live.status} />}
+              <RetentionPanel />
+            </div>
+            <div className="column right">
+              <EventLog events={live.events} localTimeZone={timeZone} />
+            </div>
+          </>
+        )}
       </main>
 
       <DetectionDrawer
@@ -449,8 +283,8 @@ export default function App() {
 
       <footer className="footer dim">
         <span>
-          Open Observatory {status?.station.software_version ?? ''} — debug surface for
-          Milestones 0–3
+          Open Observatory {live.status?.station.software_version ?? ''} — operator and
+          diagnostic surface (ADR-016/024)
         </span>
         <span>
           Levels are dBFS relative to digital full scale, not calibrated SPL. Scores are

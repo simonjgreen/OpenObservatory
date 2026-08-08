@@ -55,6 +55,7 @@ import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -72,6 +73,14 @@ from .metrics import PrometheusExporter
 log = structlog.get_logger(__name__)
 
 API_PREFIX = "/api/v1"
+
+
+class ReviewIn(BaseModel):
+    """Body for `POST /api/v1/detections/{id}/review` — the minimal review
+    workflow (confirm/reject a detection, optionally with a note)."""
+
+    status: str = Field(pattern="^(confirmed|rejected)$")
+    note: str = Field(default="", max_length=2000)
 
 
 class LiveClient:
@@ -612,6 +621,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             )
         return _detection_payload(detection, include_native=True, source_kind=source_kind)
+
+    @app.post(f"{API_PREFIX}/detections/{{detection_id}}/review")
+    def post_detection_review(
+        detection_id: str,
+        body: ReviewIn,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Record a human review of one detection. Append-only, matching
+        `orm.Review`'s own docstring ("current status is derived from the
+        latest valid review") — this always inserts a new row rather than
+        mutating one, so the review history for a detection is never lost,
+        only superseded. The minimal Milestone 4 review workflow: confirm or
+        reject, plus an optional free-text note. Correcting a taxon
+        (`corrected_taxon_id`) is left for a future pass; this endpoint
+        always writes it as `None`.
+        """
+        detection = session.get(orm.Detection, _uuid(detection_id))
+        if detection is None:
+            raise HTTPException(status_code=404, detail="detection not found")
+        previous = session.execute(
+            select(orm.Review)
+            .where(orm.Review.detection_id == detection.id)
+            .order_by(orm.Review.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        review = orm.Review(
+            detection_id=detection.id,
+            actor="local",
+            status=body.status,
+            note=body.note or "",
+            supersedes_review_id=previous.id if previous else None,
+        )
+        session.add(review)
+        session.commit()
+        return {
+            "id": str(review.id),
+            "detection_id": detection_id,
+            "status": review.status,
+            "note": review.note,
+            "created_at": _iso(review.created_at),
+        }
+
+    @app.get(f"{API_PREFIX}/detections/{{detection_id}}/review")
+    def get_detection_review(
+        detection_id: str,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """The latest review for a detection, or `null` if none exists yet."""
+        latest = session.execute(
+            select(orm.Review)
+            .where(orm.Review.detection_id == _uuid(detection_id))
+            .order_by(orm.Review.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest is None:
+            return {"review": None}
+        return {
+            "review": {
+                "id": str(latest.id),
+                "status": latest.status,
+                "note": latest.note,
+                "created_at": _iso(latest.created_at),
+            }
+        }
 
     @app.get(f"{API_PREFIX}/taxa/activity")
     def taxa_activity(

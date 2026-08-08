@@ -15,17 +15,22 @@ import { useLiveAudio } from './useLiveAudio'
 import * as audioModule from '../audio'
 
 describe('useLiveAudio', () => {
-  let startSpy: ReturnType<typeof vi.spyOn>
-  let stopSpy: ReturnType<typeof vi.spyOn>
-  let setTuneHzSpy: ReturnType<typeof vi.spyOn>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let startSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stopSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let setTuneHzSpy: any
 
   beforeEach(() => {
     startSpy = vi
       .spyOn(audioModule.LiveAudioPlayer.prototype, 'start')
-      .mockImplementation(async function (this: audioModule.LiveAudioPlayer) {
+      .mockImplementation(async function (
+        this: audioModule.LiveAudioPlayer,
+      ): Promise<void> {
         // Simulate a playing player without a real <audio> element.
         Object.defineProperty(this, 'playing', { value: true, configurable: true })
-      })
+      } as audioModule.LiveAudioPlayer['start'])
     stopSpy = vi
       .spyOn(audioModule.LiveAudioPlayer.prototype, 'stop')
       .mockImplementation(async () => {})
