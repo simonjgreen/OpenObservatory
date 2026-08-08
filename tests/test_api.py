@@ -666,3 +666,84 @@ def test_synthetic_and_replay_agree_on_the_block_contract() -> None:
         await source.close()
 
     asyncio.run(run())
+
+
+class TestRetentionStatus:
+    """`GET /api/v1/retention/status` — the operator-facing storage panel.
+
+    The UI for this (ADR-029) was written against an assumed contract while the
+    retention backend (ADR-026) was built separately, and the two did not meet:
+    the UI polled an endpoint that did not exist, so the panel would have shown
+    "not available yet" forever. These tests pin the shape so that cannot
+    silently regress again.
+    """
+
+    def test_reports_a_tier_for_each_stage_of_the_ageing_policy(self, client) -> None:
+        payload = client.get("/api/v1/retention/status").json()
+
+        assert [tier["name"] for tier in payload["tiers"]] == [
+            "native + audible",
+            "audible only",
+            "first/best per species",
+        ]
+        # Ascending, and matching the configured policy rather than hardcoded
+        # numbers -- the boundaries are settings, and a test that restated them
+        # as literals would pass while the operator's configuration was ignored.
+        settings = client.app.state.settings
+        assert [tier["age_days_max"] for tier in payload["tiers"]] == [
+            settings.retention_native_days,
+            settings.retention_audible_only_days,
+            settings.retention_exemplar_only_days,
+        ]
+        assert payload["disk_reclaim_threshold"] == settings.retention_watermark_ratio
+
+    def test_every_tier_reports_counts_and_bytes_that_are_never_negative(self, client) -> None:
+        payload = client.get("/api/v1/retention/status").json()
+
+        for tier in payload["tiers"]:
+            assert tier["clips"] >= 0
+            assert tier["bytes"] >= 0
+        assert payload["eligible_for_deletion"]["clips"] >= 0
+        assert payload["eligible_for_deletion"]["bytes"] >= 0
+
+    def test_freshly_written_clips_land_in_the_youngest_tier_only(self, client) -> None:
+        """Anything this run produced is seconds old, so it must appear in the
+        0-7 day tier and nowhere else. This is what catches an inverted or
+        off-by-one age comparison, which would silently report live evidence as
+        being due for deletion."""
+        payload = client.get("/api/v1/retention/status").json()
+        tiers = {tier["name"]: tier for tier in payload["tiers"]}
+
+        assert tiers["audible only"]["clips"] == 0
+        assert tiers["first/best per species"]["clips"] == 0
+        assert payload["eligible_for_deletion"]["clips"] == 0
+
+    def test_never_counts_bytes_that_have_already_been_reclaimed(self, client, settings) -> None:
+        """A reclaimed asset keeps its detection row but its bytes are gone from
+        disk. Counting it would overstate storage in use and make the panel
+        disagree with df."""
+        import uuid as _uuid
+        from datetime import UTC, datetime
+
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        before = client.get("/api/v1/retention/status").json()["tiers"][0]
+
+        with session_scope() as session:
+            session.add(
+                orm.MediaAsset(
+                    id=_uuid.uuid4(),
+                    kind="clip",
+                    storage_uri="/nonexistent/reclaimed.wav",
+                    mime_type="audio/wav",
+                    byte_length=123_456_789,
+                    sha256="0" * 64,
+                    created_at=datetime.now(UTC),
+                    reclaimed_at=datetime.now(UTC),
+                )
+            )
+
+        after = client.get("/api/v1/retention/status").json()["tiers"][0]
+        assert after["clips"] == before["clips"]
+        assert after["bytes"] == before["bytes"]

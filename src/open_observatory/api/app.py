@@ -301,6 +301,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = _health_payload()
         return JSONResponse(payload, status_code=200 if payload["status"] != "critical" else 503)
 
+    @app.get(f"{API_PREFIX}/retention/status")
+    def get_retention_status(session: Session = Depends(get_session)) -> dict[str, Any]:
+        """What the tiered retention policy (ADR-026) is holding, per tier.
+
+        Counted in SQL from `media_asset`, **not** by walking the clip tree.
+        A census of the ~17k assets on the SSD would be sustained disk I/O on
+        every poll of this panel, and sustained disk I/O contending with the
+        ALSA read is the documented cause of two separate capture-overrun
+        incidents in this project. `created_at` is indexed and `byte_length`
+        is already stored, so the aggregate below costs nothing capture cares
+        about.
+
+        Rows with `reclaimed_at` set are excluded: the clip is gone, the
+        detection row deliberately survives it, and counting it here would
+        report bytes that are no longer on disk.
+        """
+        sweeper = station.retention
+        now = datetime.now(UTC)
+
+        def bucket(older_than_days: float | None, younger_than_days: float) -> dict[str, int]:
+            stmt = select(
+                func.count(orm.MediaAsset.id), func.coalesce(func.sum(orm.MediaAsset.byte_length), 0)
+            ).where(
+                orm.MediaAsset.reclaimed_at.is_(None),
+                orm.MediaAsset.created_at > now - timedelta(days=younger_than_days),
+            )
+            if older_than_days is not None:
+                stmt = stmt.where(orm.MediaAsset.created_at <= now - timedelta(days=older_than_days))
+            clips, byte_total = session.execute(stmt).one()
+            return {"clips": int(clips), "bytes": int(byte_total)}
+
+        native_d = sweeper.native_days
+        audible_d = sweeper.audible_only_days
+        exemplar_d = sweeper.exemplar_only_days
+        overdue = select(
+            func.count(orm.MediaAsset.id), func.coalesce(func.sum(orm.MediaAsset.byte_length), 0)
+        ).where(
+            orm.MediaAsset.reclaimed_at.is_(None),
+            orm.MediaAsset.created_at <= now - timedelta(days=exemplar_d),
+        )
+        overdue_clips, overdue_bytes = session.execute(overdue).one()
+
+        return {
+            "tiers": [
+                {"name": "native + audible", "age_days_max": native_d, **bucket(None, native_d)},
+                {"name": "audible only", "age_days_max": audible_d, **bucket(native_d, audible_d)},
+                {
+                    "name": "first/best per species",
+                    "age_days_max": exemplar_d,
+                    **bucket(audible_d, exemplar_d),
+                },
+            ],
+            # Past the last tier and not yet reclaimed. Non-zero here is normal
+            # between sweeps, not a fault; persistently non-zero means the sweep
+            # is not keeping up, which `/health` reports by name.
+            "eligible_for_deletion": {
+                "clips": int(overdue_clips),
+                "bytes": int(overdue_bytes),
+            },
+            "disk_reclaim_threshold": sweeper.watermark_ratio,
+            "last_run_utc": sweeper.last_sweep_at.isoformat() if sweeper.last_sweep_at else None,
+            # The sweeper deletes for real when enabled; `--dry-run` is a CLI
+            # affordance, never a server mode, so this is always False here.
+            "dry_run": False,
+            "enabled": settings.retention_enabled,
+        }
+
     @app.get(f"{API_PREFIX}/system")
     def get_system() -> dict[str, Any]:
         return {"host": system_report(), "process": exporter.process_stats()}
