@@ -1,4 +1,4 @@
-"""Tests for ``oo history reconcile-streams``, the repair path for ADR-022.
+"""Tests for ``oo history reconcile-streams``, the repair path for ADR-024.
 
 The live database carries at least one `audio_stream` row whose claimed span
 (32 hours) wildly disagrees with what its own `frame_count` says was actually
