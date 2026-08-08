@@ -81,6 +81,21 @@ def create_all(engine: Engine | None = None) -> None:
     appear on a developer's or the station's existing file. SQLite's own
     ``ALTER TABLE ADD COLUMN`` is cheap and safe for a nullable column, so
     :func:`_patch_sqlite_columns` applies it defensively on every startup.
+
+    **Kept deliberately, not removed, now that ``alembic/`` exists (ADR-035).**
+    Every application and CLI entry point still calls this function directly
+    on startup; none of them run a migration. Removing the patcher today
+    would silently strand any SQLite database -- the live station's included
+    -- that reaches a future model change through ``git pull`` + restart
+    rather than through an explicit ``alembic upgrade head`` first. That
+    coupling is real *today* and should be cut by making startup call (or
+    require) Alembic instead of ``create_all()``, not by deleting the one
+    thing currently keeping an un-migrated database working. See
+    ``docs/data/DATA_MODEL.md`` "Adopting migrations on an existing
+    database" for the operator sequence that supersedes this patcher going
+    forward, and add a new column to `models.py` via an Alembic revision
+    from now on -- the patcher is a safety net for columns that already
+    shipped this way, not a sanctioned way to ship a new one.
     """
     engine = engine or get_engine()
     Base.metadata.create_all(engine)
@@ -91,10 +106,13 @@ def create_all(engine: Engine | None = None) -> None:
 def _patch_sqlite_columns(engine: Engine) -> None:
     """Add any model column missing from an existing SQLite table.
 
-    A stop-gap for the developer/on-device SQLite profile, which has no Alembic
-    migrations (ADR-007). Only additive, nullable columns are handled -- exactly
-    the shape a heartbeat or similar diagnostic column takes -- because that is
-    the only kind ``ALTER TABLE ADD COLUMN`` can do without a table rebuild.
+    A stop-gap for the developer/on-device SQLite profile that predates
+    Alembic (ADR-007, ADR-035). Only additive, nullable columns are handled
+    -- exactly the shape a heartbeat or similar diagnostic column takes --
+    because that is the only kind ``ALTER TABLE ADD COLUMN`` can do without a
+    table rebuild. It also cannot add an index: a column it patches in has no
+    index until an explicit Alembic migration adds one (this happened for
+    real -- see revision ``0002_media_asset_reclaimed_at_index``).
     """
     with engine.begin() as connection:
         for table in Base.metadata.sorted_tables:

@@ -182,12 +182,16 @@ is gone and has no replacement yet.
 3. If something is wrong post-deploy, re-run `oo audio probe` and
    `oo system-report` on the target and compare against
    `docs/operations/TARGET_DIAGNOSTICS.md`.
-4. There is no database migration step to run, because there is no migration
-   environment (below) and SQLite schema is created with `create_all()` on
-   startup.
-5. There is no documented rollback for the SQLite schema. Rollback in
+4. **If this deploy changes `src/open_observatory/db/models.py`**, run the
+   database migration first, before restarting the service — see "Database:
+   SQLite by default, Alembic migrations exist" below. `deploy.sh` does not
+   do this automatically yet (tracked as follow-up work in ADR-035); it is a
+   manual step until it is wired into the script.
+5. There is no automated rollback for the SQLite schema. Rollback in
    practice is: check out the previous commit locally, re-run `deploy.sh`,
-   and restart. Back up `data/` first if the previous commit's schema differs.
+   and restart. Back up `data/` first if the previous commit's schema
+   differs — `alembic downgrade` exists for development databases
+   (see below) but is not a substitute for a backup on the live station.
 
 ### Backups
 
@@ -196,26 +200,49 @@ their own for backing up `data/` (SQLite database, clips) and their private
 `config/runtime.env`. This should be treated as a gap, not a documented
 procedure, until something is built and tested.
 
-## Database: SQLite by default, no migrations
+## Database: SQLite by default, Alembic migrations exist
 
 Per ADR-007, the default and only database in the current deployment is
 SQLite at `data/openobservatory.sqlite`, selected via `OO_DATABASE_DSN` (empty
 by default, which resolves to the SQLite path). PostgreSQL 16 remains the
-documented production DSN target, but:
+documented production DSN target. As of ADR-035:
 
-- there is **no Alembic migration environment** anywhere in this repository;
-  `alembic` is a declared dependency with no corresponding `alembic/`
-  directory;
-- `src/open_observatory/db/session.py` builds the schema with SQLAlchemy's
-  `create_all()`, which is adequate for standing up the SQLite debug profile
-  from nothing but is not a migration path and has no notion of reversibility;
-- switching `OO_DATABASE_DSN` to a PostgreSQL URL is the intended one-line
-  configuration change, but ADR-007 is explicit that this cannot be
-  meaningfully exercised as a production path until a real migration
-  environment exists — writing one is a prerequisite of the PostgreSQL
-  profile, not a step inside it.
+- `alembic/` (`env.py`, `versions/`) and `alembic.ini` at the repository root
+  are a real migration environment, wired to `Settings` (the same
+  `OO_DATABASE_DSN` resolution the application uses) and to the SQLAlchemy
+  metadata in `db/models.py`;
+- `src/open_observatory/db/session.py: create_all()` still runs at every
+  application/CLI startup and still builds a correct schema for a database
+  that has never been touched at all — it has **not** been removed, and new
+  columns should go through an Alembic revision from here on rather than
+  relying on it (full reasoning in ADR-035);
+- switching `OO_DATABASE_DSN` to a PostgreSQL URL remains the intended
+  one-line configuration change; the migration environment is dialect-portable
+  by construction (batch mode, no dialect-specific types) but has only been
+  exercised against SQLite so far, not against a real PostgreSQL 16 instance.
 
-Do not tell an operator to run a migration. There isn't one.
+**Before restarting the service after any deploy that changed
+`db/models.py`:**
+
+- **First-ever migration on this database** (it was built by `create_all()`
+  and has never seen Alembic — this is the live station's case today):
+  `alembic stamp 0001_initial`, then `alembic upgrade head`. Never run
+  `alembic upgrade head` from scratch against a database that already has
+  the tables — the initial revision issues `CREATE TABLE` and will collide
+  with what is already there.
+- **A database already on a later Alembic revision:** `alembic upgrade head`
+  directly.
+- Check which case you're in and see the fuller creation/rollback workflow
+  in `docs/data/DATA_MODEL.md` ("Migrations (Alembic, ADR-035)").
+- Back up `data/openobservatory.sqlite` (and any `-wal`/`-shm` files next to
+  it) before running either sequence against the station. No automated
+  backup tool exists yet (below); this is a manual step.
+
+`deploy.sh` does not run migrations automatically. Wiring an
+`alembic upgrade head` step into it (after sync, before the service
+restart) is the natural next step and is unimplemented — do it as a
+follow-up, not silently inside an unrelated change, since it changes what a
+routine deploy does to a live database.
 
 ## Production target (unrealised): Docker Compose, PostgreSQL, Redis
 
