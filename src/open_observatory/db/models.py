@@ -90,6 +90,16 @@ class AudioStream(Base):
     frame_count: Mapped[int] = mapped_column(BigInteger, default=0)
     discontinuity_count: Mapped[int] = mapped_column(Integer, default=0)
     end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The UTC time of the most recently *delivered* audio block, written
+    #: periodically (every housekeeping tick, ~10 s) while the stream is open --
+    #: not just at close. This is what lets a crashed process's stream row be
+    #: closed honestly: without it, `end_utc` is either the wall-clock moment the
+    #: read finally errored (which can be hours after audio actually stopped -- see
+    #: ADR-024) or, for a process that never notices its own death, absent
+    #: entirely. NULL for rows written before this column existed.
+    last_frame_at_utc: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     gaps: Mapped[list[CaptureGap]] = relationship(back_populates="stream")

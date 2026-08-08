@@ -4,6 +4,27 @@ Written 2026-08-08 for the next session. This is an **unresolved** investigation
 a record of a fix. Everything below is measured on the live station unless marked as a
 hypothesis.
 
+> **Addendum, same day, from the coverage/data-integrity side (ADR-024).** The
+> "how much recording was actually lost" question below is now answered for the
+> specific 32-hour row, by reading `capture_gap` rows directly rather than guessing:
+> all 245 gap rows for that stream fall between 03:38:54 and 06:24:45 on 08-07 (the
+> first ~2h46m of the claim), and there are none after that for the remaining ~29
+> hours up to the claimed `end_utc`. Combined with the frame count (2.79 h) and the
+> absence of any detection in that window, this confirms **a stale row, not hidden
+> frame loss on a continuing stream** — but the mechanism is worse than a crash: the
+> stream was never closed by a killed process (there is no other `alsa` row in
+> between), which means the capture read loop itself stopped delivering blocks around
+> 06:25 and then sat there — presumably blocked on `source.read()` against the
+> already-bad file descriptor — for 29 hours without raising, until whatever finally
+> triggered the `AlsaCaptureError` at 11:36:36 on 08-08. **Hypothesis for this
+> session's queue:** the ALSA read call can enter a state where it neither returns
+> data nor raises, and nothing currently times it out. If capture reads gain a
+> watchdog/timeout, `Station` would have retried far sooner than 29 hours later, and
+> would give history a rows in exactly the shape it now expects (`last_frame_at_utc`
+> populated up to the real point of failure). This was found while making
+> `history.coverage()` unable to be fooled by a row like this one, not fixed on the
+> capture side — that's this document's territory, not ADR-024's.
+
 ## Symptom
 
 ALSA overruns and capture gaps during daytime operation, which the known-good figures

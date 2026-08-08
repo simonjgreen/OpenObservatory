@@ -75,6 +75,18 @@ SPECTROGRAM_ULTRASONIC = 1
 
 @dataclass(slots=True)
 class CaptureCounters:
+    """Process-lifetime counters.
+
+    Deliberately **not** reset when a stream reopens -- these answer "how has
+    this process behaved since it started", which is what the CPU-budget and
+    open-failure checks want. Anything that is written into an `audio_stream`
+    row (``frame_count``, ``discontinuity_count``) must come from the
+    *stream*-scoped counters on :class:`Station` instead
+    (``_stream_frames``/``_stream_discontinuities``), or a process that reopens
+    the device mid-life writes a later stream's row with an earlier stream's
+    frames added in -- exactly the kind of arithmetic that makes coverage lie.
+    """
+
     blocks: int = 0
     frames: int = 0
     discontinuities: int = 0
@@ -114,6 +126,19 @@ class Station:
         self.source: Any = None
         self.capture_state: str = "starting"
         self.capture_detail: str = ""
+
+        #: Scoped to the *current* stream, reset in `_on_stream_open`. What gets
+        #: written into `audio_stream.frame_count`/`discontinuity_count` -- see
+        #: `CaptureCounters` for why the process-lifetime counters must not be
+        #: used for that.
+        self._stream_frames: int = 0
+        self._stream_discontinuities: int = 0
+        #: UTC time of the most recently delivered block for the current stream,
+        #: from the block's own frame-derived timestamp -- not `datetime.now()` --
+        #: so it reflects when audio was actually flowing, not when this line
+        #: happened to run. Persisted periodically as `last_frame_at_utc` so a
+        #: crashed process's row can be closed honestly (ADR-024).
+        self._stream_last_frame_utc: datetime | None = None
 
         self.native_ring: RingBuffer | None = None
         self.audible_ring: RingBuffer | None = None
@@ -414,6 +439,9 @@ class Station:
         # an ALSA device takes a couple of hundred milliseconds, and anchoring on
         # open() would put every detection timestamp that far early.
         self.clock = None
+        self._stream_frames = 0
+        self._stream_discontinuities = 0
+        self._stream_last_frame_utc = None
         self.native_ring = RingBuffer(rate, self.settings.native_ring_seconds)
         self.audible_ring = RingBuffer(
             self.settings.audible_sample_rate, self.settings.audible_ring_seconds
@@ -652,8 +680,18 @@ class Station:
         if self.stream is None:
             return
         stream_id = self.stream.stream_id
-        frames = self.counters.frames
-        await asyncio.to_thread(self._close_stream_row, stream_id, reason, frames)
+        # Stream-scoped, not `self.counters.frames`: that counter is process
+        # lifetime and would carry an earlier stream's frames into this row's
+        # count if the process had already reopened the device once before.
+        frames = self._stream_frames
+        await asyncio.to_thread(
+            self._close_stream_row,
+            stream_id,
+            reason,
+            frames,
+            self._stream_discontinuities,
+            self._stream_last_frame_utc,
+        )
         self.bus.emit(
             EventType.CAPTURE_STOPPED,
             {"stream_id": str(stream_id), "reason": reason, "frames": frames},
@@ -701,6 +739,10 @@ class Station:
         self.counters.blocks += 1
         self.counters.frames += block.frame_count
         self.counters.last_block_monotonic_ns = block.monotonic_start_ns
+        self._stream_frames += block.frame_count
+        self._stream_last_frame_utc = datetime.fromtimestamp(
+            block.utc_start_ns / NS_PER_S, tz=UTC
+        )
         discontinuous = block.discontinuity is not None
 
         # 1. Evidence first: the native ring must hold this audio even if every
@@ -805,6 +847,7 @@ class Station:
     def _record_gap(self, block: CaptureBlock) -> None:
         self.counters.discontinuities += 1
         self.counters.estimated_missing_frames += block.missing_frames
+        self._stream_discontinuities += 1
         reason = str(block.discontinuity)
         duration_s = block.missing_frames / block.sample_rate if block.sample_rate else 0.0
         log.warning(
@@ -1168,7 +1211,7 @@ class Station:
             return device_id
 
     def _close_orphaned_streams(self) -> None:
-        """End any stream a previous process left open.
+        """End any stream a previous process left open, honestly.
 
         `_close_stream_row` only runs on a graceful shutdown, so a killed or crashed
         process leaves `end_utc` NULL forever. Anything reading history then treats
@@ -1176,6 +1219,20 @@ class Station:
         coverage of a twelve hour night report as 1300% — a figure that discredits
         every other number beside it. Each is closed at the last moment there is
         evidence it was actually recording.
+
+        Preference order for that moment, best evidence first:
+
+        1. `last_frame_at_utc` — the heartbeat written every housekeeping tick
+           (ADR-024) while the stream was open. Direct evidence of when audio was
+           last actually delivered, not inferred from anything downstream.
+        2. The latest detection or capture-gap timestamp on the stream — the
+           original heuristic, kept as a fallback for rows written before the
+           heartbeat existed.
+        3. `start_utc` — nothing else to go on, so treat it as having captured
+           nothing rather than guessing.
+
+        Whichever was used is recorded in `detail.orphan_recovery` so the repair
+        is auditable rather than a silent rewrite of history.
         """
         with session_scope() as session:
             open_streams = (
@@ -1184,32 +1241,87 @@ class Station:
             for row in open_streams:
                 if row.id == getattr(self.stream, "stream_id", None):
                     continue
-                last_detection = (
-                    session.query(func.max(orm.Detection.event_end_utc))
-                    .filter(orm.Detection.stream_id == row.id)
-                    .scalar()
-                )
-                last_gap = (
-                    session.query(func.max(orm.CaptureGap.start_utc))
-                    .filter(orm.CaptureGap.stream_id == row.id)
-                    .scalar()
-                )
-                candidates = [value for value in (last_detection, last_gap) if value is not None]
-                row.end_utc = max(candidates) if candidates else row.start_utc
+                method = "start_utc_fallback"
+                recovered_end = row.start_utc
+                if row.last_frame_at_utc is not None:
+                    method = "heartbeat"
+                    recovered_end = row.last_frame_at_utc
+                else:
+                    last_detection = (
+                        session.query(func.max(orm.Detection.event_end_utc))
+                        .filter(orm.Detection.stream_id == row.id)
+                        .scalar()
+                    )
+                    last_gap = (
+                        session.query(func.max(orm.CaptureGap.start_utc))
+                        .filter(orm.CaptureGap.stream_id == row.id)
+                        .scalar()
+                    )
+                    candidates = [
+                        value for value in (last_detection, last_gap) if value is not None
+                    ]
+                    if candidates:
+                        method = "detection_or_gap_timestamp"
+                        recovered_end = max(candidates)
+                detail = dict(row.detail or {})
+                detail["orphan_recovery"] = {
+                    "method": method,
+                    "recovered_end_utc": recovered_end.isoformat(),
+                    "frame_count_at_recovery": row.frame_count,
+                }
+                row.detail = detail
+                row.end_utc = recovered_end
                 row.end_reason = "process_exited"
             if open_streams:
                 log.info("station.closed_orphaned_streams", count=len(open_streams))
 
-    def _close_stream_row(self, stream_id: uuid.UUID, reason: str, frames: int) -> None:
+    def _close_stream_row(
+        self,
+        stream_id: uuid.UUID,
+        reason: str,
+        frames: int,
+        discontinuities: int,
+        last_frame_at_utc: datetime | None,
+    ) -> None:
         with session_scope() as session:
             row = session.get(orm.AudioStream, stream_id)
             if row is None:
                 return
+            # `end_utc` is honestly "when this row stopped being believed live" --
+            # which can be much later than when audio actually stopped, if the
+            # read loop wedged instead of erroring (see ADR-024). That gap is not
+            # hidden: `last_frame_at_utc` records the truth separately, and
+            # `history.coverage()` reconciles the two rather than trusting
+            # `end_utc` alone.
             row.end_utc = datetime.now(UTC)
             row.end_monotonic_ns = time.monotonic_ns()
             row.frame_count = frames
-            row.discontinuity_count = self.counters.discontinuities
+            row.discontinuity_count = discontinuities
             row.end_reason = reason[:64]
+            row.last_frame_at_utc = last_frame_at_utc
+
+    def _heartbeat_stream_row(
+        self,
+        stream_id: uuid.UUID,
+        frames: int,
+        discontinuities: int,
+        last_frame_at_utc: datetime,
+    ) -> None:
+        """Write the running frame count and heartbeat while the stream is still open.
+
+        Cheap and idempotent: if this never runs again (process killed a moment
+        later), the row still carries the truth as of the last tick rather than
+        the zeros a freshly-created row starts with -- which is what let orphaned
+        rows be closed with `frame_count=0` and an invented end time before this
+        existed.
+        """
+        with session_scope() as session:
+            row = session.get(orm.AudioStream, stream_id)
+            if row is None or row.end_utc is not None:
+                return
+            row.frame_count = frames
+            row.discontinuity_count = discontinuities
+            row.last_frame_at_utc = last_frame_at_utc
 
     def _insert_gap_row(self, block: CaptureBlock) -> None:
         with session_scope() as session:
@@ -1248,6 +1360,23 @@ class Station:
             self.bus.emit(
                 EventType.STATION_STATUS, self.status_snapshot(), station_id=self.station_id
             )
+            # A heartbeat every tick, so a crash between now and the next graceful
+            # close still leaves the row with a recent, honest `last_frame_at_utc`
+            # and frame count instead of nothing at all (ADR-024). One indexed
+            # single-row UPDATE every ~10 s is trivial next to a clip write, so
+            # this stays on the default executor like the other small writes
+            # below, not the dedicated evidence one.
+            if self.stream is not None and self._stream_last_frame_utc is not None:
+                try:
+                    await asyncio.to_thread(
+                        self._heartbeat_stream_row,
+                        self.stream.stream_id,
+                        self._stream_frames,
+                        self._stream_discontinuities,
+                        self._stream_last_frame_utc,
+                    )
+                except Exception:
+                    log.exception("housekeeping.heartbeat_failed")
             # Retention every 5 minutes, in a thread: it walks the clip tree, and a
             # slow filesystem must never stall capture. Without this the size budget
             # and expiry policy would be configuration that does nothing.
@@ -1283,7 +1412,13 @@ class Station:
             elapsed_ns = time.monotonic_ns() - self.clock.monotonic_ns_at_frame_zero
             expected_frames = int(elapsed_ns * stream.fmt.sample_rate / NS_PER_S)
             if expected_frames > 0:
-                continuity = round(min(1.0, self.counters.frames / expected_frames), 6)
+                # `_stream_frames`, not `self.counters.frames`: the elapsed time above
+                # is measured from *this* stream's clock anchor, which resets on every
+                # reopen, but `counters.frames` never does. After any reopen within a
+                # process's life that mismatch was silently absorbed by `min(1.0, ...)`
+                # rather than surfaced -- the same shape of error this session's
+                # `audio_stream.frame_count` bug turned out to be (ADR-024).
+                continuity = round(min(1.0, self._stream_frames / expected_frames), 6)
 
         hot_path_ratio = None
         if self.counters.frames and stream is not None:

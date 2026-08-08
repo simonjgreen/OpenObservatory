@@ -70,12 +70,47 @@ def get_engine() -> Engine:
 
 
 def create_all(engine: Engine | None = None) -> None:
-    """Create the schema directly.
+    """Create the schema directly, then patch in any columns added since.
 
     Used by tests and by first-run bootstrap on the SQLite developer profile.
     The PostgreSQL profile is expected to go through Alembic.
+
+    ``create_all`` only creates *missing tables* -- it never alters an existing
+    one, so a column added to a model after a SQLite database already exists
+    (as ``audio_stream.last_frame_at_utc`` was, ADR-024) would silently never
+    appear on a developer's or the station's existing file. SQLite's own
+    ``ALTER TABLE ADD COLUMN`` is cheap and safe for a nullable column, so
+    :func:`_patch_sqlite_columns` applies it defensively on every startup.
     """
-    Base.metadata.create_all(engine or get_engine())
+    engine = engine or get_engine()
+    Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        _patch_sqlite_columns(engine)
+
+
+def _patch_sqlite_columns(engine: Engine) -> None:
+    """Add any model column missing from an existing SQLite table.
+
+    A stop-gap for the developer/on-device SQLite profile, which has no Alembic
+    migrations (ADR-007). Only additive, nullable columns are handled -- exactly
+    the shape a heartbeat or similar diagnostic column takes -- because that is
+    the only kind ``ALTER TABLE ADD COLUMN`` can do without a table rebuild.
+    """
+    with engine.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            existing = {
+                row[1] for row in connection.exec_driver_sql(f'PRAGMA table_info("{table.name}")')
+            }
+            if not existing:
+                continue  # table itself doesn't exist yet; create_all() would have made it
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                ddl_type = column.type.compile(dialect=engine.dialect)
+                connection.exec_driver_sql(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}'
+                )
+                log.info("db.column_patched", table=table.name, column=column.name)
 
 
 @contextmanager
