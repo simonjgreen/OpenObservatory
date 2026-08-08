@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -73,6 +74,14 @@ log = structlog.get_logger(__name__)
 SPECTROGRAM_AUDIBLE = 0
 SPECTROGRAM_ULTRASONIC = 1
 
+#: A housekeeping tick that blocks the event loop for longer than this is
+#: reported at warning level. One capture block is 100 ms, so anything at or
+#: above this delays the next read by an appreciable fraction of a block.
+_HOUSEKEEPING_SLOW_S = 0.05
+
+#: Event-loop lag above this is logged individually. Half a capture block.
+_LOOP_LAG_SLOW_S = 0.05
+
 
 @dataclass(slots=True)
 class CaptureCounters:
@@ -104,6 +113,16 @@ class CaptureCounters:
     last_block_monotonic_ns: int = 0
     #: Wall time spent inside the per-block hot path, for the CPU budget check.
     hot_path_seconds: float = 0.0
+    #: Last housekeeping tick's synchronous, event-loop-blocking cost, and the
+    #: overshoot of its own 10 s sleep. Capture runs on a private executor but
+    #: the loop still has to issue and await each read, so anything that blocks
+    #: the loop delays capture by the same amount.
+    housekeeping_blocking_s: float = 0.0
+    loop_lag_s: float = 0.0
+    #: Worst event-loop lag seen by the watchdog, and how many times it went
+    #: past the reporting threshold.
+    loop_lag_max_s: float = 0.0
+    loop_lag_events: int = 0
 
 
 @dataclass
@@ -126,6 +145,8 @@ class Station:
         self.settings = settings
         self.bus = bus or EventBus(history=800)
         self.counters = CaptureCounters()
+        #: Per-contributor cost of the last `status_snapshot()`, in seconds.
+        self._snapshot_phase_s: dict[str, float] = {}
         self.started_monotonic_ns = time.monotonic_ns()
 
         self.station_id: uuid.UUID | None = None
@@ -211,6 +232,7 @@ class Station:
         self._capture_task: asyncio.Task[None] | None = None
         self._persist_task: asyncio.Task[None] | None = None
         self._housekeeping_task: asyncio.Task[None] | None = None
+        self._loop_lag_task: asyncio.Task[None] | None = None
         self._persist_queue: asyncio.Queue[DetectionRecord | None] = asyncio.Queue(maxsize=512)
         self._running = False
         self.persist_dropped = 0
@@ -259,11 +281,12 @@ class Station:
         self._evidence_task = asyncio.create_task(self._evidence_loop(), name="evidence")
         self._housekeeping_task = asyncio.create_task(self._housekeeping_loop(), name="housekeeping")
         self._capture_task = asyncio.create_task(self._capture_supervisor(), name="capture")
+        self._loop_lag_task = asyncio.create_task(self._loop_lag_watch(), name="loop-lag")
         log.info("station.started", station_id=str(self.station_id))
 
     async def stop(self) -> None:
         self._running = False
-        for task in (self._capture_task, self._housekeeping_task):
+        for task in (self._capture_task, self._housekeeping_task, self._loop_lag_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1399,14 +1422,70 @@ class Station:
 
     # -- housekeeping ---------------------------------------------------
 
+    async def _loop_lag_watch(self) -> None:
+        """Report how late the event loop is running.
+
+        The capture read has its own executor (ADR-030), but the loop still has
+        to *issue* each read and consume its result, so a blocked loop delays
+        capture by exactly as much as it is blocked. Sleeping a short, fixed
+        interval and measuring the overshoot is the whole measurement: a task
+        asked for 100 ms that wakes 300 ms later was starved for 200 ms, and it
+        does not matter whether the culprit was a synchronous callback, the GIL
+        or a thread that never yielded.
+        """
+        interval = 0.1
+        while self._running:
+            before = time.monotonic()
+            await asyncio.sleep(interval)
+            lag = time.monotonic() - before - interval
+            if lag > self.counters.loop_lag_max_s:
+                self.counters.loop_lag_max_s = round(lag, 4)
+            if lag > _LOOP_LAG_SLOW_S:
+                self.counters.loop_lag_events += 1
+                log.warning("loop.lag", lag_s=round(lag, 4))
+
     async def _housekeeping_loop(self) -> None:
         ticks = 0
         while self._running:
+            slept_at = time.monotonic()
             await asyncio.sleep(10.0)
+            # Overshoot of a plain sleep is the cheapest event-loop-lag measure
+            # there is: a loop that was asked for 10 s and woke at 10.6 s was
+            # blocked for 0.6 s by somebody, and the capture read -- which the
+            # loop must issue and consume even though it runs on its own
+            # executor (ADR-030) -- was late by the same amount.
+            loop_lag_s = time.monotonic() - slept_at - 10.0
             ticks += 1
+            t0 = time.monotonic()
             self.leases.sweep()
-            self.bus.emit(
-                EventType.STATION_STATUS, self.status_snapshot(), station_id=self.station_id
+            t_leases = time.monotonic()
+            snapshot = self.status_snapshot()
+            t_snapshot = time.monotonic()
+            self.bus.emit(EventType.STATION_STATUS, snapshot, station_id=self.station_id)
+            t_emit = time.monotonic()
+            self.counters.housekeeping_blocking_s = round(t_emit - t0, 4)
+            self.counters.loop_lag_s = round(loop_lag_s, 4)
+            log_tick = (
+                log.warning
+                if (t_emit - t0) > _HOUSEKEEPING_SLOW_S or loop_lag_s > _HOUSEKEEPING_SLOW_S
+                else log.debug
+            )
+            log_tick(
+                "housekeeping.tick",
+                loop_lag_s=round(loop_lag_s, 4),
+                leases_s=round(t_leases - t0, 4),
+                snapshot_s=round(t_snapshot - t_leases, 4),
+                emit_s=round(t_emit - t_snapshot, 4),
+                blocking_total_s=round(t_emit - t0, 4),
+                # Only the contributors worth reading: a dozen sub-millisecond
+                # entries would bury the one that matters.
+                snapshot_phases={
+                    name: cost
+                    for name, cost in sorted(
+                        self._snapshot_phase_s.items(), key=lambda kv: -kv[1]
+                    )[:4]
+                    if cost >= 0.001
+                },
             )
             # A heartbeat every tick, so a crash between now and the next graceful
             # close still leaves the row with a recent, honest `last_frame_at_utc`
@@ -1435,12 +1514,20 @@ class Station:
                     )
                 except Exception:
                     log.exception("housekeeping.heartbeat_failed")
-            # Retention every 10 seconds, in the evidence executor's dedicated
-            # thread: never the default pool, which capture's ALSA read also
-            # uses (ADR-021, ADR-026). Each call is bounded (batch size and a
-            # wall-clock budget), so a large backlog drains gradually across
-            # many ticks instead of stalling capture once.
-            if self.settings.retention_enabled:
+            # Retention runs in the evidence executor's dedicated thread, never
+            # the default pool (ADR-021, ADR-026), and every call is bounded by
+            # batch size and a wall-clock budget so a backlog drains gradually.
+            #
+            # It is also *paced*, at `retention_interval_s` (default 300 s), not
+            # run on every tick. A dedicated thread keeps the sweep off the
+            # loop's back but not out of its way: the sweep is ORM work in
+            # Python, and 0.30 s of it starved the event loop for 55-150 ms at a
+            # time. The loop still issues and awaits every capture read, so that
+            # lag lands directly on capture. Measured on the station 2026-08-08:
+            # 1.6 `capture.gap` records per minute with a 10 s cadence, zero
+            # over the following seven minutes with the sweep disabled. ADR-033.
+            interval_ticks = max(1, round(self.settings.retention_interval_s / 10.0))
+            if self.settings.retention_enabled and ticks % interval_ticks == 0:
                 try:
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(
@@ -1491,6 +1578,65 @@ class Station:
             if audio_seconds > 0:
                 hot_path_ratio = round(self.counters.hot_path_seconds / audio_seconds, 4)
 
+        # This whole method runs synchronously on the event loop, once per
+        # housekeeping tick and again for every live viewer and API caller, so
+        # each contributor's cost is worth knowing rather than guessing at. The
+        # timing itself is a handful of `monotonic()` calls.
+        phases: dict[str, float] = {}
+        _t = time.monotonic
+
+        def _timed(name: str, fn: Callable[[], Any]) -> Any:
+            start = _t()
+            value = fn()
+            phases[name] = round(_t() - start, 4)
+            return value
+
+        version = _timed("version", _version)
+        stream_detail = _timed("stream_detail", lambda: _jsonable(stream.detail) if stream else {})
+        resampler = _timed("resampler", lambda: self.resampler.describe() if self.resampler else None)
+        rings = _timed(
+            "rings",
+            lambda: {
+                "native": self.native_ring.snapshot() if self.native_ring else None,
+                "audible": self.audible_ring.snapshot() if self.audible_ring else None,
+            },
+        )
+        spectrograms = _timed(
+            "spectrograms",
+            lambda: [
+                encoder.describe(include_frequencies=False)
+                for encoder in self.spectrograms.values()
+            ],
+        )
+        segmenters = _timed("segmenters", lambda: self.router.snapshot() if self.router else [])
+        leases = _timed("leases", self.leases.snapshot)
+        detectors = _timed("detectors", lambda: [worker.snapshot() for worker in self.workers])
+        clips = _timed("clips", self.clips.snapshot)
+        storage = _timed("storage", self.clips.disk_usage)
+        # `RetentionSweeper` does not know whether the station calls it, so its
+        # own snapshot always claimed `enabled: true`. The station does know.
+        retention = _timed(
+            "retention",
+            lambda: {
+                **self.retention.snapshot(),
+                "enabled": self.settings.retention_enabled,
+                "interval_s": self.settings.retention_interval_s,
+            },
+        )
+        live_audio = _timed("live_audio", self.live_audio.snapshot)
+        live_audio_ultrasonic = _timed(
+            "live_audio_ultrasonic",
+            lambda: {
+                **self.live_audio_ultrasonic.snapshot(),
+                "heterodyne": self.heterodyne.describe() if self.heterodyne else None,
+                "unavailable_reason": self.heterodyne_unavailable_reason
+                if self.heterodyne is None
+                else None,
+            },
+        )
+        bus_stats = _timed("bus", self.bus.stats)
+        self._snapshot_phase_s = phases
+
         return {
             "station": {
                 "id": str(self.station_id) if self.station_id else None,
@@ -1498,7 +1644,7 @@ class Station:
                 "timezone": self.settings.timezone,
                 "latitude": self.settings.latitude,
                 "longitude": self.settings.longitude,
-                "software_version": _version(),
+                "software_version": version,
                 "uptime_s": round(uptime_s, 1),
             },
             "capture": {
@@ -1550,13 +1696,17 @@ class Station:
                 # These were both called "detail" and the provenance dict silently
                 # overwrote the message, so /api/v1/health interpolated a whole dict
                 # into its problem strings.
-                "stream_detail": _jsonable(stream.detail) if stream else {},
+                "stream_detail": stream_detail,
+                # What the last housekeeping tick cost the event loop, and how
+                # late that loop's own sleep woke. Capture has a private
+                # executor, but the loop still issues and awaits every read.
+                "housekeeping_blocking_s": self.counters.housekeeping_blocking_s,
+                "loop_lag_s": self.counters.loop_lag_s,
+                "loop_lag_max_s": self.counters.loop_lag_max_s,
+                "loop_lag_events": self.counters.loop_lag_events,
             },
-            "resampler": self.resampler.describe() if self.resampler else None,
-            "rings": {
-                "native": self.native_ring.snapshot() if self.native_ring else None,
-                "audible": self.audible_ring.snapshot() if self.audible_ring else None,
-            },
+            "resampler": resampler,
+            "rings": rings,
             "levels": {
                 "native": self.native_levels.history[-1].to_dict()
                 if self.native_levels and self.native_levels.history
@@ -1567,28 +1717,22 @@ class Station:
                 "note": "dBFS relative to digital full scale; not calibrated SPL",
             },
             # Frequency tables are sent once, in the live channel's hello frame.
-            "spectrograms": [
-                encoder.describe(include_frequencies=False)
-                for encoder in self.spectrograms.values()
-            ],
-            "segmenters": self.router.snapshot() if self.router else [],
-            "leases": self.leases.snapshot(),
-            "detectors": [worker.snapshot() for worker in self.workers],
+            "spectrograms": spectrograms,
+            "segmenters": segmenters,
+            "leases": leases,
+            "detectors": detectors,
             "normaliser": {
                 "normalised": self.normaliser.stats.normalised,
                 "duplicates_suppressed": self.normaliser.stats.duplicates_suppressed,
                 "claim_violations": self.normaliser.stats.claim_violations,
             },
-            "clips": self.clips.snapshot(),
-            "storage": self.clips.disk_usage(),
-            "retention": self.retention.snapshot(),
-            "live_audio": self.live_audio.snapshot(),
-            "live_audio_ultrasonic": {
-                **self.live_audio_ultrasonic.snapshot(),
-                "heterodyne": self.heterodyne.describe() if self.heterodyne else None,
-                "unavailable_reason": self.heterodyne_unavailable_reason if self.heterodyne is None else None,
-            },
-            "bus": self.bus.stats(),
+            "clips": clips,
+            "storage": storage,
+            "retention": retention,
+            "live_audio": live_audio,
+            "live_audio_ultrasonic": live_audio_ultrasonic,
+            "bus": bus_stats,
+            "snapshot_phase_s": phases,
             "persistence": {
                 "written": self.persist_written,
                 "queued": self._persist_queue.qsize(),

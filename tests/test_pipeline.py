@@ -770,3 +770,94 @@ class TestStreamRowRecordsProgressBeforeItEnds:
 
         assert written == [(stream_id, 384_000, 1, moment)]
 
+
+
+class TestHousekeepingDoesNotStarveCapture:
+    """The housekeeping tick shares a process with the capture read.
+
+    Capture reads on its own executor (ADR-030), but the event loop still has to
+    issue each read and consume its result, so anything that keeps the loop or
+    the GIL busy for a sizeable fraction of a 100 ms block lands on capture.
+    Measured on the live station 2026-08-08: a retention sweep on every 10 s tick
+    produced 1.6 `capture.gap` records per minute; the same station with the
+    sweep disabled produced none in seven minutes (ADR-033).
+    """
+
+    async def test_retention_is_paced_not_run_every_tick(self, monkeypatch) -> None:
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings(retention_interval_s=300.0))
+        sweeps = 0
+
+        def _sweep():
+            nonlocal sweeps
+            sweeps += 1
+            return SimpleNamespace(total_deleted=0, complete=True, to_dict=lambda: {})
+
+        monkeypatch.setattr(station.retention, "sweep", _sweep)
+        monkeypatch.setattr(station.leases, "sweep", lambda: None)
+        monkeypatch.setattr(station, "status_snapshot", lambda: {})
+
+        sleeps = 0
+
+        async def _fake_sleep(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 60:  # ten minutes of ticks
+                station._running = False
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+        station._running = True
+        await station._housekeeping_loop()
+
+        # Sixty ticks is ten minutes, so exactly two sweeps at the 300 s default.
+        assert sweeps == 2
+
+    async def test_zero_interval_still_sweeps_every_tick(self, monkeypatch) -> None:
+        """A cadence below one tick must not divide by zero or stop sweeping."""
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings(retention_interval_s=0.0))
+        sweeps = 0
+
+        def _sweep():
+            nonlocal sweeps
+            sweeps += 1
+            return SimpleNamespace(total_deleted=0, complete=True, to_dict=lambda: {})
+
+        monkeypatch.setattr(station.retention, "sweep", _sweep)
+        monkeypatch.setattr(station.leases, "sweep", lambda: None)
+        monkeypatch.setattr(station, "status_snapshot", lambda: {})
+
+        sleeps = 0
+
+        async def _fake_sleep(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 4:
+                station._running = False
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+        station._running = True
+        await station._housekeeping_loop()
+
+        assert sweeps == 5
+
+    async def test_status_snapshot_reports_its_own_cost(self) -> None:
+        """The snapshot runs on the event loop; its cost must be observable.
+
+        It was the first suspect for the 2026-08-08 regression and was cleared by
+        this number (1.2 ms on the live Pi), not by argument.
+        """
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings())
+        snapshot = station.status_snapshot()
+
+        assert "snapshot_phase_s" in snapshot
+        assert "storage" in snapshot["snapshot_phase_s"]
+        assert all(cost >= 0.0 for cost in snapshot["snapshot_phase_s"].values())
+        assert "loop_lag_max_s" in snapshot["capture"]
