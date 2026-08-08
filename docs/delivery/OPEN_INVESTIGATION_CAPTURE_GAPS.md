@@ -1,150 +1,234 @@
-# Open investigation: capture gaps and overruns, and the storage move
+# Capture gaps and overruns: what was measured, what was fixed, what is still open
 
-Written 2026-08-08 for the next session. This is an **unresolved** investigation, not
-a record of a fix. Everything below is measured on the live station unless marked as a
-hypothesis.
+Rewritten 2026-08-08 (afternoon session) from the handover of the same day. The
+previous version listed four untested hypotheses. Three of them have now been tested
+on the live station. Everything below is measured on the Pi unless it is explicitly
+labelled inference.
 
-## Symptom
+## Summary
 
-ALSA overruns and capture gaps during daytime operation, which the known-good figures
-in `HANDOVER.md` say should be **zero**.
+Two independent defects were found in the capture path, both by measuring a property
+rather than reasoning about it.
 
-| When | Measurement |
+1. **The ALSA ring was shallower than one capture block.** `AlsaSource` requested
+   `periods=8` at a 10 ms period — an **80 ms** kernel ring behind a **100 ms** read.
+   The station could not absorb a scheduling stall of a tenth of a second.
+2. **An ALSA overrun's cost was never estimated.** The frame-deficit estimator was
+   gated on `discontinuity is None`, so any block on which ALSA had already raised
+   EPIPE skipped the estimate and was published with `missing_frames=0`. The single
+   event most likely to have lost audio was the one event whose cost was not measured.
+
+Both are fixed (ADR-022). The ring is now sized from `capture_buffer_ms` (500 ms
+default) and the estimate runs either way, with gaps reported split into
+`gaps_with_loss` and `gaps_without_loss`.
+
+<!-- MEASUREMENT-TABLE -->
+
+## What was measured, in order
+
+### Baseline, before any change
+
+Clean window, no work being done on the Pi, station running the restored settings
+(`OO_ULTRASONIC_AUDIBLE_METHOD=both`, `OO_CLIP_MAX_PER_MINUTE=20`):
+
+| Window | 2026-08-08 13:08:50Z → 13:53:40Z (44.8 min) |
 |---|---|
-| 2026-08-08 ~13:12 (SD card, throttled) | 15 gaps, 8 overruns, continuity 0.99775 |
-| 2026-08-08 ~13:39 (SD card, just restarted) | 1 gap, 0 overruns, continuity 0.99985 |
-| 2026-08-08 ~14:10 (**SSD**, throttles lifted, 3 min) | 1 gap, 1 overrun, continuity 0.999004 |
-| 2026-08-08 ~14:18 (**SSD**, throttles lifted, ~11 min) | 10 gaps, 6 overruns, continuity 0.998483 |
+| Continuity | 0.999376 |
+| `capture.gap` records | 24 |
+| — of which lost real audio | **9** |
+| — of which lost nothing measurable | **15** |
+| ALSA overruns (EPIPE) | 14 |
+| Audio actually lost | 445,431 frames = **1.16 s** |
+| Individual losses (frames) | 90910, 43774, 46272, 40467, 42505, 41326, 40864, 55787, 43526 |
 
-**The USB SSD did not fix it.** That is the single most important finding here, because
-the SD card's write load was the leading hypothesis and it is now largely excluded.
+Every single real loss is between 40,467 and 90,910 frames — **0.105 s to 0.237 s**,
+that is, about one capture block each. A ring that overflows because nobody drained it
+in time loses roughly what it was holding. This is the signature that pointed at the
+ring, and it is visible only once the two kinds of gap are separated.
 
-Note that many gap records carry `missing_frames=0` — an ALSA overrun reported with no
-lost audio. A smaller number lose real frames (one at 42,505 frames ≈ 0.11 s, one at
-61,717 ≈ 0.16 s). Both are logged as `capture.gap` with `reason=overrun`, so counting
-log lines overstates the number of events that actually lost audio. **Any triage should
-separate the two**; the current `/api/v1/health` counters do not.
+### A natural experiment: CPU load
 
-## How much recording was actually lost is unresolved
+The test suite was run on the Pi during the second half of the pre-fix run. That was
+not planned as an experiment, but it is a clean one, because nothing else changed:
 
-Earlier in this session I told the operator "roughly a day". That is **not** supported
-cleanly by the data and should be re-derived, not repeated:
+| Window (same station, same settings) | Gaps/min | Audio lost per minute |
+|---|---|---|
+| 13:08:50Z → 13:53:40Z, station idle | 0.49 | 0.021 s |
+| 13:53:40Z → 14:38:27Z, pytest running | 0.80 | 0.041 s |
 
-- The last `alsa` stream row claims `start_utc` 2026-08-07 03:38:54 and `end_utc`
-  2026-08-08 11:36:36, ending with
-  `AlsaCaptureError: ALSA read failed: File descriptor in bad state`.
-- But its `frame_count` is 3,852,212,352 frames, which at 384 kHz is only **2.79 hours**
-  of audio across a 32-hour window.
-- And there are **no detections on any live stream between 2026-08-07 20:00 and
-  2026-08-08 12:00**.
+Sustained CPU load roughly **doubled** both figures. That is consistent with a
+scheduling-stall mechanism and inconsistent with a bus, device or storage mechanism —
+none of which care what the CPU is doing. It is also why hypothesis 4 (CPU contention
+from the restored rendering settings) was plausible: it is the same mechanism. The fix
+addresses the mechanism rather than the load.
 
-Those three facts do not reconcile. Either the stream row was left open across a period
-when capture was not actually delivering frames, or frames were lost on a scale the gap
-counters did not record. `HANDOVER.md` already documents a related trap — stream rows
-left unclosed by killed processes, which once made capture coverage read 1302% — so a
-stale row is the more likely explanation, but it has not been confirmed.
+## The hypotheses, resolved
 
-**This matters beyond bookkeeping**: capture coverage in the history view is computed
-from these rows, so if they are wrong, the coverage bar is wrong, and the coverage bar
-is the thing that distinguishes a quiet night from a dead microphone.
+### 1. USB bus / host-controller contention — RULED OUT by topology
 
-## What has been ruled out or made unlikely
+The AudioMoth and the SSD are on **different xHCI host controllers**, so no physical
+port move is required and none is recommended for capture's sake:
 
-- **SD-card write bandwidth.** Clips now go to a dedicated SSD. Gaps persist.
-- **Evidence writing blocking the detector.** Fixed 2026-08-05: evidence extraction runs
-  through a bounded queue and its own single-thread executor. Detectors show
-  `dropped=0`, lag ~0.14 s.
-- **Clip write volume as the direct trigger.** Correlation is weak: one gap fell 27 s
-  after the last clip write. Write rate is roughly 4.6 MB every 3 s (~1.5 MB/s), which
-  is trivial for the SSD.
-- **The microphone itself.** Continuity was 0.999842 with zero overruns for a sustained
-  period earlier the same afternoon on the same hardware.
+| Device | Bus / port | Controller | Speed |
+|---|---|---|---|
+| AudioMoth | 002 / 1 | `1f00200000.usb` → `xhci-hcd.0` | 12 Mbit/s (full speed) |
+| SanDisk Extreme SSD | 004 / 2 | `1f00300000.usb` → `xhci-hcd.1` | 480 Mbit/s (high speed) |
 
-## Hypotheses, untested, in the order I would test them
+The previous session's reading of `lsusb` was right that both buses report as
+`1d6b:0002` USB 2.0 root hubs, but that is because each Pi 5 xHCI controller exposes a
+USB 2.0 root hub *and* a separate USB 3.0 one (`usb3` and `usb5`). The two devices are
+not sharing anything.
 
-1. **USB bus or host-controller contention between the AudioMoth and the SSD.**
-   *This is the one I was about to test when the session ended.* The AudioMoth is an
-   isochronous USB audio device; isochronous transfers are exactly what gets starved
-   when a bulk-transfer storage device shares a controller. From `lsusb` earlier today:
-   the AudioMoth enumerated on **Bus 002** and the SanDisk SSD on **Bus 004**, and both
-   of those buses were listed as `1d6b:0002` — USB **2.0** root hubs. If the SSD has
-   negotiated USB 2.0 rather than 3.0, it is both slower than it should be and more
-   likely to be sharing bandwidth with the audio device.
-   - Check: `lsusb -t`, and `cat /sys/bus/usb/devices/*/speed` alongside `product`.
-   - Likely fix: move the SSD to a **USB 3.0 port** (blue) on a different controller
-     from the AudioMoth, then re-measure.
-   - This costs nothing to try and would explain why better storage did not help.
+Two real facts did come out of this, and they are recorded in
+`docs/operations/TARGET_DIAGNOSTICS.md`:
 
-2. **Capture reads share the default thread pool.** `alsa_source.read` uses
-   `asyncio.to_thread`, which is the default executor. Evidence extraction and the
-   retention sweep were moved to their own executor on 2026-08-05, but database inserts,
-   gap-row writes and health-event writes still use the default pool. Giving the capture
-   read a dedicated executor would apply "capture always wins" to thread scheduling as
-   well as to queue policy. This is a code change in `station.py` / `alsa_source.py`.
+- **The AudioMoth is a full-speed device at 75% of its bus budget.** Its isochronous
+  IN endpoint declares `wMaxPacketSize 768 bytes, bInterval 1` — 768 bytes every 1 ms,
+  against a full-speed maximum of 1023. There is no bus headroom to find and no faster
+  port to move it to. Host-side slack is the only lever, which is what was fixed.
+- **The SSD is in a USB 2.0 port**, running at roughly a tenth of its capability. This
+  does not affect capture. If it is moved, it must go to the blue port that enumerates
+  as `usb5` (same controller, `xhci-hcd.1`); the other blue port is `usb3` on the
+  AudioMoth's controller and would *create* the contention that currently does not
+  exist.
 
-3. **ALSA period/buffer sizing too tight for scheduling jitter.** 100 ms blocks at
-   384 kHz is a large period; if the buffer is only a couple of periods deep, any
-   scheduling delay overruns it. Worth reading what `alsa_source` actually requests and
-   whether a deeper ring would absorb jitter without adding latency to detection.
+### 2. Capture reads share the default thread pool — CONFIRMED as a real exposure, FIXED
 
-4. **CPU contention from restored settings.** Ultrasonic rendering was returned to
-   `both` (heterodyne *and* time expansion) and clips to 20/minute at 14:12. The 11-minute
-   sample above is the first measured under those settings, and it is the worst of the
-   day. **Reverting these is the cheapest experiment** and the fastest way to isolate
-   cause from coincidence.
+`alsa_source.read` used `asyncio.to_thread`, i.e. the default executor: 8 workers on a
+4-core Pi, shared with database inserts, gap-row writes, health-event writes, device
+probes and every FastAPI `def` endpoint — and SQLite is configured `busy_timeout=5000`,
+so one contended write can hold a worker for seconds. `AlsaSource` now owns a private
+single-thread executor (`oo-capture`) for open, read and close.
 
-## Configuration state on the station right now
+This is stated as a real exposure rather than a measured cause: it was fixed in the
+same deploy as the ring, so the two are not separated by measurement. The CPU-load
+experiment above is consistent with it but does not isolate it.
 
-`config/runtime.env` on the Pi (not in version control):
+### 3. ALSA period/buffer sizing too tight — CONFIRMED, and the primary finding
+
+`/api/v1/health` reported the negotiated configuration all along, and it said:
 
 ```
-OO_ULTRASONIC_SCHEDULE=night
-OO_CLIP_MAX_PER_MINUTE=20          # was temporarily 6 to protect the SD card
-OO_ULTRASONIC_AUDIBLE_METHOD=both  # was temporarily heterodyne-only
-OO_CLIPS_REQUIRE_MOUNT=true
-OO_CLIP_MAX_TOTAL_GB=300
-OO_BIRDNET_USE_LOCATION_FILTER=true
+"period_size": 3840, "periods": 8, "buffer_size": 30720,   # 80 ms
+"block_frames": 38400,                                     # 100 ms
 ```
 
-Backups of the previous state are at `config/runtime.env.bak` and `.bak2` on the Pi.
+The kernel could hold **less audio than one read consumes**. The ring is the only slack
+the capture path has — it is how much audio may accumulate while nothing is reading —
+and between reads the event loop runs the resampler, two spectrograms, level telemetry
+and window dispatch. The ring is now 192,000 frames (500 ms, 50 periods), verified from
+the station's own negotiated figures after the deploy. It costs 384 kB and adds no
+latency: a read still returns as soon as one block's worth of frames exists.
 
-## Storage, as it now stands
+### 4. CPU contention from the restored settings — NOT TESTED, and deliberately so
 
-- SanDisk Extreme Portable SSD, 465.8 GB, `/dev/sda`, connected via the UAS driver.
-- Wiped 2026-08-08 (it held an unrelated Ubuntu Server 26.04 **amd64** installer).
-- Single ext4 partition, label `oo-clips`, UUID `005ab10e-7a3b-4b7d-baa0-07b9aeacddc5`,
-  formatted with `-m 1` so 1% is reserved rather than the default 5%.
-- Mounted at `/home/observer/open-observatory/data/clips` from `/etc/fstab`:
-  `defaults,noatime,nofail,x-systemd.device-timeout=10`.
-- Mounted **over the existing clips path deliberately**: `media_asset.storage_uri` holds
-  absolute paths for 17,273 assets, so this made the migration a no-op for the database.
-  Verified by fetching a clip recorded the previous day through `/api/v1/media/{id}`,
-  which returned a valid 384 kHz WAV.
-- The database stays on the SD card, so losing the SSD costs evidence, not the station.
-- **`data/clips.sdcard-backup` still exists on the SD card and holds the pre-migration
-  copy (~21 GB).** It is safe to delete once you are satisfied, and doing so returns
-  that space to the system disk. It has deliberately been left in place for one cycle.
+`OO_ULTRASONIC_AUDIBLE_METHOD=both` and `OO_CLIP_MAX_PER_MINUTE=20` were left exactly
+as they were, so that the code change was the only variable between the before and
+after windows. Reverting them remains available as a cheap experiment if gaps return.
+The CPU-load experiment above suggests load does matter at the margin, so this is a
+real effect — but treating it by throttling the product would have been treating the
+symptom, and the mechanism it acts through is the one that has now been widened.
 
-## Traps worth knowing for this work
+## How much recording was actually lost, 2026-08-07 to 08-08
 
-- The mount must exist **before** the service starts. The unit runs in a systemd mount
-  namespace (`ProtectHome=read-only`), so a mount made on the host while the station is
-  running is invisible to it until a restart. `OO_CLIPS_REQUIRE_MOUNT=true` makes
-  `/api/v1/health` report this by name instead of silently writing to the SD card.
-- Deploying restarts capture, which resets every counter and voids any measurement in
-  progress. Continuity is cumulative from frame zero, so a figure taken seconds after a
-  restart is meaningless — take it over minutes.
-- `sudo journalctl -u open-observatory --since "-10 min" | grep -c capture.gap` counts
-  log lines, not lost audio. See the `missing_frames=0` caveat above.
+The previous handover said this was unresolved and should be re-derived. It has been.
+**The three facts do reconcile, and the `frame_count` was the honest one.**
 
-## How to measure
+The stream row for `9d210aae…` claims 2026-08-07 03:38:54 → 2026-08-08 11:36:36 with
+`frame_count` 3,852,212,352 — 2.79 hours of audio across a 32-hour window. Its
+supporting rows say plainly which of those is true:
 
-```bash
-# on the Pi
-curl -s localhost:8080/api/v1/health | python3 -m json.tool | head -30
-sudo journalctl -u open-observatory --since "-10 min" -o short-iso | grep capture.gap
-curl -s localhost:8080/api/v1/debug/pipeline   # evidence queue, persistence, rings
-```
+| Evidence for that stream | Value |
+|---|---|
+| `frame_count` | 3,852,212,352 = **2.786 h** |
+| `capture_gap` rows | 89, from 2026-08-07 03:39:05 to **06:24:45** |
+| `detection` rows | 2089, from 2026-08-07 03:38:57 to **06:26:07** |
+| `discontinuity_count` | 245 |
 
-Known-good targets, from `HANDOVER.md`: continuity 0.9990–0.9997, and **zero** gaps or
-overruns in normal running.
+Gaps, detections and frames all stop together at about **06:26 on 2026-08-07**. The
+`end_utc` of 2026-08-08 11:36:36 is not when audio stopped; it is when the process
+finally raised `ALSA read failed: File descriptor in bad state` and closed the row, 29
+hours later. No stream row and no detection of any kind exists between 2026-08-07
+06:26 and 2026-08-08 12:03.
+
+**So roughly 29.6 hours of recording were lost**, from 2026-08-07 ~06:26 to 2026-08-08
+~12:03 — not "roughly a day", and not spread across the window as the row's span
+implies. The cause is the one already documented in `HANDOVER.md` §7: the AudioMoth's
+mode switch was moved, the device stopped presenting audio, and nothing noticed.
+Within the 2.79 h that *did* record, gaps cost 4,072,782 frames = **10.6 s**.
+
+### A capture-side defect found while deriving that: stream rows record nothing
+
+`frame_count` and `discontinuity_count` are written **only** by `_close_stream_row`,
+which runs on a graceful stop. Measured on the station:
+
+| `audio_stream` rows | 49 |
+|---|---|
+| with `frame_count > 0` | **1** |
+| ended by the orphan sweep (`process_exited`) | 47 |
+
+Every row ended by a kill, a crash or a redeploy says the stream captured zero frames.
+The single exception is the one stream that ended through the supervisor's own error
+path — the 32-hour row above, which is why it was the only one with a usable number.
+**Any capture coverage computed from `frame_count` therefore reads zero for almost
+every session this station has ever recorded.** The station now checkpoints the running
+totals into the open row every 30 s, so a crashed stream's row says what it took.
+
+This is reported rather than acted on beyond the capture side: the history aggregation
+and coverage layer belong to another workstream.
+
+### Still unexplained, and worth a successor's attention
+
+At 2026-08-08 10:55:24Z the journal logs `capture.gap missing_frames=43890` against
+that stream, but there is **no `capture_gap` row anywhere in the database at that
+time** — the rows for that stream stop 29 hours earlier. A gap row is written only when
+`missing_frames > 0`, so one should exist. The likeliest explanation is that the insert
+raised and the exception was swallowed: it was dispatched with a bare
+`create_task(asyncio.to_thread(...))` whose exception nobody retrieved. A SQLite
+`database is locked` after the 5 s busy timeout, during the heavy backfill clip writing
+visible in the log at that moment, would look exactly like this. **This is inference,
+not measurement.** A `done` callback now logs `capture.gap_row_failed`, so the next
+occurrence will say so instead of vanishing.
+
+## Instrumentation added
+
+- `/api/v1/health` `capture` now reports `gaps_with_loss`, `gaps_without_loss`,
+  `estimated_missing_seconds` and `alsa_buffer_frames`. `discontinuities` is the sum of
+  the first two.
+- The `capture.gap` log line carries `lost_audio=true|false`.
+- Prometheus: `oo_capture_gaps_with_loss_total`, `oo_capture_gaps_without_loss_total`,
+  `oo_capture_alsa_overruns_total`, `oo_capture_alsa_buffer_frames`.
+- `capture.buffer_shallower_than_block` warns at open if ALSA clamps the ring below one
+  block — the condition that caused this whole investigation and that no other counter
+  the station publishes would have revealed.
+- `capture.gap_row_failed` logs a gap-row insert that raises.
+
+## Traps this investigation produced
+
+- **`grep -c capture.gap` overstates lost recording by roughly 2.7×**, measured. Use
+  `gaps_with_loss` from `/api/v1/health`, or grep for `lost_audio=True`.
+- **`missing_frames=0` used to mean "not measured", not "nothing lost".** Any log line
+  from before 2026-08-08 15:00 that says so should be read as unknown, and any
+  `rate_offset_ppm` from before then is contaminated in the same way: the station read
+  −245 to −270 ppm against a true device offset near −43 ppm, purely because losses it
+  had not credited looked like a slow crystal.
+- **`deploy/deploy.sh --no-web` will delete the Pi's `web/dist`.** The rsync uses
+  `--delete` and does not exclude `web/dist`, so deploying without building the UI
+  removes it from the target and the dashboard stops being served. Either build the web
+  UI, or deploy only what changed (`rsync -a --delete --exclude __pycache__ ./src/
+  HOST:open-observatory/src/` then `sudo systemctl restart open-observatory`).
+- **`rsync --delete` into `src/` fails on root-owned `__pycache__`** left by the
+  service. Exclude `__pycache__`.
+- **A stream row's `end_utc` is not when audio stopped.** It is when the process
+  noticed. Cross-check against `capture_gap` and `detection` rows before believing a
+  span.
+
+## What is still open
+
+- **Whether 500 ms is enough** under a genuinely busy bat night, which is when evidence
+  writing, three detectors and clip rendering all peak together. The measurement below
+  is a daytime one. If gaps return, the ring is the first thing to widen
+  (`OO_CAPTURE_BUFFER_MS`), and the next structural step — a free-running reader thread
+  feeding an internal queue — is described and deliberately deferred in ADR-022.
+- **The missing gap row of 2026-08-08 10:55:24Z**, above. Inference only.
+- **No 72-hour soak has run.** These are 45-minute windows.
