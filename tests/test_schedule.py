@@ -1,7 +1,9 @@
 """Tests for the night scheduler (civil-twilight gating).
 
-Reference dusk/dawn values are for the development station (51.4769 N, -0.0005 W)
-and were fetched from the sunrise-sunset.org API on 2026-08-05:
+Reference dusk/dawn values are for the Royal Observatory, Greenwich
+(51.4769 N, 0.0005 W) -- chosen as a neutral, published reference location that
+belongs to no particular deployment of this software -- and were fetched from
+the sunrise-sunset.org API on 2026-08-09:
 
     https://api.sunrise-sunset.org/json?lat=51.4769&lng=-0.0005&date=<date>&formatted=0
 
@@ -27,8 +29,8 @@ import pytest
 
 from open_observatory.schedule import NightSchedule, SolarWindow
 
-CHARTER_ALLEY_LAT = 51.4769
-CHARTER_ALLEY_LON = -0.0005
+GREENWICH_LAT = 51.4769
+GREENWICH_LON = -0.0005
 
 TOLERANCE = timedelta(minutes=5)
 
@@ -39,45 +41,45 @@ def _assert_close(actual: datetime, expected: datetime, tolerance: timedelta = T
 
 
 def test_summer_dusk_and_dawn() -> None:
-    # 2026-06-21: civil_twilight_end 21:11:49Z; 2026-06-22: civil_twilight_begin 03:01:15Z.
-    schedule = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=CHARTER_ALLEY_LON)
+    # 2026-06-21: civil_twilight_end 21:08:30Z; 2026-06-22: civil_twilight_begin 02:55:24Z.
+    schedule = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=GREENWICH_LON)
     now = datetime(2026, 6, 21, 12, 0, tzinfo=UTC)
     window = schedule.window_for(now)
     assert window is not None
-    _assert_close(window.dusk_utc, datetime(2026, 6, 21, 21, 11, 49, tzinfo=UTC))
-    _assert_close(window.dawn_utc, datetime(2026, 6, 22, 3, 1, 15, tzinfo=UTC))
+    _assert_close(window.dusk_utc, datetime(2026, 6, 21, 21, 8, 30, tzinfo=UTC))
+    _assert_close(window.dawn_utc, datetime(2026, 6, 22, 2, 55, 24, tzinfo=UTC))
 
 
 def test_winter_dusk_and_dawn() -> None:
-    # 2026-12-21: civil_twilight_end 16:38:29Z; 2026-12-22: civil_twilight_begin 07:27:18Z.
-    schedule = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=CHARTER_ALLEY_LON)
+    # 2026-12-21: civil_twilight_end 16:33:16Z; 2026-12-22: civil_twilight_begin 07:23:20Z.
+    schedule = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=GREENWICH_LON)
     now = datetime(2026, 12, 21, 12, 0, tzinfo=UTC)
     window = schedule.window_for(now)
     assert window is not None
-    _assert_close(window.dusk_utc, datetime(2026, 12, 21, 16, 38, 29, tzinfo=UTC))
-    _assert_close(window.dawn_utc, datetime(2026, 12, 22, 7, 27, 18, tzinfo=UTC))
+    _assert_close(window.dusk_utc, datetime(2026, 12, 21, 16, 33, 16, tzinfo=UTC))
+    _assert_close(window.dawn_utc, datetime(2026, 12, 22, 7, 23, 20, tzinfo=UTC))
 
 
 def test_dates_either_side_of_bst_boundary() -> None:
     # UK BST 2026 starts 29 March 2026. 28 and 30 March straddle it. Both are pure
     # UTC computations, so there must be no discontinuity across the boundary.
-    # 2026-03-28: civil_twilight_end 19:04:03Z; 2026-03-29: civil_twilight_begin 05:12:53Z.
-    schedule = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=CHARTER_ALLEY_LON)
+    # 2026-03-28: civil_twilight_end 18:59:42Z; 2026-03-29: civil_twilight_begin 05:08:03Z.
+    schedule = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=GREENWICH_LON)
 
     before = schedule.window_for(datetime(2026, 3, 28, 12, 0, tzinfo=UTC))
     assert before is not None
-    _assert_close(before.dusk_utc, datetime(2026, 3, 28, 19, 4, 3, tzinfo=UTC))
-    _assert_close(before.dawn_utc, datetime(2026, 3, 29, 5, 12, 53, tzinfo=UTC))
+    _assert_close(before.dusk_utc, datetime(2026, 3, 28, 18, 59, 42, tzinfo=UTC))
+    _assert_close(before.dawn_utc, datetime(2026, 3, 29, 5, 8, 3, tzinfo=UTC))
 
-    # 2026-03-30: civil_twilight_end 19:07:31Z; 2026-03-31: civil_twilight_begin 05:08:13Z.
+    # 2026-03-30: civil_twilight_end 19:03:11Z; 2026-03-31: civil_twilight_begin 05:03:22Z.
     after = schedule.window_for(datetime(2026, 3, 30, 12, 0, tzinfo=UTC))
     assert after is not None
-    _assert_close(after.dusk_utc, datetime(2026, 3, 30, 19, 7, 31, tzinfo=UTC))
-    _assert_close(after.dawn_utc, datetime(2026, 3, 31, 5, 8, 13, tzinfo=UTC))
+    _assert_close(after.dusk_utc, datetime(2026, 3, 30, 19, 3, 11, tzinfo=UTC))
+    _assert_close(after.dawn_utc, datetime(2026, 3, 31, 5, 3, 22, tzinfo=UTC))
 
 
 def test_window_spans_midnight() -> None:
-    schedule = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=CHARTER_ALLEY_LON)
+    schedule = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=GREENWICH_LON)
     # Mid-winter night: well after dusk, well after local midnight, well before dawn.
     two_am = datetime(2026, 12, 22, 2, 0, tzinfo=UTC)
     assert schedule.is_active(two_am) is True
@@ -90,28 +92,28 @@ def test_window_spans_midnight() -> None:
 def test_margins_widen_the_window() -> None:
     no_margin = NightSchedule(
         mode="night",
-        latitude=CHARTER_ALLEY_LAT,
-        longitude=CHARTER_ALLEY_LON,
+        latitude=GREENWICH_LAT,
+        longitude=GREENWICH_LON,
         dusk_margin_min=0.0,
         dawn_margin_min=0.0,
     )
     wide_margin = NightSchedule(
         mode="night",
-        latitude=CHARTER_ALLEY_LAT,
-        longitude=CHARTER_ALLEY_LON,
+        latitude=GREENWICH_LAT,
+        longitude=GREENWICH_LON,
         dusk_margin_min=45.0,
         dawn_margin_min=45.0,
     )
 
-    # 20 minutes before civil dusk on 2026-12-21 (dusk ~16:38:29Z): inactive with no
+    # 20 minutes before civil dusk on 2026-12-21 (dusk ~16:33:16Z): inactive with no
     # margin, active once a 45-minute dusk margin is applied.
-    just_before_dusk = datetime(2026, 12, 21, 16, 18, tzinfo=UTC)
+    just_before_dusk = datetime(2026, 12, 21, 16, 13, tzinfo=UTC)
     assert no_margin.is_active(just_before_dusk) is False
     assert wide_margin.is_active(just_before_dusk) is True
 
-    # 20 minutes after civil dawn on 2026-12-22 (dawn ~07:27:18Z): inactive with no
+    # 20 minutes after civil dawn on 2026-12-22 (dawn ~07:23:20Z): inactive with no
     # margin, active once a 45-minute dawn margin is applied.
-    just_after_dawn = datetime(2026, 12, 22, 7, 47, tzinfo=UTC)
+    just_after_dawn = datetime(2026, 12, 22, 7, 43, tzinfo=UTC)
     assert no_margin.is_active(just_after_dawn) is False
     assert wide_margin.is_active(just_after_dawn) is True
 
@@ -137,7 +139,7 @@ def test_mode_night_without_coordinates_is_always_active() -> None:
     assert state["dawn_utc"] is None
 
     # Also true with only one coordinate set.
-    partial = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=None)
+    partial = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=None)
     assert partial.is_active(now) is True
     assert partial.state(now)["reason"] == "coordinates-unset"
 
@@ -158,7 +160,7 @@ def test_high_latitude_no_civil_twilight_stays_active() -> None:
 
 
 def test_state_reports_within_and_outside_night_window() -> None:
-    schedule = NightSchedule(mode="night", latitude=CHARTER_ALLEY_LAT, longitude=CHARTER_ALLEY_LON)
+    schedule = NightSchedule(mode="night", latitude=GREENWICH_LAT, longitude=GREENWICH_LON)
 
     night = schedule.state(datetime(2026, 12, 22, 2, 0, tzinfo=UTC))
     assert night["mode"] == "night"

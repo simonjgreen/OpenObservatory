@@ -1,6 +1,8 @@
+# Template unit: @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
+# deploy/deploy.sh at install time. No committed default user or path.
 [Unit]
 Description=Nightly Open Observatory refinement pass, in the measured quiet window
-Documentation=file:///home/observer/open-observatory/docs/architecture/ADRS.md
+Documentation=file://@DEPLOY_ROOT@/docs/architecture/ADRS.md
 
 [Timer]
 # 01:00 UTC, nightly. UTC explicitly, not local time: the station logs UTC and

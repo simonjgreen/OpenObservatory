@@ -66,7 +66,7 @@ python3.12 -m venv .venv        # 3.12 exactly; pyproject requires >=3.12,<3.14
 From a workstation, build the UI and deploy in one step:
 
 ```bash
-HOST=station.example ./deploy/deploy.sh
+HOST=<user>@<station-host> ./deploy/deploy.sh
 ```
 
 Then open `http://<pi>:8080`.

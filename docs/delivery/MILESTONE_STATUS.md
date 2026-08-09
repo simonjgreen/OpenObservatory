@@ -96,8 +96,8 @@ explicitly permits redistribution, so it is committed directly rather than fetch
 on demand.
 
 The test asserts both halves of the gate against the real, shipped model and range
-model, with the plausibility filtering from ADR-032 switched on and the development station's
-own coordinates: (1) "European Robin" / *Erithacus rubecula* appears among the
+model, with the plausibility filtering from ADR-032 switched on and the neutral
+Greenwich reference coordinates (see the test module docstring): (1) "European Robin" / *Erithacus rubecula* appears among the
 candidates, with a real, in-range plausibility band, not a suppressed or
 strictly-gated one; (2) an evidence clip is written, is readable as 48 kHz audio, has
 a sane duration, and — checked at the frame level, not just by overlap — its samples
@@ -245,8 +245,8 @@ the false-positive review deliverable is for, and it needs a human.
 ## Milestone 6 — MQTT and Home Assistant — **publisher live on the operator's broker; alert engine not built**
 
 **Updated 2026-08-08, later the same day:** deployed and running against the
-operator's real Home Assistant broker at broker.example:1883. Six entities appear
-under one device, "the development station Observatory": last detection, species today,
+operator's real Home Assistant broker on the LAN. Six entities appear
+under one device named after the configured station: last detection, species today,
 bat passes tonight, bat activity, station healthy, and a `detection` event
 entity for automations. Measured live: connected first attempt, zero publish
 failures, zero drops.

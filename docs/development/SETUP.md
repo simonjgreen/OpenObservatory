@@ -5,7 +5,7 @@ and run the test suites. **Read the "Traps" section before you start** — every
 item in it has cost somebody an hour.
 
 Verified on 2026-08-09 on the project's own development laptop (Ubuntu, no
-microphone) and against the live station at `station.example`.
+microphone) and against the live development station.
 
 ---
 

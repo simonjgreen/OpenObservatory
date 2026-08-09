@@ -23,10 +23,10 @@ bool clampInto(T& value, T lo, T hi) {
 bool clampSettings(Settings& s) {
   bool changed = false;
 
-  if (s.stationHost.empty()) {
-    s.stationHost = "station.example";
-    changed = true;
-  }
+  // An empty stationHost is a meaningful state (not yet provisioned), not a
+  // value to repair: inventing an address here would point every fresh unit
+  // at one particular installation, silently. main.cpp treats empty as
+  // "raise the provisioning portal".
   if (s.stationHost.size() > 63) {
     s.stationHost.resize(63);
     changed = true;
@@ -57,6 +57,9 @@ bool clampSettings(Settings& s) {
 }
 
 std::string stationBaseUrl(const Settings& s) {
+  if (s.stationHost.empty()) {
+    return std::string();
+  }
   char buf[96];
   std::snprintf(buf, sizeof(buf), "http://%s:%u", s.stationHost.c_str(),
                 static_cast<unsigned>(s.stationPort));

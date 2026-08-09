@@ -155,19 +155,20 @@ range model is simply silent about (`occurrence is None`) is judged against
 `threshold_out_of_range`, not `threshold_in_range` — see "Known limitation" below.
 
 The shipped default is `birdnet_use_location_filter=False` with no coordinates, so out of
-the box every species is judged on confidence alone. At the development station the coordinates and
+the box every species is judged on confidence alone. On the development station the coordinates and
 the filter are set in the Pi's `config/runtime.env`, which is not in version control
 because the data model treats station location as access-controlled — so the repository
 defaults and the running station legitimately differ here. Enabling it is not cosmetic:
 before it was on, this station stored "Great Bittern" and "Spotted Crake" at 0.9
-confidence in a the development area garden.
+confidence in an ordinary inland garden.
 
 Fixture testing: `tests/test_detectors.py` exercises BirdNET's logic — week calculation,
 label parsing, plausibility-band thresholds, licence metadata, missing-model handling.
 `tests/test_birdnet_fixture.py`, added 2026-08-08, is the fixture test that runs real
 inference on a known recording and asserts a known species: a committed, individually
 licence-checked European Robin recording (CC BY-SA 4.0, Xeno-canto XC441752 — see
-`tests/fixtures/audio/ATTRIBUTION.md`) is analysed at the development station's coordinates with
+`tests/fixtures/audio/ATTRIBUTION.md`) is analysed at the neutral Greenwich reference
+coordinates with
 ADR-032's plausibility filtering switched on, and the test asserts both that "European
 Robin" appears among the candidates in an unsuppressed plausibility band, and that the
 resulting evidence clip is playable and frame-aligned to where the call actually is in
@@ -232,7 +233,8 @@ nominal.
 | `ultrasonic_schedule_dusk_margin_min` | `30.0` |
 | `ultrasonic_schedule_dawn_margin_min` | `30.0` |
 
-Verified on the Pi for the development station on 2026-08-05: civil dusk 20:27Z, civil dawn 03:55Z,
+Verified on the Pi at the station's configured location on 2026-08-05: civil dusk
+20:27Z, civil dawn 03:55Z,
 the schedule reported active at 21:45 local and inactive at noon. The station's
 `config/runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`; the repository default remains
 `always`.
@@ -372,7 +374,7 @@ Before ADR-032, `BirdNetDetector._band_for` sorted each candidate into `in_range
 different confidence threshold to each, but never excluded a species outright, and
 treated a *missing* prior as the *easiest* case rather than the hardest. Measured on the
 live station's own database, 2026-08-08, with the location filter enabled and coordinates
-correct (the development station — **the range model itself works**: Common Woodpigeon
+correct (**the range model itself works**: Common Woodpigeon
 0.995, European Goldfinch 0.781, Western House Martin 0.771, "Engine" 4e-06, so this was
 never a misconfiguration): a *Flammulated Owl* at `occurrence_probability` 8e-06 scored
 0.959 and was admitted, and 202 of 5833 named detections (3.5%) had `occurrence=None` and

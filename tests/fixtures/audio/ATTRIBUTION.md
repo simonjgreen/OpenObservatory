@@ -48,7 +48,9 @@ research for this test. CC BY-SA still permits redistribution with
 attribution, which is what this file and this note provide.
 
 The recording's own date and location are irrelevant to the test: the test
-assigns its own explicit date and station coordinates (the development station,
-the development area, 51.4769, -0.0005) to the BirdNET range/occurrence model, independent
-of when or where this clip was originally recorded. See the test module
-docstring for why that date was chosen and what the range model says about it.
+assigns its own explicit date and reference coordinates (the Royal
+Observatory, Greenwich — 51.4769, -0.0005, a neutral published reference
+location, not any deployment's site) to the BirdNET range/occurrence model,
+independent of when or where this clip was originally recorded. See the test
+module docstring for why that date was chosen and what the range model says
+about it.

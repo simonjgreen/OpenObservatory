@@ -4,7 +4,7 @@ Measured facts about the actual station, not assumptions. This file is the exit
 gate for Milestone 0: "AudioMoth formats and stable device identity are recorded
 from the actual Pi."
 
-Recorded 2026-08-04 from `pi2` at `station.example`, extended through 2026-08-08 and
+Recorded 2026-08-04 from the target Pi (the development station), extended through 2026-08-08 and
 re-checked against the live station on 2026-08-09.
 Regenerate the machine-readable portion with
 `oo audio probe --json --write docs/operations/probe.json`.
@@ -41,7 +41,7 @@ serving ALSA reads through the same shared thread pool.
 | Partition | single ext4 partition, label `oo-clips` |
 | UUID | `005ab10e-7a3b-4b7d-baa0-07b9aeacddc5` |
 | Formatting | `-m 1` (1% reserved, not the ext4 default of 5%, since this volume holds no system files) |
-| Mount point | `/home/observer/open-observatory/data/clips` |
+| Mount point | `/home/<user>/open-observatory/data/clips` |
 | `/etc/fstab` options | `defaults,noatime,nofail,x-systemd.device-timeout=10` |
 | Database | stays on the SD card — small, and the SD card is the system disk that is always present |
 
@@ -55,7 +55,7 @@ database rather than requiring 17,273 rows to be rewritten.
 
 **Operational consequence: the mount must exist before the service starts.** The
 systemd unit runs in a mount namespace (`ProtectHome=read-only`,
-`ReadWritePaths=/home/observer/open-observatory/data`), so a filesystem mounted on the
+`ReadWritePaths=/home/<user>/open-observatory/data`), so a filesystem mounted on the
 host *after* the service has started is not visible inside it — the service must be
 restarted, not just have the mount appear, for the SSD to take effect.
 `OO_CLIPS_REQUIRE_MOUNT=true` (`clips_require_mount` in `Settings`) makes
@@ -356,12 +356,12 @@ server-side gain on the stream, not a client-side audio node.
 
 - **Range model: off by default in the repository, on at this station.** The shipped
   defaults leave latitude and longitude unset and `birdnet_use_location_filter`
-  `False`, so every species is judged on confidence alone. the development station's
-  coordinates were written to the Pi's `config/runtime.env` — which is deliberately
+  `False`, so every species is judged on confidence alone. The development
+  station's coordinates were written to the Pi's `config/runtime.env` — which is deliberately
   not in version control — and the model is enabled there: week 29, 139 species
   plausible, 7 suppressed as implausible. It matters more than it sounds: before it
   was enabled, "Great Bittern" and "Spotted Crake" were stored at 0.9 confidence in
-  a the development area garden. To enable it on another station, set `OO_LATITUDE`,
+  an ordinary inland garden. To enable it on another station, set `OO_LATITUDE`,
   `OO_LONGITUDE` and `OO_BIRDNET_USE_LOCATION_FILTER=true`.
 - **Ultrasonic detections are not species identifications** and, on a broadband-noisy
   evening, some "bat passes" are likely false positives from wind or handling noise.
@@ -391,8 +391,8 @@ server-side gain on the stream, not a client-side audio node.
   `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` finding 2 and ADR-033.
 - **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),
   gating it to civil dusk through civil dawn plus configurable margins, computed from the
-  station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); Charter
-  Alley's `runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`. If coordinates are unset the
+  station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); the
+  development station's `runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`. If coordinates are unset the
   detector runs continuously rather than gating to nothing, by design — see
   `DETECTOR_STRATEGY.md`.
 - **Authentication exists but is off by default.** ADR-034 shipped Argon2id

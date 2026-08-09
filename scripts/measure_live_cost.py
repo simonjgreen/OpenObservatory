@@ -6,7 +6,7 @@ so a single reading tells you about the whole uptime, not about the condition yo
 are currently holding. This takes two readings a window apart and differences
 them, which is the only way to attribute cost to a condition.
 
-    python scripts/measure_live_cost.py --host station.example --seconds 300 --label baseline
+    python scripts/measure_live_cost.py --host <station-host> --seconds 300 --label baseline
 
 `hot_path_seconds` is not published directly, only as `hot_path_cpu_ratio`
 against audio seconds, so it is reconstructed as ratio x frames / rate. The
@@ -99,7 +99,11 @@ def summarise(first: dict[str, Any], last: dict[str, Any], wall_s: float) -> dic
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="station.example")
+    parser.add_argument(
+        "--host",
+        required=True,
+        help="the station to measure (required: no station address is committed, ADR-047)",
+    )
     parser.add_argument("--seconds", type=float, default=300.0)
     parser.add_argument("--label", default="window")
     parser.add_argument("--settle", type=float, default=15.0, help="ignore this many seconds first")

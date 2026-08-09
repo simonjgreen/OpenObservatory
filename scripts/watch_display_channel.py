@@ -28,7 +28,11 @@ def sample(host: str) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="station.example")
+    parser.add_argument(
+        "--host",
+        required=True,
+        help="the station to measure (required: no station address is committed, ADR-047)",
+    )
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--label", default="window")

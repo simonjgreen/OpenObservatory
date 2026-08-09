@@ -4,7 +4,7 @@ The point of ADR-038 is a measured byte count, so this is the command that
 measures it against a real station over the real network rather than against a
 test double. Run:
 
-    python scripts/probe_display_channel.py station.example 60
+    python scripts/probe_display_channel.py <station-host> 60
 """
 
 from __future__ import annotations
@@ -18,7 +18,11 @@ from websockets.sync.client import connect
 
 
 def main() -> None:
-    host = sys.argv[1] if len(sys.argv) > 1 else "station.example"
+    if len(sys.argv) < 2:
+        # Required, deliberately: the repository ships no station address (ADR-047).
+        print("usage: probe_display_channel.py <station-host> [seconds]", file=sys.stderr)
+        raise SystemExit(2)
+    host = sys.argv[1]
     seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 30.0
     url = f"ws://{host}:8080/api/v1/display?min_score=0.75&bats=true&rows=6"
 

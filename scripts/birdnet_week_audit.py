@@ -5,7 +5,7 @@ was not re-audited; a wrong week would make the priors wrong globally". Checking
 the arithmetic is not enough, because a plausible-looking formula can still be
 off by a fortnight. So this runs the *real* V2.4 MData model at the station's
 coordinates for every week of the year and asks whether the seasonality it
-produces matches what is actually true in a the development area garden: swifts and cuckoos
+produces matches what is actually true in a southern-England garden: swifts and cuckoos
 in late spring, fieldfares in winter, woodpigeons all year round. An offset, an
 ISO week (1-53) in place of a BirdNET week (1-48), or a cap in the wrong place
 would displace those seasons visibly.
@@ -24,6 +24,9 @@ from pathlib import Path
 
 from open_observatory.detectors.birdnet import birdnet_week, load_range_model_for_repair
 
+# The Royal Observatory, Greenwich: the repository's neutral reference
+# location (ADR-047). The audit checks UK phenology, so any UK location
+# serves; no real deployment's coordinates are committed.
 LAT, LON = 51.4769, -0.0005
 
 labels, parsed, model = load_range_model_for_repair(Path("models"), LAT, LON)

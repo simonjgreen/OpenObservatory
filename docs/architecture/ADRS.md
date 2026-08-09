@@ -1506,7 +1506,7 @@ migration — it fixes a real gap found while building this environment:
 an index, so the live station's `media_asset.reclaimed_at` column had no
 index despite the model declaring one. Confirmed against a local read-only
 copy of the live station's `openobservatory.sqlite`
-(`ssh observer@station.example`, then `scp` the file — never opened for writing).
+(`ssh <user>@<station-host>`, then `scp` the file — never opened for writing).
 Written as `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS` so it is a
 safe no-op on a database that reached `0001_initial` through a normal
 `upgrade` (which already creates the index) and a real fix on one that
@@ -1777,7 +1777,7 @@ implemented"** at the end of this entry — read that section for the current
 truth about the schema; everything above it is the research that led there.
 Every number below was measured on **2026-08-09** against a
 read-only copy of the live station's `openobservatory.sqlite`
-(`ssh observer@station.example`, `scp`, opened `mode=ro` or on a local copy; the
+(`ssh <user>@<station-host>`, `scp`, opened `mode=ro` or on a local copy; the
 station's own file was never opened for writing and the station was never
 deployed to or restarted).
 
@@ -2943,9 +2943,9 @@ Target smoke test — with no browser open, columns must not advance, and a
 browser must start them within a couple of blocks:
 
 ```bash
-curl -s http://station.example:8080/api/v1/station \
+curl -s http://<station-host>:8080/api/v1/station \
   | python3 -c 'import json,sys; print([(s["name"], s["columns_emitted"], s["viewer_gated"], s["history_seconds"]) for s in json.load(sys.stdin)["spectrograms"]])'
-# then open http://station.example:8080/ and run it again: columns_emitted rises,
+# then open http://<station-host>:8080/ and run it again: columns_emitted rises,
 # history_seconds climbs towards spectrogram_backfill_s, and the canvas carries
 # "filling ..." until it does.
 
@@ -3057,11 +3057,11 @@ by setting `OO_ULTRASONIC_SPECTROGRAM_FLOOR_DB=-105` and
 restarting -- no deploy needed -- or `git revert` the commit.
 
 ```bash
-python scripts/measure_ultrasonic_contrast.py --host station.example --seconds 30
-curl -s http://station.example:8080/api/v1/station \
+python scripts/measure_ultrasonic_contrast.py --host <station-host> --seconds 30
+curl -s http://<station-host>:8080/api/v1/station \
   | python3 -c 'import json,sys; print([(s["name"], s["floor_db"], s["ceiling_db"]) for s in json.load(sys.stdin)["spectrograms"]])'
 # expect [("audible", -95.0, -15.0), ("ultrasonic", -85.0, -30.0)]
-# then open http://station.example:8080/ with the ultrasonic panel selected and
+# then open http://<station-host>:8080/ with the ultrasonic panel selected and
 # confirm the noise floor reads dark rather than saturated orange.
 ## ADR-042: `alembic upgrade head` runs in `deploy/deploy.sh`, not application startup; `create_all()`/the ALTER TABLE patcher are retired from production use
 
@@ -3242,7 +3242,7 @@ way in.
 ```bash
 # Confirms deploy.sh's new step runs and the station is already at head
 # (idempotent no-op expected — this is not a migration, just a check).
-ssh observer@station.example "cd open-observatory && .venv/bin/python -m alembic current"
+ssh <user>@<station-host> "cd open-observatory && .venv/bin/python -m alembic current"
 # -> 0004_drop_dead_detection_indexes (head)
 
 ./deploy/deploy.sh --no-web --no-deps
@@ -3363,8 +3363,8 @@ BirdNET week is 30 and the ISO week is 32; on 2026-12-31 they are 48 and 53.
 
 **Verified empirically against the real model, not only against arithmetic.**
 Self-consistent arithmetic would not catch a formula that is coherent but off by
-a fortnight, so the real V2.4 MData model was run at the station's coordinates
-(51.4769, −0.0005) for all 48 weeks and checked against known UK phenology
+a fortnight, so the real V2.4 MData model was run at the station's configured coordinates
+for all 48 weeks and checked against known UK phenology
 (`scripts/birdnet_week_audit.py`, 2026-08-09):
 
 | Species | Prior by week | Reality |
@@ -3417,9 +3417,9 @@ oo detections reconcile-plausibility --json > /tmp/plausibility.json
 
 # 2. After --apply: the marker must be present, the row must still be there,
 #    and the species tally must have dropped it and said how many.
-curl -s 'http://station.example:8080/api/v1/detections?limit=200' \
+curl -s 'http://<station-host>:8080/api/v1/detections?limit=200' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin)["detections"]; print([(r["common_name"], r["withdrawn"]) for r in d if r["withdrawn"]])'
-curl -s 'http://station.example:8080/api/v1/history?window=last-24h' \
+curl -s 'http://<station-host>:8080/api/v1/history?window=last-24h' \
   | python3 -c 'import json,sys; h=json.load(sys.stdin); print(h["excluded_withdrawn_count"], [s["common_name"] for s in h["species"]])'
 
 # 3. The wall display's own feed, which is the point of the exercise.
@@ -3874,6 +3874,87 @@ curl -s localhost:8080/api/v1/health | python3 -c \
   'import json,sys; c=json.load(sys.stdin)["capture"]; print(c["frames"], c["expected_frames"], c["gaps_with_loss"], c["gaps_without_loss"], c["loop_lag_max_s"], c["loop_lag_events"])'
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
+
+## ADR-047: Site parameters are runtime state, managed through the web UI; the repository ships no site
+
+**Decision:** Anything true of exactly one installation — coordinates, place
+names, LAN addresses, hostnames, account names, filesystem homes — is **site
+state**, not repository content. It lives in untracked runtime configuration
+(`config/runtime.env`, NVS on the ESP32) and is editable through the web UI's
+settings page (`GET`/`PUT /api/v1/settings`, `site_settings.py`) or the
+firmware's provisioning portal. The repository describes a *system*; a
+deployment describes a *site*. Committed defaults must be universally
+applicable, and where no universal value exists the default is **unset, and
+the system says so** — never a plausible-looking value that is silently
+somebody else's.
+
+**Context.** This repository began as one garden's observatory and was
+saturated with that garden: the operator's home coordinates at ~11 m precision
+in docs and four test files, the station and broker LAN addresses in scripts,
+docs, web tests and the wall-display firmware, and the operator's username and
+home directory in the systemd unit. Publishing the repository makes every one
+of those a permanent public disclosure. The deeper problem is behavioural,
+not cosmetic: a cloned station that silently inherited the original site's
+coordinates would run BirdNET's range-based plausibility filtering against
+*someone else's garden* — confidently wrong output, which is the charter's
+honesty constraint violated by omission.
+
+**Mechanism.**
+
+- `site_settings.py` holds the whitelist of operator-editable settings in
+  three explicit tiers: **live** (station name, timezone; MQTT, applied by
+  restarting the publisher — the same code path a process restart takes, so
+  there is no second reconfigure path to drift), **restart-pinned**
+  (latitude/longitude: bound into the BirdNET range filter and the night
+  schedule when detectors start, and deliberately never swapped under a
+  running range model — the station row records the operator's declaration,
+  `Station.applied_site` records what the detectors are actually using, and
+  the API, `/api/v1/health` and the UI all report any difference as "saved,
+  in force after restart"), and **never browser-editable** (auth, bind
+  address, storage paths: each exclusion reasoned in the module).
+- Persistence is `config/runtime.env` itself — gitignored, operator-owned,
+  written atomically with comments and unknown keys preserved, mode 0600. UI
+  edits and hand edits are one configuration, not two.
+- First-run honesty: latitude/longitude default to unset; `/api/v1/health`
+  carries a `notes` list naming the consequence (no plausibility filtering,
+  night schedule always-on), the station snapshot carries
+  `location_configured`, and the web UI banners it with a link to settings.
+  The default timezone is UTC — the only zone that is not somebody's local
+  assumption. Empty env values for optional settings now mean "unset"
+  (`OO_LATITUDE=`, as shipped by `config/example.env`, previously crashed
+  startup).
+- The inside-observer firmware ships no station address at all: an empty
+  `stationHost` survives clamping, refuses to build a URL, and raises the
+  existing provisioning portal, instead of a fresh unit silently polling one
+  particular installation's LAN.
+- Tests that need a location use a **neutral published reference** — the
+  Royal Observatory, Greenwich (51.4769 N, 0.0005 W) — with every
+  externally-derived expected value re-derived for it (sunrise-sunset.org
+  civil twilight times; the BirdNET range model's Robin occurrence,
+  re-measured at 0.8099 for week 30 with the real shipped model), never
+  relabelled.
+
+**For successors.** Do not hardcode a location, address or identity back in,
+however convenient during debugging — not in a default, not in a test, not in
+a doc example. Tests take locations as inputs or use the Greenwich reference;
+doc examples use placeholder hosts (`<station-host>`) or RFC 5737 / RFC 2606
+example addresses; historical measurement notes say "the development station"
+rather than naming where it stands. If a new component needs a site
+parameter, add it to the `site_settings.py` whitelist (choosing its tier
+deliberately) rather than inventing a parallel mechanism.
+
+### Rollback and smoke test (ADR-047)
+
+No schema change, no new dependency. The settings endpoints and panel are
+additive; revert the commits to remove them. Site values already present in a
+station's `config/runtime.env` are untouched by either direction.
+
+```bash
+curl -s http://<station-host>:8080/api/v1/settings | python3 -m json.tool | head -30
+curl -s -X PUT http://<station-host>:8080/api/v1/settings \
+  -H 'content-type: application/json' -d '{"latitude": 51.4769, "longitude": -0.0005}'
+curl -s http://<station-host>:8080/api/v1/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["notes"])'
+# expect the "restart required: latitude, longitude" note; restart, and expect it gone.
 ```
 
 ## ADR-046: The frame deficit is 98% crystal drift, and "audio lost" must not show it
@@ -3985,7 +4066,7 @@ character`.
 
 ```bash
 # Note: this reads UTC. `journalctl --since` below takes LOCAL time (BST = UTC+1).
-curl -s http://station.example:8080/api/v1/station | python3 - <<'PY'
+curl -s http://<station-host>:8080/api/v1/station | python3 - <<'PY'
 import json, sys
 c = json.load(sys.stdin)["capture"]
 r = c["sample_rate"]
@@ -4002,9 +4083,9 @@ print("gaps", c["gaps_with_loss"], c["gaps_without_loss"], "overruns", c["overru
 PY
 
 # Every late read must say it cost nothing; nothing may say it did.
-ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
+ssh <user>@<station-host> 'sudo journalctl -u open-observatory --since "-30 min" \
   | grep -cE "capture.late_read"'
-ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
+ssh <user>@<station-host> 'sudo journalctl -u open-observatory --since "-30 min" \
   | grep -E "loss_confirmed|lost_audio=True"'   # must print nothing
 ```
 

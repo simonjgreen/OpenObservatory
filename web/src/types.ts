@@ -131,6 +131,11 @@ export interface StationStatus {
     longitude: number | null
     software_version: string
     uptime_s: number
+    /** False until the operator sets coordinates; the app banners this. */
+    location_configured: boolean
+    /** Site fields saved through the settings page but bound at detector
+     *  start, so not yet in force — e.g. `["latitude", "longitude"]`. */
+    site_pending_restart: string[]
   }
   capture: CaptureStatus
   resampler: {

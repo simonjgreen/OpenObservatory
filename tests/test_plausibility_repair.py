@@ -24,6 +24,13 @@ from open_observatory import plausibility_repair as repair
 from open_observatory.db import models as orm
 from open_observatory.db.session import create_all, init_engine, session_scope
 
+#: Any coordinates would do here (the range model itself is never loaded --
+#: model_dir points nowhere); these are the Royal Observatory, Greenwich, the
+#: repository's neutral reference location, so no real deployment's site
+#: leaks into committed code.
+REFERENCE_LATITUDE = 51.4769
+REFERENCE_LONGITUDE = -0.0005
+
 LABELS = [
     "Otus flammeolus_Flammulated Owl",
     "Strix aluco_Tawny Owl",
@@ -136,8 +143,8 @@ class TestFindImplausibleDetections:
             findings = repair.find_implausible_detections(
                 session,
                 model_dir=Path("/nonexistent"),
-                latitude=51.4769,
-                longitude=-0.0005,
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
 
         names = {item.common_name for item in findings}
@@ -152,7 +159,10 @@ class TestFindImplausibleDetections:
         """Dry-run fidelity: finding must never write anything."""
         with session_scope() as session:
             repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
         with session_scope() as session:
             row = session.get(orm.Detection, seeded_detections["Flammulated Owl"])
@@ -163,7 +173,10 @@ class TestFindImplausibleDetections:
         create_all()
         with session_scope() as session:
             findings = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
         assert findings == []
 
@@ -186,7 +199,10 @@ class TestFindImplausibleDetections:
 
         with session_scope() as session:
             findings = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
         assert findings == []
 
@@ -197,7 +213,10 @@ class TestApplyPlausibilityFlag:
     ) -> None:
         with session_scope() as session:
             [finding] = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
             repair.apply_plausibility_flag(session, finding)
 
@@ -215,13 +234,19 @@ class TestApplyPlausibilityFlag:
     def test_a_reviewed_row_is_never_re_flagged(self, settings, seeded_detections) -> None:
         with session_scope() as session:
             [finding] = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
             repair.apply_plausibility_flag(session, finding)
 
         with session_scope() as session:
             findings_again = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
         assert findings_again == []
 
@@ -233,7 +258,10 @@ class TestApplyPlausibilityFlag:
         step, so a human review landing in that window must still win."""
         with session_scope() as session:
             [finding] = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
             session.add(
                 orm.Review(detection_id=finding.detection_id, actor="op", status="confirmed")

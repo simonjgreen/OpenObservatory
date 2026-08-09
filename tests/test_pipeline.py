@@ -633,7 +633,7 @@ class TestReplaySource:
 class TestEvidenceIsOffTheDetectorPath:
     """Writing evidence must never block the detector that produced it.
 
-    Measured at the development station on a busy night: `_on_detections` awaited clip
+    Measured on the live development station on a busy night: `_on_detections` awaited clip
     extraction inline, and because an ultrasonic detection writes four clips —
     including a time expansion turning 6 s of 384 kHz audio into ~54 s of output
     — the worker stalled on disk I/O. `ultrasonic-pass-v1` analysed 29 windows
@@ -767,7 +767,7 @@ class TestGapsAreSplitByWhetherAudioWasLost:
 
     Many gap records carry `missing_frames=0`: ALSA reported an overrun but frame
     accounting shows nothing was actually lost. A smaller number lose real audio —
-    measured at the development station on 2026-08-08, 9 of 24 gap lines in 45 minutes, for
+    measured on the live development station on 2026-08-08, 9 of 24 gap lines in 45 minutes, for
     1.16 s of recording. Counting log lines overstated the damage by 2.7x, and the
     health endpoint could not tell the operator which was which.
     """

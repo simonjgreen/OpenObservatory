@@ -5,8 +5,8 @@
 // No hardware, no WiFi, no display. Everything here is a rule that would
 // otherwise only be checkable by flashing the board and squinting at it.
 //
-// The JSON fixtures are trimmed copies of real responses from the station at
-// station.example:8080, captured 2026-08-08.
+// The JSON fixtures are trimmed copies of real responses from the development
+// station's API, captured 2026-08-08.
 
 #include <unity.h>
 
@@ -322,7 +322,7 @@ void test_withdrawn_detections_never_reach_the_screen() {
   // ADR-044. `/api/v1/detections` deliberately still returns a withdrawn row -
   // marked, not deleted, so the record stays visible and attributable - and
   // this screen has no marker to render, so it must decline it. The owl below
-  // is the measured the development station case: a North American species at 0.96,
+  // is the case measured on the development station: a North American species at 0.96,
   // comfortably above any threshold the operator can set.
   FeedFilter f;
   f.minScore = 0.75;
@@ -452,10 +452,22 @@ void test_settings_clamping_repairs_impossible_values() {
 
 void test_station_base_url() {
   Settings s;
-  s.stationHost = "station.example";
+  // 192.0.2.10 is TEST-NET-1 (RFC 5737): documentation-only address space,
+  // never any real installation's.
+  s.stationHost = "192.0.2.10";
   s.stationPort = 8080;
-  TEST_ASSERT_EQUAL_STRING("http://station.example:8080",
-                           stationBaseUrl(s).c_str());
+  TEST_ASSERT_EQUAL_STRING("http://192.0.2.10:8080", stationBaseUrl(s).c_str());
+}
+
+void test_unprovisioned_station_host_stays_empty() {
+  // Empty means "not yet provisioned" and must survive clamping: repairing
+  // it to some address would silently point a fresh unit at one particular
+  // installation. main.cpp raises the portal on empty instead.
+  Settings s;
+  TEST_ASSERT_TRUE(s.stationHost.empty());
+  clampSettings(s);
+  TEST_ASSERT_TRUE(s.stationHost.empty());
+  TEST_ASSERT_EQUAL_STRING("", stationBaseUrl(s).c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +514,7 @@ int main(int, char**) {
   RUN_TEST(test_settings_defaults_match_the_operator_decision);
   RUN_TEST(test_settings_clamping_repairs_impossible_values);
   RUN_TEST(test_station_base_url);
+  RUN_TEST(test_unprovisioned_station_host_stays_empty);
 
   return UNITY_END();
 }

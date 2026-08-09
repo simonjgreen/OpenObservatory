@@ -1,7 +1,8 @@
 # Gap, contradiction and unresolved-assumption report
 
 Produced before implementation, as required by `CLAUDE.md`. Status date: 2026-08-04.
-Target device: `pi2` at `station.example`.
+Target device: the station's Raspberry Pi 5 (see
+`docs/operations/DEPLOYMENT_AND_OPERATIONS.md` for addressing).
 
 **Revised 2026-08-05.** The pre-implementation findings are kept as written, because the
 record of what was assumed is worth more than a tidy document. Where something has since
