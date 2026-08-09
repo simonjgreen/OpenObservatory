@@ -3049,6 +3049,19 @@ they are a configured default an operator can override
 (`OO_ULTRASONIC_SPECTROGRAM_FLOOR_DB` / `OO_ULTRASONIC_SPECTROGRAM_CEILING_DB`
 in `config/runtime.env`), not a hardcoded fact about the hardware.
 
+**And a confound learned after the fact (2026-08-09).** The microphone was, at
+the time of this measurement, sitting next to a plant rubbing against a shed —
+loud, periodic, mechanical noise that the operator intends to remove by moving
+the microphone, not by changing any setting. The −85 dBFS floor here was
+therefore derived from a noise floor that includes a temporary physical fault.
+
+That does not invalidate the change: the noise the operator complained about was
+saturating the ramp, and it no longer does. But **these numbers describe a
+microphone in the wrong place.** When it moves, re-run
+`scripts/measure_ultrasonic_contrast.py` and expect the floor to want lowering.
+Do not treat −85/−30 as a characterisation of the hardware, and do not derive
+any detector threshold from them in the meantime — see HANDOVER.md §6.3 item 4.
+
 ### Rollback and smoke test (ADR-041)
 
 No schema change, no new dependency (`websockets` is already pinned). Revert

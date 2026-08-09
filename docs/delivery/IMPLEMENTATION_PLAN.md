@@ -237,6 +237,45 @@ Deliver:
 
 Exit gate: all v1 acceptance criteria pass.
 
+## Milestone 8 — Distribution: somebody else's station
+
+Everything to this point assumes the person running the station is the person
+who built it. This milestone breaks that assumption. The test is a stranger
+with a Pi, an AudioMoth and no terminal.
+
+It comes *after* Milestone 7 deliberately: shipping an image to other people
+makes every remaining rough edge someone else's problem, and an update
+mechanism you cannot roll back is worse than no update mechanism at all.
+
+Deliver:
+
+- **a prebuilt Raspberry Pi image**, published as a GitHub release, that boots
+  to a working station and a reachable web UI with no SSH;
+- **first-boot provisioning over the network** — WiFi, hostname, location,
+  timezone — with no keyboard or monitor attached;
+- **no configuration step that requires a terminal or a text editor.** ADR-047
+  made site parameters runtime state and ADR-048 put them in the browser; this
+  milestone makes that a *guarantee* rather than a coverage level;
+- **remote update of the station after deployment**, versioned, staged and
+  rolled back on failure. Capture must survive a failed update: the charter's
+  first item does not pause for a release;
+- **over-the-air update of the counter-top display, triggered from the Pi**, so
+  the ESP32 never has to be unplugged and carried to a laptop. The station
+  already knows the display's address and already pushes to it;
+- **backup and restore of a station's identity and history**, so replacing the
+  hardware does not lose the record;
+- a signed, checksummed release process for images and firmware, with model
+  assets still fetched separately under their own licences.
+
+Exit gate: a person who has never seen this repository takes a published image,
+writes it to a card, and reaches a capturing station with a named location and a
+working display, using only a browser — then receives and applies an update to
+both the station and the display without physical access to either.
+
+**Not in scope, and deliberately:** fleet management, a cloud account, remote
+access that depends on a third-party relay, or telemetry leaving the station.
+Local-first is not negotiated away for convenience of distribution.
+
 ## Explicitly deferred
 
 - frog/insect production detectors;

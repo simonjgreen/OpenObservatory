@@ -293,6 +293,26 @@ an explicit writable path), model licences are surfaced through
 `/api/v1/models` and in the UI, and media paths are validated against the clip
 directory before being served.
 
+## Milestone 8 — Distribution: somebody else's station — **not started, and correctly last**
+
+Added 2026-08-09 at the operator's direction. A prebuilt Raspberry Pi image
+published as a GitHub release, first-boot provisioning with no keyboard or SSH,
+remote update of the station after deployment, and over-the-air update of the
+counter-top display triggered from the Pi so it never has to be unplugged. Full
+scope and exit gate in `IMPLEMENTATION_PLAN.md`.
+
+Two pieces of groundwork already exist and were not built for this:
+
+- **ADR-047** made site parameters runtime state rather than committed defaults,
+  which is the precondition for one image serving every site. ADR-048 is putting
+  those parameters in the browser.
+- **ADR-038's push channel** means the station already knows the display's
+  address and already talks to it, which is the transport an OTA trigger needs.
+
+What makes this genuinely hard, and why it must not be started early: **an
+update mechanism that cannot roll back is worse than none**, and capture may not
+pause for a release. Charter item 1 does not have a maintenance window.
+
 ## Quality gates
 
 | Gate | State |

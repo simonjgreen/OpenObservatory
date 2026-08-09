@@ -419,6 +419,25 @@ useful addition and is not currently planned.
    in `hardware_recheck_s` only helps once the switch is back in `DEFAULT`. Either
    implement the HID write path (see `AudioMoth-USB-Microphone-App` for the packet
    layout) or do it by hand and record the new setting in `TARGET_DIAGNOSTICS.md`.
+
+   **Deprioritised 2026-08-09, on the operator's instruction, and the reason
+   matters.** The microphone currently sits next to a plant rubbing against a
+   shed, so there is loud periodic mechanical noise in the recordings. That is a
+   *siting* problem he intends to solve physically once wiring and mounting are
+   settled — not a gain problem and not a software problem. Chasing the noise
+   floor against a temporary physical fault would tune the system to a condition
+   that is about to disappear, and any threshold derived from it would then be
+   wrong.
+
+   So: **do not tune anything against the current noise floor.** What was asked
+   for instead is that the knobs be *exposed* — spectrogram floor/ceiling,
+   `min_snr_db`, `min_pulses_per_pass`, band edges, detector thresholds — so the
+   operator can tune locally when the microphone is in its final position
+   (ADR-048). Treat any measurement of background level taken before the move as
+   provisional and label it so.
+
+   This also colours item 6: the hot gain remains a live confound for the Myotis
+   question, and now so does the plant. Neither is resolved by code.
 5. **Decide whether to promote the BatDetect2 cascade from an offline script to a
    live, queued detector.**
    **Decided and delivered 2026-08-09 (ADR-045), differently from how this item
