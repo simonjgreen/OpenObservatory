@@ -78,6 +78,17 @@ if [[ "$INSTALL_DEPS" == 1 ]]; then
         .venv/bin/pip install -q -e '.[alsa,resample,birdnet,dev]'"
 fi
 
+# ADR-042: migrate before restarting, not from inside application startup.
+# `alembic upgrade head` runs here, against the still-running old version's
+# database, so a slow or failing migration is caught by this script (which
+# exits non-zero and leaves the previous, working service running) rather
+# than by the service's own startup path -- capture keeps its fast, DDL-free
+# startup regardless of how migrations behave. Safe to run on every deploy:
+# a database already at head is a single read-only revision check, and the
+# live station's own database is confirmed at head today.
+echo "==> running database migrations"
+ssh "$HOST" "cd $REMOTE_DIR && .venv/bin/python -m alembic upgrade head"
+
 echo "==> installing systemd unit"
 ssh "$HOST" "sudo install -m 644 $REMOTE_DIR/deploy/open-observatory.service \
         /etc/systemd/system/open-observatory.service && \

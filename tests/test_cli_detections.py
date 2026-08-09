@@ -18,7 +18,7 @@ from open_observatory import plausibility_repair as repair
 from open_observatory.cli import app
 from open_observatory.config import set_settings
 from open_observatory.db import models as orm
-from open_observatory.db.session import create_all, init_engine, session_scope
+from open_observatory.db.session import ensure_schema_at_head, init_engine, session_scope
 
 runner = CliRunner()
 
@@ -46,7 +46,7 @@ def _stub_range_model(monkeypatch):
 
 def _seed(settings) -> uuid.UUID:
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
     station_id = uuid.uuid4()
     stream_id = uuid.uuid4()
     detector_id = uuid.uuid4()
@@ -158,7 +158,7 @@ def test_apply_with_yes_flags_the_row_and_preserves_the_original_claim(settings)
 def test_no_coordinates_refuses_rather_than_guessing(settings) -> None:
     set_settings(settings)  # base fixture has no latitude/longitude
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     result = runner.invoke(app, ["detections", "reconcile-plausibility"])
 
@@ -170,7 +170,7 @@ def test_no_implausible_detections_reports_clean(settings) -> None:
     settings = _with_coordinates(settings)
     set_settings(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     result = runner.invoke(app, ["detections", "reconcile-plausibility"])
 

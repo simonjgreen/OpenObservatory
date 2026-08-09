@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 from open_observatory.cli import app
 from open_observatory.config import set_settings
 from open_observatory.db import models as orm
-from open_observatory.db.session import create_all, init_engine, session_scope
+from open_observatory.db.session import ensure_schema_at_head, init_engine, session_scope
 
 runner = CliRunner()
 
@@ -25,7 +25,7 @@ BASE = datetime(2026, 8, 7, 3, 38, 54, tzinfo=UTC)
 
 def _seed_bad_row(settings) -> uuid.UUID:
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
     stream_id = uuid.uuid4()
     with session_scope() as session:
         session.add(
@@ -97,7 +97,7 @@ def test_apply_with_yes_corrects_the_row_and_preserves_the_claim(settings) -> No
 def test_no_suspect_rows_reports_clean(settings) -> None:
     set_settings(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     result = runner.invoke(app, ["history", "reconcile-streams"])
 
@@ -109,7 +109,7 @@ def test_open_row_is_never_reported_or_touched(settings) -> None:
     """A NULL end_utc might belong to a station running right now."""
     set_settings(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
     stream_id = uuid.uuid4()
     with session_scope() as session:
         session.add(

@@ -12,6 +12,13 @@ Covers the four things the migration environment must prove honest, per
    the old ``ALTER TABLE`` patcher without its index -- is repaired by
    stamping at ``0001_initial`` and then running an ordinary ``upgrade head``.
 
+ADR-042 adds a fifth thing: ``ensure_schema_at_head`` -- what application and
+CLI startup now call instead of ``create_all()``/the ALTER TABLE patcher --
+must bootstrap a genuinely empty database, be a safe idempotent no-op against
+one already at head (this is what runs on every ``deploy/deploy.sh`` and
+every process startup against the live station), and refuse rather than
+silently proceed against one that is unstamped or stale.
+
 These use the real ``alembic/`` directory in the repository root (via
 ``alembic.ini`` + ``alembic/env.py``), not a synthetic copy, so a change to
 either breaks these tests the same way it would break a real migration run.
@@ -19,9 +26,11 @@ either breaks these tests the same way it would break a real migration run.
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -31,8 +40,8 @@ from alembic.config import Config
 from sqlalchemy.orm import Session
 
 from open_observatory.config import REPO_ROOT
-from open_observatory.db.models import Base, MediaAsset, Station
-from open_observatory.db.session import create_all
+from open_observatory.db.models import Base, Detection, MediaAsset, Station
+from open_observatory.db.session import create_all, ensure_schema_at_head
 
 ALL_TABLE_NAMES = set(Base.metadata.tables)
 
@@ -257,3 +266,137 @@ def test_alembic_cli_x_url_override(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
     assert _table_names(engine) >= ALL_TABLE_NAMES
+
+
+# --- ensure_schema_at_head (ADR-042): the production bootstrap path ---------
+
+
+def _seed_detections(engine: sa.Engine, count: int) -> tuple[uuid.UUID, uuid.UUID]:
+    """A station, a detector, and ``count`` detection rows -- the shape of a
+    real station database, not just an empty schema."""
+    from open_observatory.db.models import Detector
+
+    station_id = uuid.uuid4()
+    detector_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        session.add(Station(id=station_id, name="Test Station", timezone="UTC"))
+        session.add(
+            Detector(
+                id=detector_id,
+                plugin_id="birdnet-v2.4",
+                plugin_version="1",
+                model_id="birdnet",
+                model_version="2.4",
+            )
+        )
+        session.flush()
+        for i in range(count):
+            session.add(
+                Detection(
+                    id=uuid.uuid4(),
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    stream_id=uuid.uuid4(),
+                    window_id=uuid.uuid4(),
+                    event_start_utc=now,
+                    event_end_utc=now,
+                    source_start_frame=i,
+                    source_end_frame=i + 1,
+                    common_name=f"Species {i}",
+                    score=0.9,
+                )
+            )
+        session.commit()
+    return station_id, detector_id
+
+
+def test_ensure_schema_at_head_bootstraps_a_genuinely_empty_database(
+    tmp_path: Path,
+) -> None:
+    """A fresh developer checkout or a brand-new station: no file at all yet.
+    ``ensure_schema_at_head`` must build the full schema itself, exactly like
+    ``alembic upgrade head`` would (it *is* that call for this case)."""
+    db_path = tmp_path / "fresh.sqlite"
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+
+    ensure_schema_at_head(engine)
+
+    assert _table_names(engine) - {"alembic_version"} == ALL_TABLE_NAMES
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "select version_num from alembic_version"
+        ).scalar() is not None
+
+
+def test_ensure_schema_at_head_is_an_idempotent_noop_at_head(tmp_path: Path) -> None:
+    """The exact shape of every real deploy and every process startup against
+    the live station: a database already at head. Running it twice must be
+    safe, change nothing, and preserve every row -- this is the idempotency
+    and safety-against-real-data check the task calls for, run here against a
+    database seeded with several thousand detection rows standing in for the
+    live station's ~65,000."""
+    db_path = tmp_path / "at_head.sqlite"
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.attributes["configure_logger"] = False
+    cfg.cmd_opts = argparse.Namespace(x=[f"url=sqlite+pysqlite:///{db_path}"])
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    _seed_detections(engine, 2_000)
+    engine.dispose()
+
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    with engine.connect() as connection:
+        before_count = connection.exec_driver_sql("select count(*) from detection").scalar()
+        before_rev = connection.exec_driver_sql(
+            "select version_num from alembic_version"
+        ).scalar()
+
+    # Run it twice -- the second call is the idempotency check.
+    ensure_schema_at_head(engine)
+    ensure_schema_at_head(engine)
+
+    with engine.connect() as connection:
+        after_count = connection.exec_driver_sql("select count(*) from detection").scalar()
+        after_rev = connection.exec_driver_sql("select version_num from alembic_version").scalar()
+
+    assert after_count == before_count == 2_000
+    assert after_rev == before_rev
+
+
+def test_ensure_schema_at_head_refuses_an_unstamped_pre_alembic_database(
+    tmp_path: Path,
+) -> None:
+    """A database with tables (built by the retired ``create_all()``/ALTER
+    TABLE bootstrap, or a ``create_all()``-built developer/test database that
+    was never adopted) but no Alembic version row. Silently proceeding here
+    is exactly the drift this task exists to close off -- it must refuse."""
+    db_path = tmp_path / "unstamped.sqlite"
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    create_all(engine)
+    _seed_detections(engine, 5)
+
+    with pytest.raises(RuntimeError, match="no Alembic version stamp"):
+        ensure_schema_at_head(engine)
+
+    # Refusing to proceed must not have touched the data.
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("select count(*) from detection").scalar() == 5
+
+
+def test_ensure_schema_at_head_refuses_a_stale_database(tmp_path: Path) -> None:
+    """A database stamped at an old revision (a deploy that synced new code
+    but whose migration step failed or was skipped) must refuse rather than
+    start the service against a schema older than the code expects."""
+    db_path = tmp_path / "stale.sqlite"
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.attributes["configure_logger"] = False
+    cfg.cmd_opts = argparse.Namespace(x=[f"url=sqlite+pysqlite:///{db_path}"])
+    command.upgrade(cfg, "0001_initial")
+
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    with pytest.raises(RuntimeError, match="expects"):
+        ensure_schema_at_head(engine)
