@@ -453,6 +453,22 @@ not rediscovered.
   an icon plus the apple-touch/manifest entries, so the display's own web
   surfaces and any phone shortcut look deliberate.
 
+  **Operator's choice: the Material Design Icons `bird` glyph.** Two things to
+  get right when implementing it. First the licence: Pictogrammers' Material
+  Design Icons are Apache-2.0, so redistribution is fine, but `CLAUDE.md`
+  requires third-party assets to carry a separately documented licence — commit
+  the attribution alongside the file, as `tests/fixtures/audio/ATTRIBUTION.md`
+  does for the Xeno-canto recording. Second, do not hand-copy or reconstruct the
+  path data from memory: fetch the real glyph from the upstream package and
+  record its version and checksum, in the manner of `models/manifest.tsv`. An
+  invented approximation of a known icon is exactly the class of plausible
+  fabrication this project has been careful to avoid elsewhere.
+
+  Ship it as an SVG favicon with an ICO or PNG fallback, plus
+  `apple-touch-icon` and a small web manifest, all served from the station
+  itself — nothing may be fetched from a CDN at runtime, since core surfaces
+  must not require internet access.
+
 ### 6.4 Then the plan's own next milestones
 
 Milestone 5 (ultrasonic and bat support) is complete. **Milestones 4 and 6 were
