@@ -5,7 +5,7 @@ was not re-audited; a wrong week would make the priors wrong globally". Checking
 the arithmetic is not enough, because a plausible-looking formula can still be
 off by a fortnight. So this runs the *real* V2.4 MData model at the station's
 coordinates for every week of the year and asks whether the seasonality it
-produces matches what is actually true in a the development area garden: swifts and cuckoos
+produces matches what is actually true in a southern-England garden: swifts and cuckoos
 in late spring, fieldfares in winter, woodpigeons all year round. An offset, an
 ISO week (1-53) in place of a BirdNET week (1-48), or a cap in the wrong place
 would displace those seasons visibly.
