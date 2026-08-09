@@ -29,12 +29,14 @@ moth_app = typer.Typer(help="AudioMoth firmware and configuration over USB HID")
 history_app = typer.Typer(help="Capture history and coverage diagnostics")
 clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 detections_app = typer.Typer(help="Detection review and repair")
+refine_app = typer.Typer(help="The refinement runner (charter item 5, ADR-042)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
 app.add_typer(history_app, name="history")
 app.add_typer(clips_app, name="clips")
 app.add_typer(detections_app, name="detections")
+app.add_typer(refine_app, name="refine")
 
 console = Console()
 
@@ -799,6 +801,237 @@ def clips_retention(
                 str(decision.bytes),
                 "yes" if decision.existed_on_disk else "no",
                 decision.reason,
+            )
+        console.print(detail)
+
+
+# ----------------------------------------------------------------------
+# refinement (charter item 5, ADR-042)
+
+
+def _build_refiner(settings: Settings) -> Any:
+    from .refinement.batdetect2 import BatDetect2Refiner
+
+    # One entry today. Kept as an explicit mapping rather than an import-by-name
+    # so an unknown value fails at startup with a readable error rather than at
+    # 01:00 with an ImportError in the journal.
+    if settings.refinement_refiner == "batdetect2-cascade":
+        return BatDetect2Refiner(
+            trim_s=settings.refinement_trim_s,
+            min_det_prob=settings.refinement_min_det_prob,
+            threads=settings.refinement_threads,
+        )
+    raise typer.BadParameter(f"unknown refiner {settings.refinement_refiner!r}")
+
+
+@refine_app.command("run")
+def refine_run(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Classify and report; write no refinement rows"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Run outside the configured quiet window. Do not use this on a station "
+        "that is capturing bats right now — that is the whole point of the window.",
+    ),
+    limit: int | None = typer.Option(None, help="Override the per-run item budget"),
+    json_out: bool = typer.Option(False, "--json", help="Print the report as JSON"),
+) -> None:
+    """Run one refinement pass over stored evidence.
+
+    **This is not run by the station process and must never be.** It is started
+    by ``open-observatory-refine.timer`` in its own systemd unit, fenced to
+    ``AllowedCPUs=2-3``/``Nice=19``/``MemoryMax=1G``, in the measured quiet
+    window. A 0.30 s retention sweep inside the capture process cost ~1.9 false
+    capture gaps a minute (ADR-033); a BatDetect2 pass is 2.1 s of inference.
+
+    What this command can and cannot do to the record: the shipped refiner has
+    ``propose`` authority only. It never edits a detection's species, score or
+    ``native_result`` — it writes an append-only ``refinement`` row carrying the
+    original claim verbatim plus what it suggests instead, and stamps the
+    detection with the fact that refinement ran, at what version, with what
+    outcome. Accepting a proposal is a human act via the review workflow. See
+    ADR-042 for why that ceiling is where it is.
+    """
+    from .db.session import create_all, init_engine, session_scope
+    from .refinement.runner import RefinementRunner, write_health_event
+
+    settings = get_settings()
+    configure_logging(settings)
+    if not settings.refinement_enabled:
+        console.print("[yellow]refinement_enabled is false; nothing to do.[/yellow]")
+        raise typer.Exit(0)
+
+    init_engine(settings)
+    create_all()
+
+    runner = RefinementRunner(
+        _build_refiner(settings),
+        session_factory=session_scope,
+        max_items=limit if limit is not None else settings.refinement_max_items,
+        max_seconds=settings.refinement_max_seconds,
+        quiet_window_start_hour=settings.refinement_window_start_hour_utc,
+        quiet_window_end_hour=settings.refinement_window_end_hour_utc,
+    )
+    report = runner.run(dry_run=dry_run, force=force)
+
+    if not dry_run:
+        with session_scope() as session:
+            write_health_event(session, report)
+
+    if json_out:
+        console.print_json(json.dumps({**report.to_dict(), "proposals": report.proposals}))
+        return
+
+    if report.skipped_reason:
+        console.print(f"[yellow]Skipped:[/yellow] {report.skipped_reason}")
+        return
+
+    if dry_run:
+        console.print("[bold yellow]DRY RUN[/bold yellow] — no refinement rows were written\n")
+
+    table = Table(title=f"Refinement pass — {report.refiner_version_label}")
+    table.add_column("outcome")
+    table.add_column("count", justify="right")
+    for outcome, count in sorted(report.outcomes.items()):
+        table.add_row(outcome, str(count))
+    console.print(table)
+    console.print(
+        f"considered {report.candidates_considered}, examined {report.examined} "
+        f"in {report.duration_s:.1f}s "
+        f"({report.inference_s:.1f}s classifying {report.audio_s:.1f}s of audio"
+        + (f", {report.realtime_factor}x realtime" if report.realtime_factor else "")
+        + f")  complete: {report.complete}"
+    )
+    if report.proposals:
+        detail = Table(title=f"Proposals for human review ({len(report.proposals)})")
+        detail.add_column("when (UTC)")
+        detail.add_column("our peak Hz", justify="right")
+        detail.add_column("proposed species")
+        detail.add_column("det_prob", justify="right")
+        for item in report.proposals[:50]:
+            peak = item.get("our_peak_frequency_hz")
+            detail.add_row(
+                str(item["event_start_utc"])[11:19],
+                f"{peak:,.0f}" if peak else "-",
+                str(item.get("proposed_scientific_name") or "-"),
+                f"{item['proposed_score']:.2f}" if item.get("proposed_score") else "-",
+            )
+        console.print(detail)
+        console.print(
+            "[yellow]These are proposals, not identifications.[/yellow] Nothing above has "
+            "changed any record. Compare each species against this station's own measured "
+            "peak frequency before accepting one — a confident BatDetect2 answer has already "
+            "contradicted that measurement once (HANDOVER.md §6.3 item 6)."
+        )
+
+
+@refine_app.command("status")
+def refine_status(
+    limit: int = typer.Option(20, help="Unresolved proposals to list"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """What the refiner has done, and what is waiting for a human ear.
+
+    Also answers the question the charter's retention safeguard depends on:
+    *how many events has the refiner never examined?* A pure age rule would
+    delete those having never looked at them once.
+    """
+    from sqlalchemy import func, select
+
+    from .db import models as orm
+    from .db.session import create_all, init_engine, session_scope
+    from .refinement.contracts import EXAMINED_OUTCOMES, RefinementOutcome
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    create_all()
+
+    with session_scope() as session:
+        by_outcome: dict[str | None, int] = {
+            row[0]: row[1]
+            for row in session.execute(
+                select(orm.Detection.refinement_outcome, func.count())
+                .group_by(orm.Detection.refinement_outcome)
+                .where(orm.Detection.taxonomic_group == "bat")
+            ).all()
+        }
+        never_examined = sum(
+            count
+            for outcome, count in by_outcome.items()
+            if outcome is None or outcome not in {str(item) for item in EXAMINED_OUTCOMES}
+        )
+        last_run = session.execute(
+            select(orm.HealthEvent)
+            .where(orm.HealthEvent.service == "refinement")
+            .order_by(orm.HealthEvent.start_utc.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        pending = (
+            session.execute(
+                select(orm.Refinement)
+                .where(orm.Refinement.outcome == str(RefinementOutcome.PROPOSED))
+                .where(orm.Refinement.resolved_at.is_(None))
+                .order_by(orm.Refinement.created_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        counts: dict[str, int] = {
+            (key or "never_refined"): value for key, value in by_outcome.items()
+        }
+        last_run_at = last_run.start_utc.isoformat() if last_run else None
+        proposals: list[dict[str, Any]] = [
+            {
+                "detection_id": str(row.detection_id),
+                "created_at": row.created_at.isoformat(),
+                "original": row.original_common_name,
+                "proposed": row.proposed_scientific_name,
+                "score": row.proposed_score,
+                "reason": row.reason,
+            }
+            for row in pending
+        ]
+        payload: dict[str, Any] = {
+            "bat_detections_by_refinement_outcome": counts,
+            "bat_detections_never_examined": never_examined,
+            "last_run": last_run.detail if last_run else None,
+            "last_run_at": last_run_at,
+            "unresolved_proposals": proposals,
+        }
+
+    if json_out:
+        console.print_json(json.dumps(payload, default=str))
+        return
+
+    console.print(f"last refinement run: {last_run_at or '[red]never[/red]'}")
+    table = Table(title="Bat detections by refinement outcome")
+    table.add_column("outcome")
+    table.add_column("detections", justify="right")
+    for key, value in sorted(counts.items()):
+        table.add_row(str(key), str(value))
+    console.print(table)
+    console.print(
+        f"[bold]{never_examined}[/bold] bat detection(s) have never been examined by a "
+        "refiner. Retention currently deletes on age alone and would remove their "
+        "evidence without ever having looked at it — see ADR-042."
+    )
+    if proposals:
+        detail = Table(title="Unresolved proposals (awaiting a human ear)")
+        detail.add_column("when")
+        detail.add_column("original")
+        detail.add_column("proposed")
+        detail.add_column("det_prob", justify="right")
+        for row in proposals:
+            detail.add_row(
+                str(row["created_at"])[:19],
+                str(row["original"] or "-"),
+                str(row["proposed"] or "-"),
+                f"{row['score']:.2f}" if row["score"] else "-",
             )
         console.print(detail)
 

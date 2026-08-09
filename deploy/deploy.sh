@@ -78,15 +78,25 @@ if [[ "$INSTALL_DEPS" == 1 ]]; then
         .venv/bin/pip install -q -e '.[alsa,resample,birdnet,dev]'"
 fi
 
-echo "==> installing systemd unit"
+echo "==> installing systemd units"
+# The refinement units (ADR-042) are installed alongside the station but are a
+# separate service on a timer: `enable --now` on a .timer arms the schedule
+# without starting a pass, so deploying never puts BatDetect2 on the CPU. The
+# .service itself is Type=oneshot and is deliberately not enabled -- the timer
+# is what starts it.
 ssh "$HOST" "sudo install -m 644 $REMOTE_DIR/deploy/open-observatory.service \
         /etc/systemd/system/open-observatory.service && \
+    sudo install -m 644 $REMOTE_DIR/deploy/open-observatory-refine.service \
+        /etc/systemd/system/open-observatory-refine.service && \
+    sudo install -m 644 $REMOTE_DIR/deploy/open-observatory-refine.timer \
+        /etc/systemd/system/open-observatory-refine.timer && \
     sudo install -m 644 $REMOTE_DIR/deploy/99-audiomoth.rules \
         /etc/udev/rules.d/99-audiomoth.rules && \
     sudo udevadm control --reload-rules && \
     sudo systemctl daemon-reload && \
     sudo systemctl enable --now open-observatory.service && \
-    sudo systemctl restart open-observatory.service"
+    sudo systemctl restart open-observatory.service && \
+    sudo systemctl enable --now open-observatory-refine.timer"
 
 echo "==> waiting for health"
 for _ in $(seq 1 30); do

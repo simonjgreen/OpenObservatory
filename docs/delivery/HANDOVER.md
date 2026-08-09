@@ -57,11 +57,21 @@ of 2026-08-05 is about 36 minutes of classifier work for a whole night, not hour
 Trimming is where the saving lives: an untrimmed 6 s evidence clip is mostly pre-roll
 silence and costs four times as much. `scripts/classify_clips_batdetect2.py`
 implements this cascade as a standalone offline tool — it reads stored clips and
-prints a comparison, and does not write to the database. It is not wired into the
-live pipeline as a registered detector plugin; `DeferredDetectorWorker` exists as the
-general mechanism that could carry it (`detectors/deferred.py`), but nothing uses it
-yet. Whether to promote the offline script into a live, queued adapter is an open
-decision, not a technical blocker — see ADR-017's 2026-08-05 update for the numbers.
+prints a comparison, and does not write to the database.
+
+**Updated 2026-08-09 (ADR-042): the cascade now ships as a scheduled job, and the
+decision about it was the opposite of what this section anticipated.** It is *not*
+a registered detector plugin and *not* carried by `DeferredDetectorWorker`. That
+worker is an in-process queue of live `AudioWindow`s whose central safety property
+is dropping anything older than `max_delivery_latency_s`; a clip written six hours
+ago is exactly what it would, correctly, reject. Instead the cascade runs as a
+**separate process** — `oo refine run`, `src/open_observatory/refinement/` — on a
+systemd timer at 01:00 UTC, fenced to `AllowedCPUs=2-3` / `Nice=19` /
+`MemoryMax=1G`, so it shares neither a GIL nor a core with capture. And it may only
+**propose** a species for human review; it never edits a record, because BatDetect2
+returned 0.77 for *Pipistrellus pygmaeus* on a call this station measured at 34 kHz
+(item 6 below). `DeferredDetectorWorker` remains unused and remains the right
+mechanism for a *live* detector too slow to run inline.
 
 ## 1b. The 2026-08-08/09 session — what changed and what it cost
 
@@ -391,11 +401,30 @@ useful addition and is not currently planned.
    implement the HID write path (see `AudioMoth-USB-Microphone-App` for the packet
    layout) or do it by hand and record the new setting in `TARGET_DIAGNOSTICS.md`.
 5. **Decide whether to promote the BatDetect2 cascade from an offline script to a
-   live, queued detector.** The speed case is now made (§1a): 36 minutes of
-   classifier work for a whole night's passes. `DeferredDetectorWorker` already
-   exists as the mechanism (`detectors/deferred.py`, `deferred_enabled` setting);
-   nothing currently registers a plugin against it. What is not settled is accuracy:
-   see item 6.
+   live, queued detector.**
+   **Decided and delivered 2026-08-09 (ADR-042), differently from how this item
+   framed it.** Not a live detector and not `DeferredDetectorWorker`: a separate
+   process, `oo refine run`, on `open-observatory-refine.timer` at 01:00 UTC,
+   CPU-fenced to cores 2-3. It writes append-only `refinement` rows and three
+   bookkeeping columns on `detection` (`refined_at`, `refinement_version`,
+   `refinement_outcome`) and **never edits a detection's species, score or
+   `native_result`** — enforced in code, with a before/after comparison of the
+   claim columns that raises if anything moved.
+
+   **What is still open here:** nothing connects a proposal to the review
+   workflow. `POST /api/v1/detections/{id}/review` exists (ADR-029) but knows
+   nothing about proposals, so `refinement.resolved_at` stays NULL and the only
+   way to see a proposal is `oo refine status`. Wiring "accept this proposal" to
+   a `review` row — and deciding whether an accepted one may finally move the
+   detection's claim — is the next piece of charter item 5.
+
+   **And the retention gap ADR-042 records but does not close:** `retention.py`
+   still deletes clips on age alone. `oo refine status` reports how many bat
+   detections have never been examined by any refiner; those clips will be
+   reclaimed at 7/30/90 days regardless. The one-line predicate that would fix it
+   is in ADR-042; applying it changes a live station's deletion policy and needs
+   the operator, plus at least one completed refinement cycle first, or every
+   deletion freezes.
 6. **Review the ultrasonic detector's false-positive rate, and resolve the Myotis
    question.** On a windy or handling-noisy evening it reports "bat pass" for
    broadband transients. Offline BatDetect2 classification of the station's own
@@ -405,6 +434,16 @@ useful addition and is not currently planned.
    The hot AudioMoth gain (item 4) is a plausible confound. This needs a human
    listening to the audible renderings, not a code change; use them to tune
    `min_snr_db`, `min_pulses_per_pass` and the band as well.
+
+   **Still open, and now instrumented (ADR-042).** The refinement runner records
+   each BatDetect2 opinion as a `refinement` row carrying the station's own
+   `peak_frequency_hz`, `peak_snr_db` and `pulse_count` next to the model's
+   species and det_prob — the exact pairing that exposed the *pygmaeus*
+   contradiction — plus a `caution` string flagging a sub-0.5 det_prob as a lean,
+   a runner-up within 0.15 as the model failing to separate species, and the hot
+   gain as an unresolved confound. This gathers the evidence for the human ear
+   this item asks for; it does not substitute for it, and nothing the runner
+   writes reaches a display or the API.
 7. **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI and
    only the resampler check exists.
 8. **Cover the history endpoints at the HTTP level.** `tests/test_history.py` tests

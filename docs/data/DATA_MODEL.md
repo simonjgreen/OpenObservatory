@@ -271,6 +271,60 @@ downstream and is deliberately deferred to a future ADR rather than half-built.
 Reviews are append-only. Current status is derived from the latest valid
 review.
 
+### refinement — Implemented (ADR-042), written by the refinement runner
+
+Append-only, like `review`. Charter item 5 in table form: **only from new
+information**, **the original claim preserved**, **a refined record
+distinguishable from an original one**. Written only by `oo refine run`
+(`src/open_observatory/refinement/store.py`), which runs in its own systemd unit,
+never in the capture process.
+
+- id
+- detection_id
+- refiner_id, refiner_version, model_id, model_version, model_sha256
+- **evidence_fingerprint** — SHA-256 over refiner + model + weights + *the
+  configuration the refiner ran under*
+- basis (`new_model`, `corrected_prior`, `human_ear`)
+- outcome (`proposed`, `no_change`, `confirmed`, `unavailable`, `failed`,
+  `applied`)
+- reason
+- original_common_name, original_scientific_name, original_taxonomic_group,
+  original_score — **the prior verdict, snapshotted verbatim at write time**
+- proposed_common_name, proposed_scientific_name, proposed_rank,
+  proposed_taxonomic_group, proposed_score
+- applied (bool), resolved_at nullable, resolved_review_id nullable → `review.id`
+- evidence (JSON, the refiner's own output verbatim)
+- created_at
+
+`ix_refinement_evidence` is **unique on (detection_id, evidence_fingerprint)**.
+That is the charter's first rule as a constraint rather than a convention: the
+same instrument, at the same version, under the same settings cannot bank a
+second, more optimistic answer about the same event. Change the model, the
+weights or the settings and the fingerprint changes and a new refinement is
+admissible.
+
+`outcome` distinguishes "examined and could not improve" (`no_change`,
+`confirmed`) from "never actually seen" (`unavailable`, `failed`). Conflating
+them would defeat the charter's retention safeguard, whose stated risk is "not
+old data, it is data the refiner never actually saw".
+
+No shipped refiner may set `applied`. See ADR-042 for the measured accuracy
+evidence behind that ceiling.
+
+### detection.refined_at / refinement_version / refinement_outcome
+
+Three columns on `detection`, denormalised from the newest `refinement` row.
+They exist because the charter's retention decision asks that "each event should
+carry the fact that refinement ran, at what version, with what outcome, and
+deletion should require it" — and the retention sweeper runs *inside the capture
+process* on a paced 1.5 s budget (ADR-026, ADR-033), so that question has to be
+answerable from an index (`ix_detection_refined_at`), not from a correlated
+subquery against a second table.
+
+NULL means no refiner has ever examined the event. **Retention does not yet
+consult these columns** — see ADR-042's "What this does not do" for the exact
+predicate that would close the gap, and why applying it is the operator's call.
+
 ### telemetry_series / telemetry_sample — Planned, not implemented
 
 Neither table exists. Retained as design intent:
@@ -378,7 +432,16 @@ Implemented:
 - `media_asset.reclaimed_at` — added by Alembic revision `0002`, because
   `ALTER TABLE ADD COLUMN` (how the column reached the live station) creates a
   column but never its index
+- `detection.refined_at` — added by Alembic revision `0005` (ADR-042), created
+  explicitly and unconditionally there for the same reason `media_asset.reclaimed_at`
+  needed revision `0002`: `ALTER TABLE ADD COLUMN` cannot create an index
 - `review.detection_id`
+- `refinement.detection_id`
+- `refinement.refiner_id`
+- `refinement.outcome`
+- `refinement.created_at`
+- `refinement (detection_id, evidence_fingerprint)` — **unique**; this is charter
+  item 5's "only from new information" rule as a database constraint (ADR-042)
 - `health_event.service`
 - `health_event.severity`
 - `health_event.start_utc`
@@ -421,8 +484,16 @@ Planned only (would apply if the corresponding table is built):
   clip; 90+ days deletes everything. Independently of all of that, disk usage
   above an 85%-default watermark reclaims the oldest surviving clips first,
   regardless of tier. Every threshold is a `Settings` field;
-- detections/reviews: **indefinite, unconditionally** — no tier or watermark
-  in `retention.py` ever deletes a `detection` row or mutates its columns;
+- detections/reviews/refinements: **indefinite, unconditionally** — no tier or
+  watermark in `retention.py` ever deletes a `detection`, `review` or
+  `refinement` row, or mutates a detection's claim columns;
+- **an open gap, recorded rather than closed (ADR-042):** the clip tiers above
+  delete on *age alone*. Nothing reads `detection.refined_at`, so a clip can be
+  reclaimed at 7, 30 or 90 days having never been examined by a refiner once —
+  which is exactly the failure `docs/CHARTER.md`'s retention decision names
+  ("delete on 'refinement has run', not on age alone"). The schema supports the
+  fix and `oo refine status` reports how many events have never been examined;
+  applying it is a live deletion-policy change and is the operator's call;
 - detailed metrics: 30–90 days depending store;
 - logs: 14 days default.
 
@@ -435,8 +506,13 @@ Planned only (would apply if the corresponding table is built):
 | `0001_initial` | the baseline, autogenerated from an empty database against `Base.metadata` and verified by stamping a `create_all()`-built database and running `alembic check` |
 | `0002_media_asset_reclaimed_at_index` | a real fix, not a demonstration: `ALTER TABLE ADD COLUMN` creates a column but never an index, so the live station's `media_asset.reclaimed_at` had none despite the model declaring one. Written `IF NOT EXISTS`, so it is a no-op on a database that reached the baseline by a normal upgrade |
 | `0003_auth_tables` | `user`, `auth_session`, `api_token` (ADR-034) |
+| `0004_drop_dead_detection_indexes` | drops the four `detection` indexes no query reads (ADR-037 option B) |
+| `0005_refinement` | the `refinement` table plus `detection.refined_at` / `refinement_version` / `refinement_outcome` and `ix_detection_refined_at` (ADR-042). Guarded like `0003`: it skips a table or column that already exists, because `create_all()` and the ALTER TABLE patcher still run at startup, and creates the index unconditionally because ADD COLUMN cannot |
 
-The live station reports `0003_auth_tables (head)`.
+The live station reported `0003_auth_tables (head)` on 2026-08-09, before
+revisions `0004` and `0005` were written; it needs `alembic upgrade head` (or a
+start, which the `create_all()` patcher covers for the columns but **not** for
+`ix_detection_refined_at` — that is `0005`'s job).
 
 `alembic/` (`env.py`, `script.py.mako`, `versions/`) and `alembic.ini` at the
 repository root are a real migration environment, wired to

@@ -180,6 +180,46 @@ class Settings(BaseSettings):
     #: this bounds when new items stop being started, not total shutdown time.
     deferred_shutdown_drain_timeout_s: float = 5.0
 
+    # ---- refinement runner (charter item 5, ADR-042) -----------------------
+    #: The refiner runs in its **own process**, started by
+    #: ``deploy/open-observatory-refine.timer`` -- never inside the station.
+    #: ADR-033 is the whole reason: a 0.30 s retention sweep in a dedicated
+    #: thread starved the capture event loop for 55-150 ms and cost ~1.9 false
+    #: capture gaps a minute, and a BatDetect2 pass is 2.1 s of inference. These
+    #: settings are read by ``oo refine run``; the station process ignores them.
+    refinement_enabled: bool = True
+    #: Which refiner to run. ``batdetect2-cascade`` classifies stored ultrasonic
+    #: evidence clips and may only ever *propose* -- see ADR-042 and
+    #: ``refinement/batdetect2.py`` for the measured accuracy evidence behind
+    #: that ceiling.
+    refinement_refiner: Literal["batdetect2-cascade"] = "batdetect2-cascade"
+    #: Measured quiet window, in **UTC** hours, half-open ``[start, end)``.
+    #: Enforced by ``RefinementRunner.run`` itself and not only by the timer: a
+    #: unit file is one ``systemctl start`` away from being bypassed, and the
+    #: one thing that must never happen is the classifier landing on the CPU at
+    #: dusk when the bats are actually flying.
+    refinement_window_start_hour_utc: int = 1
+    refinement_window_end_hour_utc: int = 3
+    #: Ceilings on one pass. The wall-clock budget is the real bound: at the
+    #: measured 2.1 s per pass, a busy night's 1015 passes is ~36 minutes, which
+    #: fits the two-hour window with room for a backlog. A pass that runs out of
+    #: budget stops cleanly and reports ``complete: false``; the next night
+    #: resumes with the oldest unrefined events.
+    refinement_max_items: int = 1200
+    refinement_max_seconds: float = 5400.0
+    #: Seconds of clip classified, centred on the loudest sample. Trimming is
+    #: where the cascade's saving lives: an untrimmed 6 s evidence clip is mostly
+    #: pre-roll silence and costs four times as much (ADR-017, 2026-08-05).
+    refinement_trim_s: float = 1.5
+    #: Noise floor, **not** a truth threshold: it exists to stop one pass
+    #: emitting a dozen near-zero species rows. The station's own measured leans
+    #: sit at 0.20-0.30 and must survive it, because a low-confidence lean is
+    #: exactly what a human ear should arbitrate.
+    refinement_min_det_prob: float = 0.05
+    #: Inference threads. The unit is fenced to two cores (``AllowedCPUs=2-3``),
+    #: so more threads than that is context switching, not throughput.
+    refinement_threads: int = 2
+
     # ---- evidence clips ---------------------------------------------------
     clips_enabled: bool = True
     clip_pre_roll_s: float = 3.0
