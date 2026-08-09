@@ -533,13 +533,13 @@ def history_reconcile_streams(
     the *same rows* for, i.e. not while capture is mid-stream on the row being
     corrected -- closed rows are safe at any time.
     """
-    from .db.session import create_all, init_engine, session_scope
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
     from .history import apply_stream_reconciliation, find_suspect_streams
 
     settings = get_settings()
     configure_logging(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     with session_scope() as session:
         suspects = find_suspect_streams(session, ratio_threshold=ratio_threshold)
@@ -632,14 +632,14 @@ def detections_reconcile_plausibility(
     be re-run to recompute an occurrence probability for each stored detection.
     """
     from . import models as model_registry
-    from .db.session import create_all, init_engine, session_scope
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
     from .detectors.base import DetectorUnavailable
     from .plausibility_repair import apply_plausibility_flag, find_implausible_detections
 
     settings = get_settings()
     configure_logging(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     if settings.latitude is None or settings.longitude is None:
         console.print(
@@ -733,13 +733,13 @@ def clips_retention(
     runs in (ADR-026). Always run ``--dry-run`` first against a station you
     care about.
     """
-    from .db.session import create_all, init_engine, session_scope
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
     from .retention import RetentionSweeper
 
     settings = get_settings()
     configure_logging(settings)
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     sweeper = RetentionSweeper(
         clip_dir=settings.clip_dir,

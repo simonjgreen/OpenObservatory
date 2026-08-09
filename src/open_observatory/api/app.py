@@ -67,7 +67,7 @@ from ..audio.probe import enumerate_capture_devices, probe_supported_rates, syst
 from ..auth import AuthError, AuthService, Principal
 from ..config import Settings, get_settings
 from ..db import models as orm
-from ..db.session import create_all, get_session, init_engine, session_scope
+from ..db.session import ensure_schema_at_head, get_session, init_engine, session_scope
 from ..display import detection_flags, display_title
 from ..events import EventType
 from ..mqtt import MqttPublisher
@@ -238,7 +238,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.ensure_directories()
     init_engine(settings)
-    create_all()
+    ensure_schema_at_head()
 
     station = Station(settings)
     hub = LiveHub()

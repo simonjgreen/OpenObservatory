@@ -8,15 +8,21 @@ shell all working the ordinary way.
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import sqlalchemy as sa
 import structlog
+from alembic import command
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..config import Settings
+from ..config import REPO_ROOT, Settings
 from .models import Base
 
 log = structlog.get_logger(__name__)
@@ -70,65 +76,105 @@ def get_engine() -> Engine:
 
 
 def create_all(engine: Engine | None = None) -> None:
-    """Create the schema directly, then patch in any columns added since.
+    """Create the schema directly from ``Base.metadata``, bypassing Alembic.
 
-    Used by tests and by first-run bootstrap on the SQLite developer profile.
-    The PostgreSQL profile is expected to go through Alembic.
+    **Not the production bootstrap path any more (ADR-041).** Application and
+    CLI startup call :func:`ensure_schema_at_head` instead, which goes through
+    Alembic so there is exactly one thing that decides what the schema looks
+    like. This function still exists for two legitimate, test-only uses:
 
-    ``create_all`` only creates *missing tables* -- it never alters an existing
-    one, so a column added to a model after a SQLite database already exists
-    (as ``audio_stream.last_frame_at_utc`` was, ADR-024) would silently never
-    appear on a developer's or the station's existing file. SQLite's own
-    ``ALTER TABLE ADD COLUMN`` is cheap and safe for a nullable column, so
-    :func:`_patch_sqlite_columns` applies it defensively on every startup.
+    1. ``tests/test_migrations.py`` builds a ``create_all()`` database and
+       asks Alembic (``alembic check``) whether it sees any drift from
+       ``head`` -- that comparison is what keeps the migrations honest, and
+       it needs a non-Alembic way to build the "expected" schema to compare
+       against.
+    2. Other tests that want a fast, disposable schema for a scenario
+       unrelated to migrations themselves.
 
-    **Kept deliberately, not removed, now that ``alembic/`` exists (ADR-035).**
-    Every application and CLI entry point still calls this function directly
-    on startup; none of them run a migration. Removing the patcher today
-    would silently strand any SQLite database -- the live station's included
-    -- that reaches a future model change through ``git pull`` + restart
-    rather than through an explicit ``alembic upgrade head`` first. That
-    coupling is real *today* and should be cut by making startup call (or
-    require) Alembic instead of ``create_all()``, not by deleting the one
-    thing currently keeping an un-migrated database working. See
-    ``docs/data/DATA_MODEL.md`` "Adopting migrations on an existing
-    database" for the operator sequence that supersedes this patcher going
-    forward, and add a new column to `models.py` via an Alembic revision
-    from now on -- the patcher is a safety net for columns that already
-    shipped this way, not a sanctioned way to ship a new one.
+    It never alters an existing table -- only ``CREATE TABLE`` for tables
+    that do not exist yet -- so it must not be pointed at a database that
+    already has some but not all of the current tables; that is exactly the
+    situation :func:`ensure_schema_at_head` refuses to paper over.
     """
     engine = engine or get_engine()
     Base.metadata.create_all(engine)
-    if engine.dialect.name == "sqlite":
-        _patch_sqlite_columns(engine)
 
 
-def _patch_sqlite_columns(engine: Engine) -> None:
-    """Add any model column missing from an existing SQLite table.
+def _alembic_config() -> Config:
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.attributes["configure_logger"] = False
+    return cfg
 
-    A stop-gap for the developer/on-device SQLite profile that predates
-    Alembic (ADR-007, ADR-035). Only additive, nullable columns are handled
-    -- exactly the shape a heartbeat or similar diagnostic column takes --
-    because that is the only kind ``ALTER TABLE ADD COLUMN`` can do without a
-    table rebuild. It also cannot add an index: a column it patches in has no
-    index until an explicit Alembic migration adds one (this happened for
-    real -- see revision ``0002_media_asset_reclaimed_at_index``).
+
+def ensure_schema_at_head(engine: Engine | None = None) -> None:
+    """Verify the schema is under Alembic's control and at ``head``.
+
+    Replaces the old ``create_all()`` + ``ALTER TABLE`` patcher as the
+    production bootstrap (ADR-041): Alembic is now the only thing that
+    creates or changes schema, so there is one description of the schema
+    (the migrations) instead of two (the migrations *and* whatever
+    ``create_all()``/the patcher happened to build) that could silently
+    drift apart -- which is exactly what happened before ADR-035.
+
+    Deliberately does **not** run a migration against a database that
+    already has tables, even an out-of-date one. ``deploy/deploy.sh`` runs
+    ``alembic upgrade head`` as an explicit step before the service is
+    (re)started (ADR-041), specifically so that a slow or failing migration
+    is caught by the deploy script -- which can fail loudly and leave the
+    previous, working version running -- rather than by this function
+    blocking or failing on capture's own startup path. Capture wins: this
+    check is a single fast read (``PRAGMA``/catalog query, no DDL), never a
+    write.
+
+    Two cases:
+
+    - **A completely empty database** (no tables at all -- a fresh developer
+      checkout, a brand-new station, or a test's throwaway SQLite file) is
+      bootstrapped by running ``alembic upgrade head`` directly. Starting
+      from nothing, this *is* revision ``0001_initial``'s ``CREATE TABLE``
+      -- fast, and by construction identical to what ``create_all()`` would
+      have built, because ``tests/test_migrations.py`` asserts exactly that.
+    - **A database that already has tables** must already be under
+      Alembic's control and at ``head``. If it has no ``alembic_version``
+      row at all, it is a pre-Alembic database that was never adopted (see
+      docs/data/DATA_MODEL.md "Which case are you in?"). If it has one but
+      it does not match ``head``, a migration is owed. Either way this
+      raises rather than starting the service against a schema the code
+      does not expect.
     """
-    with engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
-            existing = {
-                row[1] for row in connection.exec_driver_sql(f'PRAGMA table_info("{table.name}")')
-            }
-            if not existing:
-                continue  # table itself doesn't exist yet; create_all() would have made it
-            for column in table.columns:
-                if column.name in existing:
-                    continue
-                ddl_type = column.type.compile(dialect=engine.dialect)
-                connection.exec_driver_sql(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}'
-                )
-                log.info("db.column_patched", table=table.name, column=column.name)
+    engine = engine or get_engine()
+    table_names = set(sa.inspect(engine).get_table_names())
+
+    cfg = _alembic_config()
+    script = ScriptDirectory.from_config(cfg)
+    head_rev = script.get_current_head()
+
+    if not table_names:
+        log.info("db.schema_bootstrap", detail="empty database; running alembic upgrade head")
+        cfg.cmd_opts = argparse.Namespace(x=[f"url={engine.url.render_as_string(hide_password=False)}"])
+        command.upgrade(cfg, "head")
+        return
+
+    with engine.connect() as connection:
+        current_rev = MigrationContext.configure(connection).get_current_revision()
+
+    if current_rev is None:
+        raise RuntimeError(
+            "Database has tables but no Alembic version stamp -- this looks like a "
+            "pre-Alembic database (built by create_all() before the Alembic "
+            "environment existed, or the ALTER TABLE patcher retired in ADR-041). "
+            "Adopt it first: `alembic stamp 0001_initial && alembic upgrade head` "
+            "(see docs/data/DATA_MODEL.md 'Which case are you in?'). Refusing to "
+            "start against an unstamped schema."
+        )
+    if current_rev != head_rev:
+        raise RuntimeError(
+            f"Database is at Alembic revision {current_rev!r}, but the code expects "
+            f"{head_rev!r}. Run `alembic upgrade head` (deploy/deploy.sh does this "
+            "automatically before every restart) before starting the service."
+        )
+    log.info("db.schema_at_head", revision=current_rev)
 
 
 @contextmanager

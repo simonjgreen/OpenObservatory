@@ -436,9 +436,16 @@ useful addition and is not currently planned.
     50,396 detections intact. Building it found a real latent bug:
     `media_asset.reclaimed_at` existed but its index never did, because
     `ALTER TABLE ADD COLUMN` cannot create one — revision 0002 repairs it.
-    **Still open:** nothing calls `alembic upgrade head` at startup, so
-    `create_all()` and the ALTER TABLE patcher in `db/session.py` are deliberately
-    kept. Wire migrations into startup or `deploy.sh`, *then* retire the patcher.
+    **Fully closed (ADR-041, 2026-08-09):** `deploy/deploy.sh` now runs
+    `alembic upgrade head` as an explicit step before every restart, and
+    `api/app.py`/`cli.py` call a new `ensure_schema_at_head()` instead of
+    `create_all()`. The `create_all()`+ALTER TABLE patcher is retired from every
+    production code path (`create_all()` itself survives only as a test helper).
+    A fourth revision (`0004_drop_dead_detection_indexes`, ADR-037) landed since
+    this item was written; the live station is confirmed at
+    `0004_drop_dead_detection_indexes (head)` with 65,515 detections and 28,183
+    media assets, verified against a read-only backup — `alembic upgrade head`
+    against that copy is a true idempotent no-op.
 
 ### 6.3a Small, known, and unfixed
 
@@ -505,8 +512,9 @@ authority; the short version:
   prerequisite this entry used to name is met — but it has only ever been
   exercised against SQLite, so "the DSN swap is configuration-only" stays
   unverified until someone runs it against a real PostgreSQL 16 instance.
-  Startup still calls `create_all()` rather than Alembic; wiring migrations into
-  `deploy.sh` or startup is the next concrete step (see §6.3 item 10).
+  **Done (ADR-041, 2026-08-09):** startup now calls `ensure_schema_at_head()`
+  and `deploy/deploy.sh` runs `alembic upgrade head` before every restart (see
+  §6.3 item 10). PostgreSQL itself remains unexercised in this repository.
 - **Redis Streams.** ADR-009's `EventBus` protocol is the seam. The bounded queues
   and drop counters already model the back-pressure a real transport imposes.
 - **USB SSD: done (2026-08-08, ADR-021).** Evidence clips now live on a 465.8 GB
