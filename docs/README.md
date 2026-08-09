@@ -1,5 +1,18 @@
 # Open Observatory documentation
 
+## Start here
+
+| I want to... | Read |
+|---|---|
+| Know what this system is *for*, and what wins in a conflict | **[CHARTER.md](CHARTER.md)** |
+| Set up a development environment without losing an hour | **[development/SETUP.md](development/SETUP.md)** |
+| Know what "tested" has to mean here | **[development/TEST_PLAN.md](development/TEST_PLAN.md)** |
+| Understand why something is the way it is | [architecture/ADRS.md](architecture/ADRS.md) |
+| Know what is actually done | [delivery/MILESTONE_STATUS.md](delivery/MILESTONE_STATUS.md) |
+| Operate or deploy the station | [operations/DEPLOYMENT_AND_OPERATIONS.md](operations/DEPLOYMENT_AND_OPERATIONS.md) |
+| Pick up where the last session left off | [delivery/HANDOVER.md](delivery/HANDOVER.md) |
+
+
 Start here. This page is the map: what the system is, how to run it, and which
 document answers which question.
 

@@ -63,6 +63,49 @@ general mechanism that could carry it (`detectors/deferred.py`), but nothing use
 yet. Whether to promote the offline script into a live, queued adapter is an open
 decision, not a technical blocker — see ADR-017's 2026-08-05 update for the numbers.
 
+## 1b. The 2026-08-08/09 session — what changed and what it cost
+
+A long multi-agent session. The transferable parts:
+
+**Delivered:** an ESP32 wall display (ADR-023, ADR-038); MQTT + Home Assistant,
+live on the operator's broker (ADR-025); tiered retention (ADR-026); live
+ultrasonic retuning restored (ADR-022); coverage bounded by delivered frames
+(ADR-024); the capture-gap root cause and fix (ADR-033); BirdNET plausibility
+filtering (ADR-032); an Alembic environment (ADR-035); an authentication
+foundation, off by default (ADR-034); the deficit estimator corrected (ADR-039);
+a committed species fixture passing on target; a documentation audit; and
+`docs/CHARTER.md`.
+
+**Four bugs that had been silently lying, all found by checking an instrument
+against the thing it claimed to measure:**
+
+| Instrument | Claimed | Truth |
+|---|---|---|
+| `estimated_missing_seconds` | 52.4 s lost | 4.06 s (12.9x, ADR-039) |
+| `rate_offset_ppm` | +878 to +3,600 | approx -43 (same defect) |
+| capture coverage | up to 1302% | arithmetically impossible (ADR-024) |
+| MQTT `suppressed_unidentified_total` | 0 | filter never fired at all |
+
+The last one is the sharpest: the filter shipped broken, its unit test was
+green, and it was caught only by comparing the production counter against the
+database. The test asserted an invented value (`taxonomic_group=None`) instead
+of the sentinel the detector really emits (`"acoustic_event"`).
+
+**Two regressions this session caused and fixed**, both worth knowing:
+
+- Merging retention's 10 s sweep cadence reintroduced capture gaps at ~1.9/min.
+  An executor partitions queueing, not scheduling, and nothing partitions the
+  GIL (ADR-033).
+- Two agents fixed "stream rows never record frames" independently and
+  incompatibly; one wrote process-lifetime counters into per-stream rows, which
+  is the same arithmetic that produced 1302% coverage. Resolved at merge.
+
+**Traps recorded elsewhere but worth repeating here:** the station logs UTC
+while `journalctl --since` takes local time (this produced an exactly opposite
+conclusion once); React Testing Library was silently not cleaning up between
+tests, so component tests could pass or fail on another test's DOM; and the
+same `detector_id` does not imply the same operational config over time.
+
 ## 2. How to operate it
 
 ```bash
