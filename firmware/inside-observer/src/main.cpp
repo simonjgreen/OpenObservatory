@@ -101,6 +101,24 @@ std::string updatingVersion;
 
 constexpr uint32_t kWifiConnectTimeoutMs = 25000;
 
+// Keep the bootloader's rollback net armed. Without this the whole probation
+// machinery below is dead code, and we only found that by watching a real OTA:
+// the image installed, rebooted, and reported `app slot: app1` with no probation
+// marker, and otadata already read VALID.
+//
+// arduino-esp32 declares `verifyRollbackLater()` as a weak symbol returning
+// false (`cores/esp32/esp32-hal-misc.c`), and `initArduino()` acts on it *before
+// `setup()` runs*: a PENDING_VERIFY image is marked valid immediately, cancelling
+// the rollback. So `esp_ota_get_state_partition` can never return PENDING_VERIFY
+// by the time our code asks, `onProbation` is always false, and a build that
+// boots but cannot reach the station would sit there broken forever -- which is
+// the exact failure this feature exists to prevent, and the one that costs a
+// car journey.
+//
+// Overriding the weak symbol hands that decision back to us. `evaluateProbation`
+// then confirms the image once the station says hello, or rolls it back.
+extern "C" bool verifyRollbackLater() { return true; }
+
 void ledsOff() {
   // The RGB LED is active LOW. Driving all three HIGH turns it off, which is
   // what an ambient object in a living room wants, and also clears whatever
