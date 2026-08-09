@@ -105,6 +105,15 @@ class AlsaSource:
         #: so does assuming an overrun with an unmeasured cost lost nothing.
         self.gaps_with_loss = 0
         self.gaps_without_loss = 0
+        #: Reads that arrived more than a block late and cost nothing, because
+        #: the ring held the audio until we came back for it. These are a
+        #: scheduling symptom, not a capture gap, and they are counted here
+        #: rather than reported as one: see ADR-039.
+        self.late_reads = 0
+        #: The longest stall the ring has actually absorbed, in frames. If this
+        #: approaches `buffer_frames` the ring is close to being too shallow,
+        #: which is the warning no counter gave before the ring was widened.
+        self.late_read_max_frames = 0
         self.buffer_frames = 0
         #: One thread, ours. See the module docstring.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oo-capture")
@@ -120,11 +129,33 @@ class AlsaSource:
         # monotonic clock by tens of ppm; that shows up as this figure drifting
         # steadily. Lost audio shows up as it *stepping*. Only steps are gaps.
         self._deficit_baseline: float | None = None
+        # An open *suspicion* that audio was lost, held until the following
+        # blocks either confirm or refute it. See `_settle_deficit`.
+        self._suspect_baseline: float | None = None
+        self._suspect_floor = 0.0
+        self._suspect_at_frame = 0
+        self._suspect_alsa_overrun = False
+        self._suspect_until_frame = 0
+        self._suspect_peak = 0.0
         self.observed_rate_hz: float | None = None
         self.rate_offset_ppm: float | None = None
         self.missing_frames_total = 0
 
     # ------------------------------------------------------------------
+
+    @property
+    def _confirm_frames(self) -> int:
+        """How much audio must be read before a deficit step is believed.
+
+        A stall the ring absorbed shows up as a step that *reverses*: the frames
+        were never lost, they were waiting in the kernel, and the next few reads
+        return immediately until the backlog is drained. Draining takes at most
+        one ring's worth of audio plus the block in flight, so waiting that long
+        before crediting a step is what separates "the read was late" from
+        "recording was lost". Floored at three blocks for a source whose ring
+        size is unknown (tests, and any device that does not report one).
+        """
+        return max(3 * self._block_frames, self.buffer_frames + 2 * self._block_frames)
 
     def _periods_for_buffer(self) -> int:
         """How many periods to request so the ring holds ``buffer_ms`` of audio.
@@ -362,29 +393,17 @@ class AlsaSource:
             self.observed_rate_hz = presented * NS_PER_S / elapsed_ns
             self.rate_offset_ppm = (self.observed_rate_hz / rate - 1.0) * 1e6
 
-        assert self._deficit_baseline is not None
-        step = deficit - self._deficit_baseline
-        if step > self._block_frames:
-            # A step beyond a whole block is lost audio, not crystal drift.
-            #
-            # This estimate used to be gated on `discontinuity is None`, so a
-            # block on which ALSA had *already* raised EPIPE skipped it entirely
-            # and was published with `missing_frames=0`. That made an overrun —
-            # the one event most likely to have lost audio — the one event whose
-            # cost was never measured, and it read in the logs as a harmless
-            # gap. It also left the deficit uncredited, which dragged the
-            # observed-rate estimate down: -261 ppm measured against a true
-            # device offset near -43 ppm. Estimate the loss either way; the
-            # reason ALSA already gave us is the better label, so keep it.
-            if discontinuity is None:
-                discontinuity = DiscontinuityReason.OVERRUN
-            missing += int(step)
-            self.missing_frames_total += int(step)
-            self._deficit_baseline = deficit
-        else:
-            # Track the slow component, so genuine crystal offset is absorbed
-            # rather than reported forever as a gap.
-            self._deficit_baseline += 0.01 * step
+        # An EPIPE this block is evidence that *something* was lost, but not of
+        # how much — that is the deficit's job to say — so its report is
+        # deferred with the estimate rather than published ahead of it.
+        alsa_overrun = discontinuity is DiscontinuityReason.OVERRUN
+        if alsa_overrun:
+            discontinuity = None
+        self._frames_read += int(pcm.shape[0])
+        settled, confirmed, at_frame = self._settle_deficit(deficit, alsa_overrun, first_frame)
+        if settled is not None:
+            discontinuity = settled
+            missing += confirmed
 
         if discontinuity is not None and discontinuity != DiscontinuityReason.STREAM_START:
             if missing > 0:
@@ -392,7 +411,6 @@ class AlsaSource:
             else:
                 self.gaps_without_loss += 1
 
-        self._frames_read += int(pcm.shape[0])
         sequence = self._sequence
         self._sequence += 1
 
@@ -406,7 +424,108 @@ class AlsaSource:
             clock=self.info.clock,
             discontinuity=discontinuity,
             missing_frames=missing,
+            discontinuity_at_frame=at_frame,
         )
+
+    # ------------------------------------------------------------------
+
+    def _settle_deficit(
+        self, deficit: float, alsa_overrun: bool, first_frame: int
+    ) -> tuple[DiscontinuityReason | None, int, int | None]:
+        """Decide whether a timing step actually cost any audio.
+
+        The frame deficit — how far behind the stream is against elapsed
+        monotonic time — is the only ground truth the capture path has, and it
+        is what `continuity_ratio` is already built on. It moves in three ways:
+
+        * slowly and forever, because the device's crystal is not the host's
+          (about -43 ppm on the target). That is drift, absorbed into the
+          baseline, and never a gap.
+        * up and then straight back down, because a read arrived late and the
+          kernel ring held the audio until we returned for it. **Nothing was
+          lost.** This is what the estimator used to credit as loss the instant
+          it saw it, and it is why the station reported 252,495 missing frames
+          against a real deficit of 21,300 with ALSA reporting zero overruns.
+        * up and *stays* up, because the frames are genuinely gone.
+
+        Only the third is loss, and the three are not distinguishable at the
+        moment the step appears — only afterwards. So a step opens a suspicion,
+        the lowest deficit seen over the next `_confirm_frames` is taken as the
+        part that did not come back, and *that* is what gets credited. The
+        estimate is therefore reconciled against the deficit by construction:
+        `missing_frames_total` can only ever be the sustained part of
+        `expected_frames - frames`.
+
+        Returns the discontinuity to publish (if any), its cost in frames, and
+        the frame it occurred at — which is not this block's own boundary,
+        because the verdict arrives a few blocks after the event.
+        """
+        assert self._deficit_baseline is not None
+
+        if self._suspect_baseline is None:
+            step = deficit - self._deficit_baseline
+            if step <= self._block_frames and not alsa_overrun:
+                # Track the slow component, so genuine crystal offset is
+                # absorbed rather than reported forever as a gap.
+                self._deficit_baseline += 0.01 * step
+                return None, 0, None
+            self._suspect_baseline = self._deficit_baseline
+            self._suspect_floor = deficit
+            self._suspect_peak = deficit
+            self._suspect_at_frame = first_frame
+            self._suspect_alsa_overrun = alsa_overrun
+            self._suspect_until_frame = self._frames_read + self._confirm_frames
+            return None, 0, None
+
+        self._suspect_floor = min(self._suspect_floor, deficit)
+        self._suspect_peak = max(self._suspect_peak, deficit)
+        self._suspect_alsa_overrun = self._suspect_alsa_overrun or alsa_overrun
+        if self._frames_read < self._suspect_until_frame:
+            return None, 0, None
+
+        baseline = self._suspect_baseline
+        confirmed = int(max(0.0, self._suspect_floor - baseline))
+        stalled = int(max(0.0, self._suspect_peak - baseline))
+        at_frame = self._suspect_at_frame
+        overrun = self._suspect_alsa_overrun
+        self._suspect_baseline = None
+
+        if confirmed >= max(self._period_frames, 1):
+            # The deficit never came back: this audio is gone. Re-anchor the
+            # baseline at the new floor so the loss is credited exactly once.
+            self._deficit_baseline = baseline + confirmed
+            self.missing_frames_total += confirmed
+            reason = DiscontinuityReason.OVERRUN if overrun else DiscontinuityReason.FRAME_DEFICIT
+            log.warning(
+                "capture.loss_confirmed",
+                reason=str(reason),
+                frames=confirmed,
+                seconds=round(confirmed / self.info.fmt.sample_rate, 4),
+                at_frame=at_frame,
+                alsa_overrun=overrun,
+            )
+            return reason, confirmed, at_frame
+
+        # The ring gave it all back. Re-anchor on where the deficit actually
+        # settled rather than on the pre-stall baseline, which may have drifted.
+        self._deficit_baseline = self._suspect_floor
+        if overrun:
+            # ALSA is the authority on overruns, so this stays a reported gap —
+            # a ring that came within a hair of overflowing is not nothing —
+            # but its measured cost is zero and it is counted as such.
+            log.warning("capture.overrun_cost_zero", at_frame=at_frame, stall_frames=stalled)
+            return DiscontinuityReason.OVERRUN, 0, at_frame
+        self.late_reads += 1
+        self.late_read_max_frames = max(self.late_read_max_frames, stalled)
+        log.info(
+            "capture.late_read",
+            stall_frames=stalled,
+            stall_ms=round(stalled * 1000.0 / self.info.fmt.sample_rate, 1),
+            buffer_frames=self.buffer_frames,
+            count=self.late_reads,
+            note="absorbed by the ring; no audio lost",
+        )
+        return None, 0, None
 
     async def close(self) -> None:
         self._closed = True
@@ -419,6 +538,8 @@ class AlsaSource:
             overruns=self.overrun_count,
             gaps_with_loss=self.gaps_with_loss,
             gaps_without_loss=self.gaps_without_loss,
+            late_reads=self.late_reads,
+            late_read_max_frames=self.late_read_max_frames,
             missing_frames=self.missing_frames_total,
         )
         # After the device is shut, nothing else may be submitted. Do not wait:

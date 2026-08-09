@@ -74,10 +74,86 @@ class FakePcm:
         return PERIOD_FRAMES, self._payload
 
 
-def _prepared_source() -> AlsaSource:
+class RingedDevice:
+    """A fake capture device with a real kernel-style ring, driven by `_Clock`.
+
+    This is the instrument the estimator has to be judged against, because the
+    property under test — "was any audio actually lost?" — is a property of the
+    *device*, not of the reader. It produces frames at its own crystal rate,
+    holds them in a ring of `ring_frames`, drops what will not fit, and raises
+    the same `Input/output error` ALSA does when it discovers the overflow. So
+    `device.dropped` is ground truth, injected by the test, and every assertion
+    below compares the estimate against it rather than against another estimate.
+
+    `read()` advances the fake clock to the moment the next period is ready,
+    which is what a blocking ALSA read does in real time. A test simulates a
+    stalled consumer simply by advancing the clock itself before reading.
+    """
+
+    def __init__(
+        self,
+        clock: _Clock,
+        *,
+        ring_frames: int,
+        rate: int = RATE,
+        period_frames: int = PERIOD_FRAMES,
+        ppm: float = 0.0,
+    ) -> None:
+        self._clock = clock
+        self._t0 = clock.now
+        self._rate = rate * (1.0 + ppm / 1e6)
+        self._period = period_frames
+        self.ring_frames = ring_frames
+        self.delivered = 0
+        self.dropped = 0
+        self.overruns = 0
+        self._inject = 0
+        self._inject_silent = 0
+        self._payload = np.zeros(period_frames, dtype="<i2").tobytes()
+
+    def drop(self, frames: int, *, report: bool = True) -> None:
+        """Remove `frames` of audio outright, as an overflowing ring would.
+
+        With ``report=False`` the frames vanish and the device says nothing —
+        the case where the only evidence is the frame deficit itself.
+        """
+        if report:
+            self._inject += frames
+        else:
+            self._inject_silent += frames
+
+    def _produced(self) -> int:
+        return int((self._clock.now - self._t0) * self._rate / 1e9)
+
+    def read(self) -> tuple[int, bytes]:
+        if self._inject_silent:
+            self.delivered += self._inject_silent
+            self.dropped += self._inject_silent
+            self._inject_silent = 0
+        due = self._t0 + int((self.delivered + self._period) * 1e9 / self._rate)
+        if self._clock.now < due:
+            self._clock.now = due
+        backlog = self._produced() - self.delivered
+        lost = self._inject + max(0, backlog - self.ring_frames)
+        if lost:
+            self._inject = 0
+            self.delivered += lost
+            self.dropped += lost
+            self.overruns += 1
+            raise _ensure_alsaaudio()("Input/output error")
+        self.delivered += self._period
+        return self._period, self._payload
+
+
+def _drain(source: AlsaSource, blocks: int) -> list[object]:
+    return [source._read_blocking() for _ in range(blocks)]
+
+
+def _prepared_source(*, ring_frames: int = 0) -> AlsaSource:
     source = AlsaSource(block_ms=100)
     source._period_frames = PERIOD_FRAMES
     source._block_frames = BLOCK_FRAMES
+    source.buffer_frames = ring_frames
     source._dtype = "<i2"
     source._scale = 1.0 / 32768.0
     source._pending_discontinuity = None
@@ -144,58 +220,177 @@ def test_clean_block_reports_no_discontinuity(monkeypatch: pytest.MonkeyPatch) -
     assert source.gaps_without_loss == 0
 
 
-def test_overrun_that_lost_audio_reports_the_frames_it_cost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression: the estimate used to be skipped when ALSA had already raised.
+RING_FRAMES = 192_000  # 500 ms at 384 kHz, the ring ADR-030 shipped
 
-    An EPIPE overrun set `discontinuity`, and the frame-deficit estimator was
-    gated on `discontinuity is None`, so exactly the events most likely to have
-    lost audio were published as `missing_frames=0` and never counted.
-    """
-    source = _prepared_source()
+
+def _ringed(
+    monkeypatch: pytest.MonkeyPatch, *, ppm: float = 0.0, ring_frames: int = RING_FRAMES
+) -> tuple[AlsaSource, RingedDevice, _Clock]:
     clock = _Clock()
     monkeypatch.setattr("open_observatory.audio.alsa_source.time.monotonic_ns", clock)
+    source = _prepared_source(ring_frames=ring_frames)
+    device = RingedDevice(clock, ring_frames=ring_frames, ppm=ppm)
+    source._pcm = device
+    return source, device, clock
 
-    source._pcm = FakePcm()
-    source._read_blocking()  # anchors the stream
 
-    # 300 ms of wall time passes but only one block of audio arrives, and ALSA
-    # tells us why: 200 ms — 76,800 frames — never reached us.
-    source._pcm = FakePcm(raise_overrun_at=2)
-    clock.advance_ms(300)
-    block = source._read_blocking()
+def test_a_stall_the_ring_absorbs_reports_no_loss_and_is_not_an_overrun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this fix exists for: a late read is not lost audio.
 
-    assert block is not None
-    assert block.discontinuity == DiscontinuityReason.OVERRUN
+    A 300 ms stall behind a 500 ms ring loses nothing — the frames wait in the
+    kernel and arrive on the next read. The old estimator credited the timing
+    step as loss the moment it saw it and labelled it `reason=overrun`, which is
+    how the live station reported 252,495 missing frames while ALSA's own
+    overrun counter sat at zero.
+    """
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
+
+    clock.advance_ms(300)  # the event loop is blocked; nobody drains the ring
+    blocks = _drain(source, 20)
+
+    assert device.dropped == 0, "the ring should have absorbed a 300 ms stall"
+    assert device.overruns == 0
+    assert source.overrun_count == 0
+    assert source.missing_frames_total == 0
+    assert source.gaps_with_loss == 0
+    assert source.gaps_without_loss == 0
+    assert [b for b in blocks if b.discontinuity is not None] == []
+    # It is still reported — as what it is.
+    assert source.late_reads == 1
+    # The backlog still in the ring when the late read completed: 300 ms of
+    # audio accumulated, 100 ms of it consumed by the read itself.
+    assert source.late_read_max_frames == pytest.approx(200 * 384, rel=0.05)
+
+
+def test_a_genuine_overrun_still_has_its_cost_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-030's regression, which must not come back.
+
+    The estimate used to be gated on `discontinuity is None`, so a block on
+    which ALSA had already raised EPIPE skipped it and published
+    `missing_frames=0` — the event most likely to have lost audio was the one
+    whose cost was never measured. Here the stall exceeds the ring, the device
+    really does drop frames, and the estimate must match what it dropped.
+    """
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
+
+    clock.advance_ms(900)  # 345,600 frames behind a 192,000-frame ring
+    blocks = _drain(source, 20)
+
+    assert device.dropped > 0
     assert source.overrun_count == 1
-    assert block.missing_frames == pytest.approx(76_800, abs=BLOCK_FRAMES)
-    assert source.missing_frames_total == block.missing_frames
+    lost = [b for b in blocks if b.missing_frames > 0]
+    assert len(lost) == 1
+    assert lost[0].discontinuity == DiscontinuityReason.OVERRUN
+    assert lost[0].missing_frames == pytest.approx(device.dropped, abs=BLOCK_FRAMES)
+    assert source.missing_frames_total == pytest.approx(device.dropped, abs=BLOCK_FRAMES)
     assert source.gaps_with_loss == 1
     assert source.gaps_without_loss == 0
 
 
-def test_overrun_with_no_lost_audio_is_counted_separately(
+def test_an_injected_gap_of_known_size_is_reported_at_its_true_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _prepared_source()
-    clock = _Clock()
-    monkeypatch.setattr("open_observatory.audio.alsa_source.time.monotonic_ns", clock)
+    """Exactly 40,000 frames removed; exactly 40,000 frames reported."""
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
 
-    source._pcm = FakePcm()
-    source._read_blocking()
+    device.drop(40_000)
+    blocks = _drain(source, 20)
 
-    # ALSA reports an overrun, but the frames still add up: nothing was lost.
-    source._pcm = FakePcm(raise_overrun_at=2)
-    clock.advance_ms(100)
-    block = source._read_blocking()
+    assert device.dropped == 40_000
+    lost = [b for b in blocks if b.missing_frames > 0]
+    assert len(lost) == 1
+    assert lost[0].missing_frames == pytest.approx(40_000, abs=PERIOD_FRAMES)
+    assert source.missing_frames_total == pytest.approx(40_000, abs=PERIOD_FRAMES)
 
-    assert block is not None
-    assert block.discontinuity == DiscontinuityReason.OVERRUN
-    assert block.missing_frames == 0
-    assert source.gaps_without_loss == 1
-    assert source.gaps_with_loss == 0
+
+def test_an_unreported_deficit_is_not_labelled_an_overrun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio can go missing without EPIPE. It must not borrow ALSA's word for it."""
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
+
+    # Frames vanish and the device says nothing at all.
+    device.drop(40_000, report=False)
+    blocks = _drain(source, 20)
+
+    lost = [b for b in blocks if b.missing_frames > 0]
+    assert len(lost) == 1
+    assert lost[0].discontinuity == DiscontinuityReason.FRAME_DEFICIT
+    assert source.overrun_count == 0
+    assert source.gaps_with_loss == 1
+
+
+def test_the_gap_is_reported_at_the_frame_it_happened_not_where_it_settled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
+    device.drop(40_000)
+    blocks = _drain(source, 20)
+
+    gap = next(b for b in blocks if b.missing_frames > 0)
+    assert gap.discontinuity_at_frame is not None
+    assert gap.gap_at_frame == gap.discontinuity_at_frame
+    assert gap.gap_at_frame < gap.first_frame  # the verdict arrived later
+    assert gap.gap_at_frame >= 5 * BLOCK_FRAMES
+
+
+def test_estimated_missing_frames_agrees_with_the_frame_deficit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two numbers the station publishes must not contradict each other.
+
+    `expected_frames - frames` is the ground truth `continuity_ratio` is built
+    on. `estimated_missing_frames` is the per-event estimate. The live station
+    had them disagreeing by 12x. Over a run with a mix of absorbed stalls and
+    real losses they must agree to within the estimator's own granularity.
+    """
+    source, device, clock = _ringed(monkeypatch)
+    _drain(source, 5)
+
+    for stall_ms in (200, 300, 900, 150, 1200, 250):
+        clock.advance_ms(stall_ms)
+        _drain(source, 20)
+
+    rate = source.info.fmt.sample_rate
+    elapsed_ns = clock.now - source._anchor_monotonic_ns
+    expected = elapsed_ns * rate // 10**9
+    deficit = expected - source._frames_read
+
+    assert device.dropped > 0, "the 900 ms and 1200 ms stalls must overflow the ring"
+    assert source.missing_frames_total == pytest.approx(device.dropped, abs=2 * BLOCK_FRAMES)
+    # One block of slack: a deficit is only ever observed at block granularity.
+    assert source.missing_frames_total == pytest.approx(deficit, abs=BLOCK_FRAMES)
+
+
+def test_rate_offset_converges_on_the_crystal_despite_absorbed_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second number phantom frames contaminated.
+
+    Phantom missing frames are added back into `presented`, so the station read
+    +2,680 ppm against a true device offset near -43 ppm. With the estimator
+    crediting only confirmed loss, stalls must leave the figure alone.
+    """
+    source, device, clock = _ringed(monkeypatch, ppm=-43.0)
+    _drain(source, 100)
+
+    for _ in range(10):
+        clock.advance_ms(300)  # absorbed by the ring, every time
+        _drain(source, 100)
+
+    assert device.dropped == 0
     assert source.missing_frames_total == 0
+    assert source.rate_offset_ppm is not None
+    assert source.rate_offset_ppm == pytest.approx(-43.0, abs=5.0)
 
 
 def test_crystal_drift_is_absorbed_rather_than_reported_as_a_gap(
