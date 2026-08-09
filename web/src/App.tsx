@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import type { Detection } from './types'
 import { Header } from './components/Header'
@@ -14,6 +14,7 @@ import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
 import { RetentionPanel } from './components/RetentionPanel'
 import { SettingsPanel } from './components/SettingsPanel'
+import { estimatePlayhead } from './components/playhead'
 
 import { useAuth } from './hooks/useAuth'
 import { useClock } from './hooks/useClock'
@@ -53,6 +54,20 @@ export default function App() {
 
   const [selected, setSelected] = useState<Detection | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+
+  // Where the sound now leaving the speakers sits on the spectrogram's own
+  // timeline (ADR-051). Computed here because it is the one place that holds
+  // both halves: the media element's telemetry (`useLiveAudio`) and the
+  // browser-to-station clock skew measured on the live socket
+  // (`useLiveConnection`). `null` whenever nobody is listening, so the
+  // spectrogram draws no marker and starts no timer.
+  const playhead = useMemo(
+    () =>
+      audio.status === 'playing' && audio.telemetry
+        ? estimatePlayhead(audio.telemetry, live.clockSkewS)
+        : null,
+    [audio.status, audio.telemetry, live.clockSkewS],
+  )
 
   const timeZone = live.status?.station.timezone ?? 'UTC'
   const diagnosing = view.depth === 'diagnose'
@@ -319,6 +334,7 @@ export default function App() {
                 showDetections={spectrogramControls.showDetections}
                 orientation={spectrogramControls.orientation}
                 height={spectrogramControls.heroHeight}
+                playhead={playhead}
               />
             ))}
           </div>

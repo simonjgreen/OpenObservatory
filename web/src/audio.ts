@@ -132,6 +132,25 @@ export interface AudioTelemetry {
   /** Times the `waiting` event fired: playback paused for lack of data. */
   waits: number
   paused: boolean
+  /** `HTMLMediaElement.currentTime`: seconds of this stream already played.
+   *  Together with the three fields below this is what lets the spectrogram
+   *  say *where in the picture* the sound now leaving the speakers is
+   *  (ADR-051). All four are genuine readings, in the spirit of the rest of
+   *  this type: nothing here is inferred. */
+  currentTimeS: number
+  /** Browser wall clock (`Date.now() / 1000`) when the element was pointed at
+   *  the stream — the moment media time 0 started arriving. */
+  streamOpenedEpochS: number
+  /** Browser wall clock when this sample was taken. */
+  sampledEpochS: number
+  /** `performance.now()` when this sample was taken, so a consumer can
+   *  extrapolate between samples without depending on a wall clock that may
+   *  step under it. */
+  sampledPerfMs: number
+  /** Whether `currentTime` advanced since the previous sample. False means
+   *  the stream is rebuffering (or has not started), which is the difference
+   *  between "the sound is here" and "the sound stopped here". */
+  advancing: boolean
 }
 
 export type AudioStatus = 'idle' | 'starting' | 'playing' | 'error'
@@ -145,6 +164,14 @@ export class LiveAudioPlayer {
   private stalls = 0
   private waits = 0
   private reportTimer: number | null = null
+  //: Wall clock at which `audio.src` was assigned: media time 0. The handler
+  //: drains its queue before it starts streaming (`live_audio_wav`), so the
+  //: first sample it sends is the audio that was live at this instant — which
+  //: is what makes this a usable anchor for the playhead marker (ADR-051).
+  private streamOpenedEpochS = 0
+  //: Previous `currentTime` reading, so `advancing` is a comparison rather
+  //: than a guess.
+  private lastCurrentTimeS = 0
   //: Trailing-edge throttle state for `setTuneHz`. `tuneThrottleTimer` is
   //: non-null exactly while a cooldown is running; `pendingTuneHz` holds the
   //: latest value requested during that cooldown, sent when it elapses.
@@ -234,6 +261,8 @@ export class LiveAudioPlayer {
         if (this.audioEl) void this.stop()
       }
 
+      this.streamOpenedEpochS = Date.now() / 1000
+      this.lastCurrentTimeS = 0
       audio.src = url
       audio.play().catch((error) => {
         this.onStatus('error', error instanceof Error ? error.message : String(error))
@@ -315,6 +344,7 @@ export class LiveAudioPlayer {
     if (audio.buffered.length > 0) {
       bufferedAheadS = Math.max(0, audio.buffered.end(audio.buffered.length - 1) - audio.currentTime)
     }
+    const currentTimeS = audio.currentTime
     const telemetry: AudioTelemetry = {
       readyState: audio.readyState,
       networkState: audio.networkState,
@@ -322,7 +352,13 @@ export class LiveAudioPlayer {
       stalls: this.stalls,
       waits: this.waits,
       paused: audio.paused,
+      currentTimeS,
+      streamOpenedEpochS: this.streamOpenedEpochS,
+      sampledEpochS: Date.now() / 1000,
+      sampledPerfMs: performance.now(),
+      advancing: currentTimeS > this.lastCurrentTimeS,
     }
+    this.lastCurrentTimeS = currentTimeS
     this.telemetry = telemetry
     this.onTelemetry(telemetry)
   }

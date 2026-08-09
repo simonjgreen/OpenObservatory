@@ -400,6 +400,27 @@ a problem in practice; a client-side Web Audio `GainNode` is not an option,
 because it reintroduces the exact failure this endpoint exists to route
 around.
 
+### What the buffering costs, and where the UI now says so
+
+The trade this endpoint made — "this buffers what the browser's media pipeline
+decides to buffer, which is coarser and less controllable than an explicit
+jitter buffer" — has a number: **about 2.5 s**, measured on headless Chromium
+150 by `scripts/measure_playhead_offset.py`, which streams this exact body shape
+and records the instant it wrote every chunk. That is the gap the operator hears
+between the scrolling spectrogram and his speakers, and it is the browser's, not
+the station's.
+
+The spectrogram now marks it (ADR-051). `AudioTelemetry` gained four more
+genuine readings for the purpose — `currentTimeS`, `streamOpenedEpochS`,
+`sampledEpochS`/`sampledPerfMs` and `advancing` — and `web/src/components/playhead.ts`
+turns those, plus the live socket's `clockSkewS`, into a station-UTC position
+for the sound at the speakers together with the interval it is known to
+(±0.26 s median, measured). **No server change was needed and none was made:**
+this endpoint's existing behaviour — draining the listener queue before the
+first chunk, so media time 0 is the audio that was live at connect — is exactly
+what makes the second of the two estimators possible. Nothing is inferred, in
+the same spirit as the section above.
+
 ## `GET /api/v1/display` — the inside observer's push channel
 
 A fourth channel, added by ADR-038 for one client: the ESP32 counter-top display
