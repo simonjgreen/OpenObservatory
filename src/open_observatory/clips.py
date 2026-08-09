@@ -26,6 +26,7 @@ import numpy as np
 import structlog
 
 from .audio.ring import RingBuffer
+from .detectors import birdnet_classes
 
 log = structlog.get_logger(__name__)
 
@@ -69,6 +70,11 @@ class ClipStats:
     skipped_plugin_not_clipped: int = 0
     skipped_rate_limited: int = 0
     skipped_disk_guard: int = 0
+    #: Clips not written because the detection named one of BirdNET's three
+    #: human sound classes and ``clip_human_audio`` is off (ADR-049). Counted,
+    #: not silent: a privacy control nobody can see the effect of is a
+    #: promise rather than a mechanism.
+    skipped_human_audio: int = 0
     failed_not_in_ring: int = 0
     failed_io: int = 0
     partial: int = 0
@@ -98,6 +104,10 @@ class ClipManager:
         retention_days: int = 30,
         write_playback_derivative: bool = True,
         clip_plugins: tuple[str, ...] = (),
+        #: ADR-049. False -- the shipped default -- means a detection of
+        #: "Human vocal", "Human non-vocal" or "Human whistle" gets its
+        #: detection row and no audio. See :meth:`admits`.
+        clip_human_audio: bool = False,
         max_per_minute: int = 20,
         max_total_bytes: int = 20 * 1024**3,
         min_free_bytes: int = 5 * 1024**3,
@@ -118,6 +128,7 @@ class ClipManager:
         self.retention_days = retention_days
         self.write_playback_derivative = write_playback_derivative
         self.clip_plugins = frozenset(clip_plugins)
+        self.clip_human_audio = clip_human_audio
         self.max_per_minute = max_per_minute
         self.max_total_bytes = max_total_bytes
         self.min_free_bytes = min_free_bytes
@@ -136,8 +147,25 @@ class ClipManager:
 
     # ------------------------------------------------------------------
 
-    def admits(self, plugin_id: str, score: float) -> tuple[bool, str]:
-        """Decide whether one detection earns a clip, and say why not."""
+    def admits(self, plugin_id: str, score: float, label: str | None = None) -> tuple[bool, str]:
+        """Decide whether one detection earns a clip, and say why not.
+
+        The human-audio gate is checked **first**, ahead of the plugin filter,
+        the score bar, the rate limit and the disk guard. Ordering is the
+        argument: every other rule here is a resource decision that an
+        operator may reasonably tune, and the charter is explicit that "no
+        efficiency, accuracy or feature gain justifies relaxing" the privacy
+        constraint. A gate placed after a resource check is a gate that stops
+        applying whenever the resource check happens to short-circuit first.
+        """
+        if not self.clip_human_audio and birdnet_classes.is_human_audio(label):
+            self.stats.skipped_human_audio += 1
+            # The label is logged, the audio is not written. That is the whole
+            # trade: the station can still say "somebody was talking in the
+            # garden at 18:55", which is a fact about the soundscape, without
+            # keeping a recording of who they are or what they said.
+            log.info("clip.human_audio_declined", plugin=plugin_id, label=label)
+            return False, "human audio; clip_human_audio is off (privacy, ADR-049)"
         if self.clip_plugins and plugin_id not in self.clip_plugins:
             self.stats.skipped_plugin_not_clipped += 1
             return False, "plugin not in clip_plugins"
@@ -258,7 +286,7 @@ class ClipManager:
     ) -> list[ClipAsset]:
         """Write evidence for one detection. Returns the assets created."""
         self.stats.requested += 1
-        admitted, reason = self.admits(plugin_id, score)
+        admitted, reason = self.admits(plugin_id, score, label)
         if not admitted:
             log.debug("clip.skipped", plugin=plugin_id, reason=reason)
             return []
@@ -560,6 +588,7 @@ class ClipManager:
             "skipped_plugin_not_clipped": stats.skipped_plugin_not_clipped,
             "skipped_rate_limited": stats.skipped_rate_limited,
             "skipped_disk_guard": stats.skipped_disk_guard,
+            "skipped_human_audio": stats.skipped_human_audio,
             "failed_not_in_ring": stats.failed_not_in_ring,
             "failed_io": stats.failed_io,
             "partial": stats.partial,
@@ -570,6 +599,7 @@ class ClipManager:
             "writes_last_minute": len(self._recent_writes),
             "policy": {
                 "clip_plugins": sorted(self.clip_plugins),
+                "clip_human_audio": self.clip_human_audio,
                 "min_score": self.min_score,
                 "max_per_minute": self.max_per_minute,
                 "max_total_gb": round(self.max_total_bytes / 1024**3, 2),

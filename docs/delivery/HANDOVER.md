@@ -411,6 +411,36 @@ useful addition and is not currently planned.
    ready and takes effect immediately on `--apply`, with no restart. Do the
    dry run first (`--json` piped to a file), read it, and only then decide.
 
+   **Update, 2026-08-09: the dry run was done, read-only, and it changed the
+   answer (ADR-049).** Against the live database — 67,679 rows at the time — it
+   proposed 114 findings, and **91 of them were correct detections**: 62
+   `Engine`, 24 `Human vocal`, 5 `Dog`. These are BirdNET's non-biological
+   output classes, for which the range model has no meaningful prior (it
+   returns 4e-06 for "Engine" because a car is not a taxon with a
+   distribution), so ADR-032's floor was about to withdraw a stack of true
+   observations. Three things came out of that and are now fixed in code:
+
+   * `band_for` exempts the eleven sound categories
+     (`detectors/birdnet_classes.py`). Re-measured on the same database
+     read-only: **114 → 23** findings at the command's default `--limit 5000`,
+     369 → 123 over the whole table. The remainder is genuinely implausible
+     species — Flammulated Owl, Grey-winged Inca-Finch, both Screech-Owls,
+     Gray Wolf, and 62 `Spotted Crake` at occurrence 4.14e-04 that the
+     default limit had never reached.
+   * Those classes were **stored as birds at species rank** — 247 rows, with
+     `scientific_name` repeating the common name and a fabricated
+     `canonical_taxon_id` of `sci:engine`. The detector no longer does that,
+     the normaliser has a per-detection backstop, and
+     `oo detections reconcile-taxonomy` corrects the stored rows without
+     deleting any.
+   * **24 `Human vocal` detections were holding 48 evidence clips and 125 MB.**
+     `clip_human_audio` (default off) stops new ones;
+     `oo clips purge-human-audio` removes the existing ones and keeps the
+     detection rows.
+
+   None of the three commands has been run with `--apply` on the live station.
+   The order to run them in is privacy, taxonomy, then plausibility.
+
 4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
    needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
    app-packet format for writing configuration is not implemented here. **Warn

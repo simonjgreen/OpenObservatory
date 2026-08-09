@@ -296,6 +296,22 @@ class Settings(BaseSettings):
         "birdnet-v2.4",
         "ultrasonic-pass-v1",
     )
+    #: ADR-049 -- the charter's privacy constraint, as a switch.
+    #:
+    #: BirdNET GLOBAL 6K emits three human sound classes ("Human vocal",
+    #: "Human non-vocal", "Human whistle"). With this off -- the shipped
+    #: default -- such a detection still gets its row (a fact about the
+    #: soundscape, with no speech in it) and no evidence clip at all. A
+    #: microphone in a garden records neighbours and passers-by who never
+    #: consented, and the charter says no gain of any kind justifies relaxing
+    #: that. Measured on the live station on 2026-08-09: 24 "Human vocal"
+    #: detections had accumulated 48 assets and 125 MB of neighbours talking.
+    #:
+    #: Turning it on is legitimate -- an operator recording their own voice
+    #: deliberately, or debugging a mounting problem -- which is why it is a
+    #: setting rather than a hard rule, and why the UI makes it acknowledge a
+    #: `danger` string first (`site_settings.py`).
+    clip_human_audio: bool = False
     #: Hard rate limit across all detectors, so a pathological night cannot fill
     #: the disk however the per-plugin rules are configured.
     clip_max_per_minute: int = 20

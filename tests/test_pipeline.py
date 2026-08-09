@@ -234,6 +234,77 @@ class TestNormaliser:
             )
         assert normaliser.stats.claim_violations == 1
 
+    def test_species_rank_requires_something_shaped_like_a_binomial(self) -> None:
+        """ADR-049's backstop: the guard that should have caught "Engine".
+
+        The plugin-level check above asks whether this *detector* may make
+        taxonomic claims at all. BirdNET may, so it was exempt from any
+        scrutiny of the claim itself, and 247 rows on the live station ended up
+        asserting that a car engine is a bird at species rank. This second
+        check is per-detection and detector-agnostic.
+        """
+        normaliser = Normaliser()
+        window = self._window()
+        offender = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=0.5,
+            score=0.98,
+            label="Engine_Engine",
+            common_name="Engine",
+            scientific_name="Engine",
+            rank="species",
+            taxonomic_group="bird",
+        )
+        with pytest.raises(ClaimViolation, match="not a binomial"):
+            normaliser.normalise(
+                make_metadata("birdnet-v2.4"), window, offender, native_sample_rate=48000
+            )
+        assert normaliser.stats.claim_violations == 1
+
+    def test_the_same_detection_is_fine_once_it_stops_claiming_a_species(self) -> None:
+        """What `detectors/birdnet.py` now emits for the same class."""
+        normaliser = Normaliser()
+        window = self._window()
+        detection = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=0.5,
+            score=0.98,
+            label="Engine_Engine",
+            common_name="Engine",
+            scientific_name=None,
+            rank=None,
+            taxonomic_group="acoustic_event",
+        )
+        result = normaliser.normalise(
+            make_metadata("birdnet-v2.4"), window, detection, native_sample_rate=48000
+        )
+        assert result is not None
+        assert result.common_name == "Engine"  # still says what was heard
+        assert result.canonical_taxon_id is None  # no more `sci:engine`
+        assert normaliser.stats.claim_violations == 0
+
+    def test_a_real_binomial_still_passes_the_shape_check(self) -> None:
+        normaliser = Normaliser()
+        window = self._window()
+        for scientific in ("Strix aluco", "Turdus merula", "Gryllus assimilis"):
+            detection = NativeDetection(
+                offset_start_s=0.0,
+                offset_end_s=0.5,
+                score=0.9,
+                label=f"{scientific}_x",
+                common_name="x",
+                scientific_name=scientific,
+                rank="species",
+                taxonomic_group="bird",
+            )
+            assert (
+                normaliser.normalise(
+                    make_metadata("birdnet-v2.4"), window, detection, native_sample_rate=48000
+                )
+                is not None
+            )
+        assert normaliser.stats.claim_violations == 0
+
     def test_uncalibrated_detector_cannot_claim_a_probability(self) -> None:
         normaliser = Normaliser()
         window = self._window()
@@ -487,6 +558,48 @@ class TestClipPolicy:
         assert admitted is False
         assert "clip_plugins" in reason
         assert manager.stats.skipped_plugin_not_clipped == 1
+
+    def test_human_speech_gets_no_clip_by_default(self, tmp_path) -> None:
+        """The charter's privacy constraint, as a gate (ADR-049).
+
+        Measured on the live station on 2026-08-09: 24 "Human vocal"
+        detections had accumulated 48 assets and 125 MB of neighbours talking,
+        because nothing anywhere asked this question.
+        """
+        manager = self._manager(tmp_path)
+        for label in (
+            "Human vocal_Human vocal",
+            "Human non-vocal_Human non-vocal",
+            "Human whistle_Human whistle",
+        ):
+            admitted, reason = manager.admits("birdnet-v2.4", 0.99, label)
+            assert admitted is False
+            assert "privacy" in reason
+        assert manager.stats.skipped_human_audio == 3
+        # A dog and a bird are not affected -- this gate is about people.
+        assert manager.admits("birdnet-v2.4", 0.99, "Dog_Dog")[0] is True
+        assert manager.admits("birdnet-v2.4", 0.99, "Strix aluco_Tawny Owl")[0] is True
+
+    def test_human_speech_can_be_clipped_when_deliberately_enabled(self, tmp_path) -> None:
+        manager = self._manager(tmp_path, clip_human_audio=True)
+        assert manager.admits("birdnet-v2.4", 0.99, "Human vocal_Human vocal")[0] is True
+        assert manager.stats.skipped_human_audio == 0
+
+    def test_the_privacy_gate_is_checked_before_every_resource_rule(self, tmp_path) -> None:
+        """Ordering is the argument, so it is asserted rather than assumed.
+
+        A gate placed after the rate limit or the disk guard stops applying
+        whenever one of those short-circuits first. Here the rate limit is
+        already exhausted and the plugin is not in `clip_plugins`, and the
+        refusal must still be the privacy one.
+        """
+        manager = self._manager(tmp_path, max_per_minute=1)
+        assert manager.admits("birdnet-v2.4", 0.9, "Strix aluco_Tawny Owl")[0]
+        admitted, reason = manager.admits("activity-v1", 0.01, "Human vocal_Human vocal")
+        assert admitted is False
+        assert "privacy" in reason
+        assert manager.stats.skipped_rate_limited == 0
+        assert manager.stats.skipped_plugin_not_clipped == 0
 
     def test_low_scores_are_refused(self, tmp_path) -> None:
         manager = self._manager(tmp_path)

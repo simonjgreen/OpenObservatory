@@ -1095,8 +1095,203 @@ def detections_reconcile_plausibility(
         )
 
 
+@detections_app.command("reconcile-taxonomy")
+def detections_reconcile_taxonomy(
+    apply: bool = typer.Option(
+        False, "--apply", help="Write the corrections. Without this flag nothing is changed."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt when applying"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+    limit: int = typer.Option(100000, help="Maximum stored BirdNET detections to examine"),
+) -> None:
+    """Stop stored sound categories claiming to be birds at species rank (ADR-049).
+
+    Eleven of BirdNET GLOBAL 6K's output classes are sounds, not species --
+    "Engine", "Human vocal", "Dog", "Siren" and seven more. Until ADR-049 the
+    adapter stamped `rank="species"` and `taxonomic_group="bird"` onto all of
+    them, and the normaliser then minted a `canonical_taxon_id` such as
+    `sci:engine` from a scientific field that is not a binomial. New detections
+    are written correctly now; this command corrects the ones already stored.
+
+    It sets `rank` to NULL, `taxonomic_group` to `acoustic_event`, and clears
+    `scientific_name` and `canonical_taxon_id`. It does **not** touch
+    `common_name` -- "Engine" is an honest description of what was heard and is
+    exactly the signal an operator wants -- it does not touch the score, the
+    timestamps or the evidence, and it never deletes a row. The previous values
+    are preserved verbatim under `native_result.taxonomy_review`, so what the
+    system used to believe stays on the record and a second run is a no-op.
+
+    Unlike `reconcile-plausibility`, this does not skip human-reviewed rows:
+    the review workflow has no field in which a human could have endorsed a
+    rank or a taxonomic group, so skipping would leave the false claim standing
+    on precisely the rows somebody looked at. No `Review` row is touched.
+    """
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
+    from .taxonomy_repair import apply_taxonomy_correction, find_mislabelled_taxonomy
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+
+    with session_scope() as session:
+        findings = find_mislabelled_taxonomy(session, limit=limit)
+
+        if json_out:
+            emit_json([item.to_dict() for item in findings])
+        elif not findings:
+            console.print("[green]No detections are recording a sound as a species.[/green]")
+        else:
+            table = Table(title=f"{len(findings)} non-taxonomic detection(s) stored as species")
+            table.add_column("common_name")
+            table.add_column("kind")
+            table.add_column("event_start_utc")
+            table.add_column("score", justify="right")
+            table.add_column("stored rank")
+            table.add_column("stored group")
+            for item in findings[:200]:
+                table.add_row(
+                    item.common_name or "",
+                    item.sound_kind,
+                    item.event_start_utc.isoformat(),
+                    f"{item.score:.3f}",
+                    str(item.original_rank),
+                    item.original_taxonomic_group,
+                )
+            console.print(table)
+            if len(findings) > 200:
+                console.print(f"  [dim]... and {len(findings) - 200} more[/dim]")
+
+        if not findings:
+            return
+
+        if not apply:
+            notice(
+                "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
+                "Re-run with --apply to correct these rows.",
+                json_out=json_out,
+            )
+            return
+
+        if not yes and not typer.confirm(
+            f"Correct the taxonomic fields on {len(findings)} detection(s) now?",
+            default=False,
+        ):
+            notice("[yellow]Aborted; nothing was changed.[/yellow]", json_out=json_out)
+            raise typer.Exit(1)
+
+        for item in findings:
+            apply_taxonomy_correction(session, item)
+        console.print(
+            f"[green]Corrected {len(findings)} row(s).[/green] No row was deleted and no "
+            "common name was changed; the original rank, group, scientific name and "
+            "taxon id are preserved under native_result.taxonomy_review. These rows no "
+            "longer appear in the species tallies or in the taxon search."
+        )
+
+
 # ----------------------------------------------------------------------
 # system / serve
+
+
+@clips_app.command("purge-human-audio")
+def clips_purge_human_audio(
+    apply: bool = typer.Option(
+        False, "--apply", help="Delete the files. Without this flag nothing is deleted."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt when applying"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+) -> None:
+    """Delete evidence clips of human speech, keeping the detection rows (ADR-049).
+
+    The charter's privacy constraint is about people who never consented to a
+    microphone in a garden. `clip_human_audio` (off by default) stops new clips
+    of BirdNET's three human sound classes from being written at all; this
+    command deals with whatever a station accumulated before that default
+    existed. Measured on the live station on 2026-08-09: 24 "Human vocal"
+    detections holding 48 assets and 125 MB.
+
+    Detection rows are never touched: "somebody was talking in the garden at
+    18:55" stays in the record, the recording of them talking does not. The
+    `media_asset` rows survive too, marked `reclaimed_at` with reason
+    `privacy_human_audio` -- the same shape the retention sweeper uses when a
+    clip ages out (ADR-026), so `/api/v1/media/{id}` keeps answering 410 rather
+    than 500.
+
+    Dry-run by default. Selection is by detector label, so it works on rows
+    written before ADR-049 as well as after.
+    """
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
+    from .privacy import purge_human_audio
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+
+    report = purge_human_audio(session_scope, dry_run=True)
+
+    if json_out and not apply:
+        emit_json(report.to_dict())
+    elif not report.items:
+        console.print("[green]No human-audio evidence clips are stored.[/green]")
+    else:
+        table = Table(
+            title=(
+                f"{len(report.items)} human-audio clip(s) across "
+                f"{report.detections} detection(s)"
+            )
+        )
+        table.add_column("event_start_utc")
+        table.add_column("common_name")
+        table.add_column("kind")
+        table.add_column("MB", justify="right")
+        table.add_column("on disk")
+        for item in report.items[:200]:
+            table.add_row(
+                item.event_start_utc.isoformat(),
+                item.common_name or "",
+                item.kind,
+                f"{item.bytes / 1024**2:.1f}",
+                "yes" if item.existed_on_disk else "missing",
+            )
+        console.print(table)
+        total_mb = sum(item.bytes for item in report.items) / 1024**2
+        console.print(f"  [dim]{total_mb:.1f} MB total[/dim]")
+
+    if not report.items:
+        return
+
+    if not apply:
+        notice(
+            "\n[yellow]Dry run only -- nothing was deleted.[/yellow] "
+            "Re-run with --apply to delete these files. Detection rows are kept "
+            "either way.",
+            json_out=json_out,
+        )
+        return
+
+    if not yes and not typer.confirm(
+        f"Permanently delete {len(report.items)} clip file(s) of human sound?",
+        default=False,
+    ):
+        notice("[yellow]Aborted; nothing was deleted.[/yellow]", json_out=json_out)
+        raise typer.Exit(1)
+
+    applied = purge_human_audio(session_scope, dry_run=False)
+    if json_out:
+        emit_json(applied.to_dict())
+    else:
+        console.print(
+            f"[green]Deleted {applied.deleted} clip(s), reclaiming "
+            f"{applied.bytes_reclaimed / 1024**2:.1f} MB.[/green] "
+            f"{applied.already_missing} were already gone from disk; "
+            f"{applied.failed} could not be removed. Detection rows are unchanged."
+        )
 
 
 @clips_app.command("retention")

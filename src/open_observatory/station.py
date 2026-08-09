@@ -228,6 +228,7 @@ class Station:
             min_score=settings.clip_min_score,
             retention_days=settings.clip_retention_days,
             clip_plugins=settings.clip_plugins,
+            clip_human_audio=settings.clip_human_audio,
             max_per_minute=settings.clip_max_per_minute,
             max_total_bytes=int(settings.clip_max_total_gb * 1024**3),
             min_free_bytes=int(settings.clip_min_free_gb * 1024**3),

@@ -668,6 +668,22 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
         "and total-size limits below are the only thing between that setting "
         "and a full filesystem.",
     ),
+    _e(
+        "clip_human_audio",
+        "clips",
+        label="keep audio of human voices",
+        help="Off by default. BirdNET recognises human speech, whistling and "
+        "other human sound; with this off those detections are still logged "
+        "but no recording of them is written to disk. A garden microphone "
+        "hears neighbours and passers-by who never agreed to be recorded.",
+        danger="Turning this on starts keeping recordings of people talking "
+        "near the station, including people who have not consented and do "
+        "not know the microphone is there. Existing clips are not affected "
+        "either way: purge them with 'oo clips purge-human-audio'.",
+        note="The charter's privacy constraint is the reason this default is "
+        "off, and the reason it is the first check the clip writer makes, "
+        "ahead of the score, rate and disk rules.",
+    ),
     _e("clip_max_per_minute", "clips", label="clip rate limit", unit="/min",
        minimum=1, maximum=600),
     _e("clip_max_total_gb", "clips", label="clip directory budget", unit="GB",

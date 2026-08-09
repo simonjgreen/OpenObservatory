@@ -41,6 +41,30 @@ NON_TAXONOMIC_PLUGINS = frozenset({"activity-v1"})
 NON_TAXONOMIC_GROUPS = frozenset({"acoustic_event", "noise", "unknown"})
 
 
+def _looks_like_a_binomial(scientific: str | None) -> bool:
+    """Whether a scientific name could be a Linnaean binomial at all.
+
+    Deliberately weak: two whitespace-separated words, the first capitalised,
+    both alphabetic (hyphens and periods allowed, as in ``Nyctalus noctula``
+    and abbreviated forms). This is not a taxonomy check and cannot be --
+    there is no offline taxonomy in this repository (ADR-043 argued that at
+    length). It is a *shape* check, and its whole job is to catch a detector
+    stamping ``rank="species"`` onto something that is plainly not a species
+    name: "Engine", "Human vocal", "Power tools".
+    """
+    if not scientific:
+        return False
+    parts = scientific.split()
+    if len(parts) != 2:
+        return False
+    genus, epithet = parts
+    if not genus[:1].isupper() or not epithet[:1].islower():
+        return False
+    return all(
+        part.replace("-", "").replace(".", "").isalpha() for part in (genus, epithet)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalDetection:
     """A detection ready to persist and publish."""
@@ -296,6 +320,39 @@ class Normaliser:
                     f"{metadata.plugin_id} is not permitted to emit taxonomic fields "
                     f"(ADR-010) but set {', '.join(offending)}"
                 )
+        # ADR-049. The check above asks whether this *plugin* is allowed to
+        # make taxonomic claims at all. It is keyed on plugin id, so a plugin
+        # that is allowed to name species -- BirdNET -- was exempt from any
+        # scrutiny of whether a particular claim was well formed. That is why
+        # 247 rows on the live station assert "Engine, rank species, group
+        # bird": nothing here was looking at the claim itself.
+        #
+        # This second check is per-detection and detector-agnostic: a
+        # species-rank claim must carry something shaped like a binomial. It
+        # is a backstop, not the fix -- `detectors/birdnet.py` now classifies
+        # its own non-taxonomic labels before emitting, and this should
+        # therefore never fire in production. It is deliberately generic so a
+        # future adapter with the same bug is caught without anyone having to
+        # remember to add it here.
+        #
+        # State plainly what it does not catch: a shape rule cannot separate
+        # "Power tools" or "Human vocal" from "Turdus merula" -- both are a
+        # capitalised word followed by a lowercase word -- and it must not
+        # try, because "Gryllus assimilis" is a real cricket whose BirdNET
+        # label has no vernacular name. Seven of BirdNET's eleven sound
+        # categories are single words and are caught here; the other four are
+        # caught only by the curated catalogue in
+        # `detectors/birdnet_classes.py`, which is why that catalogue exists
+        # rather than a clever regular expression.
+        if detection.rank == "species" and not _looks_like_a_binomial(
+            detection.scientific_name
+        ):
+            self.stats.claim_violations += 1
+            raise ClaimViolation(
+                f"{metadata.plugin_id} claimed rank='species' for "
+                f"{detection.common_name!r} but scientific_name="
+                f"{detection.scientific_name!r} is not a binomial (ADR-049)"
+            )
         if detection.calibrated_probability is not None and not metadata.calibrated:
             self.stats.claim_violations += 1
             raise ClaimViolation(

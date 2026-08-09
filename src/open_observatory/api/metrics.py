@@ -256,6 +256,18 @@ class PrometheusExporter:
                         plugin_id=plugin,
                         reason=reason,
                     )
+                # ADR-049: admitted, not suppressed, so deliberately a separate
+                # series rather than another `reason` label on the counter
+                # above -- a number shown to a human must mean what its label
+                # says (charter honesty constraint).
+                non_taxonomic_fn = getattr(worker.plugin, "non_taxonomic_admitted", None)
+                if callable(non_taxonomic_fn):
+                    self._set(
+                        "oo_birdnet_non_biological_total",
+                        "BirdNET detections admitted as sound categories, not species",
+                        non_taxonomic_fn(),
+                        plugin_id=plugin,
+                    )
 
         clips = snapshot["clips"]
         self._set("oo_clips_written_total", "Evidence clips written", clips["written"])

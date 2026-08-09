@@ -52,6 +52,7 @@ from ..audio.contracts import (
     NativeDetection,
     WindowSpec,
 )
+from . import birdnet_classes
 from .base import DetectorContext, DetectorUnavailable
 
 log = structlog.get_logger(__name__)
@@ -107,6 +108,7 @@ def band_for(
     threshold_in_range: float,
     threshold_uncommon: float,
     threshold_out_of_range: float,
+    non_taxonomic: bool = False,
 ) -> tuple[str, float]:
     """Sort a candidate into a plausibility band and its confidence bar (ADR-032).
 
@@ -125,7 +127,27 @@ def band_for(
     about one species was indistinguishable from a range model that was never
     loaded at all -- and got the *easiest* threshold as a result (defect (b)
     in DETECTOR_STRATEGY.md's "Known limitation" section).
+
+    ``non_taxonomic`` (ADR-049) is checked before any of that, and is a
+    statement about the *question*, not about the answer. Eleven of BirdNET's
+    output classes are sound categories rather than species
+    (``birdnet_classes.NON_TAXONOMIC_LABELS``), and the range model has no
+    meaningful prior for them: asked about "Engine" it returns 4e-06 at this
+    station, which is not "engines are essentially absent from this garden",
+    it is "a car is not a taxon with a distribution". Feeding that number to
+    the plausibility floor would suppress a correct detection of a passing car
+    at any score, and — measured on the live database on 2026-08-09 — would
+    have withdrawn 91 of the 114 rows the repair pass proposed to flag. So
+    these classes are exempted from the prior entirely and judged on score
+    alone, at the ordinary in-range bar.
     """
+    if non_taxonomic:
+        # No prior is *available* here, as distinct from `no_prior` below,
+        # where a prior exists in principle and this model happens to be
+        # silent. The strictest-bar reasoning that justifies `no_prior` does
+        # not transfer: it is a hedge against a species we cannot place, and
+        # there is no species to place.
+        return birdnet_classes.NON_TAXONOMIC_BAND, threshold_in_range
     if not range_model_loaded:
         # No range model at all: there is no plausibility information to act
         # on, so apply the in-range bar uniformly rather than inventing a
@@ -269,6 +291,11 @@ class BirdNetDetector:
         #: Candidates the range model is loaded but silent about, so they
         #: faced the strict bar rather than the easy one (defect (b)).
         self._suppressed_no_prior = 0
+        #: Candidates admitted as sound categories rather than species
+        #: (ADR-049). Not a suppression count -- these were *kept*, and the
+        #: counter exists so an operator can see how much of a noisy site's
+        #: BirdNET output is traffic and machinery rather than birds.
+        self._non_taxonomic = 0
         self._species_in_range = 0
         self._week = 0
 
@@ -444,18 +471,51 @@ class BirdNetDetector:
         detections: list[NativeDetection] = []
         for index in candidates:
             confidence = float(confidences[index])
+            scientific, common = self._parsed[index]
+            # ADR-049. Eleven output classes are sound categories, not species.
+            # Decided from the label, before the range model is consulted at
+            # all, because the prior for such a class is not a weak signal --
+            # it is a category error.
+            sound_kind = birdnet_classes.kind_of(scientific)
+            non_taxonomic = sound_kind is not None
             occurrence: float | None = None
-            if prior is not None:
+            if prior is not None and not non_taxonomic:
                 raw = float(prior[index])
                 # A loaded range model that is silent (NaN) about one species
                 # is not the same as no range model at all -- both are
                 # "missing", so both funnel through the same _band_for branch.
                 occurrence = None if math.isnan(raw) else raw
-            band, threshold = self._band_for(occurrence, range_model_loaded=range_model_loaded)
+            band, threshold = self._band_for(
+                occurrence,
+                range_model_loaded=range_model_loaded,
+                non_taxonomic=non_taxonomic,
+            )
             if confidence < threshold:
                 self._count_suppressed(band)
                 continue
-            scientific, common = self._parsed[index]
+            native_result: dict[str, object] = {
+                "detector": "birdnet-v2.4",
+                "model_id": MODEL_ID,
+                "label": self._labels[index],
+                "label_index": int(index),
+                "logit": float(logits[index]),
+                "confidence": round(confidence, 6),
+                "confidence_definition": "sigmoid(clip(logit, -15, 15))",
+                "week": week,
+                "occurrence_probability": round(occurrence, 6)
+                if occurrence is not None
+                else None,
+                "plausibility_band": band,
+                "threshold_applied": threshold,
+                "range_model_used": prior is not None and not non_taxonomic,
+            }
+            if non_taxonomic:
+                # Recorded on the row so a consumer, an export or a later
+                # repair pass can tell "this was never a species claim" from
+                # "this is a species claim we have not yet judged", without
+                # having to hold the label catalogue itself.
+                native_result["sound_kind"] = sound_kind
+                self._non_taxonomic += 1
             detections.append(
                 NativeDetection(
                     offset_start_s=0.0,
@@ -463,36 +523,37 @@ class BirdNetDetector:
                     score=confidence,
                     label=self._labels[index],
                     common_name=common,
-                    scientific_name=scientific,
-                    rank="species",
-                    taxonomic_group="bird",
+                    # A sound category has no binomial and no rank. The
+                    # scientific field of "Engine_Engine" is the word "Engine",
+                    # which is not a name for anything; persisting it as
+                    # `scientific_name` is what let `_canonical_taxon_id` mint
+                    # `sci:engine`. The common name is kept: "Engine" is an
+                    # honest description of what was heard, and the operator's
+                    # history view is better for having it.
+                    scientific_name=None if non_taxonomic else scientific,
+                    rank=None if non_taxonomic else "species",
+                    taxonomic_group=(
+                        birdnet_classes.NON_TAXONOMIC_GROUP if non_taxonomic else "bird"
+                    ),
                     calibrated_probability=None,
-                    native_result={
-                        "detector": "birdnet-v2.4",
-                        "model_id": MODEL_ID,
-                        "label": self._labels[index],
-                        "label_index": int(index),
-                        "logit": float(logits[index]),
-                        "confidence": round(confidence, 6),
-                        "confidence_definition": "sigmoid(clip(logit, -15, 15))",
-                        "week": week,
-                        "occurrence_probability": round(occurrence, 6)
-                        if occurrence is not None
-                        else None,
-                        "plausibility_band": band,
-                        "threshold_applied": threshold,
-                        "range_model_used": prior is not None,
-                    },
+                    native_result=native_result,
                 )
             )
             if len(detections) >= self._max_per_window:
                 break
         return detections
 
-    def _band_for(self, occurrence: float | None, *, range_model_loaded: bool) -> tuple[str, float]:
+    def _band_for(
+        self,
+        occurrence: float | None,
+        *,
+        range_model_loaded: bool,
+        non_taxonomic: bool = False,
+    ) -> tuple[str, float]:
         return band_for(
             occurrence,
             range_model_loaded=range_model_loaded,
+            non_taxonomic=non_taxonomic,
             plausibility_floor=self._plausibility_floor,
             common_prior=self._common_prior,
             range_threshold=self._range_threshold,
@@ -538,6 +599,8 @@ class BirdNetDetector:
             detail += f", {self._suppressed_out_of_range} rejected (out-of-range bar not cleared)"
         if self._suppressed_uncommon:
             detail += f", {self._suppressed_uncommon} rejected (uncommon bar not cleared)"
+        if self._non_taxonomic:
+            detail += f", {self._non_taxonomic} non-biological sounds (not species claims)"
         return DetectorHealth(available=True, state="ok", detail=detail)
 
     def plausibility_snapshot(self) -> dict[str, int]:
@@ -547,6 +610,12 @@ class BirdNetDetector:
         member (see `detectors/deferred.py`'s duck-typing precedent for
         `self.deferred`): the other two shipped detectors have no equivalent
         concept and should not need to grow a no-op stub to keep conforming.
+
+        Deliberately still only suppressions: `api/metrics.py` labels every key
+        of this dict as a `reason` on `oo_birdnet_suppressed_total`, so a
+        non-suppression count added here would be exported as a suppression.
+        The ADR-049 non-biological count has its own accessor and its own
+        metric for exactly that reason.
         """
         return {
             "suppressed_implausible_prior": self._suppressed_implausible_prior,
@@ -554,6 +623,10 @@ class BirdNetDetector:
             "suppressed_out_of_range": self._suppressed_out_of_range,
             "suppressed_uncommon": self._suppressed_uncommon,
         }
+
+    def non_taxonomic_admitted(self) -> int:
+        """Candidates admitted as sound categories rather than species (ADR-049)."""
+        return self._non_taxonomic
 
     async def shutdown(self) -> None:
         self._interpreter = None
