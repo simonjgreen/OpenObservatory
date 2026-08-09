@@ -88,6 +88,7 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     "clip_min_score": LiveTarget("clips", "min_score"),
     "clip_retention_days": LiveTarget("clips", "retention_days"),
     "clip_plugins": LiveTarget("clips", "clip_plugins"),
+    "clip_human_audio": LiveTarget("clips", "clip_human_audio"),
     "clip_max_per_minute": LiveTarget("clips", "max_per_minute"),
     "clip_max_total_gb": LiveTarget("clips", "max_total_bytes", scale=1024**3),
     "clip_min_free_gb": LiveTarget("clips", "min_free_bytes", scale=1024**3),

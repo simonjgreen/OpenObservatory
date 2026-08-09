@@ -7,6 +7,7 @@ on broadband noise would fill the database with confident nonsense.
 
 from __future__ import annotations
 
+import math
 import uuid
 
 import numpy as np
@@ -342,6 +343,25 @@ class TestBirdNetAdapter:
         detector = BirdNetDetector(model_dir="/nonexistent")
         assert 1e-05 < detector._plausibility_floor < 0.019253
 
+    def test_a_sound_category_is_exempt_from_the_plausibility_floor(self) -> None:
+        """ADR-049. Measured on the live station: the range model returns
+        4e-06 for "Engine" and 3e-06 for "Human vocal" -- far below the floor,
+        and meaningless, because a car is not a taxon with a distribution.
+        Applying the floor to them would have withdrawn 91 of the 114 rows the
+        first live dry run proposed to flag.
+        """
+        detector = BirdNetDetector(model_dir="/nonexistent")
+        band, threshold = detector._band_for(
+            4e-06, range_model_loaded=True, non_taxonomic=True
+        )
+        assert band == "non_biological"
+        assert threshold == detector._thresholds["in_range"]
+        assert threshold < math.inf
+        # The very same prior, for something that *is* a species, is still
+        # suppressed outright -- the exemption is about the class, not the
+        # number.
+        assert detector._band_for(4e-06, range_model_loaded=True)[0] == "implausible"
+
     async def test_analyse_end_to_end_suppresses_and_labels_bands(self) -> None:
         """Wire the fixed ``_band_for`` into ``analyse`` with a stub
         interpreter and a stub range model reproducing the exact measured
@@ -407,6 +427,82 @@ class TestBirdNetAdapter:
 
         jackdaw = next(d for d in detections if d.common_name == "Eurasian Jackdaw")
         assert jackdaw.native_result["plausibility_band"] == "in_range"
+
+    async def test_a_sound_category_is_kept_but_is_not_a_species_claim(self) -> None:
+        """ADR-049, end to end through ``analyse``.
+
+        Reproduces the live station's own numbers: "Engine" at score 0.976
+        with a range-model prior of 4e-06, and "Human vocal" at 0.984 with
+        3e-06. Both must survive -- a car really did drive past -- and neither
+        may be recorded as a bird.
+        """
+
+        class _StubInterpreter:
+            def __init__(self, logits: np.ndarray) -> None:
+                self._logits = logits
+
+            def set_tensor(self, index: int, value: object) -> None:
+                return None
+
+            def invoke(self) -> None:
+                return None
+
+            def get_tensor(self, index: int) -> np.ndarray:
+                return self._logits.reshape(1, -1)
+
+        class _StubRange:
+            def __init__(self, priors: np.ndarray) -> None:
+                self._priors = priors
+
+            def probabilities(self, week: int) -> np.ndarray:
+                return self._priors
+
+        labels = [
+            "Engine_Engine",
+            "Human vocal_Human vocal",
+            "Strix aluco_Tawny Owl",
+        ]
+        scores = [0.976, 0.984, 0.974]
+        logits = np.array([math.log(p / (1.0 - p)) for p in scores], dtype=np.float32)
+        priors = np.array([4e-06, 3e-06, 0.019253], dtype=np.float32)
+
+        detector = BirdNetDetector(model_dir="/nonexistent", min_confidence=0.1)
+        detector._labels = labels
+        detector._parsed = [parse_label(label) for label in labels]
+        detector._expected_samples = 48000 * 3
+        detector._interpreter = _StubInterpreter(logits)
+        detector._input_index = 0
+        detector._output_index = 0
+        detector._range = _StubRange(priors)
+
+        window = make_window(np.zeros(48000 * 3, dtype=np.float32), 48000, detector.window_spec)
+        detections = await detector.analyse(window)
+
+        names = {d.common_name for d in detections}
+        assert names == {"Engine", "Human vocal", "Tawny Owl"}
+        assert detector._suppressed_implausible_prior == 0
+        assert detector.non_taxonomic_admitted() == 2
+
+        engine = next(d for d in detections if d.common_name == "Engine")
+        assert engine.rank is None
+        assert engine.taxonomic_group == "acoustic_event"
+        assert engine.scientific_name is None
+        assert engine.native_result["plausibility_band"] == "non_biological"
+        assert engine.native_result["sound_kind"] == "anthropogenic"
+        # No prior was consulted, so none is recorded: an occurrence figure on
+        # this row would be a number that does not mean what its label says.
+        assert engine.native_result["occurrence_probability"] is None
+        assert engine.native_result["range_model_used"] is False
+
+        human = next(d for d in detections if d.common_name == "Human vocal")
+        assert human.native_result["sound_kind"] == "human"
+
+        # The real species alongside them is completely unaffected.
+        tawny = next(d for d in detections if d.common_name == "Tawny Owl")
+        assert tawny.rank == "species"
+        assert tawny.taxonomic_group == "bird"
+        assert tawny.scientific_name == "Strix aluco"
+        assert tawny.native_result["occurrence_probability"] == pytest.approx(0.019253)
 
     def test_licence_metadata_is_declared(self) -> None:
         metadata = BirdNetDetector.metadata

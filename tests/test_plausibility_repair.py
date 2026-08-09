@@ -35,9 +35,14 @@ LABELS = [
     "Otus flammeolus_Flammulated Owl",
     "Strix aluco_Tawny Owl",
     "Coloeus monedula_Eurasian Jackdaw",
+    # ADR-049. Not a species; the range model returns 4e-06 for it because a
+    # car has no distribution, not because engines are absent from this garden.
+    "Engine_Engine",
+    "Human vocal_Human vocal",
 ]
-# Exact measured priors from the live station (HANDOVER.md section 6.3 item 0).
-PRIORS = np.array([8e-06, 0.019253, 0.772293], dtype=np.float32)
+# Exact measured priors from the live station (HANDOVER.md section 6.3 item 0,
+# and the 2026-08-09 re-measurement for the two sound categories).
+PRIORS = np.array([8e-06, 0.019253, 0.772293, 4e-06, 3e-06], dtype=np.float32)
 BASE = datetime(2026, 8, 4, 21, 0, tzinfo=UTC)
 
 
@@ -131,6 +136,11 @@ def seeded_detections(settings) -> dict[str, uuid.UUID]:
         add("Tawny Owl", LABELS[1], 0.974, 0.019253, "out_of_range")
         # Common local species, unaffected either way.
         add("Eurasian Jackdaw", LABELS[2], 0.617, 0.772293, "in_range")
+        # Two of BirdNET's sound categories, stored exactly as the live
+        # station stored them before ADR-049 -- scientific_name repeating the
+        # common name, rank "species", group "bird".
+        add("Engine", LABELS[3], 0.976, 4e-06, "out_of_range")
+        add("Human vocal", LABELS[4], 0.984, 3e-06, "out_of_range")
 
     return ids
 
@@ -154,6 +164,31 @@ class TestFindImplausibleDetections:
         assert math.isinf(flam.recomputed_threshold)
         assert flam.stored_band == "out_of_range"  # what the old logic actually did
         assert "floor" in flam.reason
+
+    def test_sound_categories_are_never_withdrawn_by_the_floor(
+        self, settings, seeded_detections
+    ) -> None:
+        """ADR-049. The bug this closes was measured, not hypothetical.
+
+        The first dry run against the live station's 67,679 rows proposed 114
+        findings, of which 62 were "Engine", 24 "Human vocal" and 5 "Dog" --
+        91 correct detections of things that really happened, about to be
+        withdrawn because a range model was asked a question it cannot answer.
+        """
+        with session_scope() as session:
+            findings = repair.find_implausible_detections(
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
+            )
+
+        names = {item.common_name for item in findings}
+        assert "Engine" not in names
+        assert "Human vocal" not in names
+        # And the genuinely implausible owl alongside them is still caught, so
+        # this is an exemption rather than a weakening of the floor.
+        assert names == {"Flammulated Owl"}
 
     def test_is_read_only(self, settings, seeded_detections) -> None:
         """Dry-run fidelity: finding must never write anything."""

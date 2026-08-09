@@ -440,3 +440,54 @@ and not an ISO week. Verified against the real MData model's seasonality at the 
 coordinates — Common Swift peaks at week 22, Cuckoo at 17, Fieldfare in winter, and both
 North American owls sit at 0.000 in every week of the year. `scripts/birdnet_week_audit.py`
 re-runs it.
+
+## Known limitation, second part: BirdNET's own non-biological classes (ADR-049)
+
+Eleven of BirdNET GLOBAL 6K V2.4's 6,522 output classes are sound categories rather
+than species: `Dog`, `Engine`, `Environmental`, `Fireworks`, `Gun`, `Human non-vocal`,
+`Human vocal`, `Human whistle`, `Noise`, `Power tools`, `Siren`. This is exactly the
+"general sound events" capability the section above wanted — traffic, machinery and
+weather as operational context — arriving free with a classifier we already run. It was
+being handled wrongly in two ways at once.
+
+**They were stored as birds.** The adapter stamped `rank="species"` and
+`taxonomic_group="bird"` onto every output class, and `normaliser._canonical_taxon_id`
+then minted `sci:engine` from a scientific field that is a repeat of the common name
+rather than a binomial. Measured on the live station on 2026-08-09: 247 such rows (203
+`Engine`, 25 `Human vocal`, 18 `Dog`, 1 `Gray Wolf`). They now carry `rank=None`,
+`scientific_name=None`, `taxonomic_group="acoustic_event"` — the sentinel that already
+means "an event, not an organism" — and a `native_result.sound_kind`. The common name
+stays: "Engine" is honest, and it is the "that was traffic, not a bird" signal an
+operator wants.
+
+**They were being judged by a range model that cannot speak about them.** The MData
+model returns 4e-06 for "Engine" at this station, which is not "engines are absent from
+this garden" but "a car has no distribution". ADR-032's plausibility floor read that as
+impossible and would have withdrawn correct detections: 91 of the first live dry run's
+114 findings. `band_for` now takes `non_taxonomic` and sorts these classes into a
+`non_biological` band at the ordinary in-range bar, before the prior is consulted at
+all. Re-measured read-only on the same database: 114 → 23 findings at the command's
+default limit.
+
+**How the eleven are identified.** Not by shape. In `birdnet_labels.txt` these entries
+have `scientific == common`, but so do two real crickets (`Gryllus assimilis`,
+`Miogryllus saussurei`); and four of the eleven ("Human vocal", "Power tools" and
+friends) are a capitalised word followed by a lowercase word, i.e. shaped exactly like
+`Turdus merula`. The catalogue is therefore an explicit list in
+`detectors/birdnet_classes.py`, re-derived from the real label file by
+`tests/test_birdnet_classes.py` wherever that file is installed.
+
+**Privacy.** Three of the eleven are human sound, and 24 `Human vocal` detections on
+the live station had accumulated 48 evidence clips and 125 MB. `clip_human_audio`
+(default off, ADR-048-editable) means such a detection now gets its row and no audio;
+`oo clips purge-human-audio` removes what a station already holds, keeping the detection
+rows. See ADR-049 for the charter argument.
+
+**Historical rows:** `oo detections reconcile-taxonomy` (dry-run by default) corrects
+the stored taxonomic fields, preserving the originals under
+`native_result.taxonomy_review` and never deleting a row.
+
+**Still open:** `Gray Wolf` (`Canis lupus`) is a real species and correctly outside this
+catalogue, but it is still filed under `taxonomic_group="bird"`. BirdNET 6K contains
+mammals, amphibians and insects, and separating them needs a real taxonomy source that
+ADR-043 deliberately did not introduce.

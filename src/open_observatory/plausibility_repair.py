@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from . import review as review_queries
 from .db import models as orm
+from .detectors import birdnet_classes
 from .detectors.birdnet import band_for, load_range_model_for_repair
 
 BIRDNET_PLUGIN_ID = "birdnet-v2.4"
@@ -103,6 +104,10 @@ def find_implausible_detections(
     silent about that species, at capture time -- gets a real recomputed
     value now rather than being permanently unreviewable.
 
+    Skips BirdNET's eleven non-taxonomic classes entirely (ADR-049): the
+    range model has no meaningful prior for "Engine" or "Dog", so applying
+    the floor to them withdraws correct detections rather than wrong ones.
+
     Skips any row already carrying a `plausibility_review`: a repeat run must
     not silently re-flag, or overwrite the first review of, a row an operator
     has already seen.
@@ -147,12 +152,23 @@ def find_implausible_detections(
         week = native_result.get("week")
         if week is None:
             continue
-        prior = range_model.probabilities(int(week))
-        raw = float(prior[index])
-        occurrence = None if math.isnan(raw) else raw
+        # ADR-049. A sound category has no meaningful occurrence prior, so the
+        # floor must not be applied to it. Without this, the first dry run
+        # against the live station's 67,679 rows proposed to withdraw 62
+        # "Engine", 24 "Human vocal" and 5 "Dog" detections -- 91 of 114
+        # findings -- every one of which was very probably correct. The prior
+        # is still recomputed below for the species rows; for these it is not
+        # even consulted.
+        non_taxonomic = birdnet_classes.kind_of_detector_label(row.detector_label) is not None
+        occurrence: float | None = None
+        if not non_taxonomic:
+            prior = range_model.probabilities(int(week))
+            raw = float(prior[index])
+            occurrence = None if math.isnan(raw) else raw
         band, threshold = band_for(
             occurrence,
             range_model_loaded=True,
+            non_taxonomic=non_taxonomic,
             plausibility_floor=plausibility_floor,
             common_prior=common_prior,
             range_threshold=range_threshold,

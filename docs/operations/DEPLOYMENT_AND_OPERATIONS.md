@@ -203,6 +203,8 @@ version of this list omitted the three repair/maintenance commands.
 | `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
 | `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
 | `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the counter-top display |
+| `oo detections reconcile-taxonomy` | stop stored sound categories (Engine, Human vocal, Dog, …) claiming to be birds at species rank (ADR-049). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Clears `rank`, `scientific_name` and `canonical_taxon_id`, sets `taxonomic_group` to `acoustic_event`, keeps `common_name`, never deletes a row; the originals are preserved under `native_result.taxonomy_review` |
+| `oo clips purge-human-audio` | delete evidence clips of human speech and mark their `media_asset` rows reclaimed (ADR-049). **Dry-run by default**; `--apply`, `--yes`, `--json`. Detection rows are never touched |
 | `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
 | `oo refine run` | one refinement pass over stored evidence clips (ADR-045). Normally started by `open-observatory-refine.timer`, not by hand. Refuses outside 01:00–03:00 UTC unless `--force`. `--dry-run`, `--limit`, `--json`. **Writes only append-only `refinement` rows plus three bookkeeping columns; never edits a detection's species, score or `native_result`** |
 | `oo refine status` | what the refiner has done, what is waiting for a human ear, and — the number the charter's retention safeguard needs — how many bat detections have **never been examined**. `--limit`, `--json` |
@@ -579,6 +581,7 @@ Generated from the code — regenerate with
 | `clip_max_s` | live (pushed) | `12.0` s | maximum clip length |
 | `clip_min_score` | live (pushed) | `0.25` | minimum score to clip |
 | `clip_plugins` | live (pushed) | `birdnet-v2.4,ultrasonic-pass-v1` | **warns before saving.** detectors that produce clips |
+| `clip_human_audio` | live (pushed) | `False` | **warns before saving.** keep audio of human voices |
 | `clip_max_per_minute` | live (pushed) | `20` /min | clip rate limit |
 | `clip_max_total_gb` | live (pushed) | `20.0` GB | clip directory budget |
 | `clip_min_free_gb` | live (pushed) | `5.0` GB | stop clipping below free space |
