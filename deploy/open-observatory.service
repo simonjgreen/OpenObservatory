@@ -41,6 +41,16 @@ PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=@DEPLOY_ROOT@/data
+# config/, because ADR-048 made settings web-editable and they persist to
+# config/runtime.env. Without this the API accepts a settings change, validates
+# it, and then dies with `OSError: [Errno 30] Read-only file system` inside the
+# atomic write -- a 500 with the whole feature dead in production while every
+# test passes locally, where no such protection applies. Found 2026-08-09 by
+# trying to change a detector threshold on the live station.
+#
+# Only config/, not @DEPLOY_ROOT@: the source tree stays read-only to the
+# service, which is the point of ProtectHome.
+ReadWritePaths=@DEPLOY_ROOT@/config
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
