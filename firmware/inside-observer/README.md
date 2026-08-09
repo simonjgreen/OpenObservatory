@@ -230,19 +230,37 @@ and must not be left holding a stale opinion.
 Verify it landed, before unplugging:
 
 ```bash
-sudo python scripts/serial_capture.py /dev/ttyUSB0 40
+sudo ~/piovenv/bin/python scripts/serial_capture.py /dev/ttyUSB0 40
 ```
 
-The two lines that prove the table took:
+The line that proves the table took:
 
 ```
-flash      : 4194304 bytes, sketch 1127649 of 2031616
+ota        : two slots, OTA available
+```
+
+If it says `SINGLE SLOT - OTA WILL NOT WORK, partition table is wrong`, the
+upload did not include `0x8000` — which is what happens if you flashed only the
+application. Nothing is broken; reflash with `pio run -e cyd -t upload`.
+
+Alongside it, for scale rather than verification:
+
+```
+flash      : 4194304 bytes, sketch 1134464 of 2031616 in this slot (55.8%)
 app slot   : app0
 ```
 
-`2031616` is one OTA slot (`0x1F0000`). If that number is `3145728` you are
-still on the old single-slot table and the upload did not include `0x8000` —
-which is what happens if you flashed only the application.
+**A correction worth knowing, because the first version of this check was
+wrong.** This section originally said to read `sketch <n> of 2031616` and to
+treat `3145728` as the failure. The banner did not print that. It printed
+`ESP.getFreeSketchSpace() + ESP.getSketchSize()`, and `getFreeSketchSpace()` on
+ESP32 returns the size of the *next* OTA partition — so on a correctly
+repartitioned board it read `1134224 of 3165840`, and an operator following the
+instructions would have concluded the flash had failed when it had succeeded.
+On the old single-slot table there is no next partition, so it would have read
+`of 1134224`: 100% full, and equally misleading. The banner now prints the
+running slot's own size and states the two-slot question directly. Verified on
+hardware 2026-08-09.
 
 ### Every flash after this one
 
@@ -544,7 +562,7 @@ python scripts/probe_display_channel.py <station-host> 90
 
 # 3. Flash, then read the board's own account of itself for two minutes.
 sudo pio run -e cyd -t upload
-sudo python scripts/serial_capture.py /dev/ttyUSB0 130
+sudo ~/piovenv/bin/python scripts/serial_capture.py /dev/ttyUSB0 130
 ```
 
 From step 3, the lines that constitute a pass:

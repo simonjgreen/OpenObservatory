@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 
 #include "board_pins.h"
 #include "config_store.h"
@@ -119,9 +120,26 @@ void logBanner() {
   Serial.printf("chip       : %s rev %d, %d cores @ %u MHz\n",
                 ESP.getChipModel(), ESP.getChipRevision(),
                 ESP.getChipCores(), ESP.getCpuFreqMHz());
-  Serial.printf("flash      : %u bytes, sketch %u of %u\n",
+  // Print the running slot's own size, not `getFreeSketchSpace() +
+  // getSketchSize()`. That sum is the *next* OTA slot plus this sketch, which
+  // is not a quantity anything cares about: on the two-slot table it read
+  // "1134224 of 3165840" where a reader expects the 1,984 KB slot, and on the
+  // old single-slot table -- where there is no next partition and
+  // getFreeSketchSpace() returns 0 -- it would have read "of 1134224", i.e.
+  // 100% full. ADR-050's flashing check was written against the first form and
+  // would have called a correct flash a failure.
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  Serial.printf("flash      : %u bytes, sketch %u of %u in this slot (%.1f%%)\n",
                 ESP.getFlashChipSize(), ESP.getSketchSize(),
-                ESP.getFreeSketchSpace() + ESP.getSketchSize());
+                running ? running->size : 0,
+                running ? 100.0 * ESP.getSketchSize() / running->size : 0.0);
+  // The presence of a second slot is the whole point of ADR-050's repartition,
+  // and it is the one thing a flash can silently get wrong, so state it.
+  const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+  Serial.printf("ota        : %s\n",
+                (next && next != running)
+                    ? "two slots, OTA available"
+                    : "SINGLE SLOT - OTA WILL NOT WORK, partition table is wrong");
   // Which of the two OTA slots is running, and whether this boot is on
   // probation. Without a camera on the glass, a serial capture is the only
   // account of an update, and "which slot" is the first thing it needs to say.
