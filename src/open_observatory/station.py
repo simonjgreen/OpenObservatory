@@ -917,7 +917,7 @@ class Station:
                 "reason": reason,
                 "estimated_missing_frames": block.missing_frames,
                 "estimated_seconds": round(duration_s, 4),
-                "at_frame": block.first_frame,
+                "at_frame": block.gap_at_frame,
                 "occurred_utc": datetime.fromtimestamp(
                     block.utc_start_ns / NS_PER_S, tz=UTC
                 ).isoformat().replace("+00:00", "Z"),
@@ -1404,7 +1404,7 @@ class Station:
                     start_utc=datetime.fromtimestamp(block.utc_start_ns / NS_PER_S, tz=UTC),
                     estimated_missing_frames=block.missing_frames,
                     reason=str(block.discontinuity),
-                    detail={"at_frame": block.first_frame, "sequence": block.sequence},
+                    detail={"at_frame": block.gap_at_frame, "sequence": block.sequence},
                 )
             )
 
@@ -1691,6 +1691,14 @@ class Station:
                 # one overrun can span several blocks, and a gap can be detected
                 # from frame accounting without ALSA raising anything at all.
                 "overruns": getattr(self.source, "overrun_count", None),
+                # Reads that arrived late and cost nothing because the ring held
+                # the audio. These used to be reported as gaps with lost audio,
+                # which is how the station came to overstate its own losses ~13x
+                # (ADR-039). They are a scheduling symptom, not lost recording,
+                # and `late_read_max_frames` against `alsa_buffer_frames` is the
+                # margin the ring still has.
+                "late_reads": getattr(self.source, "late_reads", None),
+                "late_read_max_frames": getattr(self.source, "late_read_max_frames", None),
                 "alsa_buffer_frames": getattr(self.source, "buffer_frames", None) or None,
                 # Distinct from "detail" above, which is the capture *state* message.
                 # These were both called "detail" and the provenance dict silently

@@ -410,6 +410,18 @@ sufficient; the test is whether the work is CPU-bound in Python.
 
 ## Finding 2: `capture.gap lost_audio=True` was lying — no audio was lost
 
+> **FIXED 2026-08-09, ADR-039 — not yet deployed.** The estimator now confirms a
+> deficit step against the following blocks before crediting it, and reserves
+> `reason=overrun` for a step ALSA actually reported. Measured off-target against
+> a fake device with a real ring: against a trace that loses **nothing**, the old
+> estimator reported 259,596 phantom frames and +15,013 ppm where the new one
+> reports **0** frames, 8 `late_reads` and **-43.0 ppm** (the device's true
+> offset). Against a trace where the device really drops 422,365 frames, the new
+> estimate is 422,444 — **0.019%** error, agreeing with `expected_frames - frames`
+> to 845 frames (2.2 ms) — where the old one claimed 779,406. The live-station
+> corroboration and the on-target verification that is still outstanding are at
+> the end of this document under "Closing finding 2".
+
 Measured mid-regression, from one `/api/v1/station` reading:
 
 | | Frames | Seconds |
@@ -465,7 +477,8 @@ deficit step against the following few blocks before crediting it, and to reserv
 
 ## What is still open after this round
 
-- **The deficit-step estimator over-credits**, finding 2 above. Not fixed.
+- ~~**The deficit-step estimator over-credits**, finding 2 above. Not fixed.~~
+  **Fixed 2026-08-09 (ADR-039); not yet deployed.** See "Closing finding 2" below.
 - **A residual ~1.6 event/min of 60–120 ms event-loop lag on a 30 s beat**, present
   with retention disabled, producing no gaps. Unattributed. `clips.disk_usage()`
   caches its clip-tree walk for exactly 30 s and is the obvious candidate, but that
@@ -502,3 +515,130 @@ sudo journalctl -u open-observatory --since "-15 min" | grep loop.lag | tail
 curl -s localhost:8080/api/v1/station | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["snapshot_phase_s"])'
 ```
+
+
+---
+
+# Closing finding 2: the estimator now measures loss instead of lateness
+
+2026-08-09. ADR-039. **Written but not deployed** — the station was owned by
+another agent this session, so everything below is either an off-target
+measurement or a read-only reading of the *unfixed* station.
+
+## What changed
+
+`AlsaSource._settle_deficit` replaces the immediate credit. A step larger than one
+block, or an EPIPE, opens a suspicion; the lowest deficit over the next ring-plus-
+two-blocks (0.7 s on target) is taken as the part that never came back, and only
+that is credited. So `estimated_missing_frames` is now a decomposition of
+`expected_frames - frames` rather than a second number that can disagree with it.
+
+- `reason=overrun` only for an event ALSA reported. A confirmed loss with no EPIPE
+  is the new `frame_deficit` reason.
+- A late read that cost nothing is no longer a gap: `late_reads` and
+  `late_read_max_frames` are new counters on `/api/v1/station`, and the log line is
+  `capture.late_read` at info.
+- `CaptureBlock.discontinuity_at_frame` carries where the loss happened, since the
+  verdict now arrives a few blocks after the event.
+
+## Measured off-target, against a device that drops frames on cue
+
+The instrument is `RingedDevice` in `tests/test_alsa_source.py` — a fake capture
+device with a real ring, its own crystal rate, and ALSA's own `Input/output error`
+on overflow. `device.dropped` is ground truth injected by the test.
+
+| Trace | Truth | Old estimate | New estimate |
+|---|---|---|---|
+| 8 stalls of 250–400 ms behind a 500 ms ring | **0 frames lost** | 259,596 (0.676 s), 5 gaps "with loss", **+15,013 ppm** | **0**, 0 gaps, 8 late reads, **−43.0 ppm** |
+| 10 stalls of 150–1200 ms, ring overflows twice | **422,365 frames** | 779,406 (+84.5%) | **422,444 (+0.019%)** |
+
+In the second trace `expected_frames - frames` was 423,289: the new estimate agrees
+with it to **845 frames (2.2 ms)**, the old one disagreed by 356,117.
+
+The first row reproduces the live defect almost exactly — 259,596 phantom frames
+against the station's measured 252,495, with nothing lost and ALSA silent.
+
+## Corroboration from the live station, read-only, 2026-08-09 08:43Z
+
+This is the **unfixed** build still running:
+
+| `frames` | `expected_frames` | Real deficit | `estimated_missing_frames` | `overruns` | `gaps_with_loss` | `rate_offset_ppm` |
+|---|---|---|---|---|---|---|
+| 376,089,600 | 376,133,372 | 43,772 (0.114 s) | 348,786 (0.908 s) | **0** | 7 | **+878** |
+
+An 8.0x over-report in 16 minutes, every gap labelled as lost audio, ALSA
+reporting no overrun. 348,786/376,089,600 = 927 ppm; 927 − 43 (the true crystal
+offset) = 884, against the +878 observed. The contamination arithmetic is exact,
+which is the strongest available evidence that the ppm figure and the estimator
+are one defect and not two.
+
+## On-target verification, still outstanding
+
+Run this **before** deploying, on the station as it is:
+
+```bash
+ssh observer@station.example "curl -s localhost:8080/api/v1/station" | python3 -c '
+import json,sys; c=json.load(sys.stdin)["capture"]
+d=c["expected_frames"]-c["frames"]
+print("deficit      ", d, "frames =", round(d/c["sample_rate"],4), "s")
+print("estimated    ", c["estimated_missing_frames"], "=", c["estimated_missing_seconds"], "s")
+print("ratio        ", round(c["estimated_missing_frames"]/max(1,d),2), "x")
+print("overruns     ", c["overruns"], " gaps_with_loss", c["gaps_with_loss"],
+      " gaps_without_loss", c["gaps_without_loss"])
+print("rate_offset  ", c["rate_offset_ppm"], "ppm")'
+```
+
+Then deploy (this is a deploy the orchestrator must serialise — it restarts
+capture and resets every counter):
+
+```bash
+rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
+ssh observer@station.example sudo systemctl restart open-observatory
+sleep 1800   # 30 minutes, so the ratio is not dominated by startup
+```
+
+Run the same block again. **Pass criteria:**
+
+- `ratio` ≤ 1.0 and the two figures within one block (38,400 frames) of each other,
+  against ~8x before.
+- `rate_offset_ppm` between −60 and −30. It was +878.
+- `overruns` 0 and `gaps_with_loss` 0 while `late_reads` may be non-zero — that is
+  the whole point: stalls are visible, losses are not invented.
+- `late_read_max_frames` well below `alsa_buffer_frames` (192,000). If it
+  approaches it, the ring is close to too shallow and `OO_CAPTURE_BUFFER_MS` is the
+  lever — this counter is the early warning the station never had.
+
+```bash
+sudo journalctl -u open-observatory --since "-30 min" | grep -c capture.late_read
+sudo journalctl -u open-observatory --since "-30 min" | grep 'lost_audio=True'
+# Remember: journalctl takes LOCAL time (BST = UTC+1); the log lines are UTC.
+```
+
+## Rollback
+
+Confined to `src/`, no schema change, no new dependency, no new setting.
+
+```bash
+git revert <this commit>
+rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
+ssh observer@station.example sudo systemctl restart open-observatory
+```
+
+There is no configuration lever to disable the new behaviour, deliberately: a
+setting that restores a known-wrong measurement is not worth its own failure mode.
+
+## Traps this round produced
+
+- **`estimated_missing_frames` is now block-granular and settles late.** A gap is
+  published up to 0.7 s after it happened, so do not correlate a `capture.gap`
+  timestamp with an event to better than that — use `at_frame`, which is exact.
+- **A loss smaller than one ALSA period (10 ms) is absorbed into the drift
+  baseline, not credited.** The estimator can under-report by up to 10 ms per
+  event. That is the stated tolerance, and it is the direction the project prefers
+  to be wrong in.
+- **`late_reads` is not a gap and must never be added to `discontinuities`.** It is
+  the event-loop stall signal that `capture.gap` used to impersonate; it belongs
+  next to `loop_lag_events`, not next to lost recording.
+- **Any `rate_offset_ppm` or `estimated_missing_seconds` recorded before this fix
+  is contaminated**, on top of the earlier contamination noted above. Only
+  `expected_frames - frames` was trustworthy across the whole history of this file.

@@ -31,6 +31,11 @@ class SourceKind(StrEnum):
 
 class DiscontinuityReason(StrEnum):
     OVERRUN = "overrun"
+    #: Frames the stream clock says are permanently gone, without ALSA ever
+    #: raising EPIPE. Distinct from ``OVERRUN`` on purpose: labelling an
+    #: unreported deficit "overrun" was how the station came to claim ring
+    #: overflows the driver had never seen (ADR-039).
+    FRAME_DEFICIT = "frame_deficit"
     SHORT_READ = "short_read"
     DEVICE_RESET = "device_reset"
     TIMESTAMP_IMPLAUSIBLE = "timestamp_implausible"
@@ -157,6 +162,16 @@ class CaptureBlock:
     discontinuity: DiscontinuityReason | None = None
     #: Frames the source believes were lost immediately before this block.
     missing_frames: int = 0
+    #: Where the loss actually happened, when that is not this block's own
+    #: boundary. A source that confirms a loss before reporting it (see
+    #: :class:`~open_observatory.audio.alsa_source.AlsaSource`) publishes the
+    #: gap a few blocks after the event, and the record must still say where.
+    discontinuity_at_frame: int | None = None
+
+    @property
+    def gap_at_frame(self) -> int:
+        """The frame a reported discontinuity belongs to."""
+        return self.first_frame if self.discontinuity_at_frame is None else self.discontinuity_at_frame
 
     @property
     def frame_count(self) -> int:

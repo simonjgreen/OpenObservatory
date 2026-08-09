@@ -183,6 +183,14 @@ estimator credits a *late* read as lost audio. See
 `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-033. Judge real loss by
 `frames` against `expected_frames`, never by `estimated_missing_seconds`.
 
+That estimator was corrected on 2026-08-09 (**ADR-039**): a deficit step is now
+credited only once it fails to come back, `reason=overrun` is reserved for an event
+ALSA actually reported, and a late read that cost nothing increments `late_reads`
+instead of minting a gap. **The fix has not been deployed**, so every figure in the
+paragraph above still describes the running station, and
+`frames` against `expected_frames` remains the number to judge loss by until an
+on-target before/after has been taken.
+
 Note also that the one-hour no-drift test this document's "Resampling correctness" list
 asks for has been run at **five minutes**, not one hour, and the 72-hour soak has never
 run. Neither gap is closed.
