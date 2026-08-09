@@ -88,6 +88,7 @@ Useful during development:
 ./.venv/bin/oo config                # effective settings, with the resolved database DSN
 ./.venv/bin/oo audio probe           # enumerate capture devices (works with zero devices)
 ./.venv/bin/oo system-report         # host facts worth attaching to a diagnostic
+./.venv/bin/oo audio window-dump     # inspect a segmenter window with ground-truth frame numbers
 ```
 
 The full CLI surface is listed in

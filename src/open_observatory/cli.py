@@ -387,6 +387,347 @@ def audio_resample_check(
     )
 
 
+@audio_app.command("window-dump")
+def audio_window_dump(
+    source: Path | None = typer.Option(
+        None, "--source", help="WAV file to replay through the pipeline; omit for a synthetic scene"
+    ),
+    scene: str = typer.Option(
+        "impulse", help="Synthetic scene when --source is omitted (see `oo audio window-dump --help`)"
+    ),
+    stream_kind: str = typer.Option(
+        "audible48", "--stream-kind", help="'native' or 'audible48' -- which derived stream to segment"
+    ),
+    sample_rate: int = typer.Option(384000, help="Native rate to assume for --source, or to synthesise"),
+    duration_s: float = typer.Option(3.0, help="WindowSpec.duration_s"),
+    stride_s: float = typer.Option(3.0, help="WindowSpec.stride_s"),
+    seconds: float = typer.Option(12.0, help="How much audio to feed through the segmenter"),
+    block_ms: int = typer.Option(100, help="Capture block size, matching real ALSA block pacing"),
+    index: int = typer.Option(0, "--index", help="Which completed window to show in full detail"),
+    gap_at_s: float | None = typer.Option(
+        None, "--gap-at-s", help="Inject a capture gap once this many seconds of native audio have been read"
+    ),
+    gap_frames: int = typer.Option(
+        0, help="Native frames to drop when --gap-at-s fires, simulating lost audio"
+    ),
+    write_wav: Path | None = typer.Option(
+        None, "--write-wav", help="Write the detailed window's actual PCM to this WAV file"
+    ),
+    timezone: str | None = typer.Option(
+        None, help="IANA zone for local-time rendering; defaults to the configured station timezone"
+    ),
+    summary_only: bool = typer.Option(
+        False, "--summary-only", help="Skip the full detail block for --index"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+) -> None:
+    """Inspect one window exactly as the segmenter cut it, with ground truth.
+
+    This is Milestone 2's window inspection CLI. It runs the *real* production
+    classes -- ``StreamClock``, ``AudibleResampler``, ``StreamSegmenter`` and a
+    ``RingBuffer`` -- over a replayed WAV file or a synthetic scene, the same way
+    ``station.py`` drives them from live capture. It does not attach to a running
+    station: the native ring buffer is in-process memory owned by whichever
+    process holds the microphone (technical spec, "one process owns the
+    microphone"), and a second process cannot read it without either perturbing
+    capture or adding a new IPC surface, which is out of scope here. So this
+    command is read-only with respect to the live capture path in the strongest
+    sense: it never touches it. What it inspects is stored/replay audio, run
+    through the identical segmenter code a live stream would use.
+
+    Frames address the audio, never wall-clock time: every window is reported by
+    its actual ``start_frame``/``end_frame`` (and, for the audible stream, the
+    native frame range it maps back to), with UTC first and a local-time
+    rendering derived from it -- never the other way around.
+
+    Ground truth, not a summary that could itself be lying: each window's frame
+    count comes from the actual shape of its ``pcm`` array, not from
+    ``WindowSpec`` arithmetic, and is independently cross-checked against a
+    second read of the same frame range from a fresh ``RingBuffer`` fed the same
+    derived audio. A mismatch is reported, not silently trusted.
+    """
+    import hashlib
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    import numpy as np
+
+    from .audio.contracts import NS_PER_S, AudioWindow, StreamClock, WindowSpec
+    from .audio.replay_source import ReplaySource, SyntheticSource
+    from .audio.resample import AudibleResampler
+    from .audio.ring import RingBuffer
+    from .segmenter import WindowRouter
+
+    if stream_kind not in ("native", "audible48"):
+        console.print("[bold red]--stream-kind must be 'native' or 'audible48'[/bold red]")
+        raise typer.Exit(2)
+
+    settings = get_settings()
+    configure_logging(settings)  # keep structlog on stderr so --json stdout stays clean
+    try:
+        tz = ZoneInfo(timezone or settings.timezone)
+    except Exception as exc:
+        console.print(f"[bold red]bad timezone:[/bold red] {exc}")
+        raise typer.Exit(2) from None
+
+    def _utc(ns: int) -> datetime:
+        return datetime.fromtimestamp(ns / NS_PER_S, tz=UTC)
+
+    def _iso(ns: int) -> str:
+        return _utc(ns).isoformat().replace("+00:00", "Z")
+
+    def _local(ns: int) -> str:
+        return _utc(ns).astimezone(tz).isoformat()
+
+    async def run() -> dict[str, Any]:
+        capture_source: ReplaySource | SyntheticSource
+        if source is not None:
+            capture_source = ReplaySource(source, block_ms=block_ms, mode="accelerated", loop=False)
+        else:
+            capture_source = SyntheticSource(
+                scene=scene, sample_rate=sample_rate, block_ms=block_ms, mode="accelerated"
+            )
+        info = await capture_source.open()
+        native_rate = info.fmt.sample_rate
+        output_rate = settings.audible_sample_rate if stream_kind == "audible48" else native_rate
+
+        window_spec = WindowSpec(
+            stream_kind=stream_kind,  # type: ignore[arg-type]
+            sample_rate=output_rate,
+            duration_s=duration_s,
+            stride_s=stride_s,
+        )
+        router = WindowRouter(native_rate=native_rate, stream_id=info.stream_id)
+        router.register(window_spec, "window-dump", sample_rate=output_rate)
+        resampler = (
+            AudibleResampler(native_rate, output_rate) if stream_kind == "audible48" else None
+        )
+
+        # An independent read path for the ground-truth cross-check: the ring
+        # is fed the same derived audio the segmenter sees, but through its own
+        # accounting, so a segmenter bug and a ring bug would have to agree to
+        # go unnoticed.
+        ring_capacity_s = max(seconds * 1.5, duration_s * 4, 5.0)
+        truth_ring = RingBuffer(output_rate, ring_capacity_s)
+
+        clock: StreamClock | None = None
+        windows: list[AudioWindow] = []
+        native_frames_seen = 0
+        gap_injected = False
+        target_native_frames = int(seconds * native_rate)
+
+        while native_frames_seen < target_native_frames:
+            if (
+                gap_at_s is not None
+                and not gap_injected
+                and native_frames_seen >= int(gap_at_s * native_rate)
+            ):
+                capture_source.inject_gap(gap_frames)
+                gap_injected = True
+
+            block = await capture_source.read()
+            if block is None:
+                break
+            native_frames_seen += block.frame_count
+
+            if clock is None:
+                offset_ns = block.first_frame * NS_PER_S // block.sample_rate
+                clock = StreamClock(
+                    utc_ns_at_frame_zero=block.utc_start_ns - offset_ns,
+                    monotonic_ns_at_frame_zero=block.monotonic_start_ns - offset_ns,
+                )
+
+            discontinuous = block.discontinuity is not None and block.sequence > 0
+
+            if stream_kind == "native":
+                out_pcm, out_first_frame = block.pcm, block.first_frame
+            else:
+                assert resampler is not None
+                derived = resampler.process(block.pcm)
+                out_pcm, out_first_frame = derived.pcm, derived.first_frame
+
+            if out_pcm.size == 0:
+                continue
+
+            out_utc = clock.utc_ns(out_first_frame, output_rate)
+            out_monotonic = clock.monotonic_ns(out_first_frame, output_rate)
+            truth_ring.append(out_first_frame, out_pcm, out_monotonic)
+
+            def _collect(
+                window: AudioWindow, _consumers: list[str], _sink: list[AudioWindow] = windows
+            ) -> None:
+                _sink.append(window)
+
+            router.push(
+                stream_kind,  # type: ignore[arg-type]
+                out_pcm,
+                out_first_frame,
+                out_utc,
+                out_monotonic,
+                discontinuous=discontinuous,
+                on_window=_collect,
+            )
+
+        await capture_source.close()
+
+        segmenter_snapshot = router.snapshot()
+
+        report: dict[str, Any] = {
+            "stream": {
+                "stream_id": str(info.stream_id),
+                "source_kind": str(info.source_kind),
+                "device_label": info.device_label,
+                "native_sample_rate": native_rate,
+                "stream_kind": stream_kind,
+                "output_sample_rate": output_rate,
+            },
+            "clock": {
+                "utc_ns_at_frame_zero": clock.utc_ns_at_frame_zero if clock else None,
+                "utc_at_frame_zero": _iso(clock.utc_ns_at_frame_zero) if clock else None,
+            },
+            "window_spec": {
+                "duration_s": duration_s,
+                "stride_s": stride_s,
+                "expected_frame_count": window_spec.frame_count,
+            },
+            "gap_injected": {"at_s": gap_at_s, "frames": gap_frames} if gap_injected else None,
+            "segmenter": segmenter_snapshot[0] if segmenter_snapshot else None,
+            "native_frames_fed": native_frames_seen,
+            "windows": [],
+        }
+
+        for i, window in enumerate(windows):
+            actual_frames = int(window.pcm.shape[0])
+            truth = truth_ring.extract(window.start_frame, window.end_frame)
+            ring_match = truth is not None and np.array_equal(truth, window.pcm)
+            entry: dict[str, Any] = {
+                "index": i,
+                "window_id": str(window.window_id),
+                "start_frame": window.start_frame,
+                "end_frame": window.end_frame,
+                "native_start_frame": window.native_start_frame,
+                "native_end_frame": window.native_end_frame,
+                "actual_frame_count": actual_frames,
+                "expected_frame_count": window_spec.frame_count,
+                "duration_s_actual": round(actual_frames / window.sample_rate, 6),
+                "utc_start": _iso(window.utc_start_ns),
+                "utc_end": _iso(window.utc_end_ns),
+                "local_start": _local(window.utc_start_ns),
+                "local_end": _local(window.utc_end_ns),
+                "ring_cross_check": "match" if ring_match else "MISMATCH-or-unavailable",
+            }
+            if i == index:
+                pcm = window.pcm
+                peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
+                rms = float(np.sqrt(np.mean(np.square(pcm)))) if pcm.size else 0.0
+                entry["detail"] = {
+                    "peak": round(peak, 6),
+                    "rms": round(rms, 6),
+                    "sha256": hashlib.sha256(np.ascontiguousarray(pcm).tobytes()).hexdigest(),
+                    "first_samples": [round(float(x), 6) for x in pcm[:8]],
+                    "last_samples": [round(float(x), 6) for x in pcm[-8:]],
+                }
+                if write_wav is not None:
+                    import soundfile as sf
+
+                    write_wav.parent.mkdir(parents=True, exist_ok=True)
+                    sf.write(str(write_wav), pcm, window.sample_rate, subtype="FLOAT")
+                    entry["written_to"] = str(write_wav)
+            report["windows"].append(entry)
+
+        return report
+
+    report = asyncio.run(run())
+
+    if json_out:
+        console.print_json(json.dumps(report))
+        if not report["windows"]:
+            raise typer.Exit(1)
+        return
+
+    console.print(
+        f"[bold]{report['stream']['source_kind']}[/bold] "
+        f"{report['stream']['device_label']}  stream_id={report['stream']['stream_id']}"
+    )
+    console.print(
+        f"native {report['stream']['native_sample_rate']} Hz -> "
+        f"segmenting [bold]{stream_kind}[/bold] @ {report['stream']['output_sample_rate']} Hz, "
+        f"window {duration_s}s / stride {stride_s}s"
+    )
+    if clock_row := report["clock"]["utc_at_frame_zero"]:
+        console.print(f"stream clock anchor: frame 0 = {clock_row} UTC")
+    if report["gap_injected"]:
+        console.print(
+            f"[yellow]injected a {report['gap_injected']['frames']}-frame gap at "
+            f"{report['gap_injected']['at_s']}s of native audio[/yellow]"
+        )
+
+    if not report["windows"]:
+        console.print(
+            f"[bold red]No window completed.[/bold red] {report['native_frames_fed']:,} native "
+            f"frames were fed through, but that is less than one window's worth. "
+            "Increase --seconds or shorten --duration-s."
+        )
+        raise typer.Exit(1)
+
+    table = Table(title="Windows emitted")
+    for col in (
+        "idx", "start_frame", "end_frame", "native_start", "native_end",
+        "frames (actual/expected)", "utc_start", "local_start", "ring check",
+    ):
+        table.add_column(col)
+    for entry in report["windows"]:
+        table.add_row(
+            str(entry["index"]),
+            str(entry["start_frame"]),
+            str(entry["end_frame"]),
+            str(entry["native_start_frame"]),
+            str(entry["native_end_frame"]),
+            f"{entry['actual_frame_count']}/{entry['expected_frame_count']}",
+            entry["utc_start"],
+            entry["local_start"],
+            "[green]match[/green]" if entry["ring_cross_check"] == "match" else "[red]MISMATCH[/red]",
+        )
+    console.print(table)
+
+    if report["segmenter"] is not None:
+        seg = report["segmenter"]
+        console.print(
+            "segmenter view: "
+            f"buffered_frames={seg['buffered_frames']} ({seg['buffered_s']}s tail not yet a window), "
+            f"windows_emitted={seg['windows_emitted']}, resets={seg['resets']}"
+        )
+
+    if index < 0 or index >= len(report["windows"]):
+        console.print(
+            f"[bold red]--index {index} is out of range (0..{len(report['windows']) - 1})[/bold red]"
+        )
+        raise typer.Exit(1)
+
+    if not summary_only:
+        detail = report["windows"][index]["detail"]
+        table = Table(title=f"Window {index} detail")
+        table.add_column("field")
+        table.add_column("value", overflow="fold")
+        table.add_row("window_id", report["windows"][index]["window_id"])
+        table.add_row("actual frame count", str(report["windows"][index]["actual_frame_count"]))
+        table.add_row("duration (actual)", f"{report['windows'][index]['duration_s_actual']} s")
+        table.add_row("peak", str(detail["peak"]))
+        table.add_row("rms", str(detail["rms"]))
+        table.add_row("sha256", detail["sha256"])
+        table.add_row("first 8 samples", str(detail["first_samples"]))
+        table.add_row("last 8 samples", str(detail["last_samples"]))
+        table.add_row(
+            "ring cross-check",
+            "[green]match — independent read agrees[/green]"
+            if report["windows"][index]["ring_cross_check"] == "match"
+            else "[red]MISMATCH — do not trust this window[/red]",
+        )
+        console.print(table)
+        if "written_to" in report["windows"][index]:
+            console.print(f"[dim]wrote {report['windows'][index]['written_to']}[/dim]")
+
+
 # ----------------------------------------------------------------------
 # models
 

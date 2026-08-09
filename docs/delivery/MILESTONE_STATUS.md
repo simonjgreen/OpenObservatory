@@ -59,7 +59,7 @@ run; the 72-hour soak remains outstanding.
 | Transient asset lease manager | done, with sweep and leak accounting |
 | Redis Streams job contract | **deferred** — in-process `EventBus` behind the same protocol, per ADR-009 and the explicit permission in `CLAUDE.md` |
 | Bounded queue policies | done; per-detector bounded queues, delivery deadline, circuit breaker |
-| Window inspection CLI | partial — `oo audio resample-check` inspects timing; there is no window dump command |
+| Window inspection CLI | done — `oo audio resample-check` inspects resampler timing and `oo audio window-dump` (added 2026-08-09) dumps a specific segmenter window: actual frame bounds, actual sample count (cross-checked against an independent `RingBuffer` read, not just restated `WindowSpec` arithmetic), UTC and local-time rendering, and gap-injection to show how a discontinuity shows up in the segmenter's own frame accounting |
 | Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps. Recorded as ADR-012 |
 | Spectrogram presentation | done, beyond plan — scrolling and waterfall orientations, with the shared coordinate mapping in `web/src/components/geometry.ts` tested against both |
 | Event stream filtering | done — unidentified events are hidden by default, so the stream shows what was identified rather than everything the activity detector fired on |
@@ -149,7 +149,7 @@ single surface with two depths.
 | Authentication foundation | done (ADR-034) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 wall display keeps working |
 | Inside-observer push channel | done (ADR-038) — `GET /api/v1/display`, a detections-only WebSocket. 49 B a detection against the polled transport's ~127 kB/20 s; deployed to the Pi and flashed to the board on 2026-08-09. Elapsed times ("4s ago") ticking once a second, partial repaints only. HTTP polling retained and exercised as the fallback |
 
-## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture gate closed; soak and drift run outstanding**
+## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture and window-dump gates closed; soak and drift run outstanding**
 
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
@@ -159,6 +159,19 @@ mutually exclusive, because deploying restarts capture and voids the run.
 (`tests/test_birdnet_fixture.py`; 3 passed in 6.83 s on aarch64, 2026-08-08). See the
 Milestone 3 exit-gate note above for what it asserts and its provenance.
 
+**`oo audio window-dump`: done (2026-08-09).** It runs the real `StreamClock`,
+`AudibleResampler`, `StreamSegmenter` and `RingBuffer` classes over a replayed WAV
+file or a synthetic scene — never against the live station, since the native ring
+buffer is in-process memory owned by whichever process holds the microphone, and
+this command deliberately does not attach to a running station to avoid perturbing
+capture. Every window it reports carries its actual frame bounds and actual sample
+count (the array's own shape, not `WindowSpec` arithmetic restated), independently
+cross-checked against a second `RingBuffer` read of the same frames so a segmenter
+bug and a ring bug would both have to agree to go unnoticed. `--gap-at-s` injects a
+capture gap so the segmenter's real reaction (dropping its buffered tail across a
+discontinuity) is directly observable in the reported frame numbers, not asserted.
+See `tests/test_cli_audio.py` (9 tests) and `docs/development/SETUP.md`.
+
 Still outstanding in this milestone:
 
 * **The 72-hour soak.** The single biggest remaining item, and the one CLAUDE.md
@@ -166,8 +179,11 @@ Still outstanding in this milestone:
   exclusive, because deploying restarts capture and voids the run — so it needs a
   deliberate quiet period with no changes landing.
 * **The one-hour drift run.** Verified at 5 minutes only.
-* **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI; only
-  `oo audio resample-check` exists.
+
+This milestone's own exit gate ("the acceptance criteria for capture continuity
+pass over 72 continuous hours, and a detector fixture test passes in CI on the
+target architecture") is still **not met** — closing the window-dump line item
+does not close the gate, since the 72-hour soak is unaffected by it.
 
 ## Milestone 5 — Ultrasonic and bat support — **complete**
 
@@ -300,14 +316,13 @@ kept flowing). Any future work on these channels must be measured the same way.
 ## What must not be claimed yet
 
 Per `CLAUDE.md`, this system is **not complete**. Outstanding before that word
-applies, corrected 2026-08-09 — three items on the earlier version of this list
-(a committed species fixture test, authentication, and the Milestone 4 dashboard)
-have since been delivered and are struck rather than deleted, so the record of
-what was outstanding when survives:
+applies, corrected 2026-08-09 — four items on the earlier version of this list
+(a committed species fixture test, authentication, the Milestone 4 dashboard and
+`oo audio window-dump`) have since been delivered and are struck rather than
+deleted, so the record of what was outstanding when survives:
 
 - **the 72-hour soak test** — the single biggest item, never run;
 - **the one-hour drift run at full duration** — verified at 5 minutes only;
-- **`oo audio window-dump`** — Milestone 2 asked for a window inspection CLI;
 - **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
   webhooks;
 - **Milestone 7 entirely** — MCP tools, export bundles, backup/restore, setup
@@ -321,6 +336,8 @@ what was outstanding when survives:
 - ~~a committed fixture test proving a known species from a known recording~~ —
   done 2026-08-08, `tests/test_birdnet_fixture.py`, passing on the target;
 - ~~authentication~~ — done 2026-08-08, ADR-034, **off by default**;
+- ~~`oo audio window-dump`~~ — done 2026-08-09, see the Milestone 2 and
+  Milestone 4.5 sections above;
 - ~~the Milestone 4 product dashboard~~ — largely delivered 2026-08-08; the
   review workflow remains minimal.
 

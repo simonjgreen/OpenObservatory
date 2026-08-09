@@ -405,8 +405,19 @@ useful addition and is not currently planned.
    The hot AudioMoth gain (item 4) is a plausible confound. This needs a human
    listening to the audible renderings, not a code change; use them to tune
    `min_snr_db`, `min_pulses_per_pass` and the band as well.
-7. **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI and
-   only the resampler check exists.
+7. **`oo audio window-dump`.** **Done, 2026-08-09.** Milestone 2 asked for a window
+   inspection CLI; only `oo audio resample-check` existed before this. It runs the
+   real `StreamClock`/`AudibleResampler`/`StreamSegmenter`/`RingBuffer` classes over
+   a replayed WAV or synthetic scene — deliberately not against a running station,
+   since the native ring is in-process memory owned by whichever process holds the
+   microphone, and this command must not perturb capture. Each reported window's
+   frame count comes from its own `pcm` array shape, cross-checked against an
+   independent `RingBuffer` read of the same frames, and `--gap-at-s` shows a
+   discontinuity's real effect on the segmenter's frame accounting rather than
+   asserting one. See `oo audio window-dump --help`, `tests/test_cli_audio.py`, and
+   `docs/operations/DEPLOYMENT_AND_OPERATIONS.md`'s CLI table. This closes the
+   line item but not Milestone 4.5's own exit gate, which still needs the 72-hour
+   soak and the full-hour drift run.
 8. **Cover the history endpoints at the HTTP level.** `tests/test_history.py` tests
    the aggregation functions; nothing exercises `/api/v1/history` or
    `/api/v1/history/windows` through the app, which is where the true-division

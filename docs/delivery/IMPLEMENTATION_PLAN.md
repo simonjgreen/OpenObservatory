@@ -10,8 +10,9 @@
 > [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
 > summary as of 2026-08-09: Milestones 0–3 and 5 complete, Milestone 4 largely
 > delivered with a minimal review workflow, Milestone 4.5 outstanding (the
-> 72-hour soak, the full-hour drift run, `oo audio window-dump`), Milestone 6's
-> publisher live but its alert engine unbuilt, Milestone 7 not started.
+> 72-hour soak and the full-hour drift run; `oo audio window-dump` is now done),
+> Milestone 6's publisher live but its alert engine unbuilt, Milestone 7 not
+> started.
 
 ## Milestone 0 — Repository and target diagnostics
 
