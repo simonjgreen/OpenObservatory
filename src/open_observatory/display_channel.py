@@ -1,6 +1,6 @@
 """The inside observer's push channel: a detections-only feed sized for an ESP32.
 
-ADR-038. The wall display (ADR-023) originally polled four REST endpoints every
+ADR-038. The counter-top display (ADR-023) originally polled four REST endpoints every
 20 s, which cost the station ~315 ms of query work and ~127 kB of payload per
 cycle to render six rows -- 71 kB of that was forty detection records, each ~1.8 kB
 of evidence checksums, media URLs, detector metadata and UUIDs, fetched so the

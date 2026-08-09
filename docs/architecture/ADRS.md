@@ -42,7 +42,7 @@ reasoning is retained and is often the most useful part.
 | 020 | Non-live-source detections excluded from browsing views by default | active |
 | 021 | Evidence clips live on their own device, mounted over the clips directory | active |
 | 022 | Live ultrasonic retuning as a plain HTTP control call | active |
-| 023 | The inside observer is an ESP32 wall display that never shows a score | active; its premise that "no code in this repository publishes to a broker" is **superseded by ADR-025**, but the polling decision stands |
+| 023 | The inside observer is an ESP32 counter-top display that never shows a score | active; its premise that "no code in this repository publishes to a broker" is **superseded by ADR-025**, but the polling decision stands |
 | 024 | Capture coverage is bounded by delivered frames, not a stream row's claim | active; its "no Alembic environment exists" note is **superseded by ADR-035** |
 | 025 | MQTT publisher and Home Assistant Discovery, off by default | active |
 | 026 | NVR-style tiered clip retention; detection metadata kept forever | active; **amended by ADR-033** (sweep cadence), and its "no Alembic migrations anywhere" note is **superseded by ADR-035** |
@@ -664,7 +664,7 @@ class hitting the station during a sweep, worth knowing about if a future
 regression looks like periodic latency spikes correlated with slider use.
 
 
-## ADR-023: The inside observer is an ESP32 wall display that polls HTTP and never shows a score
+## ADR-023: The inside observer is an ESP32 counter-top display that polls HTTP and never shows a score
 
 > **Transport superseded by ADR-038 (2026-08-09).** The display is now pushed to
 > over a lean WebSocket (`GET /api/v1/display`) served by the Pi itself. HTTP
@@ -731,7 +731,7 @@ delivery contingent on someone else's milestone.
 
 The REST API, by contrast, is live, read-only, documented and already carries
 everything the display needs — including the `include_synthetic` exclusion of ADR-020,
-which matters here more than anywhere: a wall display is exactly the "browsing view"
+which matters here more than anywhere: a counter-top display is exactly the "browsing view"
 that must not present a test scene as an observation.
 
 Polling is therefore an interim transport, not a rejection of MQTT. `StationSource` is
@@ -761,7 +761,7 @@ as "92%" would state a confidence that the identification is correct, which is n
 the number means and not something this system can currently claim. The normaliser
 already refuses to let a non-taxonomic detector emit a species name; this is the same
 rule carried to the presentation layer, where the misreading actually happens — nobody
-misreads a JSON field, but everybody misreads a percentage on a wall.
+misreads a JSON field, but everybody misreads a percentage on a counter top.
 
 So a single configurable threshold decides which named detections appear, and the
 number itself does not reach the screen. On the device it is presented as a named step
@@ -1363,7 +1363,7 @@ below-`min_confidence` candidate is silently never turned into a row today. Goin
 forward, `implausible` and `no_prior` candidates that fail their band's threshold
 are suppressed by `BirdNetDetector.analyse` before a `NativeDetection` is ever
 created — consistent with the detector's own existing behaviour, and with the
-useful side effect that the API, the MQTT publisher and the ESP32 wall display
+useful side effect that the API, the MQTT publisher and the ESP32 counter-top display
 are automatically consistent with each other, since none of them has anything
 new to filter.
 
@@ -1646,8 +1646,8 @@ over.** `firmware/inside-observer` polls `GET /api/v1/detections` and
 credential — it is a 4 MB-flash ESP32 with no PSRAM, its HTTP client sends a
 bare GET, and this agent's territory explicitly excludes `firmware/`, so
 adding bearer-token support there is not a same-session option; doing it
-anyway would need a physical USB reflash of a device mounted on the
-operator's wall. Two paths were available: leave those two endpoints
+anyway would need a physical USB reflash of a device sitting on the
+operator's counter top. Two paths were available: leave those two endpoints
 reachable with no credential even when `auth_enabled` is true (chosen), or
 require a reflash before `auth_enabled` could ever be turned on for a station
 running this display. The second option effectively vetoes closing ADR-015
@@ -2445,7 +2445,7 @@ against PostgreSQL or on the Pi 5 itself.
 
 ## ADR-038: The inside observer is pushed to over a lean WebSocket, and shows elapsed times
 
-**Decision:** Replace the wall display's HTTP polling (ADR-023) with a push
+**Decision:** Replace the counter-top display's HTTP polling (ADR-023) with a push
 channel served by the station itself — a new WebSocket at `GET /api/v1/display`
 carrying detections only, in compact JSON sized to fit a single Ethernet MTU
 several times over. The display renders **elapsed** times ("4s ago", "1m ago",
@@ -2508,7 +2508,7 @@ ADR-025 shipped the MQTT publisher, so routing the display through it was
 available. It was rejected: the broker runs on the Home Assistant box, and the
 station and the display are the same system in the same house. Publishing garden
 detections to a third machine so a device on the same LAN can read them back
-makes the wall display depend on a box neither of them needs, and CLAUDE.md's
+makes the counter-top display depend on a box neither of them needs, and CLAUDE.md's
 local-first rule is not "cloud-free", it is "core function needs nothing else
 running". The display talks to the Pi. The `MqttSettings` struct stays in NVS —
 unused, and now documented as such.
@@ -2537,7 +2537,7 @@ a peak frequency; the words "Bat pass" are supplied by the firmware, so no futur
 server change can put a species on a pass. `title_hint`'s frequency-band candidate
 ("45 kHz · common pipistrelle?") is deliberately *not* forwarded — it is a
 legitimate hint in a browsing UI that can carry the sentence explaining it, and a
-species claim on a wall.
+species claim on a counter top.
 
 Server-side filtering is the point, not an optimisation. The device sends its
 threshold and its bat switch as query parameters and receives nothing it would
@@ -2573,7 +2573,7 @@ minutes to 59; hours to 23; then days, saturating at "99d+ ago". Rounding is
 weaker claim, and the one that makes the second-by-second count read as a count
 rather than as a value jittering across a boundary. A **negative** age renders as
 "now", not "-1s ago": the anchor is only re-taken on a heartbeat so fractional
-negatives are routine, and a minus sign on a wall reads as a fault.
+negatives are routine, and a minus sign on a counter top reads as a fault.
 
 Past a day the unit deliberately stops getting coarser. Weeks and months were
 considered and rejected: a feed row older than a day means the garden has been
@@ -2801,7 +2801,7 @@ control it: `spectrogram_encode_min_viewers` (default **1**; `0` restores the
 old always-on behaviour) and `spectrogram_keep_audible_warm` (default
 **false**). The API layer supplies the count via
 `Station.set_spectrogram_consumer_count(lambda: hub.count)` — the *live* hub, not
-the display clients, because the wall display has no canvas and would never make
+the display clients, because the counter-top display has no canvas and would never make
 the work worth doing.
 
 Because encoding stops, the retained history is discarded the moment the gate
@@ -2810,7 +2810,7 @@ publishes `viewer_gated` and `history_seconds` per channel so the UI can label a
 deliberately blank canvas as *filling* rather than let it read as failure.
 
 **Reason — the steady state of this station is nobody watching.** The operator's
-framing is that the wall display is the first-class surface and "first class BAU
+framing is that the counter-top display is the first-class surface and "first class BAU
 experience is no web browser open"; the web UI must be fully functional while it
 is open, but it is not expected to be open. Work done for an absent browser is
 therefore not merely inefficient, it is charged against the event loop whose
@@ -2820,7 +2820,7 @@ waste real CPU on a device that must never be starved of it" — and the
 spectrograms simply had not been held to it.
 
 **Measured on the live station, 2026-08-09**, five-minute windows, AudioMoth at
-384 kHz, wall display connected throughout, `hot_path_cpu_ratio` differenced
+384 kHz, counter-top display connected throughout, `hot_path_cpu_ratio` differenced
 across each window rather than read cumulatively:
 
 | Window | Build | Live sockets | Encoders | `hot_path_cpu_ratio` | loop-lag events/min | `gaps_with_loss` |
@@ -3277,7 +3277,7 @@ the system. Deleting a row, or hiding it from the API, was never available. But
 item 6 is equally explicit that *an answer that is wrong is worse than no
 answer, because it will be believed*, and the honesty constraint requires that
 "unverified" stay available **all the way to the surface**. On the two surfaces
-where it cannot — a Home Assistant entity state, and a wall display that shows a
+where it cannot — a Home Assistant entity state, and a counter-top display that shows a
 name and an elapsed time with no score at all by ADR-023's rule — carrying the
 row with an unrenderable caveat *is* presenting it as fact. Suppression there is
 the honest reading of the same constraint, not an exception to it.
@@ -3294,7 +3294,7 @@ bucket per group and names nothing, and the withdrawn detection genuinely did
 occur.
 
 **The operator's instinct, and where the code corrected it.** The brief proposed
-"visible in the API/history with a withdrawn marker, suppressed on the wall
+"visible in the API/history with a withdrawn marker, suppressed on the counter-top
 display and MQTT". That is what shipped, with one correction: *history* turned
 out to be two different things. `/api/v1/history` returns a `timeline` (counts —
 nothing to mark, and nothing needing marking) and a `species` list (an aggregate
@@ -3422,7 +3422,7 @@ curl -s 'http://<station-host>:8080/api/v1/detections?limit=200' \
 curl -s 'http://<station-host>:8080/api/v1/history?window=last-24h' \
   | python3 -c 'import json,sys; h=json.load(sys.stdin); print(h["excluded_withdrawn_count"], [s["common_name"] for s in h["species"]])'
 
-# 3. The wall display's own feed, which is the point of the exercise.
+# 3. The counter-top display's own feed, which is the point of the exercise.
 python scripts/watch_display_channel.py --seconds 60 --label "post-withdrawal"
 
 # 4. The week audit, re-runnable whenever the model assets change.
@@ -3818,9 +3818,9 @@ reason** (`RefinerUnavailable`), never a pass that silently found nothing.
   the next piece of charter item 5, and it is the piece where a human ear is the
   new information.
 - **It does not surface refinement in the API, the UI, the MQTT publisher or the
-  wall display.** Nothing a person sees on those surfaces changes, which is
+  counter-top display.** Nothing a person sees on those surfaces changes, which is
   correct while every refinement is a proposal: a proposal is a question, not an
-  observation, and putting one on a wall display would be precisely the
+  observation, and putting one on a counter-top display would be precisely the
   over-claiming this ADR exists to prevent. `oo refine status` is the surface.
 - **It does not add BatDetect2 as a dependency or an extra.** Its whole
   repository is CC-BY-NC-4.0 (ADR-006, ADR-017); the operator installs it
@@ -3891,7 +3891,7 @@ somebody else's.
 **Context.** This repository began as one garden's observatory and was
 saturated with that garden: the operator's home coordinates at ~11 m precision
 in docs and four test files, the station and broker LAN addresses in scripts,
-docs, web tests and the wall-display firmware, and the operator's username and
+docs, web tests and the counter-top display firmware, and the operator's username and
 home directory in the systemd unit. Publishing the repository makes every one
 of those a permanent public disclosure. The deeper problem is behavioural,
 not cosmetic: a cloned station that silently inherited the original site's

@@ -9,7 +9,7 @@ verbatim alongside it; nothing is deleted and nothing is overwritten.
 
 ADR-032 stopped there: it flagged rows and no consumer read the flag, so a
 *Western Screech-Owl* already in the database still reached the API, the MQTT
-publisher and the ESP32 wall display as a plain factual claim. This module is
+publisher and the ESP32 counter-top display as a plain factual claim. This module is
 the other half. It is the single definition of "this row has been withdrawn",
 so the five surfaces that must agree about it cannot drift apart:
 
@@ -19,7 +19,7 @@ so the five surfaces that must agree about it cannot drift apart:
 * ``mqtt/publisher.py`` -- never announces it;
 * ``firmware/inside-observer`` -- refuses it on the HTTP fallback path too.
 
-Deliberately dependency-free: no SQLAlchemy, no numpy, no FastAPI. The wall
+Deliberately dependency-free: no SQLAlchemy, no numpy, no FastAPI. The counter-top
 display's channel module (``display_channel.py``) is documented as free of the
 database and of FastAPI, and it has to be able to import this. The one thing
 that genuinely needs SQLAlchemy -- a predicate that keeps withdrawn rows out of

@@ -168,7 +168,7 @@ has already settled, with the evidence that settled them.
 - A coverage figure capable of reading **1302%**, and an "audio lost" figure
   over-reporting by **12.9x**. Both were sincere, both were believed, and both
   are honesty failures rather than capture failures.
-- **21 North American owls** reaching the wall display of a UK garden station.
+- **21 North American owls** reaching the counter-top display of a UK garden station.
   Item 1 was
   perfect; item 3's claim was not proportional to its evidence.
 

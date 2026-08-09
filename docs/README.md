@@ -29,7 +29,7 @@ a 48 kHz audible stream from it, cuts immutable time-addressed windows, runs
 three detectors over them, normalises and persists the detections, writes
 checksummed evidence clips to a USB SSD, and serves them through a FastAPI
 control plane, a React debug/operator UI, an optional MQTT publisher and an
-ESP32 wall display.
+ESP32 counter-top display.
 
 It is **not complete**. `CLAUDE.md` forbids that word until the acceptance
 criteria pass a continuous 72-hour soak on the Pi, and that soak has never been
@@ -72,7 +72,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
                             │              │      │
                         REST API ◀─────────┘      └──▶ MQTT publisher ──▶ Home Assistant
                          │     │
-              React UI ◀─┘     └──▶ ESP32 wall display (HTTP polling)
+              React UI ◀─┘     └──▶ ESP32 counter-top display (HTTP polling)
 ```
 
 ### Consumers of the API, as of today
@@ -80,7 +80,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Surface | Where | Transport |
 |---|---|---|
 | Debug/operator web UI | `web/` | WebSocket + REST + chunked-WAV HTTP |
-| ESP32 wall display ("inside observer") | `firmware/inside-observer/` | REST polling every 20 s |
+| ESP32 counter-top display ("inside observer") | `firmware/inside-observer/` | REST polling every 20 s |
 | Home Assistant | `src/open_observatory/mqtt/` | MQTT + HA Discovery (off by default) |
 | Prometheus | `GET /metrics` | scrape |
 
@@ -108,7 +108,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Work on a detector | [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md) |
 | Know why BatDetect2 is not a live detector | [`detectors/BATDETECT2_EVALUATION.md`](detectors/BATDETECT2_EVALUATION.md) |
 | Chase the open capture-gap problem | [`delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md) |
-| Work on the ESP32 wall display | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md) |
+| Work on the ESP32 counter-top display | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md) |
 
 ---
 

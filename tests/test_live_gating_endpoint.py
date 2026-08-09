@@ -4,7 +4,7 @@
 that connecting a browser is what actually starts the encoders, that a viewer
 who arrives during an idle period is told the canvas is filling rather than
 shown a stale one, and -- the operator's first-class requirement -- that a
-browser arriving and leaving does not disturb the wall display.
+browser arriving and leaving does not disturb the counter-top display.
 
 `TestClient` runs the socket over ASGI in-process, so these are not a
 measurement of the network path: ADR-012's constraint that live-channel changes
@@ -107,7 +107,7 @@ class TestTheBrowserIsWhatStartsTheEncoders:
 
 
 class TestTheDisplayIsNotCollateralDamage:
-    """The wall display is the first-class surface; a browser must not cost it.
+    """The counter-top display is the first-class surface; a browser must not cost it.
 
     Both channels live in one process on one event loop, which is exactly why
     this needs asserting rather than assuming.

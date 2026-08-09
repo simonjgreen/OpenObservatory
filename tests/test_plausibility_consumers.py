@@ -4,14 +4,14 @@ ADR-032 fixed the detector so no *new* implausible identification is ever
 written, and shipped `oo detections reconcile-plausibility` to flag the ones
 already stored. Nothing read that flag: a Western Screech-Owl already in the
 database still reached `GET /api/v1/detections`, Home Assistant over MQTT, and
-the ESP32 on the operator's living-room wall as a plain factual claim.
+the ESP32 on the operator's counter top as a plain factual claim.
 
 These tests are written against the *old* behaviour on purpose -- every one of
 them fails if its consumer stops checking the flag -- and they encode the split
 ADR-044 argues for:
 
 * a *record* keeps the row and marks it (the API list, detail and export);
-* a *claim* refuses it (species tallies, MQTT, the wall display).
+* a *claim* refuses it (species tallies, MQTT, the counter-top display).
 
 `tests/test_plausibility_repair.py` covers the other half: how the flag gets
 written in the first place.
@@ -104,7 +104,7 @@ class TestTheFlagItself:
         assert detection_flags(STANDING_NATIVE_RESULT)["withdrawn"] is False
 
 
-class TestWallDisplayWire:
+class TestCounterTopDisplayWire:
     """`display_channel.wire_item`: the ESP32 gets nothing at all (ADR-044)."""
 
     filt = display_channel.DisplayFilter(min_score=0.75, show_bats=True, rows=6)
@@ -418,7 +418,7 @@ class TestApiSurfaces:
             f"/api/v1/taxa/activity?hours={hours}&include_withdrawn=true"
         ).json()["entries"], "the diagnostic escape hatch must still work"
 
-    def test_the_wall_displays_connect_snapshot_never_contains_it(self, client) -> None:
+    def test_the_counter_top_displays_connect_snapshot_never_contains_it(self, client) -> None:
         """The end of the chain this whole ADR exists for.
 
         Filtered in SQL, in a query whose narrow column list deliberately does

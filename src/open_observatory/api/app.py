@@ -279,7 +279,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     station.set_spectrogram_sink(lambda columns: hub.broadcast_binary(columns.to_binary()))
     # ADR-040: the hub's socket count is the station's only way to know whether
     # the spectrograms are being drawn for anyone. Deliberately the *live* hub
-    # and not the display clients -- the wall display has no canvas and would
+    # and not the display clients -- the counter-top display has no canvas and would
     # never make encoding worth doing.
     station.set_spectrogram_consumer_count(lambda: hub.count)
     # Milestone 6 (ADR-025): subscribes to station.bus, the same seam every other
@@ -402,7 +402,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         change (ADR-034) -- not even a cookie is inspected.
 
         `_ALWAYS_PUBLIC_PATHS` and, for GET only, `auth_public_read_paths`
-        (default: the ESP32 wall display's `/api/v1/detections` poll) are
+        (default: the ESP32 counter-top display's `/api/v1/detections` poll) are
         exempt. Everything else under `API_PREFIX` needs a valid session or
         API token. Static UI assets and `/metrics` never match `API_PREFIX`
         and are untouched by this function.

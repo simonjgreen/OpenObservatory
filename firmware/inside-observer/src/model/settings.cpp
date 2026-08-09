@@ -37,7 +37,7 @@ bool clampSettings(Settings& s) {
   }
 
   changed |= clampInto<uint16_t>(s.pollSeconds, 5, 600);
-  // A threshold of 0 would put every acoustic-event-grade guess on the wall;
+  // A threshold of 0 would put every acoustic-event-grade guess on the counter top;
   // a threshold of 1 would guarantee an empty screen. Neither is useful, and
   // both look like a broken display rather than a configured one.
   changed |= clampInto<double>(s.scoreThreshold, 0.05, 0.99);

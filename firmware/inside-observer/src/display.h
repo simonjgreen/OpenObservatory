@@ -43,7 +43,7 @@ struct HitBox {
 };
 
 // Sensitivity presets. The operator configures which detections are named on
-// the wall by picking a described step, never by typing a number: a BirdNET
+// the counter top by picking a described step, never by typing a number: a BirdNET
 // score is not a calibrated probability and putting "0.75" in front of someone
 // invites them to read it as one. The value behind the step is still a plain
 // threshold and is still settable numerically through the provisioning portal,

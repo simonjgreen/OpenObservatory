@@ -13,7 +13,7 @@
 //
 // The station's MQTT publisher exists now, but this display deliberately does
 // not use it: the broker runs on the Home Assistant box, and routing two devices
-// that are the same system through a third would make the wall display depend on
+// that are the same system through a third would make the counter-top display depend on
 // something neither of them needs. ADR-038 records that choice.
 #pragma once
 

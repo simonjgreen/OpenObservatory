@@ -1,6 +1,6 @@
 // Open Observatory - inside observer
 //
-// A wall/desk display that shows, calmly, what the garden acoustic station is
+// A counter-top display that shows, calmly, what the garden acoustic station is
 // hearing. Species name and time. No scores, ever. Bat passes are shown as
 // passes with a peak frequency and never as a species.
 //

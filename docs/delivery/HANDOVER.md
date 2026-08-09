@@ -28,7 +28,7 @@ checksummed evidence clips (including audible renderings of ultrasound) to a USB
 and serves a real-time debug UI over two WebSocket channels plus a plain-HTTP audio
 stream — in scrolling or waterfall orientation, with unidentified and non-live-source
 events hidden by default — plus a history mode for browsing what was persisted. The
-same API now also feeds an **ESP32 wall display** (ADR-023) and an **MQTT publisher**
+same API now also feeds an **ESP32 counter-top display** (ADR-023) and an **MQTT publisher**
 running live against the operator's Home Assistant broker (ADR-025), and an
 **authentication foundation** exists, off by default (ADR-034).
 
@@ -77,7 +77,7 @@ mechanism for a *live* detector too slow to run inline.
 
 A long multi-agent session. The transferable parts:
 
-**Delivered:** an ESP32 wall display (ADR-023, ADR-038); MQTT + Home Assistant,
+**Delivered:** an ESP32 counter-top display (ADR-023, ADR-038); MQTT + Home Assistant,
 live on the operator's broker (ADR-025); tiered retention (ADR-026); live
 ultrasonic retuning restored (ADR-022); coverage bounded by delivered frames
 (ADR-024); the capture-gap root cause and fix (ADR-033); BirdNET plausibility

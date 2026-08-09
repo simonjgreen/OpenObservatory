@@ -20,7 +20,7 @@ Flagging is not the same as hiding, and this module still only flags. What a fla
 *means* to everything downstream is defined in ``plausibility.py`` and was
 implemented in ADR-044: the API keeps a flagged row and marks it ``withdrawn``,
 species tallies exclude it and report how many they excluded, and the MQTT
-publisher and the ESP32 wall display do not present it at all. So running this
+publisher and the ESP32 counter-top display do not present it at all. So running this
 command with ``--apply`` now has visible consequences on every surface, which it
 did not when ADR-032 shipped it.
 """
@@ -203,7 +203,7 @@ def apply_plausibility_flag(session: Session, item: PlausibilityFinding) -> None
     Since ADR-044 the consumers do read this. `GET /api/v1/detections` keeps the
     row and marks it `withdrawn`; `/api/v1/history`'s species list and
     `/api/v1/taxa/activity` drop it and report `excluded_withdrawn_count`; the
-    MQTT publisher and the `/api/v1/display` wall-display channel do not present
+    MQTT publisher and the `/api/v1/display` counter-top display channel do not present
     it at all. `plausibility.is_withdrawn` is the single definition they share.
     A row is withdrawn the moment this function commits, with no restart and no
     further step, which is exactly why the confirmation above is not a formality.

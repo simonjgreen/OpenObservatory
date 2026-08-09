@@ -85,7 +85,7 @@ int64_t parseIso8601Utc(const char* iso) {
   }
   // The station documents UTC on every timestamp. Anything else is either a
   // contract change or a bug, and silently assuming an offset would put wrong
-  // times on the wall.
+  // times on the counter top.
   if (*p != 'Z' && *p != 'z') {
     return kInvalidTime;
   }

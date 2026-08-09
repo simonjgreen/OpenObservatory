@@ -981,7 +981,7 @@ def detections_reconcile_plausibility(
     with no restart: a flagged row is kept and marked `withdrawn` by
     `/api/v1/detections`, dropped from `/api/v1/history`'s species list and
     `/api/v1/taxa/activity` (both of which report `excluded_withdrawn_count`),
-    and shown by neither the MQTT publisher nor the ESP32 wall display. Read the
+    and shown by neither the MQTT publisher nor the ESP32 counter-top display. Read the
     dry-run output, and preferably `--json` it to a file, before applying.
 
     Requires station coordinates (`latitude`/`longitude`) and the BirdNET model
@@ -1066,8 +1066,8 @@ def detections_reconcile_plausibility(
             f"[green]Flagged {len(findings)} row(s).[/green] Rows are kept, not deleted; "
             "the original claim is preserved under native_result, and the finding is "
             "recorded under native_result.plausibility_review. These rows are now "
-            "marked withdrawn by the API and are no longer shown on MQTT or the wall "
-            "display (ADR-044); no restart is needed."
+            "marked withdrawn by the API and are no longer shown on MQTT or the "
+            "counter-top display (ADR-044); no restart is needed."
         )
 
 

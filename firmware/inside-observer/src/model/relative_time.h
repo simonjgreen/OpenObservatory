@@ -31,7 +31,7 @@ namespace observer {
 // idea of now - a few hundred milliseconds of it is normal, because the epoch
 // anchor is only re-taken on a heartbeat. It renders as "now" rather than as
 // "-1s ago", because a display cannot honestly claim to know about the future
-// and a minus sign on a wall reads as a fault.
+// and a minus sign on a counter top reads as a fault.
 //
 // Beyond a day the unit stops getting coarser. Weeks and months were considered
 // and rejected: a feed row older than a day already means the garden has been

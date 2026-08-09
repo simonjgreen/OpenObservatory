@@ -409,7 +409,7 @@ class MqttPublisher:
             # subscribed to `.../detection` can render a caveat, and a retained
             # `last_detection` would sit on a dashboard indefinitely. So a
             # withdrawn row is not published at all, exactly as it is not put on
-            # the wall display.
+            # the counter-top display.
             #
             # This is expected to be dead code on a healthy station, and is here
             # anyway: withdrawal is written by a repair CLI run *after* capture,

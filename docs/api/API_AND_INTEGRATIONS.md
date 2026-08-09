@@ -192,7 +192,7 @@ take `include_withdrawn=true` as the diagnostic escape hatch.
 `GET /history`'s `timeline` is deliberately unfiltered: it counts detections
 and names nothing.
 
-The MQTT publisher and the `/api/v1/display` wall-display channel present a
+The MQTT publisher and the `/api/v1/display` counter-top display channel present a
 withdrawn detection not at all. Both are claim surfaces with no room for a
 caveat — a Home Assistant entity state is a bare name, and ADR-023 forbids the
 display from showing a score — so marking is not an option there and silence is
@@ -284,7 +284,7 @@ cookie or `Authorization: Bearer <token>` on every `/api/v1/*` path except:
   after every restart with no credential;
 - `GET /metrics` — never matches the `/api/v1/*` prefix at all;
 - anything in `auth_public_read_paths` (GET only; default exactly
-  `/api/v1/detections`, for the ESP32 wall display, which cannot carry a
+  `/api/v1/detections`, for the ESP32 counter-top display, which cannot carry a
   credential and cannot be reflashed as part of an ordinary station upgrade).
 
 `WS /api/v1/live` closes with code **4401** when a credential is required and

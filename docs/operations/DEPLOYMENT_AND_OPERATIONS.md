@@ -202,7 +202,7 @@ version of this list omitted the three repair/maintenance commands.
 | `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |
 | `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
 | `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
-| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the wall display |
+| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the counter-top display |
 | `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
 | `oo refine run` | one refinement pass over stored evidence clips (ADR-045). Normally started by `open-observatory-refine.timer`, not by hand. Refuses outside 01:00–03:00 UTC unless `--force`. `--dry-run`, `--limit`, `--json`. **Writes only append-only `refinement` rows plus three bookkeeping columns; never edits a detection's species, score or `native_result`** |
 | `oo refine status` | what the refiner has done, what is waiting for a human ear, and — the number the charter's retention safeguard needs — how many bat detections have **never been examined**. `--limit`, `--json` |
@@ -499,7 +499,7 @@ network path. Until then, treat a session cookie or API token exactly like
 the plaintext HTTP that carries it: readable by anything already positioned
 on the LAN, same as ADR-015 always implied.
 
-**The ESP32 wall display's exemption.** `firmware/inside-observer` reads
+**The ESP32 counter-top display's exemption.** `firmware/inside-observer` reads
 `/api/v1/display` (its WebSocket push channel since ADR-038) and, when that is
 down, polls `GET /api/v1/detections` and `GET /api/v1/health` — with no way to
 carry a credential, and it cannot be reflashed as part of an ordinary station

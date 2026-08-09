@@ -1,4 +1,4 @@
-"""Watch the wall display's own counters while something else happens.
+"""Watch the counter-top display's own counters while something else happens.
 
 ADR-038's channel and the debug UI's live channel share one process and one event
 loop, and ADR-040's premise is that the display is the first-class surface. That

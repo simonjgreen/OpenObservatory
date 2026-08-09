@@ -271,7 +271,7 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           )}
           <p className="dim">
             The record is kept, not deleted: it is evidence about the detector. It is no
-            longer counted in species summaries, and is not shown on the wall display.
+            longer counted in species summaries, and is not shown on the counter-top display.
           </p>
         </div>
       )}

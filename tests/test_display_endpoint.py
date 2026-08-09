@@ -68,7 +68,7 @@ class TestConnect:
             assert len(raw.encode()) < display_channel.MAX_FRAME_BYTES, len(raw)
 
     def test_a_synthetic_source_is_reported_degraded_and_named(self, display_client) -> None:
-        # ADR-020's incident, on the channel that matters most for it: a wall
+        # ADR-020's incident, on the channel that matters most for it: a counter-top
         # display is the "browsing view" that must never present a test scene as
         # an observation of the garden.
         with display_client.websocket_connect("/api/v1/display") as socket:

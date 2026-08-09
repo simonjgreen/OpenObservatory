@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     #: all of it in one burst delayed the audio consumer on the same event loop.
     spectrogram_backfill_s: float = 30.0
     #: Live viewers required before the spectrogram encoders run at all
-    #: (ADR-040). The station's steady state is no browser connected -- the wall
+    #: (ADR-040). The station's steady state is no browser connected -- the counter-top
     #: display is the first-class surface -- and the two encoders measured
     #: 0.0554 of a core on the target against a whole-hot-path 0.1067, so more
     #: than half the per-block work was being done for nobody. Set to 0 for the
@@ -427,7 +427,7 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     #: GET-only paths that stay reachable with no credential even when
     #: ``auth_enabled`` is true. Exists for exactly one reason: the ESP32
-    #: wall display (``firmware/inside-observer``) polls these two paths
+    #: counter-top display (``firmware/inside-observer``) polls these two paths
     #: every ``pollSeconds`` with no way to carry a credential, and it cannot
     #: be reflashed as part of closing this ADR (see ADR-034). `/api/v1/health`
     #: and `/metrics` are separately hardcoded as always-public in `api/app.py`

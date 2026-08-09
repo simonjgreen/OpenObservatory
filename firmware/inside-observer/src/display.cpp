@@ -409,7 +409,7 @@ void Display::showFeed(const StationSnapshot& snapshot,
   const int rows = feedRowsFor(hasBanner);
 
   // Keys describe what a region currently shows. Repainting only when a key
-  // changes is what makes this sit still on a wall instead of blinking every
+  // changes is what makes this sit still on a counter top instead of blinking every
   // twenty seconds.
   const std::string headerKey =
       stateLabel(snapshot.health.state) + "|" + snapshot.health.detail;

@@ -10,7 +10,7 @@ Two layers are exercised:
 * The real FastAPI app through `TestClient` (`TestAuthWiredThroughApi`) --
   the blanket gate, login/logout, session and token auth, the rate limit as
   seen through the endpoint, and -- explicitly, because a regression here
-  goes dark on someone's wall -- the two paths the ESP32 inside-observer
+  goes dark on someone's counter top -- the two paths the ESP32 inside-observer
   display polls unauthenticated (`GET /api/v1/health`,
   `GET /api/v1/detections`) staying reachable with `auth_enabled=True`.
 """
@@ -254,7 +254,7 @@ class TestAuthEnabledBlanketGate:
         )
         assert response.status_code == 401
 
-    def test_esp32_wall_display_endpoints_stay_public(self, enabled_app) -> None:
+    def test_esp32_counter_top_display_endpoints_stay_public(self, enabled_app) -> None:
         """Regression guard: the ESP32 inside-observer display cannot be
         reflashed as part of this change (see ADR-034) and polls these two
         paths every `pollSeconds` with no credential at all. If this test

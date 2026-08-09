@@ -1,6 +1,6 @@
 # Inside observer
 
-A wall or desk display that shows, calmly, what the garden acoustic station is
+A counter-top display that shows, calmly, what the garden acoustic station is
 hearing. Species name and how long ago, newest first, ticking once a second. A
 footer line counting today's species. Nothing else.
 

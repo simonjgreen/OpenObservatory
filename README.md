@@ -7,7 +7,7 @@ Raspberry Pi 5 and AudioMoth USB microphone.
 partly; 7 not started.** The station captures a live 384 kHz stream from an
 AudioMoth, derives a 48 kHz audible stream, runs three detectors over
 time-addressed windows, writes checksummed evidence clips to a USB SSD, and
-serves them through a REST/WebSocket API to a React operator UI, an ESP32 wall
+serves them through a REST/WebSocket API to a React operator UI, an ESP32 counter-top
 display, an optional MQTT publisher and Prometheus.
 
 It is *not* finished — see
@@ -63,17 +63,18 @@ system declining to call a passing car a bird.
 
 ### The indoor display
 
-![A small 3D-printed portrait display on a desk, showing LIVE IN THE GARDEN and
-a list of recent species with times](docs/screenshots/indoor-monitor.jpg)
+![A small 3D-printed portrait display standing on a counter top, showing LIVE IN
+THE GARDEN and a list of recent species with times](docs/screenshots/indoor-monitor.jpg)
 
 An ESP32 with a 2.8" touchscreen, on the same WiFi as the station, showing what
 is in the garden right now. **This is the everyday face of the system**: the
-normal state of a working observatory is nobody at a browser, so the wall
+normal state of a working observatory is nobody at a browser, so the counter-top
 display is a first-class surface and the web UI is the one you open when you
 want to dig in.
 
 It deliberately shows no scores and only identifications above a confidence
-threshold, because a number on a shelf invites a reading it cannot support. It
+threshold, because a number sitting in a room invites a reading it cannot
+support. It
 must also look *unreachable* when it cannot reach the station, never merely
 quiet — a stale list that looks fresh is the one failure this surface must not
 have.
@@ -219,7 +220,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
                                     SQLite/PostgreSQL + clips ──▶ REST API
 ```
 
-Beyond the debug UI, the same API feeds an **ESP32 wall display** in the house
+Beyond the debug UI, the same API feeds an **ESP32 counter-top display** in the house
 (`firmware/inside-observer/`, HTTP polling, never shows a score — ADR-023) and an
 optional **MQTT publisher** with Home Assistant Discovery
 (`src/open_observatory/mqtt/`, off by default — ADR-025). An **authentication

@@ -1,4 +1,4 @@
-# Live transport for the debug UI, and for the wall display
+# Live transport for the debug UI, and for the counter-top display
 
 The API specification only commits to SSE for detection updates. A real-time
 spectrogram and a live listen button need more than that, so this document
@@ -7,11 +7,11 @@ records what was added and why, rather than leaving it implicit in the code.
 Four channels now: two WebSockets for the debug UI, deliberately separate
 (ADR-012); a chunked-WAV HTTP stream added by ADR-019 as the default playback
 path after Web Audio proved silent on a real laptop; and a fourth, much smaller
-WebSocket added by ADR-038 for the ESP32 wall display, which needs detections and
+WebSocket added by ADR-038 for the ESP32 counter-top display, which needs detections and
 nothing else. ADR-012's single-writer rule governs every WebSocket here — the WAV
 addition has no socket and so no writer to serialise.
 
-If you only want the wall display's channel, skip to
+If you only want the counter-top display's channel, skip to
 [`GET /api/v1/display`](#get-apiv1display--the-inside-observers-push-channel) at
 the end; nothing above it applies to that client.
 
@@ -402,7 +402,7 @@ around.
 
 ## `GET /api/v1/display` — the inside observer's push channel
 
-A fourth channel, added by ADR-038 for one client: the ESP32 wall display
+A fourth channel, added by ADR-038 for one client: the ESP32 counter-top display
 (`firmware/inside-observer`). Detections only, in compact JSON, sized so that
 every frame this channel can produce fits inside a single Ethernet MTU with room
 to spare.
@@ -481,7 +481,7 @@ by the firmware, so no server change can put a species on a pass
 (`ultrasonic-pass-v1` detects passes, not species; ADR-013). The frequency-band
 candidate that `title_hint` carries elsewhere ("45 kHz · common pipistrelle?") is
 deliberately not forwarded: it is a legitimate hint in a UI that can print the
-sentence explaining it, and a species claim on a wall.
+sentence explaining it, and a species claim on a counter top.
 
 ### Snapshot, then deltas
 

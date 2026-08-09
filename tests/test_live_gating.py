@@ -1,6 +1,6 @@
 """The live view's cost is charged to capture, so it is only paid when watched.
 
-ADR-040. The steady state of this station is *no browser connected* -- the wall
+ADR-040. The steady state of this station is *no browser connected* -- the counter-top
 display is the first-class surface -- so every FFT computed for an absent viewer
 is waste charged against the event loop whose stalls demonstrably cause capture
 gaps (ADR-033). The heterodyne already gates on `listener_count`; these tests

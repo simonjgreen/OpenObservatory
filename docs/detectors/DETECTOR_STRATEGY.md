@@ -411,7 +411,7 @@ suppressed *out-of-range* species. It is now split into
 in `api/metrics.py`.
 
 **What is not fixed by this change: the ~5833 already-persisted rows.** Going forward, an implausible candidate is suppressed by the detector before a
-row is ever created, so the API, the MQTT publisher and the ESP32 wall display are
+row is ever created, so the API, the MQTT publisher and the ESP32 counter-top display are
 automatically consistent — there is nothing for any of them to filter. But the ~202
 historical rows already in the database were written under the old logic and still read as
 plain fact everywhere, including the living-room display. `oo detections
@@ -426,7 +426,7 @@ definition of "withdrawn". A flagged row is *kept and marked* where there is roo
 nuance — `GET /api/v1/detections`, the detail view, the CSV/JSON export, and the web UI,
 which explains the withdrawal in the detection drawer — and *suppressed* where there is
 not: `/api/v1/history`'s species list and `/api/v1/taxa/activity` drop it and report
-`excluded_withdrawn_count`, and the MQTT publisher and the ESP32 wall display do not
+`excluded_withdrawn_count`, and the MQTT publisher and the ESP32 counter-top display do not
 present it at all. Charter item 5 ("withdraw, not delete; the prior verdict stays visible
 and attributable") is why the row survives; item 6 and the honesty constraint are why the
 two surfaces that cannot render a caveat show nothing instead. What remains is an operator

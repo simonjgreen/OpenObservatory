@@ -55,7 +55,7 @@ class PushStationSource : public StationSource {
   static constexpr size_t kCandidateMax = 48;
   // Missed heartbeats before the feed is declared stale. Three, so a single
   // dropped packet on a domestic 2.4 GHz band does not put a red rule on the
-  // wall.
+  // counter top.
   static constexpr uint32_t kMissedBeatsBeforeStale = 3;
 
  private:

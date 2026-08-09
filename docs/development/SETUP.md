@@ -223,7 +223,7 @@ src/open_observatory/     the station
   auth.py                 the authentication foundation (off by default)
   cli.py / config.py      the `oo` CLI and every OO_* setting
 web/                      React + TypeScript + Vite debug/operator UI
-firmware/inside-observer/ ESP32 wall display (PlatformIO)
+firmware/inside-observer/ ESP32 counter-top display (PlatformIO)
 alembic/                  migration environment, five revisions
 deploy/                   deploy.sh, the two systemd units (station + the
                           separate refinement runner and its timer), udev rules

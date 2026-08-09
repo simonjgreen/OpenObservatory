@@ -838,7 +838,7 @@ class Station:
         # 3a. Spectrograms, on the same terms as the heterodyne below: encode
         # only when someone is actually looking. Two encoders measured 0.0554 of
         # a core on the target against a whole-hot-path 0.1067 -- more than half
-        # the per-block work, and in this station's steady state (the wall
+        # the per-block work, and in this station's steady state (the counter-top
         # display is the first-class surface, no browser open) all of it was
         # being spent on pictures nothing would ever read. See ADR-040.
         #
