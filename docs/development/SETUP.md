@@ -301,3 +301,17 @@ scripts/                  offline benchmarks and the BatDetect2 cascade tool
   an existing one — they are referenced by number from comments across `src/`,
   `web/` and `firmware/`.
 - Evidence before assertions. Do not write "tests pass" without having run them.
+
+## PlatformIO is not installed on this laptop
+
+`~/.platformio` holds the packages, but there is no `pio` binary anywhere on
+`PATH`, so `pio run` and `pio test` fail with "command not found" rather than
+anything that points at the cause. Install it into a venv:
+
+```bash
+python3 -m venv /tmp/piovenv && /tmp/piovenv/bin/pip install -q platformio==6.1.19
+/tmp/piovenv/bin/pio run -e cyd -t upload      # or: -e native for host tests
+```
+
+`/tmp` does not survive a reboot. Put it somewhere durable if you are doing
+firmware work more than once.
