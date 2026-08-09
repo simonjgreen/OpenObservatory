@@ -246,7 +246,7 @@ cleanly. State extraction is the first task of Milestone 4, not an optional tidy
 > **Status 2026-08-08: the "not foundation" list above is historical, and all of
 > it was addressed.** Measured on 2026-08-09: `App.tsx` is 323 lines with 3
 > `useState` hooks, decomposed into `web/src/hooks/*` and `web/src/state/*`;
-> `@testing-library/react` is installed and there are **136 frontend tests across
+> `@testing-library/react` is installed and there are **140 frontend tests across
 > 15 files**, not one; `?view=operate|diagnose` gives URL-driven state that
 > survives a refresh (ADR-028); and `styles.css` gained spacing and type scales
 > (ADR-027 — which also records that ~700 lines of older component CSS were

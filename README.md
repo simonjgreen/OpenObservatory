@@ -196,7 +196,7 @@ naming where the built system diverges from it.
 
 Measured 2026-08-09: **389 Python tests pass, 6 skip** (the fixture tests for the
 deliberately-unbundled BirdNET and BatDetect2 model assets, which skip rather than
-fail by design), and **136 frontend tests pass**. `ruff check .` is clean.
+fail by design), and **140 frontend tests pass**. `ruff check .` is clean.
 `mypy src` reports 29 pre-existing errors and has never been clean.
 
 The Python tests run without a microphone, against the mandated replay/synthetic

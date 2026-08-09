@@ -109,7 +109,7 @@ Measured on 2026-08-09 on this branch:
 | Gate | Result |
 |---|---|
 | `pytest -q --deselect tests/test_api.py::TestLiveChannels` | **389 passed, 6 skipped, 12 deselected** in 84 s |
-| `npm test` (web) | **136 passed**, 15 files |
+| `npm test` (web) | **140 passed** |
 | `ruff check .` | clean |
 | `mypy src` | **29 errors in 12 files** — all pre-existing, see trap 5 |
 

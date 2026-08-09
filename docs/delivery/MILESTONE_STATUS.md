@@ -137,7 +137,7 @@ single surface with two depths.
 |---|---|
 | React dashboard | foundation done — application shell and component set; surface-agnostic WebSocket and audio clients |
 | Styling | done (ADR-027) — spacing and type scales applied to new surfaces; ~700 lines of pre-existing component CSS deliberately not migrated, recorded as scoped-out |
-| Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **136 frontend tests**, up from 1 file |
+| Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **140 frontend tests** as of 2026-08-09, up from 1 file with only pure functions testable |
 | Timeline, filters, detail | foundation done — HISTORY mode: named windows, stacked timeline, species summary, click-to-focus, coverage bar |
 | Spectrogram and playback | done — two orientations, live listening, per-detection clips including audible ultrasound |
 | Health/system page | done (ADR-028) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
@@ -279,7 +279,7 @@ directory before being served.
 
 | Gate | State |
 |---|---|
-| Unit tests | **389 passing, 6 skipped**, measured 2026-08-09 on the development laptop with `pytest -q --deselect tests/test_api.py::TestLiveChannels`. The skips are the BatDetect2 and BirdNET fixture tests, which skip cleanly when the deliberately-unbundled model assets are absent. Plus **136 frontend tests** across 15 files. The last full run *on the target device* was 197 tests on 2026-08-08 and has not been repeated since |
+| Unit tests | **389 passing, 6 skipped**, measured 2026-08-09 on the development laptop with `pytest -q --deselect tests/test_api.py::TestLiveChannels`. The skips are the BatDetect2 and BirdNET fixture tests, which skip cleanly when the deliberately-unbundled model assets are absent. Plus **140 frontend tests** (`npm ci && npm test` in `web/`). This number moves as work lands; it was 136 earlier the same day. The last full run *on the target device* was 197 tests on 2026-08-08 and has not been repeated since |
 | Lint / types | `ruff check .` clean. **`mypy src` is not clean and never has been** — 29 errors in 12 files as of 2026-08-09, all pre-existing. Judge a change by whether it adds errors |
 | Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. The history-endpoint gap recorded here is **closed**: `tests/test_history.py::TestHistoryHTTP` now exercises `/api/v1/history` and `/api/v1/history/windows` through a real app (ADR-024) |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |

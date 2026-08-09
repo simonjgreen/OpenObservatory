@@ -315,7 +315,7 @@ per 2-second native window, still comfortably inside the 2 s budget.
 
 **Test counts are not a target-device measurement and do not belong in this file.**
 The last full run *on the Pi* was 197 Python tests on 2026-08-08. The current
-suite is 389 Python and 136 frontend tests, measured on the development laptop on
+suite is 389 Python and 140 frontend tests, measured on the development laptop on
 2026-08-09 — see `docs/delivery/MILESTONE_STATUS.md`, which is the authority.
 BatDetect2's own benchmark on this hardware *is* a target measurement and is
 recorded in `docs/detectors/BATDETECT2_EVALUATION.md`.

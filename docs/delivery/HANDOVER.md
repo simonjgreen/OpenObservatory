@@ -34,7 +34,7 @@ running live against the operator's Home Assistant broker (ADR-025), and an
 
 Measured 2026-08-09 on the development laptop against this branch: **389 Python
 tests pass, 6 skip** (`pytest -q --deselect tests/test_api.py::TestLiveChannels`;
-the skips are the unbundled-model fixture tests, by design) and **136 frontend
+the skips are the unbundled-model fixture tests, by design) and **140 frontend
 tests pass**. `ruff check .` is clean; `mypy src` reports 29 pre-existing errors
 and has never been clean. The last recorded full run *on the target device* was
 197 Python tests on 2026-08-08 — that number is a snapshot of that run, not the
