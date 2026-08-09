@@ -3043,18 +3043,28 @@ so a rollback cannot affect capture.
 clean, and `behind clock` must grow at roughly 0.18 s/hour without `audio lost`
 moving:
 
+A heredoc, not `python3 -c '...'`: the f-strings need double quotes inside a
+single-quoted argument, and escaping them is how the first draft of this block
+failed with `SyntaxError: unexpected character after line continuation
+character`.
+
 ```bash
 # Note: this reads UTC. `journalctl --since` below takes LOCAL time (BST = UTC+1).
-curl -s http://station.example:8080/api/v1/station | python3 -c '
-import json,sys; c=json.load(sys.stdin)["capture"]; r=c["sample_rate"]
-d=c["expected_frames"]-c["frames"]; up=c["expected_frames"]/r
-drift=-c["rate_offset_ppm"]*1e-6*up
-print(f"uptime      {up:8.0f} s")
-print(f"audio lost  {c[\"estimated_missing_seconds\"]:8.4f} s   <- the row labelled audio lost")
-print(f"behind clock{d/r:8.4f} s   of which {drift:.4f} s drift, +-0.05 s phase")
-print(f"residual    {d/r-drift-c[\"estimated_missing_seconds\"]:8.4f} s   must stay within +-0.1 s")
+curl -s http://station.example:8080/api/v1/station | python3 - <<'PY'
+import json, sys
+c = json.load(sys.stdin)["capture"]
+r = c["sample_rate"]
+d = c["expected_frames"] - c["frames"]
+up = c["expected_frames"] / r
+drift = -c["rate_offset_ppm"] * 1e-6 * up
+lost = c["estimated_missing_seconds"]
+print(f"uptime       {up:8.0f} s")
+print(f"audio lost   {lost:8.4f} s   <- the row labelled 'audio lost'")
+print(f"behind clock {d / r:8.4f} s   of which {drift:.4f} s drift, +-0.05 s phase")
+print(f"residual     {d / r - drift - lost:8.4f} s   must stay within +-0.1 s")
 print("gaps", c["gaps_with_loss"], c["gaps_without_loss"], "overruns", c["overruns"],
-      "late_reads", c["late_reads"], "of ring", c["alsa_buffer_frames"])'
+      "late_reads", c["late_reads"], "of ring", c["alsa_buffer_frames"])
+PY
 
 # Every late read must say it cost nothing; nothing may say it did.
 ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
@@ -3062,3 +3072,18 @@ ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 m
 ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
   | grep -E "loss_confirmed|lost_audio=True"'   # must print nothing
 ```
+
+Run against the live station at 47 minutes' uptime, 2026-08-09 11:15:59 UTC,
+same uninterrupted stream:
+
+```
+uptime           2830 s   stream 728ac7be
+audio lost     0.0000 s
+behind clock   0.2193 s   of which 0.1428 s drift, +-0.05 s phase
+residual       0.0766 s   must stay within +-0.1 s
+gaps 0 0 overruns 0 late_reads 41 of ring 192000 ppm -50.44
+```
+
+Note what that says: the raw deficit is now **0.219 s**, more than twice the
+0.104 s that prompted this whole investigation, and the station has still lost
+nothing. Under the old label that would have read as the leak getting worse.
