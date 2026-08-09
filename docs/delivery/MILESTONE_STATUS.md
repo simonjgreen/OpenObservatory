@@ -313,6 +313,18 @@ What makes this genuinely hard, and why it must not be started early: **an
 update mechanism that cannot roll back is worse than none**, and capture may not
 pause for a release. Charter item 1 does not have a maintenance window.
 
+## Milestone 9 — Nice to have, once the core is settled — **not started, by design**
+
+A home for enhancements that are wanted and not urgent, so they stop being ideas
+and start being decisions. Nothing here blocks an exit gate.
+
+Currently one entry: **taxonomic grouping above species (ADR-053)**, raised
+2026-08-09. The detector exposes nothing between a species binomial and
+"bird" — the label file has no hierarchy and `taxonomic_group` is a claim-kind
+marker, not a rank. Genus grouping is free and exact; family is a real data
+dependency and the honest version needs a licensed, checksummed taxonomy.
+ADR-053 records why the hardcoded corvid list is refused.
+
 ## Quality gates
 
 | Gate | State |

@@ -279,6 +279,27 @@ both the station and the display without physical access to either.
 access that depends on a third-party relay, or telemetry leaving the station.
 Local-first is not negotiated away for convenience of distribution.
 
+## Milestone 9 — Nice to have, once the core is settled
+
+Enhancements that are genuinely wanted and genuinely not urgent. Nothing here
+blocks an exit gate, and nothing here should displace the 72-hour soak. The
+point of the section is that "worth doing later" is a decision with a home,
+rather than an idea that evaporates.
+
+- **Taxonomic grouping above species (ADR-053).** Browse and aggregate by family
+  or order — "show me the corvids" — instead of only by species. The detector
+  offers no such layer: BirdNET's label file is 6,522 species binomials with no
+  hierarchy, and our `taxonomic_group` field says bird/bat/acoustic-event, not
+  rank. Genus is free (it is the first token of the binomial, 1,843 of them) but
+  is *not* family: grouping the station's corvids by genus captures 1,044
+  *Corvus* detections and silently drops the Magpie and the Jay. Family needs a
+  checksummed, separately-licensed taxonomy acquired like the model assets.
+  ADR-053 records the reasoning, and refuses the hardcoded-species-list shortcut
+  in writing.
+
+Exit gate: none. Items graduate out of this section into a numbered milestone
+when someone decides to do them.
+
 ## Explicitly deferred
 
 - frog/insect production detectors;
