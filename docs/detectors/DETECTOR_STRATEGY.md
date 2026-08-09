@@ -4,7 +4,10 @@ This document is the pre-implementation design spec, written before any detector
 It is kept as-is below to record intent. See **"As implemented"** at the end for the three
 detectors that actually shipped, their real configuration keys and defaults, and where the
 shipped system differs from what this document proposed — most notably, that BatDetect2
-below was never implemented.
+below was never implemented as a live detector.
+
+Configuration keys and defaults in the "As implemented" sections were re-verified against
+`src/open_observatory/config.py` on **2026-08-09**.
 
 ## Bird detection
 
@@ -17,8 +20,12 @@ Expected windowing is typically approximately three seconds at 48 kHz, but adapt
 ## Bat detection
 
 *As implemented: not this.* A non-ML pulse-train detector (`ultrasonic-pass-v1`) shipped
-instead and is running on the target device. BatDetect2 below remains planned, not
-implemented — see "As implemented".
+instead and is running on the target device. **BatDetect2 was benchmarked on the target
+on 2026-08-05 and deliberately not adopted as a live detector** — measured at 0.52×
+realtime, against 36–40× for the detectors that do ship. There is no
+`open_observatory.detectors.batdetect2` adapter and none is planned unless the cascade
+below is promoted. See `BATDETECT2_EVALUATION.md` for the figures and ADR-017 for the
+decision.
 
 Initial candidate: BatDetect2, a deep-learning detector/classifier for bat echolocation in high-frequency recordings. Validate:
 
@@ -193,8 +200,11 @@ constructor defaults, so behaviour did not change until an operator set somethin
 | `ultrasonic_min_snr_db` | `12.0` |
 | `ultrasonic_min_pulse_ms` | `1.5` |
 | `ultrasonic_max_pulse_ms` | `40.0` |
+| `ultrasonic_merge_gap_ms` | `2.0` — fragments of one call closer than this, measured onset to onset, merge. See "Sub-bin peak frequency" below for why onset-to-onset matters: a feeding buzz must never be merged away |
 | `ultrasonic_pass_gap_s` | `1.5` |
 | `ultrasonic_min_pulses_per_pass` | `3` |
+
+Table verified against `src/open_observatory/config.py` on 2026-08-09.
 
 A detection reports a measured frequency band, pulse count and SNR, and nothing more. A
 frequency band is evidence a human can interpret, not an identification: the detector's own
@@ -290,10 +300,17 @@ clip as recorded is not checkable by ear. That rendering is peak-normalised and 
 read as sound-pressure information: all levels in this system, native or rendered, are
 uncalibrated dBFS, never SPL.
 
-BatDetect2 itself remains a planned, unimplemented Milestone 5 item (`acoupi_batdetect2`
-evaluation harness "not started" per `MILESTONE_STATUS.md`). Nothing shipped should be
-read as a substitute classifier for it: `ultrasonic-pass-v1` answers "was there a bat pass
-here" with supporting measurements, not "which species".
+BatDetect2 has been **evaluated and deliberately not adopted as a live detector**, not
+left unimplemented by omission. The evaluation harness that this sentence previously
+called "not started" is done: `scripts/benchmark_batdetect2.py`,
+`tests/test_batdetect2.py`, `BATDETECT2_EVALUATION.md` and
+`results/batdetect2-pi5.json`, measured on the Pi on 2026-08-05 (ADR-017). What is
+genuinely open is whether to promote the offline cascade in
+`scripts/classify_clips_batdetect2.py` into a live, queued plugin against
+`DeferredDetectorWorker` — an unmade decision, not a technical blocker.
+
+Nothing shipped should be read as a substitute classifier: `ultrasonic-pass-v1` answers
+"was there a bat pass here" with supporting measurements, not "which species".
 
 ### Deferred mode — as implemented (Milestone 5 item 3)
 

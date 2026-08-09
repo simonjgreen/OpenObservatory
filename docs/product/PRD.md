@@ -1,5 +1,23 @@
 # Product Requirements Document
 
+> **This is the seed product specification, unedited.** It states what the product
+> is *for*, and that has not changed — the principles in §7 and the privacy rules
+> in §10 are still binding, and several are enforced in code rather than merely
+> stated.
+>
+> It is **not** a status document. §13's release scope (v0.1 … v1.0) is
+> superseded by [`../delivery/IMPLEMENTATION_PLAN.md`](../delivery/IMPLEMENTATION_PLAN.md)'s
+> milestones, and what is actually delivered is in
+> [`../delivery/MILESTONE_STATUS.md`](../delivery/MILESTONE_STATUS.md). Nothing
+> here should be read as a claim that a requirement is met.
+>
+> Requirements known **not** to be met as of 2026-08-09, so this file is not
+> mistaken for one: FR-007's bat detector identifies no species (ADR-013);
+> FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-015's
+> MCP interface does not exist; FR-017's upgrade preflight and backup guidance do
+> not exist; §10's configurable location precision does not exist; and §11's
+> 72-hour soak has never been run.
+
 ## 1. Product name
 
 **Open Observatory**

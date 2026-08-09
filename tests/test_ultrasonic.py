@@ -3,7 +3,7 @@
 The pulse-train mechanics (pass detection, click rejection, taxonomy honesty)
 are already covered in ``tests/test_detectors.py::TestUltrasonicDetector``.
 This file is scoped to the additions in
-``docs/superpowers/specs/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md``:
+``docs/design/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md``:
 buzz detection over the kept pulse-interval series, the extended
 ``frequency_candidate`` naming, and the night-schedule gate.
 """
