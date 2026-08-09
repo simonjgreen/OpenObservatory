@@ -65,7 +65,10 @@ enum SettingsHit : int16_t {
   kHitSensitivityDown,
   kHitSensitivityUp,
   kHitBats,
-  kHitClock,
+  // Retired by ADR-038 (there are no clock times left to format). Kept so the
+  // enum's numeric values, which are compared against nothing persisted but are
+  // easier to reason about when stable, do not all shift by one.
+  kHitClockRetired,
   kHitBrightnessDown,
   kHitBrightnessUp,
   kHitWifiPortal,
@@ -96,6 +99,17 @@ class Display {
   void showFeed(const StationSnapshot& snapshot, const Settings& settings,
                 bool force);
 
+  // Advance the "4s ago" line on every row whose text actually changed, and
+  // nothing else (ADR-038).
+  //
+  // Called once a second. Repainting the whole screen at that rate on a 240x320
+  // SPI panel would be visible as flicker and would burn CPU for nothing, so the
+  // elapsed time gets a reserved, fixed-width column of its own and a small
+  // 72x18 sprite: a row whose age string is unchanged this second - which is
+  // most of them, most of the time, once rows are minutes old - costs zero SPI
+  // traffic. Returns the number of rows actually repainted, for the log.
+  int tickRelativeTimes(const StationSnapshot& snapshot);
+
   void showSettings(const Settings& draft, const char* transportName);
   void showNumberPad(const char* title, const std::string& value,
                      bool allowDots);
@@ -114,7 +128,8 @@ class Display {
   void drawHeader(const StationSnapshot& snapshot);
   void drawFooter(const StationSnapshot& snapshot, const Settings& settings);
   void drawRow(int index, int top, const FeedItem& item,
-               const Settings& settings, int32_t offsetSeconds);
+               const Settings& settings);
+  void drawRowTime(int top, const std::string& text, bool isBat);
   void drawEmptyState(int top, int height, const StationSnapshot& snapshot,
                       const Settings& settings);
   void drawBanner(int top, const StationSnapshot& snapshot);
@@ -126,7 +141,11 @@ class Display {
 
   TFT_eSPI tft_;
   TFT_eSprite row_{&tft_};
+  // A second, much smaller sprite for the one thing on this screen that changes
+  // every second. 72x18 is 2.6 kB against the row sprite's 19 kB.
+  TFT_eSprite time_{&tft_};
   bool rowSpriteReady_ = false;
+  bool timeSpriteReady_ = false;
   uint32_t panelId_ = 0;
 
   std::vector<HitBox> hits_;
@@ -134,6 +153,9 @@ class Display {
   // Cached rendering of the last feed screen, so a poll that changes nothing
   // repaints nothing.
   std::vector<std::string> lastRowKeys_;
+  // Separate from lastRowKeys_ so a ticking clock never repaints a species name.
+  std::vector<std::string> lastRowTimes_;
+  std::vector<int> rowTops_;
   std::string lastHeaderKey_;
   std::string lastFooterKey_;
 };

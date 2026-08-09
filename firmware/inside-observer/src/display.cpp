@@ -2,7 +2,10 @@
 
 #include <Arduino.h>
 
+#include <algorithm>
+
 #include "board_pins.h"
+#include "model/relative_time.h"
 
 namespace observer {
 namespace {
@@ -28,6 +31,14 @@ constexpr int kFooterH = 30;
 constexpr int kRowH = 40;
 constexpr int kBannerH = 34;
 constexpr int kMargin = 14;
+// The reserved column for the elapsed time, at the left of a row's second line.
+// Fixed width so the detail that follows it does not shuffle sideways once a
+// second as "9s ago" becomes "10s ago"; wide enough for the longest string
+// formatRelative can produce ("99d+ ago"), which the host tests bound at eight
+// characters.
+constexpr int kTimeW = 72;
+constexpr int kTimeH = 18;
+constexpr int kSecondLineY = 24;
 constexpr int kFeedTop = kHeaderH;
 constexpr int kFeedBottom = kScreenH - kFooterH;
 
@@ -105,6 +116,15 @@ bool Display::begin() {
                    "falling back to direct draws (expect flicker)");
   }
 
+  timeSpriteReady_ = false;
+  time_.setColorDepth(16);
+  if (time_.createSprite(kTimeW, kTimeH) != nullptr) {
+    timeSpriteReady_ = true;
+  } else {
+    Serial.println("[display] WARNING: time sprite allocation failed; the "
+                   "one-second tick will draw direct (expect flicker)");
+  }
+
   Serial.printf("[display] ILI9341 init ok, %dx%d rotation=%d panel_id=0x%06X "
                 "row_sprite=%d free_heap=%u\n",
                 tft_.width(), tft_.height(), 0,
@@ -172,6 +192,8 @@ void Display::drawFitted(TFT_eSprite& s, const std::string& text, int x, int y,
 void Display::showBoot(const char* line1, const char* line2) {
   hits_.clear();
   lastRowKeys_.clear();
+  lastRowTimes_.clear();
+  rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
 
@@ -219,18 +241,22 @@ void Display::drawBanner(int top, const StationSnapshot& snapshot) {
 }
 
 void Display::drawRow(int index, int top, const FeedItem& item,
-                      const Settings& settings, int32_t offsetSeconds) {
+                      const Settings& settings) {
   const uint16_t titleColour = item.isBat() ? kBat : kInk;
 
-  std::string second = formatClock(item.startUtc, offsetSeconds,
-                                   settings.use24hClock);
+  // Everything on the second line *except* the elapsed time, which lives in its
+  // own reserved column and is repainted on its own schedule. Splitting them is
+  // what lets the clock tick once a second without redrawing a species name 86
+  // thousand times a day.
+  std::string tail;
   if (!item.detail.empty()) {
-    second += "  \xB7  ";  // middle dot in the built-in font's high range
-    second += item.detail;
+    tail += item.detail;
   }
   if (item.repeats > 1) {
-    second += "  \xB7  ";
-    second += "x" + std::to_string(item.repeats);
+    if (!tail.empty()) {
+      tail += "  \xB7  ";  // middle dot in the built-in font's high range
+    }
+    tail += "x" + std::to_string(item.repeats);
   }
 
   if (rowSpriteReady_) {
@@ -239,7 +265,7 @@ void Display::drawRow(int index, int top, const FeedItem& item,
                titleColour);
     row_.setTextDatum(TL_DATUM);
     row_.setTextColor(kInkDim, kBg);
-    row_.drawString(second.c_str(), kMargin, 24, 2);
+    row_.drawString(tail.c_str(), kMargin + kTimeW, kSecondLineY, 2);
     row_.pushSprite(0, top);
   } else {
     tft_.fillRect(0, top, kScreenW, kRowH, kBg);
@@ -247,9 +273,50 @@ void Display::drawRow(int index, int top, const FeedItem& item,
     tft_.setTextColor(titleColour, kBg);
     tft_.drawString(item.title.c_str(), kMargin, top + 2, 4);
     tft_.setTextColor(kInkDim, kBg);
-    tft_.drawString(second.c_str(), kMargin, top + 24, 2);
+    tft_.drawString(tail.c_str(), kMargin + kTimeW, top + kSecondLineY, 2);
   }
   (void)index;
+  (void)settings;
+}
+
+void Display::drawRowTime(int top, const std::string& text, bool isBat) {
+  // Slightly brighter for a bat, matching its title colour, because a violet row
+  // reading "12s ago" in sage green looks like two unrelated things.
+  const uint16_t colour = isBat ? kBat : kInkDim;
+  if (timeSpriteReady_) {
+    time_.fillSprite(kBg);
+    time_.setTextDatum(TL_DATUM);
+    time_.setTextColor(colour, kBg);
+    time_.drawString(text.c_str(), 0, 0, 2);
+    time_.pushSprite(kMargin, top + kSecondLineY);
+  } else {
+    tft_.fillRect(kMargin, top + kSecondLineY, kTimeW, kTimeH, kBg);
+    tft_.setTextDatum(TL_DATUM);
+    tft_.setTextColor(colour, kBg);
+    tft_.drawString(text.c_str(), kMargin, top + kSecondLineY, 2);
+  }
+}
+
+int Display::tickRelativeTimes(const StationSnapshot& snapshot) {
+  if (!snapshot.clock.anchored()) {
+    // No epoch yet, so no age can be claimed. The rows stay blank in that column
+    // rather than showing an invented "now".
+    return 0;
+  }
+  int repainted = 0;
+  const size_t rows = std::min(rowTops_.size(),
+                               std::min(lastRowTimes_.size(), snapshot.feed.size()));
+  for (size_t i = 0; i < rows; ++i) {
+    const std::string text =
+        formatRelative(snapshot.clock.ageOf(snapshot.feed[i].startUtc));
+    if (text == lastRowTimes_[i]) {
+      continue;  // this row's words have not changed this second
+    }
+    drawRowTime(rowTops_[i], text, snapshot.feed[i].isBat());
+    lastRowTimes_[i] = text;
+    ++repainted;
+  }
+  return repainted;
 }
 
 void Display::drawEmptyState(int top, int height,
@@ -340,7 +407,6 @@ void Display::showFeed(const StationSnapshot& snapshot,
   const bool hasBanner =
       snapshot.health.state != StationState::kListening;
   const int rows = feedRowsFor(hasBanner);
-  const int32_t offset = snapshot.utcOffsetSeconds;
 
   // Keys describe what a region currently shows. Repainting only when a key
   // changes is what makes this sit still on a wall instead of blinking every
@@ -364,15 +430,20 @@ void Display::showFeed(const StationSnapshot& snapshot,
     top += kBannerH;
   }
 
+  // Deliberately does NOT include the elapsed time: that changes every second
+  // and has its own, much cheaper repaint path (tickRelativeTimes). Folding it
+  // into this key would repaint a species name once a second for no reason.
   std::vector<std::string> keys;
   for (int i = 0; i < rows && i < static_cast<int>(snapshot.feed.size()); ++i) {
     const FeedItem& item = snapshot.feed[i];
-    keys.push_back(item.title + "|" +
-                   formatClock(item.startUtc, offset, settings.use24hClock) +
-                   "|" + item.detail + "|" + std::to_string(item.repeats));
+    keys.push_back(item.title + "|" + item.detail + "|" +
+                   std::to_string(item.repeats) + "|" +
+                   std::to_string(item.startUtc));
   }
 
   if (snapshot.feed.empty()) {
+    rowTops_.clear();
+    lastRowTimes_.clear();
     const std::string emptyKey = "EMPTY|" + headerKey;
     if (force || lastRowKeys_.size() != 1 || lastRowKeys_[0] != emptyKey) {
       drawEmptyState(top, kFeedBottom - top, snapshot, settings);
@@ -382,12 +453,18 @@ void Display::showFeed(const StationSnapshot& snapshot,
     if (force || lastRowKeys_.size() != keys.size()) {
       tft_.fillRect(0, top, kScreenW, kFeedBottom - top, kBg);
       lastRowKeys_.assign(keys.size(), std::string());
+      lastRowTimes_.assign(keys.size(), std::string());
     }
+    lastRowTimes_.resize(keys.size());
+    rowTops_.assign(keys.size(), 0);
     for (size_t i = 0; i < keys.size(); ++i) {
+      rowTops_[i] = top + static_cast<int>(i) * kRowH;
       if (force || lastRowKeys_[i] != keys[i]) {
-        drawRow(static_cast<int>(i), top + static_cast<int>(i) * kRowH,
-                snapshot.feed[i], settings, offset);
+        drawRow(static_cast<int>(i), rowTops_[i], snapshot.feed[i], settings);
         lastRowKeys_[i] = keys[i];
+        // The row sprite just painted over the time column too, so the cached
+        // string no longer describes what is on the glass.
+        lastRowTimes_[i].clear();
       }
     }
     // Clear any rows the feed shrank out of.
@@ -395,6 +472,7 @@ void Display::showFeed(const StationSnapshot& snapshot,
     if (usedBottom < kFeedBottom) {
       tft_.fillRect(0, usedBottom, kScreenW, kFeedBottom - usedBottom, kBg);
     }
+    tickRelativeTimes(snapshot);
   }
 
   const std::string footerKey =
@@ -450,6 +528,8 @@ constexpr int kRowButtons = 278;
 void Display::showSettings(const Settings& draft, const char* transportName) {
   hits_.clear();
   lastRowKeys_.clear();
+  lastRowTimes_.clear();
+  rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
 
@@ -501,8 +581,12 @@ void Display::showSettings(const Settings& draft, const char* transportName) {
 
   row(kRowBats, "Bat passes", draft.showBats ? "always shown" : "hidden",
       draft.showBats ? kBat : kInkDim, kHitBats);
-  row(kRowClock, "Clock", draft.use24hClock ? "24 hour" : "12 hour", kInk,
-      kHitClock);
+  // Where "Clock" used to be. ADR-038 replaced clock times with elapsed times,
+  // so there is no 12/24-hour choice left to make; what is worth knowing in its
+  // place is which transport is actually feeding the glass, because the HTTP
+  // fallback is a real running state and not a theoretical one. Read-only: it
+  // reports, it does not set.
+  row(kRowClock, "Feed", transportName, kAccent, kHitNone);
 
   // Brightness as a bar. A percentage here would be the only number on the
   // screen, and one number invites reading the rest as numbers too.
@@ -609,6 +693,8 @@ void Display::showNumberPad(const char* title, const std::string& value,
 void Display::showPortal(const char* ssid, const char* ip) {
   hits_.clear();
   lastRowKeys_.clear();
+  lastRowTimes_.clear();
+  rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
 

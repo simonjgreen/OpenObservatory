@@ -1,8 +1,8 @@
 # Inside observer
 
 A wall or desk display that shows, calmly, what the garden acoustic station is
-hearing. Species name and time, newest first. A footer line counting today's
-species. Nothing else.
+hearing. Species name and how long ago, newest first, ticking once a second. A
+footer line counting today's species. Nothing else.
 
 It is an ambient object, not a dashboard. It is meant to be legible from the
 other side of a room and unremarkable when nobody is looking at it.
@@ -11,7 +11,7 @@ other side of a room and unremarkable when nobody is looking at it.
 
 | | |
 |---|---|
-| Species name and local time | yes |
+| Species name and how long ago ("4s ago", "1m ago") | yes |
 | A score, a percentage, a confidence figure | **never** |
 | A bat species | **never** — `ultrasonic-pass-v1` detects passes, not species |
 | A bat pass with its peak frequency | yes, always, whatever the threshold |
@@ -125,15 +125,20 @@ firmware/inside-observer/
       detection_feed.*      threshold filtering, ordering, collapsing
       station_health.*      offline / degraded / listening
       settings.*            configuration and its clamping
-      time_utils.*          ISO 8601, local clock, peak frequency
+      time_utils.*          ISO 8601, peak frequency
+      relative_time.*       "4s ago" / "1m ago" / "99d+ ago", and its boundaries
+      station_clock.*       the monotonic base those are counted from
+      push_frame.*          the /api/v1/display wire format, parsed
     board_pins.h            the table above, in code, with its sources
-    station_source.*        the transport seam; HTTP polling today
+    station_source.*        the transport seam, and the HTTP fallback
+    push_station_source.*   the WebSocket push transport (ADR-038, the default)
     display.*               all rendering
     touch.*                 XPT2046 on the second SPI bus
     portal.*                captive-portal provisioning
     config_store.*          NVS persistence
     main.cpp                boot, self-tests, screen state machine
-  test/test_feed/           host unit tests for everything in src/model/
+  test/test_feed/           host unit tests: filtering, ordering, health
+  test/test_push/           host unit tests: relative times, clock, wire format
 ```
 
 Everything under `src/model/` is deliberately free of hardware dependencies so
@@ -225,34 +230,81 @@ regardless, which is how you get to the touch-orientation controls in the
 portal.
 
 The settings page offers: station host and port (numeric keypad), naming
-sensitivity (named steps), bat passes on/off, 12/24-hour clock, brightness, and
-a route into the provisioning portal. Text fields that need letters — a
-hostname rather than an IP, MQTT credentials — are portal-only; typing a
-hostname on a resistive 240x320 panel is not a kindness.
+sensitivity (named steps), bat passes on/off, a read-only line reporting which
+transport is actually feeding the glass, brightness, and a route into the
+provisioning portal. Text fields that need letters — a hostname rather than an
+IP, MQTT credentials — are portal-only; typing a hostname on a resistive 240x320
+panel is not a kindness.
+
+Saving **restarts the device**. The naming sensitivity and the bat switch are
+applied by the station, in the URL the socket was opened with, so changing either
+has to reopen the socket; restarting re-runs the whole connect handshake, which
+means the screen is repopulated from the station's answer rather than from rows
+that were filtered under the old rule.
+
+The 12/24-hour clock choice is gone: ADR-038 replaced clock times with elapsed
+ones, so there is nothing left for it to decide. The `use24hClock` field survives
+in NVS so no stored configuration needs migrating.
 
 ## Where the data comes from
 
-`GET http://<station>:8080/api/v1/...`, polled every 20 s by default:
+**Directly from the Pi, over a WebSocket the station pushes down** (ADR-038):
 
-| Request | Used for |
+```
+ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6
+```
+
+The filter is in the URL, so the station applies it and the device never receives
+a detection it would throw away. Measured on the wire against the live station:
+
+| Frame | Bytes |
 |---|---|
-| `/health` | listening / degraded, and the reason |
-| `/detections?limit=40&identified_only=true&min_score=<t>` | the named rows |
-| `/detections?limit=8&group=bat` | bat passes (never score-filtered) |
-| `/history?window=today` | species count, and the station's real UTC offset |
+| connect snapshot, six real species names | 294 |
+| a named detection | 49 |
+| a bat pass | 40 |
+| the 10 s heartbeat | 43 |
 
-The station's local midnight, which `/history` reports as
-`range.start_utc`, is how the display learns the station's UTC offset including
-DST. There is no NTP client and no IANA database on the device; UTC is used
-internally and converted only for presentation, as `CLAUDE.md` requires.
+**11.4 B/s in a 90-second sample.** The polled transport this replaced cost the
+station ~315 ms of query time and ~127 kB every 20 s (~6,350 B/s) to render the
+same six rows, most of it evidence checksums the display never used.
 
-Responses are stream-parsed through ArduinoJson filters, so the ~70 kB
-detections body never lands in the heap — only the six fields per row that get
-rendered.
+There is **no score field on this wire at all**. The threshold decides what is
+sent; the number stays on the Pi. A bat pass carries only a marker and a peak
+frequency — the words "Bat pass" are supplied by this firmware, so no station
+change can put a species on a pass.
 
-MQTT is **not** wired up. `StationSource` is the seam an `MqttStationSource`
-drops into later; the broker settings are already stored so they survive that
-firmware update.
+### Times
+
+Elapsed, not clock: `now`, `4s ago`, `1m ago`, `1h ago`, `3d ago`, saturating at
+`99d+ ago`. They tick once a second without waiting for new data, and only the
+rows whose words actually changed are repainted — a 72x18 sprite in a reserved
+column, never a screen redraw.
+
+The board has no RTC and does not run NTP, so the count comes from `millis()`,
+which only moves forward, and the station's `now` is used *only* to anchor that to
+a real epoch. Anchoring directly to a wall clock would let an NTP step or a late
+frame move every row on the screen at once. The anchor is re-taken only when it is
+out by two seconds or more.
+
+### The fallback
+
+`HttpStationSource` is still here, still wired up, and still runs: if the socket
+has been down for 60 s the display starts polling `/health`, `/detections` and
+`/history` again exactly as it did before, and stands the poller back down the
+moment the socket returns. The settings page reports which one is feeding the
+glass. A fallback nobody ever runs is not a fallback.
+
+Sixty seconds, not immediately, because a Wi-Fi hiccup or a station restart would
+otherwise put 127 kB per 20 s straight back on the wire. A station restart is
+absorbed by the socket's own reconnect in a few seconds and never reaches the
+poller.
+
+### Not MQTT
+
+The station's MQTT publisher exists (ADR-025), and this display deliberately does
+not use it: the broker runs on the Home Assistant box, and the station and the
+display are the same system in the same house. The `MqttSettings` struct stays in
+NVS, unused.
 
 ## If the display looks wrong
 
@@ -260,7 +312,7 @@ firmware update.
 of this board:
 
 ```
--D ILI9341_2_DRIVER  -D TFT_RGB_ORDER=TFT_BGR  -D TFT_INVERSION_ON
+-D ILI9341_2_DRIVER  -D TFT_RGB_ORDER=TFT_BGR  -D TFT_INVERSION_OFF
 ```
 
 | Symptom | Fix |
@@ -329,9 +381,62 @@ esptool --port /dev/ttyUSB0 --baud 460800 \
     read_flash 0x0 0x400000 firmware-backup-$(date +%F).bin
 ```
 
+## Target-device smoke test
+
+Three commands, in this order, all of which must be run against the real board
+and the real station — nothing here can be believed from a host build.
+
+```bash
+# 1. The pure logic, on a laptop. 53 cases: filtering, ordering, health parsing,
+#    relative-time boundaries, the millis() wrap, and the wire format.
+pio test -e native
+
+# 2. What the push channel actually costs on the wire, against the live station.
+#    Expect ~11 B/s: a 49-byte detection, a 43-byte heartbeat every 10 s.
+python scripts/probe_display_channel.py station.example 90
+
+# 3. Flash, then read the board's own account of itself for two minutes.
+sudo pio run -e cyd -t upload
+sudo python scripts/serial_capture.py /dev/ttyUSB0 130
+```
+
+From step 3, the lines that constitute a pass:
+
+```
+[selftest] panel readback PASSED
+[push] connected to /api/v1/display?min_score=0.7500&bats=true&rows=6
+[push] hello: 6 rows, 30 species today, hb 10s
+[push] +Common Woodpigeon (49 B)
+[push] frames=35 bytes=1817 mean=51 B/frame dropped=0 reconnects=0 ticks=183 …
+```
+
+`ticks` is the one to read carefully: it counts *partial* repaints of the elapsed
+time and should rise by roughly 60 a minute while the newest row is under a minute
+old. Zero means the clock is not ticking, or — the trap that actually happened —
+that something else is calling `showFeed` often enough to be updating the ages as a
+side effect. `dropped` must stay 0, and free heap must be flat.
+
+Then confirm the station is unharmed:
+
+```bash
+curl -s http://station.example:8080/api/v1/station | jq '.capture, .display_channel'
+```
+
+Judge continuity by `frames` against `expected_frames`, not by
+`estimated_missing_seconds`, which over-reports by roughly 12.9x.
+`display_channel.per_client[].mean_frame_bytes` is the station's own view of the
+same number the device reports, and the two should agree.
+
 ## Rollback note
 
 This firmware lives entirely on the display. Nothing about it touches the
 station, which it only ever reads from. Rolling back is either a re-flash of a
 previous `firmware.bin` or the whole-image restore above; in both cases the
 station is unaffected and no observation is at risk.
+
+The station half of ADR-038 rolls back independently and just as cheaply:
+`/api/v1/display` is an additive endpoint that costs nothing with no client
+connected, so reverting the firmware alone is sufficient — a display running the
+polled build works against a station that has the push channel, and a display
+running the push build falls back to polling against a station that does not
+(after 60 s, with the banner honest in the meantime).

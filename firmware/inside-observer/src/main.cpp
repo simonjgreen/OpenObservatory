@@ -5,7 +5,12 @@
 // passes with a peak frequency and never as a species.
 //
 // Board: DIYmalls / Sunton ESP32-2432S028R ("Cheap Yellow Display").
-// Data:  the station's read-only REST API, polled over HTTP. See ADR-023.
+// Data:  a WebSocket the station pushes detections down, tens of bytes each,
+//        with HTTP polling kept as the fallback. See ADR-038, then ADR-023.
+//
+// Times are elapsed, not clock: "4s ago", "1m ago", "1h ago", self-ticking once
+// a second off a monotonic base so they stay live between frames and keep
+// counting honestly while the feed is down.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -13,7 +18,9 @@
 #include "board_pins.h"
 #include "config_store.h"
 #include "display.h"
+#include "model/relative_time.h"
 #include "portal.h"
+#include "push_station_source.h"
 #include "station_source.h"
 #include "touch.h"
 
@@ -24,15 +31,37 @@ using namespace observer;
 Display display;
 Touch touch;
 Portal portal;
-HttpStationSource source;
+
+// The push channel is the transport. The poller is kept, wired up and actually
+// used whenever the socket is down, so the seam stays real rather than
+// theoretical - a fallback nobody ever runs is not a fallback.
+PushStationSource push;
+HttpStationSource http;
 
 Settings settings;
 Settings draft;            // edited on the settings screen, committed on Save
 StationSnapshot snapshot;
 
 Screen screen = Screen::kBoot;
-uint32_t nextPollMs = 0;
+uint32_t nextServiceMs = 0;
+uint32_t nextTickMs = 0;
+uint32_t nextFallbackMs = 0;
+uint32_t pushDownSinceMs = 0;
+bool onFallback = false;
+uint32_t nextScreenLogMs = 0;
+uint32_t timeRepaints = 0;
+uint32_t lastFramesRendered = 0xFFFFFFFFu;  // forces the first paint
+StationState lastStateRendered = StationState::kConnecting;
 uint32_t restartAtMs = 0;
+
+// How long the socket must be down before the poller is woken. Long enough that
+// a WiFi hiccup or a station restart does not put 127 kB of polling back on the
+// wire for the sake of one missed heartbeat; short enough that a display cannot
+// sit blank for minutes if the push channel is genuinely broken.
+constexpr uint32_t kFallbackAfterMs = 60000;
+
+// Once a second, because that is the unit the smallest relative times are in.
+constexpr uint32_t kTickMs = 1000;
 
 // Number-pad editing state.
 std::string padValue;
@@ -121,8 +150,9 @@ void logRenderedScreen() {
     Serial.println("[screen] |   (empty state - see health above)   |");
   }
   for (const FeedItem& item : snapshot.feed) {
-    std::string second = formatClock(item.startUtc, snapshot.utcOffsetSeconds,
-                                     settings.use24hClock);
+    std::string second = snapshot.clock.anchored()
+                             ? formatRelative(snapshot.clock.ageOf(item.startUtc))
+                             : std::string("--");
     if (!item.detail.empty()) {
       second += "  .  " + item.detail;
     }
@@ -155,7 +185,7 @@ void enterFeed(bool force) {
 void enterSettings() {
   draft = settings;
   screen = Screen::kSettings;
-  display.showSettings(draft, source.transportName());
+  display.showSettings(draft, snapshot.transport);
 }
 
 void enterPortal() {
@@ -225,9 +255,8 @@ void handleSettingsHit(int16_t id) {
     case kHitBats:
       draft.showBats = !draft.showBats;
       break;
-    case kHitClock:
-      draft.use24hClock = !draft.use24hClock;
-      break;
+    case kHitClockRetired:
+      return;  // the row in that slot is read-only now: it reports the transport
     case kHitBrightnessDown:
       draft.brightnessPercent =
           (draft.brightnessPercent > 15) ? draft.brightnessPercent - 10 : 5;
@@ -250,7 +279,13 @@ void handleSettingsHit(int16_t id) {
       saveSettings(settings);
       markConfigured();
       display.setBrightness(settings.brightnessPercent);
-      nextPollMs = 0;  // re-poll immediately: the threshold may have moved
+      // The threshold and the bat switch are applied by the *station*, in the
+      // URL the socket was opened with, so changing either has to reopen the
+      // socket. Restarting is the blunt way to do that and the honest one: it
+      // re-runs the whole connect handshake, so the screen is repopulated from
+      // the station's answer rather than from rows filtered under the old rule.
+      Serial.println("[main] settings saved; restarting to reopen the feed");
+      restartAtMs = millis() + 400;
       enterFeed(true);
       return;
     case kHitCancel:
@@ -260,7 +295,7 @@ void handleSettingsHit(int16_t id) {
     default:
       return;
   }
-  display.showSettings(draft, source.transportName());
+  display.showSettings(draft, snapshot.transport);
 }
 
 void handleNumberPadHit(int16_t id) {
@@ -286,11 +321,11 @@ void handleNumberPadHit(int16_t id) {
       }
     }
     screen = Screen::kSettings;
-    display.showSettings(draft, source.transportName());
+    display.showSettings(draft, snapshot.transport);
     return;
   } else if (id == kHitPadCancel) {
     screen = Screen::kSettings;
-    display.showSettings(draft, source.transportName());
+    display.showSettings(draft, snapshot.transport);
     return;
   } else {
     return;
@@ -360,11 +395,12 @@ void setup() {
 
   settings = loadSettings();
   draft = settings;
-  Serial.printf("[config] station=%s:%u poll=%us bats=%d clock=%s "
+  // No clock format here any more: ADR-038 replaced clock times with elapsed
+  // ones, so `use24hClock` survives in NVS but no longer decides anything.
+  Serial.printf("[config] station=%s:%u fallback_poll=%us bats=%d "
                 "brightness=%u%% configured=%d\n",
                 settings.stationHost.c_str(), settings.stationPort,
                 settings.pollSeconds, settings.showBats ? 1 : 0,
-                settings.use24hClock ? "24h" : "12h",
                 settings.brightnessPercent, hasBeenConfigured() ? 1 : 0);
 
   if (!display.begin()) {
@@ -387,9 +423,13 @@ void setup() {
     return;
   }
 
+  push.begin(settings);
   snapshot.health.state = StationState::kConnecting;
+  snapshot.transport = push.transportName();
   enterFeed(true);
-  nextPollMs = 0;
+  nextServiceMs = 0;
+  nextTickMs = millis() + kTickMs;
+  pushDownSinceMs = millis();
 }
 
 void loop() {
@@ -412,15 +452,95 @@ void loop() {
     handleTouch(p);
   }
 
-  if (screen == Screen::kFeed && static_cast<int32_t>(millis() - nextPollMs) >= 0) {
+  // The monotonic base every "4s ago" on the screen is counted from. Fed
+  // unconditionally, on every pass, so it keeps counting whether or not anything
+  // is connected - which is the whole reason elapsed times can be trusted while
+  // the feed is down.
+  snapshot.clock.tick(millis());
+
+  if (screen == Screen::kFeed &&
+      static_cast<int32_t>(millis() - nextServiceMs) >= 0) {
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("[wifi] link lost; reconnecting");
       WiFi.reconnect();
     }
-    source.poll(settings, snapshot);
-    display.showFeed(snapshot, settings, false);
-    logRenderedScreen();
-    nextPollMs = millis() + settings.pollSeconds * 1000UL;
+
+    const bool ok = push.poll(settings, snapshot);
+    nextServiceMs = millis() + push.serviceIntervalMs(settings);
+
+    if (ok) {
+      if (onFallback) {
+        Serial.println("[main] push feed is back; standing the poller down");
+        onFallback = false;
+      }
+      pushDownSinceMs = 0;
+      snapshot.transport = push.transportName();
+    } else {
+      if (pushDownSinceMs == 0) {
+        pushDownSinceMs = millis();
+      }
+      // Fall back to polling only after the socket has been down for a while.
+      // Waking the poller for every reconnect would put the 127 kB per 20 s that
+      // this whole change removes straight back on the wire.
+      if (millis() - pushDownSinceMs > kFallbackAfterMs &&
+          static_cast<int32_t>(millis() - nextFallbackMs) >= 0) {
+        if (!onFallback) {
+          Serial.println("[main] push feed down for a minute; falling back to "
+                         "HTTP polling");
+          onFallback = true;
+        }
+        http.poll(settings, snapshot);
+        nextFallbackMs = millis() + http.serviceIntervalMs(settings);
+      }
+    }
+
+    // Only when the *content* moved. This block runs every 10 ms - it is
+    // servicing a socket, not fetching anything - and showFeed rebuilds a key
+    // string per row every time it is called, which at 100 Hz is real work done
+    // on a device whose whole job is to sit still. The elapsed times are not
+    // this block's business: they belong to the one-second tick below.
+    const uint32_t framesNow = push.framesReceived();
+    const StationState stateNow = snapshot.health.state;
+    if (framesNow != lastFramesRendered || stateNow != lastStateRendered) {
+      lastFramesRendered = framesNow;
+      lastStateRendered = stateNow;
+      display.showFeed(snapshot, settings, false);
+    }
+  }
+
+  // The tick. Only the rows whose words actually changed are repainted, and each
+  // of those is a 72x18 sprite push, not a screen redraw - a feed whose newest
+  // row is minutes old costs nothing at all most seconds.
+  if (screen == Screen::kFeed &&
+      static_cast<int32_t>(millis() - nextTickMs) >= 0) {
+    nextTickMs = millis() + kTickMs;
+    // Counted, not assumed. Without a camera on the glass this number is the
+    // only evidence that the clock is actually ticking and that it is repainting
+    // rows rather than the screen: it should be roughly one per second while the
+    // newest row is under a minute old, and fall away to nothing once every row
+    // is measured in minutes.
+    timeRepaints += display.tickRelativeTimes(snapshot);
+
+    // Once a minute, put the rendered screen and the transport's counters in the
+    // log. Without a camera this is the only record of what is on the glass, and
+    // the bytes-per-frame figure is what ADR-038 is judged on.
+    if (static_cast<int32_t>(millis() - nextScreenLogMs) >= 0) {
+      nextScreenLogMs = millis() + 60000;
+      logRenderedScreen();
+      Serial.printf("[push] frames=%lu bytes=%lu mean=%lu B/frame dropped=%lu "
+                    "reconnects=%lu ticks=%lu transport=%s heap=%u\n",
+                    static_cast<unsigned long>(push.framesReceived()),
+                    static_cast<unsigned long>(push.bytesReceived()),
+                    static_cast<unsigned long>(
+                        push.framesReceived() > 0
+                            ? push.bytesReceived() / push.framesReceived()
+                            : 0),
+                    static_cast<unsigned long>(push.framesDropped()),
+                    static_cast<unsigned long>(push.reconnects()),
+                    static_cast<unsigned long>(timeRepaints),
+                    snapshot.transport,
+                    static_cast<unsigned>(ESP.getFreeHeap()));
+    }
   }
 
   delay(20);

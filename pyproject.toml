@@ -57,6 +57,14 @@ dev = [
   # (tests/test_mqtt_schema.py) so the envelope cannot drift unnoticed again.
   "jsonschema==4.23.0",
   "hypothesis==6.123.2",
+  # Client for scripts/probe_display_channel.py, which measures what
+  # /api/v1/display actually costs on the wire against a real station (ADR-038).
+  # Not a runtime dependency: the server side is Starlette's own WebSocket.
+  "websockets==17.0.1",
+  # scripts/serial_capture.py. `pio device monitor` needs a tty, which an agent
+  # or a CI job does not have, and reading the display's serial output is the
+  # only evidence that the firmware works.
+  "pyserial==3.5",
 ]
 
 [project.scripts]
