@@ -29,14 +29,17 @@ confusing failure downstream.
 ## Why this species, date and location
 
 European Robin is a common, visually and acoustically well known UK
-resident, present and vocal at the development station (51.4769, -0.0005)
-essentially year-round -- unlike a scarce winter visitor, there is no
-plausible week where it *should* fail the range model. The analysis date is
-fixed at 2026-08-08T06:00 Europe/London (BirdNET week 30); measured with the
-real, shipped range model at the development station's coordinates, that week gives
-European Robin an occurrence probability of ~0.83, comfortably inside
-"in_range" (threshold 0.55) and nowhere near the ADR-032 plausibility floor
-(0.0005). This is recorded explicitly, and asserted in
+resident, present and vocal essentially year-round -- unlike a scarce winter
+visitor, there is no plausible week where it *should* fail the range model.
+The reference coordinates are the Royal Observatory, Greenwich (51.4769,
+-0.0005): a neutral, published reference location that belongs to no
+particular deployment of this software, and comfortably inside the Robin's
+year-round range. The analysis date is fixed at 2026-08-08T06:00
+Europe/London (BirdNET week 30); measured with the real, shipped range model
+at these coordinates on 2026-08-09, that week gives European Robin an
+occurrence probability of 0.8099, comfortably inside "in_range" (threshold
+0.55) and nowhere near the ADR-032 plausibility floor (0.0005). This is
+recorded explicitly, and asserted in
 `test_the_fixed_date_and_location_keep_the_species_plausible`, so a change to
 the range model or the floor that silently makes this fixture inapplicable in
 future is caught by name rather than by a mysteriously empty candidate list.
@@ -64,8 +67,9 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "audio"
 FIXTURE_AUDIO = FIXTURE_DIR / "erithacus_rubecula_XC441752.mp3"
 FIXTURE_SHA256 = "21d116a92365cf6f753ef90f166eaeeebedf46300dd212a050cfdc28ce2d68ca"
 
-CHARTER_ALLEY_LATITUDE = 51.4769
-CHARTER_ALLEY_LONGITUDE = -0.0005
+#: Royal Observatory, Greenwich -- see the module docstring.
+REFERENCE_LATITUDE = 51.4769
+REFERENCE_LONGITUDE = -0.0005
 STATION_TIMEZONE = "Europe/London"
 #: Deliberately fixed, not "now" — see the module docstring. Any date would do
 #: for a year-round resident, but a fixed date keeps the test's own week
@@ -107,10 +111,10 @@ def detector() -> BirdNetDetector:
 @pytest.fixture()
 def context() -> DetectorContext:
     return DetectorContext(
-        station_name="charter-alley-test",
+        station_name="fixture-test",
         timezone=STATION_TIMEZONE,
-        latitude=CHARTER_ALLEY_LATITUDE,
-        longitude=CHARTER_ALLEY_LONGITUDE,
+        latitude=REFERENCE_LATITUDE,
+        longitude=REFERENCE_LONGITUDE,
     )
 
 
@@ -204,7 +208,7 @@ class TestBirdNetKnownRecording:
     ) -> None:
         """Guard against the trap named in the module docstring: assert,
         against the real shipped range model, that European Robin clears the
-        plausibility bar at the development station for the exact week this test's fixed
+        plausibility bar at the reference location for the exact week this test's fixed
         date computes to. If this fails, the fixture is not "wrong" -- the
         chosen date has stopped being a safe one and needs revisiting, which
         is a far more legible failure than an empty candidate list below.
@@ -223,7 +227,7 @@ class TestBirdNetKnownRecording:
         )
         occurrence = float(detector._range.probabilities(week)[robin_index])
         assert occurrence > 0.5, (
-            f"European Robin occurrence at the development station in week {week} is "
+            f"European Robin occurrence at the reference location in week {week} is "
             f"{occurrence:.4f}, no longer comfortably 'in_range' -- the fixture's "
             "date/location choice needs revisiting, not the test's threshold"
         )

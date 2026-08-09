@@ -102,8 +102,18 @@ def _seed(settings) -> uuid.UUID:
     return detection_id
 
 
+#: The Royal Observatory, Greenwich -- the repository's neutral reference
+#: location. The range model is never loaded in these tests (the CLI is fed a
+#: nonexistent model dir), so the values only need to be *some* configured
+#: location, never a real deployment's.
+REFERENCE_LATITUDE = 51.4769
+REFERENCE_LONGITUDE = -0.0005
+
+
 def _with_coordinates(settings):
-    return settings.model_copy(update={"latitude": 51.4769, "longitude": -0.0005})
+    return settings.model_copy(
+        update={"latitude": REFERENCE_LATITUDE, "longitude": REFERENCE_LONGITUDE}
+    )
 
 
 def test_dry_run_reports_but_does_not_change_anything(settings) -> None:
