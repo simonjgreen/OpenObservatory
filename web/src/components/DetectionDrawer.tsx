@@ -129,6 +129,7 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
             {title.label}
             {title.hint && <span className="title-hint">{title.hint}</span>}
             {title.feedingBuzz && <span className="feeding-buzz-marker">feeding buzz</span>}
+            {title.withdrawn && <span className="withdrawn-marker">withdrawn</span>}
           </h2>
           {detection.scientific_name && <p className="sci">{detection.scientific_name}</p>}
         </div>
@@ -136,6 +137,28 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           ✕
         </button>
       </header>
+
+      {/* The drawer is where someone digs in, so this is where the withdrawal
+          has to be explained rather than merely marked (ADR-042, charter item
+          5: the prior verdict stays visible and attributable). The original
+          claim above is left exactly as it was recorded. */}
+      {title.withdrawn && (
+        <div className="withdrawn-note" role="note">
+          <strong>This identification has been withdrawn.</strong>
+          <p>
+            {typeof detection.withdrawal?.reason === 'string'
+              ? detection.withdrawal.reason
+              : 'A plausibility review found this species is not plausible at this location and week.'}
+          </p>
+          {typeof detection.withdrawal?.reviewed_utc === 'string' && (
+            <p className="dim mono">reviewed {detection.withdrawal.reviewed_utc}</p>
+          )}
+          <p className="dim">
+            The record is kept, not deleted: it is evidence about the detector. It is no
+            longer counted in species summaries, and is not shown on the wall display.
+          </p>
+        </div>
+      )}
 
       <dl className="kv compact">
         <div>

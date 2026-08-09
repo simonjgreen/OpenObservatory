@@ -318,6 +318,52 @@ void test_empty_response_yields_an_empty_feed() {
   TEST_ASSERT_EQUAL_size_t(0, feed.size());
 }
 
+void test_withdrawn_detections_never_reach_the_screen() {
+  // ADR-042. `/api/v1/detections` deliberately still returns a withdrawn row -
+  // marked, not deleted, so the record stays visible and attributable - and
+  // this screen has no marker to render, so it must decline it. The owl below
+  // is the measured the development station case: a North American species at 0.96,
+  // comfortably above any threshold the operator can set.
+  FeedFilter f;
+  f.minScore = 0.75;
+  f.maxItems = 10;
+  const std::vector<FeedItem> feed = feedFrom(
+      R"JSON({"detections":[
+        {"event_start_utc":"2026-08-08T22:10:00Z","common_name":"Western Screech-Owl",
+         "scientific_name":"Megascops kennicottii","taxonomic_group":"bird","score":0.96,
+         "withdrawn":true,"detector":{"plugin_id":"birdnet-v2.4"}},
+        {"event_start_utc":"2026-08-08T22:05:00Z","common_name":"Tawny Owl",
+         "scientific_name":"Strix aluco","taxonomic_group":"bird","score":0.82,
+         "withdrawn":false,"detector":{"plugin_id":"birdnet-v2.4"}}
+      ]})JSON",
+      f);
+  TEST_ASSERT_EQUAL_size_t(1, feed.size());
+  TEST_ASSERT_EQUAL_STRING("Tawny Owl", feed[0].title.c_str());
+}
+
+void test_a_withdrawn_bat_pass_is_refused_too() {
+  // Bat passes bypass the score threshold entirely, so the withdrawal check
+  // has to happen before the bat branch or it would never apply to one.
+  FeedFilter f;
+  const std::vector<FeedItem> feed = feedFrom(
+      R"JSON({"detections":[
+        {"event_start_utc":"2026-08-07T04:25:19Z","common_name":null,"scientific_name":null,
+         "taxonomic_group":"bat","score":0.1,"peak_frequency_hz":36241.0,"withdrawn":true,
+         "detector":{"plugin_id":"ultrasonic-pass-v1"}}
+      ]})JSON",
+      f);
+  TEST_ASSERT_EQUAL_size_t(0, feed.size());
+}
+
+void test_the_streaming_filter_keeps_the_withdrawn_flag() {
+  // The failure this guards is silent: if `withdrawn` is not in the
+  // ArduinoJson filter it is discarded during the parse, every row reads as
+  // standing, and the test above would pass for the wrong reason.
+  JsonDocument filter;
+  buildDetectionsFilter(filter);
+  TEST_ASSERT_TRUE(filter["detections"][0]["withdrawn"].as<bool>());
+}
+
 void test_detection_without_a_timestamp_is_dropped() {
   FeedFilter f;
   f.minScore = 0.1;
@@ -442,6 +488,9 @@ int main(int, char**) {
   RUN_TEST(test_feed_is_truncated_to_the_rows_the_screen_has);
   RUN_TEST(test_empty_response_yields_an_empty_feed);
   RUN_TEST(test_detection_without_a_timestamp_is_dropped);
+  RUN_TEST(test_withdrawn_detections_never_reach_the_screen);
+  RUN_TEST(test_a_withdrawn_bat_pass_is_refused_too);
+  RUN_TEST(test_the_streaming_filter_keeps_the_withdrawn_flag);
 
   RUN_TEST(test_species_count_today_respects_the_threshold);
   RUN_TEST(test_history_filter_keeps_the_local_midnight_anchor);

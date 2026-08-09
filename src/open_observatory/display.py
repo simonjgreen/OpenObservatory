@@ -18,6 +18,8 @@ identification, and the stored record / taxonomic fields must never carry it (se
 
 from __future__ import annotations
 
+from . import plausibility
+
 #: Only detections with this taxonomic group are eligible for a frequency-based
 #: candidate hint. Currently only the ultrasonic detector emits it.
 _BAT_GROUP = "bat"
@@ -88,6 +90,14 @@ def display_title(
 def detection_flags(native_result: dict[str, object] | None) -> dict[str, bool]:
     """Small derived marker set for list/history rows that don't carry the raw blob.
 
-    Currently just the feeding-buzz flag, computed from ``native_result``.
+    The feeding-buzz flag, and ``withdrawn`` (ADR-042) for a row whose claim a
+    plausibility review has retracted. ``withdrawn`` is deliberately here as
+    well as being a top-level field on the detection payload: this dict is what
+    the web UI's ``formatDetectionTitle`` reads for every render site at once,
+    so a marker that lives only at the top level would have had to be plumbed
+    into five components separately and would have been missed in one of them.
     """
-    return {"feeding_buzz": bool((native_result or {}).get("has_feeding_buzz"))}
+    return {
+        "feeding_buzz": bool((native_result or {}).get("has_feeding_buzz")),
+        "withdrawn": plausibility.is_withdrawn(native_result),
+    }

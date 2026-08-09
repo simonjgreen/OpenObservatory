@@ -621,11 +621,12 @@ def detections_reconcile_plausibility(
     detector output verbatim, so the correction is auditable (the same shape as
     `oo history reconcile-streams`'s `detail.reconciliation`).
 
-    Flagging is not the same as hiding: no consumer (the `/api/v1/detections`
-    endpoint, the MQTT publisher, or the ESP32 wall display firmware) currently
-    checks `plausibility_review` to stop presenting a flagged row as an
-    observation. That is separate, tracked follow-up work, not done by this
-    command.
+    Since ADR-042 this flag has teeth, and `--apply` takes effect immediately
+    with no restart: a flagged row is kept and marked `withdrawn` by
+    `/api/v1/detections`, dropped from `/api/v1/history`'s species list and
+    `/api/v1/taxa/activity` (both of which report `excluded_withdrawn_count`),
+    and shown by neither the MQTT publisher nor the ESP32 wall display. Read the
+    dry-run output, and preferably `--json` it to a file, before applying.
 
     Requires station coordinates (`latitude`/`longitude`) and the BirdNET model
     assets (`oo models fetch`) to be present, since the range model itself has to
@@ -708,8 +709,9 @@ def detections_reconcile_plausibility(
         console.print(
             f"[green]Flagged {len(findings)} row(s).[/green] Rows are kept, not deleted; "
             "the original claim is preserved under native_result, and the finding is "
-            "recorded under native_result.plausibility_review. No consumer filters on "
-            "this flag yet -- see the command's own docstring."
+            "recorded under native_result.plausibility_review. These rows are now "
+            "marked withdrawn by the API and are no longer shown on MQTT or the wall "
+            "display (ADR-042); no restart is needed."
         )
 
 

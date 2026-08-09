@@ -221,6 +221,30 @@ class TestBirdNetAdapter:
         assert birdnet_week(datetime(2026, 2, 1, tzinfo=UTC)) == 5
         assert birdnet_week(datetime(2026, 12, 31, tzinfo=UTC)) == 48
 
+    def test_every_day_of_a_leap_and_a_common_year_lands_in_1_to_48(self) -> None:
+        """The re-audit HANDOVER 6.3 item 0 asked for (ADR-042).
+
+        `birdnet_week` is written as `int(day / 7.25) + 1`, which is not the
+        form the convention is usually stated in. This asserts it is exactly
+        equivalent to the stated rule -- four weeks per calendar month, week 1
+        being days 1-7, the fourth absorbing days 22-31 -- for every day of a
+        common year and a leap year, and that the result never leaves [1, 48].
+
+        The range matters as much as the mapping: the MData model treats *any*
+        week outside 1-48 as "year round", which silently disables seasonality
+        rather than failing. Measured at the station's coordinates: Common
+        Swift is 0.913 at week 52, 0 or -1, and 0.000 in January.
+        """
+        import calendar
+        from datetime import UTC, datetime
+
+        for year in (2026, 2028):  # a common year and a leap year
+            for month in range(1, 13):
+                for day in range(1, calendar.monthrange(year, month)[1] + 1):
+                    week = birdnet_week(datetime(year, month, day, 12, tzinfo=UTC))
+                    assert week == (month - 1) * 4 + min(4, (day - 1) // 7 + 1)
+                    assert 1 <= week <= 48
+
     def test_label_parsing(self) -> None:
         assert parse_label("Erithacus rubecula_European Robin") == (
             "Erithacus rubecula",

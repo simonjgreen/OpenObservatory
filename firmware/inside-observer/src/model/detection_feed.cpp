@@ -49,6 +49,17 @@ bool detectionToItem(JsonObjectConst detection, const FeedFilter& filter,
     return false;  // an undateable row cannot be placed on a timeline
   }
 
+  // A claim the station has withdrawn (ADR-042). The push channel already
+  // filters these server-side, but this HTTP fallback path reads
+  // `/api/v1/detections`, which deliberately still *returns* withdrawn rows so
+  // that the record stays visible and attributable - marked, not deleted. This
+  // screen has no marker to render: no score, no caveat, one line per row, read
+  // from across a room. So it declines the row instead. Checked before anything
+  // else, so it applies to bat passes as well as named species.
+  if (detection["withdrawn"].as<bool>()) {
+    return false;
+  }
+
   if (isBatDetection(detection)) {
     if (!filter.showBats) {
       return false;
@@ -159,6 +170,10 @@ void buildDetectionsFilter(JsonDocument& filter) {
   detection["score"] = true;
   detection["peak_frequency_hz"] = true;
   detection["detector"]["plugin_id"] = true;
+  // Without this the streaming filter would drop `withdrawn` during the parse
+  // and every withdrawn row would read as an ordinary one (ADR-042). One
+  // boolean per row is the cheapest field on this wire.
+  detection["withdrawn"] = true;
   filter["excluded_synthetic_count"] = true;
 }
 

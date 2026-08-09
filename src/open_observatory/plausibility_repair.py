@@ -16,10 +16,13 @@ detector output is kept verbatim, and the finding is recorded under a new
 ``detail.reconciliation``. Dry-run by default, like every other repair command in
 this codebase.
 
-Flagging is not the same as hiding. This module only marks a row reviewed; making
-any consumer (the API, the MQTT publisher, the ESP32 wall display) actually stop
-presenting a flagged row as an observation is separate work, not done here -- see
-the module docstring notes on ``apply_plausibility_flag`` below.
+Flagging is not the same as hiding, and this module still only flags. What a flag
+*means* to everything downstream is defined in ``plausibility.py`` and was
+implemented in ADR-042: the API keeps a flagged row and marks it ``withdrawn``,
+species tallies exclude it and report how many they excluded, and the MQTT
+publisher and the ESP32 wall display do not present it at all. So running this
+command with ``--apply`` now has visible consequences on every surface, which it
+did not when ADR-032 shipped it.
 """
 
 from __future__ import annotations
@@ -185,12 +188,13 @@ def apply_plausibility_flag(session: Session, item: PlausibilityFinding) -> None
     audit-preserving shape: the original `native_result` is copied, not mutated in
     place, and nothing under its existing keys is overwritten.
 
-    This flags only; it does not hide the row from any consumer. `GET
-    /api/v1/detections`, the MQTT publisher and the ESP32 wall display firmware
-    would each need to check `native_result.plausibility_review.implausible` and
-    exclude or mark such rows to actually stop presenting a flagged historical
-    record as an observation -- none of them do that yet. That follow-up is
-    tracked in `HANDOVER.md` section 6.3 item 0.
+    Since ADR-042 the consumers do read this. `GET /api/v1/detections` keeps the
+    row and marks it `withdrawn`; `/api/v1/history`'s species list and
+    `/api/v1/taxa/activity` drop it and report `excluded_withdrawn_count`; the
+    MQTT publisher and the `/api/v1/display` wall-display channel do not present
+    it at all. `plausibility.is_withdrawn` is the single definition they share.
+    A row is withdrawn the moment this function commits, with no restart and no
+    further step, which is exactly why the confirmation above is not a formality.
     """
     row = session.get(orm.Detection, item.detection_id)
     if row is None:

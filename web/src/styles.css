@@ -299,6 +299,32 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   margin-left: 4px;
 }
 
+/* ADR-042. A withdrawn identification stays on screen — the record is evidence
+   about the detector — but must never read as a standing claim, so the marker
+   is warning-coloured rather than decorative. */
+.withdrawn-marker {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 176, 84, 0.18);
+  color: var(--warn);
+  margin-left: 4px;
+}
+
+.withdrawn-note {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  background: rgba(255, 176, 84, 0.08);
+  border-radius: 3px;
+}
+
+.withdrawn-note p {
+  margin: 6px 0 0;
+}
+
 .spectrogram {
   position: relative;
   width: 100%;

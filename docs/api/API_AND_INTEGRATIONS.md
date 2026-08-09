@@ -167,6 +167,37 @@ kept running against synthetic audio and persisted 5 bird detections
 events indistinguishable from genuine records in every browsing view that
 existed at the time.
 
+### `withdrawn` and `excluded_withdrawn_count` — implemented, ADR-042
+
+A detection whose identification a plausibility review has retracted
+(`oo detections reconcile-plausibility --apply`, ADR-032) is treated differently
+depending on whether the surface is a *record* or a *claim*.
+
+Every detection payload carries a top-level **`withdrawn`** boolean — always
+present, false on the overwhelming majority — and a **`withdrawal`** object
+(null unless withdrawn) holding the reviewer's recomputed occurrence
+probability, band, threshold, reason and `reviewed_utc`, verbatim. The same
+boolean appears in the derived `flags` block and as a `withdrawn` column in the
+CSV export. The row itself is **not** hidden from `GET /detections`,
+`GET /detections/{id}` or the export: the charter's item 5 requires that the
+prior verdict stay visible and attributable, and a record the system got wrong
+is evidence about the system.
+
+The endpoints that aggregate *by species* do exclude it, because a `GROUP BY`
+row has nothing to attach a marker to: `GET /history`'s `species` and
+`unidentified` lists and `GET /taxa/activity` drop withdrawn detections and
+report **`excluded_withdrawn_count`**, exactly as they report
+`excluded_synthetic_count`. `GET /taxa/activity` and `history.species_summary`
+take `include_withdrawn=true` as the diagnostic escape hatch.
+`GET /history`'s `timeline` is deliberately unfiltered: it counts detections
+and names nothing.
+
+The MQTT publisher and the `/api/v1/display` wall-display channel present a
+withdrawn detection not at all. Both are claim surfaces with no room for a
+caveat — a Home Assistant entity state is a bare name, and ADR-023 forbids the
+display from showing a score — so marking is not an option there and silence is
+the honest answer.
+
 ## Event stream
 
 **Planned wording superseded.** The original text below is stale and is kept
