@@ -1,5 +1,62 @@
 # Initial Architecture Decisions
 
+Every material deviation from `TECHNICAL_SPEC.md` is recorded here, numbered.
+**ADR numbers are referenced by number from source comments across `src/`,
+`web/`, `firmware/`, `tests/`, `alembic/` and `config/example.env`.** Therefore:
+
+- **Never delete an ADR**, including a superseded one. Mark it, keep it.
+- **Never renumber an ADR.** The gaps at 031 and 036 are numbers that were
+  reserved and not needed; a gap is harmless, a broken cross-reference is not.
+- Two ADRs appear out of numeric order in this file (016 sits between 011 and
+  012; 034 sits after 035), because each was appended where it was written.
+  The index below is the authoritative ordering. Do not reorder the file to fix
+  it — that would produce a large diff for no gain and conflict with appends.
+- New ADRs are **appended** to the end of this file, and added to the index.
+
+## Index
+
+Status as verified on 2026-08-09. "Superseded" never means deleted: the original
+reasoning is retained and is often the most useful part.
+
+| # | Decision | Status |
+|---|---|---|
+| 001 | Single exclusive audio capture owner | active |
+| 002 | Highest practical native rate, with a derived audible stream | active |
+| 003 | Immutable time-addressed windows | active |
+| 004 | PostgreSQL canonical metadata, filesystem canonical clip bytes | **partly superseded by ADR-007** — SQLite is the only database actually exercised |
+| 005 | No authoritative composite biodiversity score in v1 | active |
+| 006 | Separate model installation and licensing | active |
+| 007 | SQLAlchemy storage with SQLite in developer mode | active; its "no Alembic environment" position is **superseded by ADR-035** |
+| 008 | Native systemd deployment for the debug slice; Compose deferred | active |
+| 009 | In-process event bus behind a transport-neutral protocol | active |
+| 010 | An owned acoustic-activity detector is the first plugin | active |
+| 011 | The debug UI is an observability surface, not the product dashboard | **partly superseded by ADR-016** |
+| 012 | Two live channels, and exactly one writer per WebSocket | active |
+| 013 | `ultrasonic-pass-v1`, a non-taxonomic detector on the native stream | active; its "no night scheduler" constraint is **closed** — a scheduler shipped in Milestone 5 (`schedule.py`) |
+| 014 | Ultrasonic evidence rendered into the audible band | active |
+| 015 | Anonymous read access, authentication deferred to Milestone 4 | **closed by ADR-034** |
+| 016 | The debug UI is the foundation of the product dashboard | active; supersedes part of ADR-011. Its measurements of the *starting* state (styles.css line count, no component test library, `App.tsx` size) are historical — all three were addressed in Milestone 4 |
+| 017 | BatDetect2 is evaluated as an optional adapter; weights never bundled | active |
+| 018 | Live ultrasonic monitoring is a second heterodyne, one oscillator per station | active |
+| 019 | Live playback moved off Web Audio to a chunked-WAV stream | active |
+| 020 | Non-live-source detections excluded from browsing views by default | active |
+| 021 | Evidence clips live on their own device, mounted over the clips directory | active |
+| 022 | Live ultrasonic retuning as a plain HTTP control call | active |
+| 023 | The inside observer is an ESP32 wall display that never shows a score | active; its premise that "no code in this repository publishes to a broker" is **superseded by ADR-025**, but the polling decision stands |
+| 024 | Capture coverage is bounded by delivered frames, not a stream row's claim | active; its "no Alembic environment exists" note is **superseded by ADR-035** |
+| 025 | MQTT publisher and Home Assistant Discovery, off by default | active |
+| 026 | NVR-style tiered clip retention; detection metadata kept forever | active; **amended by ADR-033** (sweep cadence), and its "no Alembic migrations anywhere" note is **superseded by ADR-035** |
+| 027 | A spacing/type scale for the web UI, applied to new surfaces | active |
+| 028 | Operator/diagnostic disclosure as one depth toggle | active |
+| 029 | Retention UI built against an assumed API shape; review shipped minimally | active; the assumed endpoint now exists (`GET /api/v1/retention/status`) and the two were reconciled |
+| 030 | The ALSA ring is sized for scheduling jitter; the capture read owns its thread | active |
+| 031 | *(number reserved and not used — do not reuse)* | — |
+| 032 | A near-zero occurrence prior suppresses a BirdNET candidate outright | active |
+| 033 | Retention is paced, because a dedicated thread is not the same as out of the way | active; amends ADR-026 |
+| 034 | An authentication foundation closes ADR-015, off by default | active; its "no Alembic migration is written here" note is **closed** — revision `0003_auth_tables` was added afterwards |
+| 035 | A real Alembic migration environment, written before the PostgreSQL move | active |
+| 036 | *(number reserved and not used — do not reuse)* | — |
+
 ## ADR-001: Single exclusive audio capture owner
 
 **Decision:** Only `capture` opens the physical ALSA device.
@@ -186,6 +243,17 @@ covering live transport, history fetching, spectrogram controls, audio monitorin
 mode switching in one 425-line component. A third surface cannot be added to that
 cleanly. State extraction is the first task of Milestone 4, not an optional tidy-up.
 
+> **Status 2026-08-08: the "not foundation" list above is historical, and all of
+> it was addressed.** Measured on 2026-08-09: `App.tsx` is 323 lines with 3
+> `useState` hooks, decomposed into `web/src/hooks/*` and `web/src/state/*`;
+> `@testing-library/react` is installed and there are **136 frontend tests across
+> 15 files**, not one; `?view=operate|diagnose` gives URL-driven state that
+> survives a refresh (ADR-028); and `styles.css` gained spacing and type scales
+> (ADR-027 — which also records that ~700 lines of older component CSS were
+> deliberately *not* migrated, so that part of the assessment still stands). The
+> line counts and hook counts quoted above are kept as the measurement that
+> justified the decision, not as a description of the code today.
+
 ## ADR-012: Two live channels, and exactly one writer per WebSocket
 
 **Decision:** The live surface is two separate WebSockets — `/api/v1/live` carrying JSON
@@ -223,6 +291,16 @@ bush-cricket. It has a known false-positive rate on broadband transients (wind, 
 noise) and no night scheduler, so it currently runs 24 hours a day. BatDetect2 remains
 Milestone 5 and is not implemented.
 
+> **Status 2026-08-05:** the night scheduler now exists
+> (`src/open_observatory/schedule.py`, `ultrasonic_schedule`, default `always`;
+> the live station sets `night`). The detector no longer necessarily runs 24
+> hours a day. **The false-positive rate on broadband transients is unchanged** —
+> scheduling reduces *when* it runs, not how often an individual pass is wrong.
+> The detector also gained feeding-buzz flagging, sub-bin peak-frequency
+> interpolation, and presentational candidate group titles carrying a mandatory
+> `?`; the stored record still keeps `label = "bat pass"` with no species name,
+> and the normaliser's guard is unchanged. See `docs/detectors/DETECTOR_STRATEGY.md`.
+
 ## ADR-014: Ultrasonic evidence is rendered into the audible band for human review
 
 **Decision:** Alongside the native evidence clip, ultrasonic detections get an audible
@@ -252,6 +330,14 @@ truthful. Milestone 4 owns the authentication foundation.
 rather than assumed: the station must not be exposed beyond the local network until
 Milestone 4 lands, and station coordinates are readable by anyone who can reach the port.
 Milestone 4 cannot be called complete while this ADR stands.
+
+> **Status 2026-08-08: CLOSED by ADR-034.** An authentication foundation shipped —
+> Argon2id passwords, session cookies, revocable API tokens. It is deliberately
+> **off by default** (`auth_enabled=false`), so a station that has not opted in
+> still behaves exactly as this ADR describes, and the constraint above still
+> applies to it. ADR-034 also records one deliberate exemption: with auth enabled,
+> `GET /api/v1/detections`, `GET /api/v1/health` and `/metrics` stay reachable with
+> no credential, for the ESP32 display and `deploy.sh`.
 
 ## ADR-017: BatDetect2 is evaluated as an optional adapter, and its weights are never bundled
 
@@ -614,6 +700,13 @@ this repository publishes to a broker. Building the display against a transport 
 has not been written would have made the display's correctness untestable and its
 delivery contingent on someone else's milestone.
 
+> **Status 2026-08-08:** that premise no longer holds — ADR-025's MQTT publisher
+> shipped later the same day and is live against the operator's real broker. The
+> *decision* stands unchanged: the display still polls HTTP, `StationSource`
+> remains the seam an `MqttStationSource` would drop into, and the broker settings
+> are already persisted in NVS so switching the feed needs no reprovisioning.
+> Nothing about this ADR needs undoing; only this paragraph's premise is dated.
+
 The REST API, by contrast, is live, read-only, documented and already carries
 everything the display needs — including the `include_synthetic` exclusion of ADR-020,
 which matters here more than anywhere: a wall display is exactly the "browsing view"
@@ -775,6 +868,11 @@ transition). `db.session.create_all()` now defensively `ALTER TABLE ADD COLUMN`s
 any column missing from an existing SQLite file, which covers the developer and
 on-device profiles this project currently runs, but a real migration is still owed
 before the PostgreSQL profile is exercised for real.
+
+> **Status 2026-08-08: superseded by ADR-035.** An Alembic environment now
+> exists, and `audio_stream.last_frame_at_utc` is included in the `0001_initial`
+> baseline. The `ALTER TABLE` patcher is deliberately retained for now; see
+> ADR-035 for why, and for what still has to change before it can be retired.
 
 
 ## ADR-025: MQTT publisher and Home Assistant Discovery, off by default, on its own bus subscription
@@ -994,6 +1092,14 @@ its own docstring), so a fresh SQLite database picks the columns up automaticall
 a live deployment with an existing database needs an explicit `ALTER TABLE` before
 this code runs against it, which is a deploy-time concern for whoever performs
 that deploy, not something decided here.
+
+> **Status 2026-08-08.** Two later changes amend this ADR without replacing it.
+> **ADR-035** built the Alembic environment: both `media_asset` columns are in the
+> `0001_initial` baseline, and revision `0002` adds the `reclaimed_at` index that
+> `ALTER TABLE ADD COLUMN` could never have created. **ADR-033** paced the sweep:
+> it runs every `retention_interval_s` (default 300 s), not on every housekeeping
+> tick, because a ~0.30 s ORM sweep holds the GIL and starved the event loop. The
+> tiers, thresholds and "detection metadata is kept forever" rule are unchanged.
 
 
 ## ADR-027: A spacing/type scale for the web UI, applied to new surfaces rather than migrated wholesale
@@ -1611,3 +1717,7 @@ creates any new table on next startup with no migration needed for the
 SQLite developer/on-device profile (ADR-007); the PostgreSQL profile will
 need these three tables added to whatever Alembic revision that agent's work
 produces.
+
+> **Status 2026-08-08: that follow-up landed.** Revision
+> `0003_auth_tables` adds `user`, `auth_session` and `api_token`. The live
+> station reports `0003_auth_tables (head)`.
