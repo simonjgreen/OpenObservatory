@@ -22,10 +22,18 @@ import {
   pixelToFrequency,
   pixelToSecondsAgo,
   ringTransform,
+  secondsAgoToPixel,
   spanRect,
   type Band,
   type Orientation,
 } from './geometry'
+import {
+  CENTRE_LINE_MAX_UNCERTAINTY_S,
+  formatPlayheadLabel,
+  playheadBand,
+  playheadSecondsAgo,
+  type PlayheadEstimate,
+} from './playhead'
 
 export type Palette = 'observatory' | 'merlin' | 'ice'
 
@@ -123,7 +131,19 @@ interface Props {
   showDetections: boolean
   orientation: Orientation
   height: number
+  /** Where the sound now leaving the speakers is, in station UTC, with the
+   *  width of the interval it is willing to claim (ADR-051). `null` when
+   *  nobody is listening, when playback is paused, or when the stream is
+   *  rebuffering — in which case no marker is drawn at all, rather than a
+   *  stale one left where the sound stopped. Costs nothing when null: the
+   *  draw loop's only expense is one ref read per frame. */
+  playhead?: PlayheadEstimate | null
 }
+
+/** Amber, because none of the three detection colours (bird green, bat violet,
+ *  acoustic-event blue) is amber and the marker must not read as a claim about
+ *  a sound. */
+const PLAYHEAD_COLOUR = '255, 176, 32'
 
 export function Spectrogram({
   spec,
@@ -136,6 +156,7 @@ export function Spectrogram({
   showDetections,
   orientation,
   height,
+  playhead = null,
 }: Props) {
   const visibleRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLCanvasElement | null>(null)
@@ -166,6 +187,15 @@ export function Spectrogram({
   // cost frames and left the boxes visibly rougher than the plot they sit on.
   const detectionsRef = useRef(detections)
   detectionsRef.current = detections
+
+  // Same treatment for the playhead, and for the same reason: the estimate is
+  // resampled four times a second and must not restart the overlay's loop.
+  const playheadRef = useRef<PlayheadEstimate | null>(playhead)
+  playheadRef.current = playhead
+  const listening = playhead !== null
+  /** The words under the badge row. Polled rather than derived during render,
+   *  because the number moves with the clock and not with React. */
+  const [playheadLabel, setPlayheadLabel] = useState<string | null>(null)
 
   // Compose the display range into the palette so the hot loop stays a single
   // table lookup per bin rather than an arithmetic rescale per bin.
@@ -259,6 +289,35 @@ export function Spectrogram({
     const timer = window.setInterval(check, 500)
     return () => window.clearInterval(timer)
   }, [windowSeconds, spec.hop_s, ready])
+
+  // Playhead readout. Only runs while somebody is actually listening, so the
+  // steady state of this station — nobody watching, nobody listening (ADR-040)
+  // — pays nothing for it, not even a timer.
+  useEffect(() => {
+    if (!listening) {
+      setPlayheadLabel(null)
+      return
+    }
+    const tick = () => {
+      const estimate = playheadRef.current
+      const newestUtc = newestUtcRef.current
+      if (!estimate || newestUtc === null) {
+        setPlayheadLabel(null)
+        return
+      }
+      const newest = newestUtc + elapsedColumns() * spec.hop_s
+      setPlayheadLabel(
+        formatPlayheadLabel(
+          playheadSecondsAgo(estimate, newest, performance.now()),
+          estimate.uncertaintyS,
+          windowSeconds,
+        ),
+      )
+    }
+    tick()
+    const timer = window.setInterval(tick, 250)
+    return () => window.clearInterval(timer)
+  }, [listening, windowSeconds, spec.hop_s])
 
   // Draw loop.
   useEffect(() => {
@@ -468,6 +527,58 @@ export function Spectrogram({
         }
       }
 
+      // Playhead: where in this picture the sound now leaving the speakers is
+      // (ADR-051). Drawn from the same `newest` the detection boxes are
+      // positioned from, through the same `spanRect`, so it cannot drift out
+      // of agreement with them or with the plot underneath.
+      const estimate = playheadRef.current
+      if (estimate && newest !== null) {
+        const secondsAgo = playheadSecondsAgo(estimate, newest, performance.now())
+        const drawn = playheadBand(secondsAgo, estimate.uncertaintyS, windowSeconds)
+        if (drawn) {
+          // A band, not a hairline: the width is the interval the estimate is
+          // willing to claim, drawn to scale on the time axis.
+          const rect = spanRect(
+            {
+              startSecondsAgo: drawn.oldestSecondsAgo,
+              endSecondsAgo: drawn.newestSecondsAgo,
+              lowHz: null,
+              highHz: null,
+            },
+            band,
+            viewport,
+            windowSeconds,
+            orientation,
+          )
+          context.fillStyle = `rgba(${PLAYHEAD_COLOUR},0.16)`
+          context.fillRect(rect.x, rect.y, rect.width, rect.height)
+
+          // The centre line is the operator's "you are hearing this column"
+          // and is only drawn while the bound is tight enough for a single
+          // line to be a fair summary of it; past that the band alone says
+          // what is known, which is "somewhere in here".
+          const centre = drawn.centreSecondsAgo
+          if (
+            estimate.uncertaintyS <= CENTRE_LINE_MAX_UNCERTAINTY_S &&
+            centre >= 0 &&
+            centre <= windowSeconds
+          ) {
+            const at = secondsAgoToPixel(centre, windowSeconds, viewport, orientation)
+            context.strokeStyle = `rgba(${PLAYHEAD_COLOUR},0.9)`
+            context.lineWidth = 1.5
+            context.beginPath()
+            if (orientation === 'scroll') {
+              context.moveTo(at, 0)
+              context.lineTo(at, cssHeight)
+            } else {
+              context.moveTo(0, at)
+              context.lineTo(cssWidth, at)
+            }
+            context.stroke()
+          }
+        }
+      }
+
       // Live edge marker.
       context.strokeStyle = dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
       context.lineWidth = 1
@@ -520,6 +631,14 @@ export function Spectrogram({
         <span className="badge dim">{(spec.hop_s * 1000).toFixed(0)} ms/col</span>
         <span className="badge dim">FFT {spec.fft_size}</span>
         <span className="badge dim">{orientation}</span>
+        {playheadLabel && (
+          <span
+            className="badge playhead"
+            title="Where the audio coming out of your speakers is in this picture. The bar on the plot is the interval this is known to; its width is the browser's own output buffering plus the network, which cannot be read exactly from a media element. Disappears while the stream is paused or rebuffering rather than showing a stale position."
+          >
+            {playheadLabel}
+          </span>
+        )}
       </div>
       {filling && (
         <div className="spectrogram-filling" role="status">

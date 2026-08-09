@@ -12,7 +12,7 @@ import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Spectrogram } from './Spectrogram'
-import type { SpectrogramSpec } from '../types'
+import type { ColumnBatch, SpectrogramSpec } from '../types'
 
 const SPEC: SpectrogramSpec = {
   channel: 0,
@@ -29,9 +29,11 @@ const SPEC: SpectrogramSpec = {
   history_columns: 1250,
 }
 
-function renderSpectrogram(props: Partial<React.ComponentProps<typeof Spectrogram>> = {}) {
+type Props = Partial<React.ComponentProps<typeof Spectrogram>>
+
+function renderSpectrogram(props: Props = {}) {
   const register = vi.fn((_channel: number, _sink: unknown) => vi.fn())
-  const utils = render(
+  const element = (extra: Props) => (
     <Spectrogram
       spec={SPEC}
       register={register}
@@ -44,9 +46,32 @@ function renderSpectrogram(props: Partial<React.ComponentProps<typeof Spectrogra
       orientation="scroll"
       height={250}
       {...props}
-    />,
+      {...extra}
+    />
   )
-  return { ...utils, register }
+  const utils = render(element({}))
+  return { ...utils, register, update: (extra: Props) => utils.rerender(element(extra)) }
+}
+
+/** Enough of a 2D context for the column sink and the two draw loops to run
+ *  under jsdom, which has no canvas at all. Deliberately records nothing: the
+ *  pixels are `playhead.test.ts`/`geometry.test.ts`'s business, and this exists
+ *  only so the component's *timeline* can be exercised end to end. */
+function fakeContext(): CanvasRenderingContext2D {
+  const target: Record<string, unknown> = {
+    createImageData: (width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4),
+    }),
+    measureText: () => ({ width: 10 }),
+  }
+  return new Proxy(target, {
+    get: (object, property) =>
+      property in object ? object[property as string] : () => undefined,
+    set: (object, property, value) => {
+      object[property as string] = value
+      return true
+    },
+  }) as unknown as CanvasRenderingContext2D
 }
 
 describe('Spectrogram', () => {
@@ -137,6 +162,119 @@ describe('Spectrogram', () => {
       const notice = container.querySelector('.spectrogram-filling')
       expect(notice?.textContent).toContain('filling')
       expect(notice?.textContent).not.toContain('this view starts when you open it')
+    })
+  })
+
+  /** ADR-051. The playhead badge is the DOM half of the marker; the band and
+   *  centre line are canvas, and `playhead.test.ts` proves their placement.
+   *  What must be true here is the wiring: nothing at all when nobody is
+   *  listening, and the number and its bound together when somebody is.
+   */
+  describe('the playhead readout', () => {
+    const estimate = { utcS: 0, uncertaintyS: 0.24, disagreementS: 0, atPerfMs: 0 }
+
+    it('shows nothing when nobody is listening', () => {
+      const { container } = renderSpectrogram()
+      expect(container.querySelector('.badge.playhead')).toBeNull()
+    })
+
+    it('still shows nothing while listening but before any column has arrived', () => {
+      // Without a newest column there is no timeline to place the sound on.
+      // ADR-040 means this is a routine state, not an error one.
+      const { container } = renderSpectrogram({ playhead: estimate })
+      expect(container.querySelector('.badge.playhead')).toBeNull()
+    })
+
+    it('drops the readout again the moment playback stops', () => {
+      const { container, rerender } = renderSpectrogram({ playhead: estimate })
+      rerender(
+        <Spectrogram
+          spec={SPEC}
+          register={vi.fn(() => vi.fn())}
+          detections={[]}
+          palette="observatory"
+          windowSeconds={30}
+          blackPoint={0.13}
+          whitePoint={0.72}
+          showDetections
+          orientation="scroll"
+          height={250}
+          playhead={null}
+        />,
+      )
+      expect(container.querySelector('.badge.playhead')).toBeNull()
+    })
+
+    it('reports the offset and its bound once columns are arriving', () => {
+      // jsdom has no canvas, and the column sink returns early without a 2D
+      // context, so the ring never advances and the panel never learns what
+      // time it is showing. A minimal fake context is enough to let a real
+      // batch through and prove the badge reads off the *column* timeline
+      // rather than off a wall clock of its own.
+      const contexts = vi
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockImplementation(() => fakeContext())
+      vi.useFakeTimers()
+      try {
+        const { container, register, update } = renderSpectrogram({
+          playhead: null,
+          windowSeconds: 30,
+        })
+        const sink = register.mock.calls[0][1] as (batch: ColumnBatch) => void
+        const columnUtcS = 1_700_000_000
+        sink({
+          channel: 0,
+          bins: SPEC.bins,
+          columns: 1,
+          firstUtcS: columnUtcS,
+          data: new Uint8Array(SPEC.bins),
+        })
+        // Frozen clocks: `performance.now()` does not advance under fake
+        // timers, so the sub-column interpolation and the playhead's own
+        // extrapolation are both exactly zero and the expected string is not
+        // a range.
+        update({
+          playhead: {
+            utcS: columnUtcS - 2.5,
+            uncertaintyS: 0.24,
+            disagreementS: 0,
+            atPerfMs: performance.now(),
+          },
+        })
+        vi.advanceTimersByTime(250)
+        expect(container.querySelector('.badge.playhead')?.textContent).toBe(
+          'hearing 2.5 s ago ±0.2 s',
+        )
+      } finally {
+        vi.useRealTimers()
+        contexts.mockRestore()
+      }
+    })
+
+    it('does not re-register the column sink when the playhead updates', () => {
+      // The estimate is resampled four times a second. It is a draw-loop
+      // input, exactly like `orientation` and `windowSeconds` above, and must
+      // never touch the transport.
+      const { register, rerender } = renderSpectrogram({ playhead: estimate })
+      expect(register).toHaveBeenCalledTimes(1)
+      for (const uncertaintyS of [0.24, 0.3, 0.9]) {
+        rerender(
+          <Spectrogram
+            spec={SPEC}
+            register={register}
+            detections={[]}
+            palette="observatory"
+            windowSeconds={30}
+            blackPoint={0.13}
+            whitePoint={0.72}
+            showDetections
+            orientation="scroll"
+            height={250}
+            playhead={{ ...estimate, uncertaintyS }}
+          />,
+        )
+      }
+      expect(register).toHaveBeenCalledTimes(1)
     })
   })
 

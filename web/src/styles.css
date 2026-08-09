@@ -358,6 +358,14 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   font-family: var(--mono);
 }
 .spectrogram-badges .badge.dim { color: var(--text-dim); }
+/* The playhead readout wears the same amber as its marker on the plot, so the
+   words and the bar are readable as one thing rather than two. It is only
+   present while something is actually playing. */
+.spectrogram-badges .badge.playhead {
+  color: rgb(255, 176, 32);
+  border-color: rgba(255, 176, 32, 0.42);
+  pointer-events: auto;
+}
 
 .spectrogram-readout {
   position: absolute; bottom: 6px; right: 8px;
