@@ -1,5 +1,26 @@
 # Acceptance Criteria
 
+The v1 gate. `CLAUDE.md`: *"Do not describe the system as complete until the
+acceptance criteria in this file pass on the Raspberry Pi 5 for a continuous
+72-hour soak test."*
+
+**No box below is ticked, and that is accurate rather than neglectful: no formal
+acceptance run has ever been performed.** Several criteria are believed met from
+day-to-day measurement — capture is addressed by stable identity, exactly one
+process opens ALSA, CSV/JSON export works, health checks exist — but "believed met
+from ordinary use" is not "passed an acceptance run", and this project does not
+tick a box on the former. Ticking these is a deliberate acceptance exercise
+somebody has to run, alongside the 72-hour soak, and record here with dates.
+
+For what *is* delivered, with evidence, see
+[`MILESTONE_STATUS.md`](MILESTONE_STATUS.md). For the measured figures the capture
+criteria will be judged against, see
+[`../operations/TARGET_DIAGNOSTICS.md`](../operations/TARGET_DIAGNOSTICS.md). For
+what the soak should capture, see
+[`../operations/DEPLOYMENT_AND_OPERATIONS.md`](../operations/DEPLOYMENT_AND_OPERATIONS.md)'s
+"Soak testing" section. Note that a soak and a deploy are mutually exclusive —
+deploying restarts capture and voids the run.
+
 ## Capture
 
 - [ ] AudioMoth is addressed by stable identity, not volatile card number alone.
