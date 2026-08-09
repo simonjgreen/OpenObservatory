@@ -4314,10 +4314,19 @@ up three problems of increasing seriousness, all measured rather than inferred:
    repeating the common name and a fabricated `canonical_taxon_id` of
    `sci:engine`. The system asserts that a car engine is a bird, at species
    rank. That is an honesty-constraint failure on the *live pipeline*, not
-   merely in history: the station's stored rows carry
-   `plausibility_band: 'out_of_range'` and `threshold_applied: 0.9`, which is
-   the pre-ADR-032 logic, so ADR-032 is not deployed there and the rows are
-   still arriving.
+   merely in history — the normaliser accepts these claims from BirdNET today,
+   so they keep arriving.
+
+   **Corrected at merge.** An earlier draft of this ADR read the stored
+   `plausibility_band: 'out_of_range'` / `threshold_applied: 0.9` on those rows
+   as evidence that ADR-032 was never deployed to the station. It was not: those
+   are historical rows written before the deploy of 2026-08-09 14:04 UTC.
+   Checked afterwards, all 141 banded detections written since carry `in_range`
+   at `0.55` and none carry `out_of_range` at `0.9`, and
+   `oo_birdnet_suppressed_total{reason="suppressed_implausible_prior"}` — a
+   counter that exists only under ADR-032 — was already at 19. ADR-032 is live
+   and suppressing. The taxonomy defect described here is real and independent
+   of it; the deployment claim was not.
 3. **24 `Human vocal` detections held 48 evidence clips and 125 MB** of
    neighbours and passers-by talking in a garden.
 
