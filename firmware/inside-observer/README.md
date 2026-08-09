@@ -150,13 +150,24 @@ on a laptop rather than by flashing the board and squinting at it.
 
 ## Build
 
-PlatformIO Core 6.1.18 or later. No Arduino IDE.
+PlatformIO Core 6.1.18 or later, in its own virtualenv. No Arduino IDE. There is
+no `pio` on `PATH` on the development laptop, and `~/.platformio` holding the
+packages does not give you one — the failure is "command not found", which points
+nowhere useful:
+
+```bash
+python3 -m venv ~/piovenv && ~/piovenv/bin/pip install -q platformio==6.1.19
+```
+
+Then:
 
 ```bash
 cd firmware/inside-observer
-pio run -e cyd            # build for the board
-pio test -e native        # host unit tests, no hardware needed
+~/piovenv/bin/pio run -e cyd            # build for the board
+~/piovenv/bin/pio test -e native        # host unit tests, no hardware needed
 ```
+
+The rest of this document writes `pio` for brevity; it means that binary.
 
 Current figures on this build:
 
@@ -346,7 +357,7 @@ in NVS so no stored configuration needs migrating.
 **Directly from the Pi, over a WebSocket the station pushes down** (ADR-038):
 
 ```
-ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6&fw=0.2.0
+ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6&fw=0.2.4
 ```
 
 `fw` is the running firmware version, so the station can offer an update to a
@@ -589,9 +600,10 @@ Then confirm the station is unharmed:
 curl -s http://<station-host>:8080/api/v1/station | jq '.capture, .display_channel'
 ```
 
-Judge continuity by `frames` against `expected_frames`, not by
-`estimated_missing_seconds`, which over-reports by roughly 12.9x.
-`display_channel.per_client[].mean_frame_bytes` is the station's own view of the
+Judge lost audio by `estimated_missing_seconds`, not by `expected_frames` minus
+`frames` — that difference is dominated by the AudioMoth's slow crystal and by
+block-sampling phase, and an earlier version of this line had it backwards
+(ADR-046). `display_channel.per_client[].mean_frame_bytes` is the station's own view of the
 same number the device reports, and the two should agree.
 
 ## Rollback note

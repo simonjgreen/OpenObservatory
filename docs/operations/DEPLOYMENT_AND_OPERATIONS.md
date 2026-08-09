@@ -39,21 +39,34 @@ server. There is no message broker; the event bus is in-process (ADR-009).
    list (see below);
 3. creates `.venv` if absent and installs the package with
    `pip install -e '.[alsa,resample,birdnet,dev]'`;
-4. installs `deploy/open-observatory.service` and `deploy/99-audiomoth.rules`,
-   reloads `udev` and `systemd`, and does `enable --now` followed by
-   `restart`;
-5. polls `http://127.0.0.1:8080/api/v1/health` over SSH for up to 60 seconds
+4. runs `alembic upgrade head` **before** anything is restarted, against the
+   database the still-running old version is using (ADR-042). A slow or failing
+   migration therefore fails this script and leaves the previous, working
+   service up, rather than failing inside the new version's startup path. A
+   database already at head is a single read-only revision check, so this is
+   safe on every deploy;
+5. installs `deploy/open-observatory.service`, the refinement service and its
+   timer (ADR-045), and `deploy/99-audiomoth.rules`; reloads `udev` and
+   `systemd`; does `enable --now` then `restart` on the station, and
+   `enable --now` on `open-observatory-refine.timer` — which arms the schedule
+   without starting a pass, so deploying never puts the classifier on the CPU;
+6. polls `http://127.0.0.1:8080/api/v1/health` over SSH for up to 60 seconds
    and prints recent `journalctl` output if the service does not come up
    healthy in that time.
 
-It is idempotent — safe to run repeatedly — and takes flags:
+The three systemd units are committed as templates: `deploy.sh` substitutes the
+deploy user and install path at install time, so no station's paths are baked
+into the repository (ADR-047).
+
+It is idempotent — safe to run repeatedly. **`HOST` is required**, deliberately:
+the repository ships no station address, so a deploy always says where it is
+going.
 
 | Invocation | Effect |
 |---|---|
-| `./deploy/deploy.sh` | full deploy |
-| `./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
-| `./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source and restart |
-| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-047) |
+| `HOST=user@host ./deploy/deploy.sh` | full deploy |
+| `HOST=user@host ./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
+| `HOST=user@host ./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source, migrate and restart |
 
 `REMOTE_DIR` (default `open-observatory`, relative to the SSH login home) is
 also overridable as an environment variable, though this is rarely needed.
@@ -82,13 +95,20 @@ present.
 
 ### Excludes applied on every sync
 
-In addition to `config/runtime.env`, `deploy.sh` excludes: `.git`, `data`,
-`.env`, `.venv`, `node_modules`, `web/node_modules`, `__pycache__`, `*.pyc`,
-`.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `models/*.tflite` and
+In addition to `config/runtime.env`, `deploy.sh` excludes: `.git`, `.claude`,
+`data`, `.env`, `.venv`, `node_modules`, `web/node_modules`, `__pycache__`,
+`*.pyc`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `models/*.tflite` and
 `models/*.txt`. The model exclusions matter operationally: model assets
 fetched on the target with `oo models fetch` are not overwritten or deleted
 by a later deploy, and are not shipped from the developer machine either
 (ADR-006 — model licences differ from the code's and are not bundled).
+`.claude` is excluded because agent worktrees live there and are full checkouts
+with their own virtualenvs; syncing them would push gigabytes to the Pi.
+
+**`web/dist` is excluded only when `--no-web` is passed.** It is gitignored, so
+in a fresh clone or a worktree it does not exist locally at all, and a plain
+`--delete` would remove the working UI from the station. A code-only redeploy
+therefore leaves whatever UI is already on the target alone.
 
 ### The systemd unit
 
@@ -220,6 +240,47 @@ Both default to dry-run, both require a confirmation, and neither has ever been
 run with `--apply` against the live station. Run them with `--json` piped to a
 file and read the output first.
 
+### Updating the counter-top display, without a cable (ADR-050)
+
+The ESP32 display carries two OTA app slots and fetches new firmware from the
+station over the WebSocket it is already connected on. The station is the
+distribution point: it stores one image at a time under `data/firmware/`.
+
+From the browser: *settings* → **Display firmware** → upload
+`firmware/inside-observer/.pio/build/cyd/firmware.bin`, give it the version from
+`platformio.ini`, press *publish*. Displays take it as they reconnect;
+*roll out now* tells the ones already connected.
+
+From a terminal:
+
+```bash
+curl -s -X POST --data-binary @firmware/inside-observer/.pio/build/cyd/firmware.bin \
+  -H 'content-type: application/octet-stream' \
+  'http://<station-host>:8080/api/v1/firmware?version=0.2.1&notes=what%20changed'
+curl -s http://<station-host>:8080/api/v1/firmware        # what is published
+curl -s -X POST http://<station-host>:8080/api/v1/firmware/rollout
+curl -s -X DELETE http://<station-host>:8080/api/v1/firmware   # withdraw it
+```
+
+Four things worth knowing before you publish:
+
+- **The version must be strictly newer**, and dotted digits only — `0.2.1`, not
+  `0.2.1-rc1`. Both ends refuse a version they cannot order rather than guessing.
+  An unbumped build is a rollout that quietly does nothing.
+- **The display chooses when.** It defers while someone is using it, and while
+  the newest row on the feed is under a minute old.
+- **It rolls itself back.** SHA-256 is checked before the image becomes bootable;
+  a crash loop is undone by the bootloader; a build that runs but cannot reach
+  the station within ten minutes reverts itself.
+- **The image travels over plain HTTP and the digest comes from whoever supplied
+  the image.** This defends against corruption, not against someone who can
+  already impersonate the station on your LAN. Image signing is not implemented.
+
+A display running pre-ADR-050 firmware reports its version as `unknown`. That is
+not the same as "out of date", and the UI does not present it as such. Getting
+such a display onto the two-slot partition table needs one cable flash — see
+[`../../firmware/inside-observer/README.md`](../../firmware/inside-observer/README.md).
+
 ### Known operational trap: killing the service by pattern match
 
 Do not run `pkill -f "oo serve"` (or any `pkill -f`/`pgrep -f` pattern match
@@ -252,18 +313,17 @@ is gone and has no replacement yet.
 
 ### Updating
 
-1. `./deploy/deploy.sh` (add `--no-web` if only Python changed, `--no-deps`
-   if only config or non-dependency source changed).
+1. `HOST=<user>@<station-host> ./deploy/deploy.sh` (add `--no-web` if only
+   Python changed, `--no-deps` if only config or non-dependency source changed).
 2. Watch the health poll in the script's own output; it prints recent
    `journalctl` on failure.
 3. If something is wrong post-deploy, re-run `oo audio probe` and
    `oo system-report` on the target and compare against
    `docs/operations/TARGET_DIAGNOSTICS.md`.
-4. **If this deploy changes `src/open_observatory/db/models.py`**, run the
-   database migration first, before restarting the service — see "Database:
-   SQLite by default, Alembic migrations exist" below. `deploy.sh` does not
-   do this automatically yet (tracked as follow-up work in ADR-035); it is a
-   manual step until it is wired into the script.
+4. **Schema changes need nothing extra.** `deploy.sh` runs `alembic upgrade head`
+   itself, after the sync and before the restart. Back up
+   `data/openobservatory.sqlite` first if the revision is one you have not run
+   before — see "Database: SQLite by default, Alembic migrations exist" below.
 5. There is no automated rollback for the SQLite schema. Rollback in
    practice is: check out the previous commit locally, re-run `deploy.sh`,
    and restart. Back up `data/` first if the previous commit's schema
@@ -298,28 +358,22 @@ documented production DSN target. As of ADR-035:
   by construction (batch mode, no dialect-specific types) but has only been
   exercised against SQLite so far, not against a real PostgreSQL 16 instance.
 
-**Before restarting the service after any deploy that changed
-`db/models.py`:**
+**`deploy.sh` runs `alembic upgrade head` on every deploy** (ADR-042), after the
+sync and before the service restart, so an ordinary schema change needs no
+manual step. The live station's database is at head today.
 
-- **First-ever migration on this database** (it was built by `create_all()`
-  and has never seen Alembic — this is the live station's case today):
-  `alembic stamp 0001_initial`, then `alembic upgrade head`. Never run
-  `alembic upgrade head` from scratch against a database that already has
-  the tables — the initial revision issues `CREATE TABLE` and will collide
-  with what is already there.
-- **A database already on a later Alembic revision:** `alembic upgrade head`
-  directly.
-- Check which case you're in and see the fuller creation/rollback workflow
-  in `docs/data/DATA_MODEL.md` ("Migrations (Alembic, ADR-035)").
-- Back up `data/openobservatory.sqlite` (and any `-wal`/`-shm` files next to
-  it) before running either sequence against the station. No automated
-  backup tool exists yet (below); this is a manual step.
+Two things still need a person:
 
-`deploy.sh` does not run migrations automatically. Wiring an
-`alembic upgrade head` step into it (after sync, before the service
-restart) is the natural next step and is unimplemented — do it as a
-follow-up, not silently inside an unrelated change, since it changes what a
-routine deploy does to a live database.
+- **A database that has never seen Alembic** — one built by `create_all()` and
+  never stamped. Run `alembic stamp 0001_initial` once, by hand, before the
+  first deploy that would migrate it. Never run `alembic upgrade head` from
+  scratch against a database that already has the tables: the initial revision
+  issues `CREATE TABLE` and will collide with what is there. The fuller
+  creation/rollback workflow is in `docs/data/DATA_MODEL.md`
+  ("Migrations (Alembic, ADR-035)").
+- **A backup, when the revision is one you have not run before.** Copy
+  `data/openobservatory.sqlite` and any `-wal`/`-shm` files next to it. No
+  automated backup tool exists (below).
 
 ## Production target (unrealised): Docker Compose, PostgreSQL, Redis
 
@@ -667,6 +721,7 @@ Generated from the code — regenerate with
 | `display_channel_heartbeat_s` | live | `10.0` s | heartbeat interval |
 | `display_channel_snapshot_rows` | live | `6` | rows sent on connect |
 | `display_channel_queue_max` | live | `64` | queue depth |
+| `display_ota_offer_on_connect` | live | `True` | offer firmware updates on connect |
 
 #### MQTT / Home Assistant
 

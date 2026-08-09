@@ -1,20 +1,26 @@
 # Open Observatory
 
-A local-first, modular, continuously operating passive acoustic observatory for a
-Raspberry Pi 5 and AudioMoth USB microphone.
+A passive acoustic observatory for a garden. A Raspberry Pi 5 and an AudioMoth
+USB microphone listen continuously, and the record they keep is honest about its
+own uncertainty.
 
-**Status: Milestones 0–3 and 5 complete on real hardware; 4 largely delivered; 6
-partly; 7 not started.** The station captures a live 384 kHz stream from an
-AudioMoth, derives a 48 kHz audible stream, runs three detectors over
-time-addressed windows, writes checksummed evidence clips to a USB SSD, and
-serves them through a REST/WebSocket API to a React operator UI, an ESP32 counter-top
-display, an optional MQTT publisher and Prometheus.
+Capture runs at 384 kHz, so bats are inside the band. A 48 kHz audible stream is
+derived from the same frames, three detectors run over immutable time-addressed
+windows, and every detection that earns one is stored with a checksummed evidence
+clip cut from the native ring buffer. It is local-first: capture, detection,
+review and query never need the internet.
 
-It is *not* finished — see
-[`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) for an
-honest account of what works and what does not, and **do not describe it as
-complete until the acceptance criteria pass a 72-hour soak, which has never been
-run.**
+A station is configured from its own web UI, watched from a browser or from an
+ESP32 counter-top display it can update over the air, and read through a
+REST/WebSocket API, an optional MQTT feed into Home Assistant, and Prometheus.
+
+It runs unattended, as a systemd service. The reference station has been
+recording since it was commissioned on 4 August 2026: 74,969 detections, 93
+named bird species and 61 GB of evidence clips as of 2026-08-09. It has not yet
+run the continuous 72-hour soak the acceptance criteria require, so nothing here
+is called complete or verified —
+[`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) is the
+ledger of what is delivered and what is outstanding.
 
 **New here?** [`docs/README.md`](docs/README.md) is the map of all the
 documentation. If you are about to write code,
@@ -79,7 +85,7 @@ must also look *unreachable* when it cannot reach the station, never merely
 quiet — a stale list that looks fresh is the one failure this surface must not
 have.
 
-## What it does today
+## What it does
 
 - **Captures once, at the highest rate the device offers.** One process owns the
   microphone; detectors never open it. On the reference station that is 384 kHz
@@ -102,9 +108,32 @@ have.
   browser, so ultrasonic detections also get time-expanded (slowed, so frequencies
   divide — preserves everything) and heterodyned (mixed down like a handheld
   detector — preserves real time) renderings, each labelled with what it changed.
+- **Does not call a car a bird, and does not keep recordings of people.**
+  BirdNET's eleven non-bird sound categories — `Engine`, `Human vocal`, `Dog`, …
+  — are stored as acoustic events with no rank and no scientific name, and a
+  human-voice detection gets a row and no audio at all (ADR-049).
+  `clip_human_audio` turns the second half off; it defaults to false and makes
+  you acknowledge a warning first.
 - **Serves a real-time debug UI** with a scrolling spectrogram (audible and
   ultrasonic), live species/event list, low-latency listen button, and the pipeline's
   own internals.
+- **Configures itself from the browser.** 132 settings, in three declared tiers —
+  live, restart-pinned, and the twenty deliberately not editable from a browser,
+  each listed with the hazard that excludes it (ADR-047/048). A first run offers a
+  guided flow. The UI writes `config/runtime.env` on the device, atomically,
+  preserving your comments; a hand edit and a UI edit are one configuration.
+- **Refines the record overnight, and only ever proposes** (ADR-045). A second,
+  CPU-fenced process on cores 2–3 runs a BatDetect2 cascade over stored bat clips
+  at 01:00 UTC. It writes append-only `refinement` rows and can never rewrite a
+  detection's claim. Capture keeps cores 0–1 to itself.
+- **Records what BirdNET refused, not just how many** (ADR-052) — per-species
+  near misses with the score, the occurrence prior and the bar they fell short
+  of, so a threshold can be moved on evidence. Metadata only: no audio is kept
+  for a rejected candidate.
+- **Publishes to Home Assistant** over MQTT with Discovery, off by default
+  (ADR-025), and **pushes to a counter-top ESP32 display** over a WebSocket that
+  costs about 11 B/s — and can update that display's firmware over the air, with
+  a checksum before install and a rollback the display owns (ADR-050).
 
 ## Quick start
 
@@ -121,13 +150,18 @@ python3.12 -m venv .venv        # 3.12 exactly; pyproject requires >=3.12,<3.14
 .venv/bin/oo serve                # capture + detectors + API + UI on :8080
 ```
 
-From a workstation, build the UI and deploy in one step:
+From a workstation, build the UI, sync, migrate and restart in one step:
 
 ```bash
 HOST=<user>@<station-host> ./deploy/deploy.sh
 ```
 
-Then open `http://<pi>:8080`.
+`HOST` is required — this repository ships no station address (ADR-047). The
+script runs `alembic upgrade head` against the still-running old version before
+it restarts anything, so a failing migration leaves the working service up.
+
+Then open `http://<station-host>:8080` and press `settings`. Everything an
+operator tunes lives there; a terminal is not part of the loop.
 
 **No microphone?** That is a supported mode, not a failure — the audio pipeline
 spec makes replay mandatory:
@@ -185,17 +219,22 @@ spent on what a diagnostic surface needs and a product dashboard would hide
 | `oo audio probe` | Enumerate capture devices; record formats, stable identity and native rate support |
 | `oo audio test-capture` | Capture briefly and report frames delivered vs elapsed, levels and clipping |
 | `oo audio resample-check` | Verify group delay, delivery-latency bounds and seam continuity |
+| `oo audio window-dump` | Inspect one segmenter window against ground-truth frame numbers, with optional injected gaps |
 | `oo audiomoth info` | Firmware identity over USB HID (switch in `USB/OFF`) |
 | `oo models status` / `fetch` | Model asset state and checksummed acquisition |
 | `oo history reconcile-streams` | Repair stream rows whose claimed span the frame count contradicts (ADR-024). Dry-run by default |
 | `oo detections reconcile-plausibility` | Re-check stored BirdNET rows against the current range model (ADR-032). Dry-run by default |
+| `oo detections reconcile-taxonomy` | Stop stored sound categories claiming to be birds at species rank (ADR-049). Dry-run by default |
+| `oo clips purge-human-audio` | Delete stored clips of human speech and mark the assets reclaimed (ADR-049). Dry-run by default |
 | `oo clips retention` | Run the tiered clip retention sweep by hand (ADR-026) |
+| `oo refine run` / `status` | One overnight refinement pass, and what the refiner has and has not examined (ADR-045) |
 | `oo system-report` | Host facts worth recording with a diagnostic |
 | `oo serve` | Run the station |
 | `oo config` | Print effective configuration |
 
-The two `reconcile-*` commands are the only ones that can write to the database,
-and only with `--apply`. Neither has been run against the live station.
+The four repair commands — three `reconcile-*` and `purge-human-audio` — are
+dry-run by default and need both `--apply` and a confirmation. None has been run
+with `--apply` against the live station.
 
 ## Architecture
 
@@ -220,11 +259,18 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
                                     SQLite/PostgreSQL + clips ──▶ REST API
 ```
 
-Beyond the debug UI, the same API feeds an **ESP32 counter-top display** in the house
-(`firmware/inside-observer/`, HTTP polling, never shows a score — ADR-023) and an
-optional **MQTT publisher** with Home Assistant Discovery
-(`src/open_observatory/mqtt/`, off by default — ADR-025). An **authentication
-foundation** exists and is also off by default (ADR-034).
+Beyond the debug UI, the same API feeds an **ESP32 counter-top display** in the
+house (`firmware/inside-observer/` — a pushed WebSocket at ~11 B/s with an HTTP
+poller as fallback, never a score on the wire, and its own firmware updates over
+the air; ADR-023/038/050) and an optional **MQTT publisher** with Home Assistant
+Discovery (`src/open_observatory/mqtt/`, off by default — ADR-025). An
+**authentication foundation** exists and is also off by default (ADR-034).
+
+Two things run outside `oo serve`, on purpose. The **refinement runner**
+(`src/open_observatory/refinement/`, ADR-045) is its own systemd service on a
+timer, fenced to cores 2–3, so a 2-second inference pass can never starve the
+capture loop; the station process does not import it. The **web build** happens
+on the workstation, because the Pi has no Node toolchain and does not need one.
 
 ### Where to read next
 
@@ -250,13 +296,14 @@ naming where the built system diverges from it.
 ( cd web && npm ci && npm test )
 ```
 
-Measured 2026-08-09: **419 Python tests pass, 9 skip** (6 are the fixture tests
-for the deliberately-unbundled BirdNET and BatDetect2 model assets, which skip
-rather than fail by design; 3 are `tests/test_api.py::TestLiveChannels` cases
-that starlette 0.41.3's synchronous `TestClient` cannot represent — see
-[`docs/development/SETUP.md`](docs/development/SETUP.md) trap 3), and **140
+Measured on this branch on 2026-08-09: **826 Python tests pass, 11 skip** (8 are
+the fixture tests for the deliberately-unbundled BirdNET and BatDetect2 model
+assets, which skip rather than fail by design; 3 are
+`tests/test_api.py::TestLiveChannels` cases that starlette 0.41.3's synchronous
+`TestClient` cannot represent — see
+[`docs/development/SETUP.md`](docs/development/SETUP.md) trap 3), and **235
 frontend tests pass**. `ruff check .` is clean.
-`mypy src` reports 29 pre-existing errors and has never been clean.
+`mypy src` reports 22 pre-existing errors and has never been clean.
 
 The Python tests run without a microphone, against the mandated replay/synthetic
 sources; `tests/test_api.py` drives the real FastAPI app over the real pipeline end
@@ -324,6 +371,12 @@ because that is the failure mode this project is built to resist.
   raises and refuses the detection (ADR-010).
 - A detector that has not declared calibration **cannot** report a calibrated
   probability.
+- BirdNET's eleven non-bird sound categories are stored with no rank, no
+  scientific name and `taxonomic_group: acoustic_event`, because a classifier
+  saying `Engine` is not the classifier identifying a bird (ADR-049).
+- A detection of a human voice is written down and its audio is not, by default.
+  The microphone records neighbours and passers-by who never consented; that is a
+  charter constraint, not a setting with a sensible other value (ADR-049).
 - Levels are labelled dBFS relative to digital full scale, never as calibrated SPL,
   because no calibration procedure exists yet.
 - Audible renderings of ultrasound are filtered and normalised, so they record

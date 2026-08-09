@@ -39,6 +39,13 @@ need them:
 
 On the Pi, `deploy/deploy.sh` installs `.[alsa,resample,birdnet,dev]`.
 
+**BatDetect2 is deliberately not an extra.** The overnight refinement runner
+(ADR-045) uses it if it is there and reports itself unavailable if it is not,
+because its repository is CC-BY-NC-4.0 and that is the operator's licence
+decision to make, not a transitive install. `pip install batdetect2==1.3.1` plus
+a CPU build of torch, on the machine that will run it. Three tests skip without
+it.
+
 ### If `python3.12` is not on your PATH
 
 On a recent Ubuntu the system `python3` may already be 3.13 or 3.14, which
@@ -89,7 +96,18 @@ Useful during development:
 ./.venv/bin/oo audio probe           # enumerate capture devices (works with zero devices)
 ./.venv/bin/oo system-report         # host facts worth attaching to a diagnostic
 ./.venv/bin/oo audio window-dump     # inspect a segmenter window with ground-truth frame numbers
+./.venv/bin/oo refine status         # what the overnight refiner has and has not examined
 ```
+
+The near-miss ledger (ADR-052) has no CLI — the `oo` command line has no HTTP
+client — so read it from the running station:
+
+```bash
+curl -s 'http://127.0.0.1:8080/api/v1/detectors/near-misses' | python3 -m json.tool
+```
+
+It is also the **Rejected candidates** panel in the UI's `diagnostics` view. It
+lives in memory, so a restart empties it.
 
 The full CLI surface is listed in
 [`../operations/DEPLOYMENT_AND_OPERATIONS.md`](../operations/DEPLOYMENT_AND_OPERATIONS.md).
@@ -164,14 +182,15 @@ Measured on 2026-08-09 on this branch:
 
 | Gate | Result |
 |---|---|
-| `pytest -q` | **649 passed, 9 skipped** in ~179 s, measured on merged `main` after the 2026-08-09 fan-out (the per-branch figures agents reported were each measured before the others merged, so none of them match this) |
-| `npm test` (web) | **140 passed** |
+| `pytest -q` | **826 passed, 11 skipped** in ~186 s. Figures move fast on this repository — a count measured before a parallel branch merged will not match one measured after, so re-measure rather than trusting this line |
+| `npm test` (web) | **235 passed** in 22 files |
 | `ruff check .` | clean |
 | `mypy src` | **22 errors in 11 files** — all pre-existing, see trap 5 |
 
-Of the 9 skips: 6 are the BatDetect2 and BirdNET fixture tests, which skip
-cleanly when the (deliberately unbundled) model assets are absent — that is
-the designed behaviour, not a broken environment. The other 3 are
+Of the 11 skips: 8 are the BatDetect2 and BirdNET fixture tests, which skip
+cleanly when the (deliberately unbundled) model assets and the optional
+`batdetect2` package are absent — that is the designed behaviour, not a broken
+environment. The other 3 are
 `tests/test_api.py::TestLiveChannels` cases that are marked `skip` outright
 (not conditionally), for the starlette limitation described in trap 3 below.
 
@@ -234,17 +253,22 @@ These are the ones that waste time. None of them is a bug in your setup.
 8. **Do not deploy to the live station casually.** `deploy/deploy.sh` restarts
    the systemd unit, which restarts capture and voids any measurement or soak in
    progress. It also `rsync --delete`s, which has destroyed the station's
-   gitignored `config/runtime.env` once and will delete `web/dist` if you pass
-   `--no-web`. See
+   gitignored `config/runtime.env` once, and it runs `alembic upgrade head`
+   against the live database before restarting.
+   `HOST=<user>@<station-host>` is mandatory, so there is no way to deploy
+   somewhere by accident. See
    [`../operations/DEPLOYMENT_AND_OPERATIONS.md`](../operations/DEPLOYMENT_AND_OPERATIONS.md).
 
 9. **The station logs UTC; `journalctl --since` takes local time.** BST is
    UTC+1. This has produced an exactly-opposite conclusion once. Print both.
 
-10. **`estimated_missing_seconds` over-reports lost audio.** Judge real loss by
-    `frames` vs `expected_frames` in `/api/v1/health`, never by that field. See
-    [`../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md)
-    and ADR-033.
+10. **`expected_frames - frames` is not lost audio, and a single reading of it is
+    mostly artefact.** It is sampling phase (±50 ms), the AudioMoth's ~50.4 ppm
+    slow crystal (4.4 s a day, forever, with nothing lost), anchor bias, and only
+    then real loss. Read `estimated_missing_seconds` for loss; the UI shows the
+    deficit separately as `behind clock`. An earlier version of this trap said
+    the exact opposite — ADR-046 measured it and settled it. See
+    [`../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md).
 
 11. **Loopback is not a test of a network path.** The concurrent-WebSocket-writer
     bug was flawless on loopback and near-total failure over Wi-Fi. Anything
@@ -302,16 +326,17 @@ scripts/                  offline benchmarks and the BatDetect2 cascade tool
   `web/` and `firmware/`.
 - Evidence before assertions. Do not write "tests pass" without having run them.
 
-## PlatformIO is not installed on this laptop
+## PlatformIO needs its own venv
 
-`~/.platformio` holds the packages, but there is no `pio` binary anywhere on
-`PATH`, so `pio run` and `pio test` fail with "command not found" rather than
-anything that points at the cause. Install it into a venv:
+`~/.platformio` holds the packages, but there is no `pio` binary on `PATH`, so
+`pio run` and `pio test` fail with "command not found" rather than anything that
+points at the cause. Put it in a venv, somewhere durable:
 
 ```bash
-python3 -m venv /tmp/piovenv && /tmp/piovenv/bin/pip install -q platformio==6.1.19
-/tmp/piovenv/bin/pio run -e cyd -t upload      # or: -e native for host tests
+python3 -m venv ~/piovenv && ~/piovenv/bin/pip install -q platformio==6.1.19
+~/piovenv/bin/pio run -e cyd -t upload      # or: -e native for host tests
 ```
 
-`/tmp` does not survive a reboot. Put it somewhere durable if you are doing
-firmware work more than once.
+`~/piovenv` already exists on this laptop, running PlatformIO Core 6.1.19, and
+is the path the firmware documentation and smoke tests assume. An earlier
+version of this section said `/tmp/piovenv`, which does not survive a reboot.
