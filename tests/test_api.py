@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -118,7 +119,22 @@ class TestStationEndpoints:
         assert names == {"audible", "ultrasonic"}
         ultrasonic = next(spec for spec in specs if spec["name"] == "ultrasonic")
         assert ultrasonic["min_hz"] >= 15000
-        assert ultrasonic["columns_emitted"] > 0
+        # `columns_emitted > 0` used to stand here, and stopped being true of an
+        # idle station when ADR-040 made encoding conditional on a viewer. It was
+        # testing that the channel *runs*, which is now a different question from
+        # whether it *exists*; the running is covered by
+        # `test_live_gating_endpoint.py`. Connect a viewer and it emits.
+        assert ultrasonic["viewer_gated"] is True
+        with client.websocket_connect("/api/v1/live") as socket:
+            socket.receive_text()  # hello
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                specs = client.get("/api/v1/station").json()["spectrograms"]
+                emitted = next(s for s in specs if s["name"] == "ultrasonic")["columns_emitted"]
+                if emitted > 0:
+                    break
+                time.sleep(0.1)
+            assert emitted > 0
 
     def test_detectors_declare_their_claims_and_licences(self, client) -> None:
         detectors = client.get("/api/v1/detectors").json()["detectors"]

@@ -91,6 +91,27 @@ full 2400-column history for both channels in one burst (~770 kB) delayed the
 audio consumer on the same event loop enough to produce ~1.9 s of backlog and
 around 900 dropped audio chunks on the listen channel.
 
+**There is often nothing to back-fill, and that is not a fault (ADR-040).** The
+server only runs the spectrogram encoders while at least
+`spectrogram_encode_min_viewers` clients are connected (default 1), and discards
+the retained history when the last one leaves — stale columns cannot be dated
+honestly, so they are not kept. The first browser to connect after an idle period
+therefore receives **no** backfill frame and fills from live columns over ~30 s;
+a second browser joining it receives the full backfill as usual.
+
+Each channel descriptor in `hello` (and in `/api/v1/station`'s `spectrograms`)
+carries two fields for this:
+
+| Field | Meaning |
+|---|---|
+| `viewer_gated` | This channel only records while a viewer is connected, so an empty canvas is expected rather than a symptom |
+| `history_seconds` | Seconds of history the server currently holds. `0.0` means the client will get no backfill |
+
+A client must render the difference. The UI shows *"filling · history is
+recorded only while the live view is open"* over the canvas until it holds the
+selected window; an unlabelled blank canvas looks exactly like a broken
+pipeline, which is the confusion backfill was introduced to prevent.
+
 ## `GET /api/v1/live/audio` — listen channel
 
 For the UI's **GO LIVE** button. Carries two channels, selected once at

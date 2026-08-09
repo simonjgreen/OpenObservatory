@@ -642,3 +642,32 @@ setting that restores a known-wrong measurement is not worth its own failure mod
 - **Any `rate_offset_ppm` or `estimated_missing_seconds` recorded before this fix
   is contaminated**, on top of the earlier contamination noted above. Only
   `expected_frames - frames` was trustworthy across the whole history of this file.
+
+## Confirmed on the target, 2026-08-09 (ADR-039's pass criteria)
+
+ADR-039 shipped stating "this change has **not** been deployed to the Pi and no
+on-target before/after exists". It has now been deployed, incidentally to the
+ADR-040 work, and the pass criteria above hold. Read from `/api/v1/station` on
+the live station with the AudioMoth at 384 kHz, across several windows of an hour
+of running:
+
+| Criterion | Required | Measured | |
+|---|---|---|---|
+| deficit ratio | ≤ 1.0, within one block | `estimated_missing_frames` **0** against a real deficit of 25,245 frames (0.066 s) | pass |
+| `rate_offset_ppm` | −60 to −30 | **−50.0, −50.3, −51.6, −53.2, −50.7** across five windows | pass |
+| `overruns` | 0 | **0** | pass |
+| `gaps_with_loss` | 0 | **0**; `grep -c 'lost_audio=True'` over 40 minutes returns **0** | pass |
+| `late_reads` may be non-zero | — | **12** `capture.late_read` lines in 40 minutes | pass |
+| `late_read_max_frames` ≪ `alsa_buffer_frames` | — | **57,952** of 192,000 (30% of the ring) | pass |
+
+Against the pre-fix reading in ADR-039 — 348,786 phantom frames on a real deficit
+of 43,772 (**8.0x**), every gap labelled as having lost audio, `rate_offset_ppm`
+**+878** — the estimator now reports nothing lost when nothing was lost, and the
+observed rate lands on the device's true crystal offset. The stalls did not go
+away and were never supposed to: they are now `late_reads` with their headroom
+recorded, which is what the ring was widened for.
+
+The one thing still not verified is the case ADR-039's off-target tests cover but
+the station has not produced: a stall the 500 ms ring genuinely fails to absorb.
+No overrun occurred here, so the "estimate what a real loss cost" path remains
+proven only against `RingedDevice`.

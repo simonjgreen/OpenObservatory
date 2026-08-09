@@ -21,6 +21,13 @@ export interface SpectrogramSpec {
   column_span_frames?: number
   /** Sub-windows max-combined per column, so no audio falls between columns. */
   sub_windows_per_column?: number
+  /** True when the server only encodes this channel while a viewer is connected
+   *  (ADR-040), which is what makes an empty canvas on connect normal rather
+   *  than a symptom. Lets the UI explain the blank instead of implying failure. */
+  viewer_gated?: boolean
+  /** Seconds of history the server currently holds for backfill. Zero means a
+   *  connecting client gets nothing and must fill from live columns. */
+  history_seconds?: number
 }
 
 export interface LevelSample {

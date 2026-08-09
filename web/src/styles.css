@@ -342,6 +342,18 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   pointer-events: none;
 }
 
+/* A deliberately blank canvas has to read as deliberate. Centred rather than
+   tucked in a corner, because the thing it is explaining is the whole panel. */
+.spectrogram-filling {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 4px 10px; border-radius: 3px;
+  color: rgba(230, 236, 255, 0.72);
+  background: rgba(8, 10, 16, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
 /* ---------- columns ---------- */
 
 .columns {
