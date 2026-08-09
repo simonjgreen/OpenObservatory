@@ -250,6 +250,52 @@ class UltrasonicDetector:
         self._blocks = 0
         self._gated_windows = 0
 
+    def retune(
+        self,
+        *,
+        band_hz: tuple[float, float] | None = None,
+        min_snr_db: float | None = None,
+        min_pulse_ms: float | None = None,
+        max_pulse_ms: float | None = None,
+        merge_gap_ms: float | None = None,
+        pass_gap_s: float | None = None,
+        min_pulses_per_pass: int | None = None,
+        buzz_max_interval_ms: float | None = None,
+        buzz_min_pulses: int | None = None,
+        buzz_interval_ratio: float | None = None,
+    ) -> None:
+        """Change the pass-detection thresholds on a running detector.
+
+        This is the knob set an operator actually reaches for: a microphone
+        with a noisy neighbour (a plant against a shed, a fan, a road) needs
+        ``min_snr_db`` and ``min_pulses_per_pass`` raised until the false
+        passes stop, and a restart per attempt makes that a day's work instead
+        of a minute's. Every value is read inside :meth:`analyse`; the band
+        mask is recomputed per window from ``self._band``, so there is nothing
+        precomputed to invalidate. The running noise-floor estimate is kept --
+        it describes the room, not the thresholds.
+        """
+        if band_hz is not None:
+            self._band = (float(band_hz[0]), float(band_hz[1]))
+        if min_snr_db is not None:
+            self._min_snr_db = float(min_snr_db)
+        if min_pulse_ms is not None:
+            self._min_pulse_s = float(min_pulse_ms) / 1000.0
+        if max_pulse_ms is not None:
+            self._max_pulse_s = float(max_pulse_ms) / 1000.0
+        if merge_gap_ms is not None:
+            self._merge_gap_s = float(merge_gap_ms) / 1000.0
+        if pass_gap_s is not None:
+            self._pass_gap_s = float(pass_gap_s)
+        if min_pulses_per_pass is not None:
+            self._min_pulses = int(min_pulses_per_pass)
+        if buzz_max_interval_ms is not None:
+            self._buzz_max_interval_ms = float(buzz_max_interval_ms)
+        if buzz_min_pulses is not None:
+            self._buzz_min_pulses = int(buzz_min_pulses)
+        if buzz_interval_ratio is not None:
+            self._buzz_interval_ratio = float(buzz_interval_ratio)
+
     async def initialise(self, context: DetectorContext) -> None:
         if self.native_sample_rate < self.MIN_SAMPLE_RATE:
             raise DetectorUnavailable(

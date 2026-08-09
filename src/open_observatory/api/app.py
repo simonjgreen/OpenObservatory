@@ -79,6 +79,8 @@ from ..site_settings import (
     SettingValueError,
     coerce_updates,
     describe_settings,
+    describe_setup,
+    validate_merged,
 )
 from ..station import Station
 from .metrics import PrometheusExporter
@@ -595,36 +597,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_site_settings() -> dict[str, Any]:
         return describe_settings(settings, applied_site=station.applied_site)
 
+    @app.get(f"{API_PREFIX}/setup")
+    def get_setup() -> dict[str, Any]:
+        """The guided first-run flow's state.
+
+        A station with no configuration should guide rather than fail, so this
+        answers the four questions a person actually has on day one -- where am
+        I, what time is it here, is my microphone working, do I want MQTT --
+        and reads the *live* capture state for the microphone answer rather
+        than a stored flag, because "configured" and "working" are different
+        claims and only one of them is worth making.
+        """
+        return describe_setup(settings, capture=station.status_snapshot()["capture"])
+
     @app.put(f"{API_PREFIX}/settings")
     async def put_site_settings(payload: dict[str, Any]) -> dict[str, Any]:
-        """Save operator-editable site settings.
+        """Save operator-editable settings.
 
-        Persist first (runtime.env, atomically), then apply live where that is
-        safe: identity fields mutate the running settings object and re-upsert
-        the station row; MQTT changes restart the publisher so it reconnects
-        with the new broker details. Latitude/longitude are persisted and
-        reported, never injected into running detectors -- the response and
-        every later GET name them as pending a restart (see site_settings.py
-        for why a live coordinate swap under the BirdNET range model is the
-        wrong kind of clever).
+        Validate, persist (runtime.env, atomically), then apply live where that
+        is safe: identity fields mutate the running settings object and
+        re-upsert the station row; tuning is pushed into the encoders,
+        detectors, clip manager and retention sweeper by
+        ``Station.apply_tuning``; MQTT changes restart the publisher so it
+        reconnects with the new broker details.
+
+        Restart-pinned fields are persisted and reported, never injected --
+        the response and every later GET name them as pending a restart (see
+        site_settings.py for why a live coordinate swap under the BirdNET range
+        model, or a live capture re-negotiation, is the wrong kind of clever).
+        A live field whose target object is not running is reported the same
+        way, on the same evidence: ``Station.applied_site`` says what is
+        actually in use, and anything else is a claim this API will not make.
+
+        Validation runs *before* anything is written, and covers cross-field
+        rules against the merged configuration, so a rejected request leaves
+        both the file and the process exactly as they were.
         """
         try:
             updates = coerce_updates(payload)
+            validate_merged(settings, updates)
         except SettingValueError as exc:
             raise HTTPException(status_code=422, detail={"errors": exc.errors}) from exc
-
-        merged_lat = updates.get("latitude", settings.latitude)
-        merged_lon = updates.get("longitude", settings.longitude)
-        if (merged_lat is None) != (merged_lon is None):
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "errors": {
-                        "latitude": "set both coordinates, or clear both",
-                        "longitude": "set both coordinates, or clear both",
-                    }
-                },
-            )
 
         changed = {
             name: value for name, value in updates.items() if getattr(settings, name) != value
@@ -635,6 +648,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         if {"station_name", "timezone", "latitude", "longitude"} & changed.keys():
             await station.apply_site_identity()
+        # Live tuning. Cheap and synchronous by construction -- attribute
+        # rebinds and threshold swaps, never a device or a thread -- so it does
+        # not go near the capture path or an executor.
+        live_changed = [
+            name for name in changed if not EDITABLE_BY_NAME[name].restart_required
+        ]
+        if live_changed:
+            station.apply_tuning(live_changed)
         mqtt_changed = [name for name in changed if name.startswith("mqtt_")]
         if mqtt_changed:
             # Stop/start rather than poking fields into a live client: the
@@ -721,6 +742,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "no station location configured: BirdNET runs without range-based "
                 "plausibility filtering and the ultrasonic night schedule stays "
                 "always-on. Set coordinates in the web UI settings page."
+            )
+        # First-run guidance, not a fault. UTC is the shipped default because
+        # it is the only zone that is not somebody's local assumption, but a
+        # station still on it is showing an operator times that are probably
+        # not theirs, and saying nothing about that is the same omission the
+        # unset-location note exists to avoid. Silenced once the operator has
+        # been through (or dismissed) the guided flow, so an operator who
+        # genuinely wants UTC is not nagged forever.
+        if not settings.setup_completed and settings.timezone == "UTC":
+            notes.append(
+                "timezone is still UTC (the shipped default): times in the UI and on "
+                "the counter-top display are UTC, not local. Set your IANA zone in the "
+                "web UI settings page."
             )
         pending = station.site_pending_restart()
         if pending:

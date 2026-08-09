@@ -7,6 +7,7 @@ import { Suggestions } from './components/Suggestions'
 import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
 import { DetectionDrawer } from './components/DetectionDrawer'
+import { FirstRun } from './components/FirstRun'
 import { History } from './components/History'
 import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
@@ -15,6 +16,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 
 import { useAuth } from './hooks/useAuth'
 import { useClock } from './hooks/useClock'
+import { useFirstRun } from './hooks/useFirstRun'
 import { useHistoryBrowser } from './hooks/useHistoryBrowser'
 import { useLiveAudio } from './hooks/useLiveAudio'
 import { useLiveConnection } from './hooks/useLiveConnection'
@@ -46,6 +48,7 @@ export default function App() {
   const history = useHistoryBrowser()
   const audio = useLiveAudio()
   const view = useViewMode()
+  const firstRun = useFirstRun()
 
   const [selected, setSelected] = useState<Detection | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -95,7 +98,7 @@ export default function App() {
         <button
           className={`diagnostics-toggle ${showSettings ? 'on' : ''}`}
           onClick={() => setShowSettings((open) => !open)}
-          title="Site configuration: station name, timezone, location, MQTT. Stored on the device, never in the repository."
+          title="Everything this station can be configured with: identity, location, capture, spectrogram contrast, detector thresholds, clips, retention, MQTT. Stored on the device, never in the repository."
         >
           settings
         </button>
@@ -130,6 +133,20 @@ export default function App() {
         )}
       </Header>
 
+      {/* Day one: guide rather than fail. The panel appears only while the
+          station itself reports required questions outstanding, and its
+          dismissal is recorded on the station, not in this browser. */}
+      {firstRun.offer && !showSettings && (
+        <FirstRun
+          onClose={() => {
+            firstRun.dismiss()
+            firstRun.refresh()
+          }}
+          onSaved={() => firstRun.refresh()}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+      )}
+
       {live.status && live.status.station.location_configured === false && !showSettings && (
         <div className="site-banner" role="note">
           No station location is configured — species plausibility filtering and night
@@ -146,7 +163,12 @@ export default function App() {
         </div>
       )}
 
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsPanel
+          onClose={() => setShowSettings(false)}
+          onSaved={() => firstRun.refresh()}
+        />
+      )}
 
       <OperatorSummary status={live.status} />
 

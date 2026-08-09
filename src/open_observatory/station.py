@@ -26,7 +26,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -37,6 +37,7 @@ import structlog
 from sqlalchemy import func
 
 from . import models as model_registry
+from . import tuning
 from .audio.contracts import (
     NS_PER_S,
     AudioWindow,
@@ -73,6 +74,28 @@ log = structlog.get_logger(__name__)
 
 SPECTROGRAM_AUDIBLE = 0
 SPECTROGRAM_ULTRASONIC = 1
+
+
+class _Unapplied:
+    """Placeholder recorded in ``applied_site`` for a live setting that was
+    saved while the object meant to receive it did not exist.
+
+    It compares equal to nothing, so the setting reports as pending until a
+    restart builds the component and binds the saved value. Recording the
+    *old* value would be wrong (there was no old value in use) and recording
+    the new one would be a claim that something is using it."""
+
+    def __eq__(self, other: object) -> bool:
+        return False
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return "<not applied>"
+
+
+UNAPPLIED = _Unapplied()
 
 #: A housekeeping tick that blocks the event loop for longer than this is
 #: reported at warning level. One capture block is 100 ms, so anything at or
@@ -230,13 +253,17 @@ class Station:
             batch_budget_s=settings.retention_batch_budget_s,
         )
 
-        #: What the running detector pipeline was actually built with, recorded
-        #: at `_build_detectors` time. The settings object can change under a
-        #: live process (the UI settings page persists and applies edits), but
-        #: coordinates are deliberately *not* re-injected into a running BirdNET
-        #: range filter or night schedule -- see site_settings.py. This snapshot
-        #: is what lets the API report "saved, in force after restart" honestly
-        #: instead of pretending.
+        #: What the running pipeline is actually using, recorded as each part
+        #: of it is built (`_record_applied`) and updated as live settings are
+        #: pushed into it (`apply_tuning`). The settings object can change under
+        #: a live process -- the UI settings page persists and applies edits --
+        #: but a restart-pinned value is deliberately *not* re-injected: swapping
+        #: coordinates under a running BirdNET range filter would change what
+        #: "plausible" means mid-stream, and re-negotiating capture geometry
+        #: would cost audio. This snapshot is what lets the API report "saved,
+        #: in force after restart" honestly instead of pretending. It covers
+        #: live-tier settings too, so a live edit that could not reach its
+        #: object is reported as pending rather than as done (ADR-048).
         self.applied_site: dict[str, Any] | None = None
         self.workers: list[DetectorWorker] = []
         self.recent_detections: list[DetectionRecord] = []
@@ -288,6 +315,10 @@ class Station:
 
     async def start(self) -> None:
         self.settings.ensure_directories()
+        # Logging, the metrics mount and the replay/synthetic sources are
+        # built from these once per process. Recording them here is what makes
+        # a later edit report as "saved, awaiting restart" rather than as done.
+        self._record_applied(tuning.PINNED_AT_PROCESS_START)
         self.station_id = await asyncio.to_thread(self._ensure_station_row)
         await asyncio.to_thread(self._close_orphaned_streams)
         self._running = True
@@ -513,6 +544,11 @@ class Station:
         self.live_audio_ultrasonic.reconfigure(self.settings.audible_sample_rate)
         self._build_heterodyne(rate)
         self._build_spectrograms(rate)
+        # Capture geometry has now been negotiated with the device and copied
+        # into rings, resamplers and encoders. Record it, so a later settings
+        # edit to any of it is reported as "saved, awaiting restart" rather
+        # than silently doing nothing (ADR-048).
+        self._record_applied(tuning.PINNED_AT_CAPTURE_START)
 
         if self.router is None:
             self.router = WindowRouter(native_rate=rate, stream_id=info.stream_id)
@@ -520,6 +556,10 @@ class Station:
         else:
             self.router.rebind(info.stream_id, native_rate=rate)
             await self._rebind_detectors(rate)
+        # Whatever exists now holds the live-tier values it was built with.
+        # Recording them here means a subsequent edit is reported as applied
+        # only once it has actually reached the object (ADR-048).
+        self.record_live_targets()
 
         self._set_capture_state("capturing")
         self._device_row_id = await asyncio.to_thread(self._upsert_device_and_stream, info)
@@ -638,10 +678,7 @@ class Station:
 
     async def _build_detectors(self, native_rate: int) -> None:
         settings = self.settings
-        self.applied_site = {
-            "latitude": settings.latitude,
-            "longitude": settings.longitude,
-        }
+        self._record_applied(tuning.PINNED_AT_DETECTOR_START)
         context = DetectorContext(
             station_name=settings.station_name,
             timezone=settings.timezone,
@@ -667,6 +704,11 @@ class Station:
                     stride_s=settings.birdnet_window_stride_s,
                     min_confidence=settings.birdnet_min_confidence,
                     plausibility_floor=settings.birdnet_plausibility_floor,
+                    common_prior=settings.birdnet_common_prior,
+                    range_threshold=settings.birdnet_range_threshold,
+                    threshold_in_range=settings.birdnet_threshold_in_range,
+                    threshold_uncommon=settings.birdnet_threshold_uncommon,
+                    threshold_out_of_range=settings.birdnet_threshold_out_of_range,
                     use_location_filter=(
                         settings.birdnet_use_location_filter
                         and settings.latitude is not None
@@ -1184,9 +1226,16 @@ class Station:
             )
 
     def site_pending_restart(self) -> list[str]:
-        """Restart-pinned site fields whose saved value differs from the one
-        the running detectors were built with. Empty before detectors exist:
-        nothing has been pinned yet, so nothing can be stale."""
+        """Settings whose saved value differs from the one the running
+        components are actually using. Empty before anything is built: nothing
+        has been pinned yet, so nothing can be stale.
+
+        Covers live-tier settings as well as restart-pinned ones (ADR-048).
+        A live setting is removed from this list by :meth:`apply_tuning`
+        succeeding, not by the save succeeding -- if the owning object is not
+        there to receive it (no ultrasonic encoder at 48 kHz, a detector that
+        is switched off), the setting is saved and honestly reported as not
+        yet in force."""
         if self.applied_site is None:
             return []
         return [
@@ -1194,6 +1243,86 @@ class Station:
             for name, applied in self.applied_site.items()
             if applied != getattr(self.settings, name)
         ]
+
+    def _record_applied(self, names: Iterable[str]) -> None:
+        """Record what a freshly built component was built with."""
+        if self.applied_site is None:
+            self.applied_site = {}
+        for name in names:
+            self.applied_site[name] = getattr(self.settings, name)
+
+    def record_live_targets(self) -> None:
+        """Snapshot every live-tier setting whose owning object now exists.
+
+        Called after capture and the detectors are built. A setting whose
+        owner is absent is deliberately *not* recorded: an absent key means
+        "nothing here is using this", which reports as neither applied nor
+        pending, because both would be a claim about a component that is not
+        running.
+        """
+        self._record_applied(
+            name
+            for name, target in tuning.LIVE_TARGETS.items()
+            if self._tuning_owner(target) is not None
+        )
+
+    def _tuning_owner(self, target: tuning.LiveTarget) -> Any | None:
+        if target.kind == "clips":
+            return self.clips
+        if target.kind == "retention":
+            return self.retention
+        if target.kind == "spectrogram":
+            channel = SPECTROGRAM_AUDIBLE if target.owner == "audible" else SPECTROGRAM_ULTRASONIC
+            return self.spectrograms.get(channel)
+        if target.kind == "detector":
+            for worker in self.workers:
+                if worker.plugin_id == target.owner and hasattr(worker.plugin, "retune"):
+                    return worker.plugin
+        return None
+
+    def apply_tuning(self, names: Iterable[str]) -> list[str]:
+        """Push live-tier settings into the objects that hold their values.
+
+        Returns the names that could **not** be applied, so the caller can
+        report them as pending rather than as done. Nothing here touches
+        capture: the clip manager and retention sweeper take plain attribute
+        assignments, and the encoders and detectors take a ``retune()`` that
+        rebinds values read per column or per window. No device is reopened,
+        no thread is joined, no queue is drained -- charter item 1 holds.
+        """
+        unapplied: list[str] = []
+        retunes: dict[int, dict[str, Any]] = {}
+        owners: dict[int, Any] = {}
+        for name in names:
+            target = tuning.LIVE_TARGETS.get(name)
+            if target is None:
+                # Read fresh from Settings on every use; already applied by
+                # the caller mutating the settings object.
+                continue
+            owner = self._tuning_owner(target)
+            if owner is None:
+                unapplied.append(name)
+                self.applied_site = self.applied_site or {}
+                self.applied_site[name] = UNAPPLIED
+                continue
+            value = getattr(self.settings, name)
+            if target.kind in ("clips", "retention"):
+                scaled = int(value * target.scale) if target.scale != 1.0 else value
+                if target.parameter == "clip_plugins":
+                    scaled = frozenset(value)
+                setattr(owner, target.parameter, scaled)
+                self.applied_site = self.applied_site or {}
+                self.applied_site[name] = value
+            else:
+                owners[id(owner)] = owner
+                retunes.setdefault(id(owner), {})[target.parameter] = value
+                self.applied_site = self.applied_site or {}
+                self.applied_site[name] = value
+        for key, kwargs in retunes.items():
+            owners[key].retune(**kwargs)
+        if unapplied:
+            log.info("settings.tuning_not_applied", fields=sorted(unapplied))
+        return unapplied
 
     async def apply_site_identity(self) -> None:
         """Push the (already-mutated) settings' identity fields to the station
