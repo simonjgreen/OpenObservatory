@@ -18,7 +18,9 @@
 #include "board_pins.h"
 #include "config_store.h"
 #include "display.h"
+#include "model/ota_policy.h"
 #include "model/relative_time.h"
+#include "ota.h"
 #include "portal.h"
 #include "push_station_source.h"
 #include "station_source.h"
@@ -72,6 +74,30 @@ int16_t padTarget = kHitNone;
 uint8_t strayTaps = 0;
 uint32_t strayWindowMs = 0;
 
+// --- over-the-air update (ADR-050) -----------------------------------------
+// When the glass was last touched. Zero means "not since boot", which reads as
+// an infinitely long time ago -- see updateContext().
+uint32_t lastTouchMs = 0;
+// Whether this boot is running an image that has not yet proved itself, and
+// whether that question has been settled either way. While it is unsettled no
+// second update is started: stacking an unproven build on an unproven build
+// leaves nothing known-good to fall back to.
+bool onProbation = false;
+bool probationResolved = true;
+bool portalCompleted = false;
+// The offer is re-evaluated at this cadence rather than every 20 ms, because
+// most refusals are deferrals ("someone is using it") that will not change
+// within a loop pass.
+constexpr uint32_t kUpdateRecheckMs = 60000;
+uint32_t nextUpdateCheckMs = 0;
+UpdateVerdict lastVerdictLogged = UpdateVerdict::kGo;  // forces the first log
+// Failed installs before an offer is dropped. Three, so one bad minute of
+// Wi-Fi does not cost a rollout, and a genuinely undownloadable image does not
+// re-download itself for the rest of the device's life.
+constexpr uint8_t kMaxInstallAttempts = 3;
+uint8_t installAttempts = 0;
+std::string updatingVersion;
+
 constexpr uint32_t kWifiConnectTimeoutMs = 25000;
 
 void ledsOff() {
@@ -96,6 +122,11 @@ void logBanner() {
   Serial.printf("flash      : %u bytes, sketch %u of %u\n",
                 ESP.getFlashChipSize(), ESP.getSketchSize(),
                 ESP.getFreeSketchSpace() + ESP.getSketchSize());
+  // Which of the two OTA slots is running, and whether this boot is on
+  // probation. Without a camera on the glass, a serial capture is the only
+  // account of an update, and "which slot" is the first thing it needs to say.
+  Serial.printf("app slot   : %s%s\n", otaRunningSlot().c_str(),
+                onProbation ? "  (PENDING VERIFY - on probation)" : "");
   Serial.printf("psram      : %u bytes (expected 0 on this board)\n",
                 ESP.getPsramSize());
   Serial.printf("free heap  : %u bytes\n", ESP.getFreeHeap());
@@ -334,6 +365,128 @@ void handleNumberPadHit(int16_t id) {
                         padTarget == kHitHost);
 }
 
+// --- over-the-air update ----------------------------------------------------
+
+void otaProgress(int percent) {
+  display.showUpdating(updatingVersion.c_str(), percent, "");
+  if (percent % 10 == 0) {
+    Serial.printf("[ota] %d%%\n", percent);
+  }
+}
+
+// Settle the "is the running image any good?" question. Runs every loop pass
+// until it answers, then never again.
+//
+// A deliberate restart while this is still unsettled -- an operator saving
+// settings on a build that has never reached the station -- rolls back, because
+// the bootloader sees an image still in PENDING_VERIFY. That is the intended
+// outcome, not an oversight: an image that renders a settings page but cannot
+// reach the station is exactly the failure this mechanism exists to undo.
+void serviceProbation() {
+  if (probationResolved) {
+    return;
+  }
+  ProbationContext context;
+  context.onProbation = onProbation;
+  context.stationHelloSeen = push.helloSeenEver();
+  context.portalCompleted = portalCompleted;
+  context.msSinceBoot = millis();
+
+  switch (evaluateProbation(context)) {
+    case ProbationVerdict::kNotOnProbation:
+      probationResolved = true;
+      return;
+    case ProbationVerdict::kWaiting:
+      return;
+    case ProbationVerdict::kConfirm:
+      probationResolved = true;
+      Serial.printf("[ota] this build reached the station (%s); confirming\n",
+                    context.portalCompleted ? "via the portal" : "hello frame");
+      otaConfirmRunningImage();
+      return;
+    case ProbationVerdict::kRollBack:
+      otaRollBackAndReboot();  // does not return
+      return;
+  }
+}
+
+UpdateContext updateContext() {
+  UpdateContext context;
+  context.onFeedScreen = (screen == Screen::kFeed);
+  context.portalRunning = portal.running();
+  context.stationReachable = push.usable();
+  context.msSinceTouch =
+      (lastTouchMs == 0) ? 0xFFFFFFFFu : (millis() - lastTouchMs);
+  context.newestRowAgeSeconds =
+      (!snapshot.feed.empty() && snapshot.clock.anchored())
+          ? snapshot.clock.ageOf(snapshot.feed.front().startUtc)
+          : -1;
+  return context;
+}
+
+void installOffer(const FirmwareOffer& source) {
+  // By value: clearPendingOffer() below would otherwise saw off the reference
+  // this function is still reading from.
+  const FirmwareOffer offer = source;
+  updatingVersion = offer.version;
+  screen = Screen::kUpdating;
+  display.showUpdating(offer.version.c_str(), -1, "");
+
+  const OtaResult result = otaInstall(settings, offer, otaProgress);
+  Serial.printf("[ota] %s -> %s\n", offer.version.c_str(),
+                otaResultText(result));
+
+  if (result == OtaResult::kInstalled) {
+    push.clearPendingOffer();
+    display.showUpdating(offer.version.c_str(), 100, "restarting");
+    restartAtMs = millis() + 600;
+    return;
+  }
+
+  // Nothing was committed, so the running image is untouched and the display
+  // simply goes back to the feed. The word on the glass is the outcome, not
+  // "please try again": there is nobody to try.
+  if (++installAttempts >= kMaxInstallAttempts) {
+    Serial.println("[ota] giving up on this offer");
+    push.clearPendingOffer();
+    installAttempts = 0;
+  }
+  display.showUpdating(offer.version.c_str(), 100, otaResultText(result));
+  delay(3000);
+  enterFeed(true);
+}
+
+void serviceUpdates() {
+  if (!probationResolved || restartAtMs != 0) {
+    return;
+  }
+  if (!push.pendingOffer().present()) {
+    return;
+  }
+  if (static_cast<int32_t>(millis() - nextUpdateCheckMs) < 0) {
+    return;
+  }
+  nextUpdateCheckMs = millis() + kUpdateRecheckMs;
+
+  const UpdateVerdict verdict =
+      evaluateOffer(push.pendingOffer(), INSIDE_OBSERVER_VERSION, updateContext());
+  if (verdict != lastVerdictLogged) {
+    lastVerdictLogged = verdict;
+    Serial.printf("[ota] offer %s: %s\n", push.pendingOffer().version.c_str(),
+                  verdictReason(verdict));
+  }
+  if (verdict == UpdateVerdict::kGo) {
+    installOffer(push.pendingOffer());
+    return;
+  }
+  if (!isDeferral(verdict)) {
+    // A refusal is a fact about the offer, not about the moment: re-evaluating
+    // it every minute for the rest of the device's life would only fill the
+    // log. The station re-offers on the next connect.
+    push.clearPendingOffer();
+  }
+}
+
 void handleTouch(const TouchPoint& p) {
   int16_t hitId = kHitNone;
   for (const HitBox& box : display.hitBoxes()) {
@@ -380,6 +533,10 @@ void handleTouch(const TouchPoint& p) {
       return;
 
     case Screen::kBoot:
+    case Screen::kUpdating:
+      // Nothing on this screen is touchable. An update in progress is not
+      // cancellable by a fingertip: aborting a flash write halfway because
+      // somebody leaned on the glass is not a feature.
       return;
   }
 }
@@ -389,6 +546,14 @@ void handleTouch(const TouchPoint& p) {
 void setup() {
   Serial.begin(115200);
   delay(300);
+
+  // Asked before anything else can reboot the device. An image written by OTA
+  // boots exactly once in ESP_OTA_IMG_PENDING_VERIFY; if it restarts without
+  // being marked valid the bootloader puts the previous slot back by itself.
+  // Everything this firmware does about rollback is downstream of this line.
+  onProbation = otaOnProbation();
+  probationResolved = !onProbation;
+
   logBanner();
 
   ledsOff();
@@ -451,13 +616,21 @@ void loop() {
   if (portal.running()) {
     portal.handle();
     if (portal.submitted()) {
+      // Counts as proof for a probationary build, and has to be recorded
+      // *before* the restart below: the operator reached the recovery path and
+      // it worked, and rolling back on the restart that follows would discard
+      // the credentials they have just typed in (ADR-050).
+      portalCompleted = true;
       Serial.println("[portal] settings submitted; restarting in 2s");
       restartAtMs = millis() + 2000;
     }
   }
 
+  serviceProbation();
+
   TouchPoint p;
   if (touch.poll(settings, p)) {
+    lastTouchMs = millis();
     handleTouch(p);
   }
 
@@ -551,6 +724,11 @@ void loop() {
                     static_cast<unsigned>(ESP.getFreeHeap()));
     }
   }
+
+  // Last, and only from the main loop: installing takes about ninety seconds
+  // and blanks the screen, so it must never happen from inside a socket
+  // callback or between a repaint and its own tick.
+  serviceUpdates();
 
   delay(20);
 }

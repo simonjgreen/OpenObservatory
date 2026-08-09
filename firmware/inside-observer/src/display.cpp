@@ -207,6 +207,45 @@ void Display::showBoot(const char* line1, const char* line2) {
   }
 }
 
+void Display::showUpdating(const char* version, int percent, const char* note) {
+  constexpr int kBarX = kMargin;
+  constexpr int kBarY = 180;
+  constexpr int kBarW = kScreenW - 2 * kMargin;
+  constexpr int kBarH = 10;
+
+  if (percent < 0) {
+    hits_.clear();
+    lastRowKeys_.clear();
+    lastRowTimes_.clear();
+    rowTops_.clear();
+    lastHeaderKey_.clear();
+    lastFooterKey_.clear();
+
+    tft_.fillScreen(kBg);
+    drawTracked("UPDATING", kScreenW / 2, 130, 2, 3, kAccent);
+    tft_.setTextDatum(TC_DATUM);
+    tft_.setTextColor(kInkDim, kBg);
+    tft_.drawString(version, kScreenW / 2, 156, 2);
+    tft_.drawRect(kBarX - 1, kBarY - 1, kBarW + 2, kBarH + 2, kRule);
+    // Said plainly, because the one thing a person walking past a blank
+    // counter-top display needs to know is that it is not broken.
+    tft_.drawString("do not unplug", kScreenW / 2, 206, 2);
+  }
+
+  if (percent >= 0) {
+    const int filled = (kBarW * (percent < 100 ? percent : 100)) / 100;
+    tft_.fillRect(kBarX, kBarY, filled, kBarH, kAccent);
+    tft_.fillRect(kBarX + filled, kBarY, kBarW - filled, kBarH, kBg);
+  }
+
+  if (note != nullptr && note[0] != '\0') {
+    tft_.setTextDatum(TC_DATUM);
+    tft_.setTextColor(kInkDim, kBg);
+    tft_.fillRect(0, 226, kScreenW, 20, kBg);
+    tft_.drawString(note, kScreenW / 2, 228, 2);
+  }
+}
+
 void Display::drawHeader(const StationSnapshot& snapshot) {
   tft_.fillRect(0, 0, kScreenW, kHeaderH, kBg);
   drawTracked("LIVE IN THE GARDEN", kScreenW / 2, 14, 2, 4, kAccent);

@@ -28,6 +28,11 @@ enum class Screen : uint8_t {
   kSettings,
   kNumberPad,
   kPortal,
+  //: Installing new firmware (ADR-050). Deliberately its own screen and not a
+  //: banner over the feed: the feed is stale from the moment the download
+  //: starts, and a screen that still looks like a live feed while it is not one
+  //: is the failure mode the three distinct states exist to prevent.
+  kUpdating,
 };
 
 // A rectangular touch target. Screens publish these; the input loop hit-tests
@@ -114,6 +119,12 @@ class Display {
   void showNumberPad(const char* title, const std::string& value,
                      bool allowDots);
   void showPortal(const char* ssid, const char* ip);
+
+  // The update screen. `percent` < 0 paints the whole screen; 0..100 repaints
+  // only the bar, so a 1 MB download does not spend its time on SPI traffic.
+  // `note` is one short line under the bar -- an outcome, or empty while the
+  // download runs.
+  void showUpdating(const char* version, int percent, const char* note);
 
   const std::vector<HitBox>& hitBoxes() const { return hits_; }
 

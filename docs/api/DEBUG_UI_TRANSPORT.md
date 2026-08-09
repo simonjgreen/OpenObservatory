@@ -425,6 +425,7 @@ display socket. The pump and the receive loop only ever queue and receive.
 | `min_score` | `0.75` | Named detections below this are **not sent**. Never appears in any frame. |
 | `bats` | `true` | Whether bat passes are sent at all. They are never score-filtered. |
 | `rows` | server config (6) | Rows in the connect snapshot. 1–12. |
+| `fw` | absent | The firmware version running on the display, e.g. `0.2.0` (ADR-050). The only thing this client ever tells the station about itself. Absent from builds before ADR-050; reported as unknown, never assumed to be old. |
 
 Filtering is server-side so the device never receives-and-discards, which is the
 whole point of the change. The filter lives in the URL, so changing it means
@@ -440,6 +441,7 @@ carries `t`.
 | `h` | once, on connect | `{"t":"h","v":1,"now":1786263065,"hb":10,"st":"L","sp":30,"f":[…]}` | 150–294 B |
 | `d` | as detections occur | `{"t":"d","n":"Common Woodpigeon","at":1786263086}` | 40–57 B |
 | `s` | every `hb` seconds | `{"t":"s","now":1786263075,"st":"L","sp":30}` | 43 B |
+| `u` | on connect if behind, or on a rollout | `{"t":"u","fv":"0.2.1","sha":"<64 hex>","sz":1127649,"p":"/api/v1/firmware/image"}` | ~130 B |
 
 Frame keys:
 
@@ -452,6 +454,10 @@ Frame keys:
 | `d` | `h`, `s` | The station's own words for a degraded state. Absent when listening. |
 | `sp` | any | Distinct species today. On a `d` frame only when the count moved. |
 | `f` | `h` | The connect snapshot: `rows` rows, already run-collapsed. |
+| `fv` | `u` | The offered firmware version. Dotted numbers only; a version either end cannot order is refused rather than guessed at. |
+| `sha` | `u` | SHA-256 of the whole image, 64 lowercase hex. Checked on the device against every byte it received, **before** anything becomes bootable. |
+| `sz` | `u` | Image size in bytes. Checked against the offer *and* against `Content-Length`; a mismatch or a chunked response is refused. |
+| `p` | `u` | Path to fetch the image from, on this same station. **Never a host** — the firmware refuses a `p` that does not start with `/`, so a frame cannot redirect the fetch elsewhere. |
 
 Row keys, shared by `f` entries and by the body of a `d` frame:
 
@@ -501,7 +507,8 @@ banner. A test scene is not an observation of the garden.
 One bounded queue per client (`display_channel_queue_max`, default 64). When it
 is full the **oldest detection frame** is shed — never a status frame, because
 losing the banner to a burst of woodpigeons would make a broken station look
-merely quiet. Counters are reported in `/api/v1/station` under `display_channel`,
+merely quiet, and never a `u` frame, for the same reason: a rollout that a burst
+of birdsong can silently cancel is not a rollout. Counters are reported in `/api/v1/station` under `display_channel`,
 including `mean_frame_bytes`.
 
 Capture always wins: nothing on this path can block or apply back-pressure to the
@@ -514,6 +521,7 @@ capture loop.
 | `display_channel_heartbeat_s` | `10.0` | Heartbeat period. Also sets how long a dead station takes to look dead (3 beats). |
 | `display_channel_snapshot_rows` | `6` | Connect snapshot size when `rows` is not given. |
 | `display_channel_queue_max` | `64` | Frames a display may fall behind by. |
+| `display_ota_offer_on_connect` | `true` | Offer a published firmware image to a display whose `fw` is older (ADR-050). Costs nothing when the versions agree — no frame is sent. |
 
 ### Measuring it
 

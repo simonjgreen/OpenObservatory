@@ -83,6 +83,20 @@ bool parsePushFrame(const char* json, PushFrame& out) {
     out.items.push_back(std::move(item));
   } else if (std::strcmp(type, "s") == 0) {
     out.type = PushFrameType::kHeartbeat;
+  } else if (std::strcmp(type, "u") == 0) {
+    // Copied out verbatim, including anything nonsensical. The parser's job is
+    // to say what arrived; evaluateOffer() is the only thing that decides
+    // whether it is worth writing to flash, and it is host-tested against
+    // exactly these shapes.
+    out.type = PushFrameType::kFirmwareOffer;
+    out.offer.version = stringOr(root["fv"], "");
+    out.offer.sha256 = stringOr(root["sha"], "");
+    out.offer.path = stringOr(root["p"], "");
+    const int64_t size = root["sz"] | static_cast<int64_t>(0);
+    out.offer.sizeBytes = size > 0 ? static_cast<uint32_t>(size) : 0;
+    if (out.offer.version.empty()) {
+      return false;  // an offer of nothing in particular
+    }
   } else {
     return false;
   }

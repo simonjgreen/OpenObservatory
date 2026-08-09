@@ -11,9 +11,12 @@
 //                     {"b":1,"at":1786226651,"k":36.2}]}
 //   detection   {"t":"d","n":"Common Woodpigeon","at":1786196799,"sp":15}
 //   heartbeat   {"t":"s","now":1786196799,"st":"L","sp":14}
+//   update      {"t":"u","fv":"0.2.0","sha":"<64 hex>","sz":993284,
+//                "p":"/api/v1/firmware/image"}
 //
 // Keys:
-//   t    frame type: "h" hello, "d" detection, "s" heartbeat
+//   t    frame type: "h" hello, "d" detection, "s" heartbeat, "u" firmware
+//        offer (ADR-050)
 //   v    wire version. Hello only. A version this build does not know is
 //        refused outright rather than half-parsed, and the display falls back
 //        to HTTP polling.
@@ -36,6 +39,17 @@
 //   k    peak frequency in kHz, one decimal. Bat passes only.
 //   r    detections collapsed into this row. Absent when 1.
 //
+// Update-frame keys (`u` only, ADR-050):
+//   fv   the offered firmware version, dotted numeric.
+//   sha  SHA-256 of the whole image, 64 lowercase hex characters. Verified on
+//        the device against what it actually received, before anything is
+//        committed. An offer without a usable digest is refused.
+//   sz   image size in bytes, so an image too large for an app slot is refused
+//        before the first byte is written rather than halfway through.
+//   p    path to fetch the image from, on the same station this socket is
+//        already connected to. Path only, never a host: a frame that could name
+//        a host could point this display at somebody else's binary.
+//
 // There is no score field, and there is no way to add one without changing this
 // file: ADR-023's rule is structural on this wire, not a convention.
 //
@@ -50,6 +64,7 @@
 #include <ArduinoJson.h>
 
 #include "model/detection_feed.h"
+#include "model/ota_policy.h"
 #include "model/station_health.h"
 
 namespace observer {
@@ -62,6 +77,7 @@ enum class PushFrameType : uint8_t {
   kHello,
   kDetection,
   kHeartbeat,
+  kFirmwareOffer,
 };
 
 struct PushFrame {
@@ -78,6 +94,10 @@ struct PushFrame {
 
   int speciesToday = -1;       // -1 = the frame did not carry one
   std::vector<FeedItem> items; // hello: the snapshot. detection: exactly one.
+
+  //: Update frames only. Populated verbatim from the frame; whether it is
+  //: acceptable is evaluateOffer()'s decision, not the parser's.
+  FirmwareOffer offer;
 };
 
 // Parses one frame. Returns false for anything that is not a frame this build

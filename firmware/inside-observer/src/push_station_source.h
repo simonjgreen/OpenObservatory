@@ -19,6 +19,7 @@
 
 #include <WebSocketsClient.h>
 
+#include "model/ota_policy.h"
 #include "station_source.h"
 
 namespace observer {
@@ -40,6 +41,18 @@ class PushStationSource : public StationSource {
   // speaks a wire version this build does not know is *not* usable, and the
   // fallback must treat it as such.
   bool usable() const { return helloSeen_; }
+
+  // Whether a hello has *ever* been understood on this boot. Unlike usable(),
+  // this is never cleared by a disconnect, because it answers a different
+  // question: "has this firmware build ever managed to do its job?" -- which is
+  // what a probationary image is being judged on (ADR-050).
+  bool helloSeenEver() const { return helloEver_; }
+
+  // The most recent firmware offer the station pushed, if any. Held rather than
+  // acted on: whether to install it is `evaluateOffer`'s decision, taken on the
+  // main loop where the screen state and the last touch are known.
+  const FirmwareOffer& pendingOffer() const { return offer_; }
+  void clearPendingOffer() { offer_ = FirmwareOffer{}; }
 
   uint32_t framesReceived() const { return framesReceived_; }
   uint32_t bytesReceived() const { return bytesReceived_; }
@@ -66,6 +79,9 @@ class PushStationSource : public StationSource {
   bool started_ = false;
   bool connected_ = false;
   bool helloSeen_ = false;
+  bool helloEver_ = false;
+
+  FirmwareOffer offer_;
 
   std::vector<std::string> inbox_;
   std::vector<FeedItem> candidates_;
