@@ -215,7 +215,10 @@ def test_0004_drops_and_restores_the_four_dead_detection_indexes(
     assert "ix_detection_event_start_utc" in at_head
     assert "ix_detection_stream_id" in at_head
 
-    command.downgrade(cfg, "-1")
+    # Explicit revision, not "-1": head has moved past 0004 since this test
+    # was written (ADR-043, revision 0005), and "-1" is relative to whatever
+    # head currently is, not to this revision specifically.
+    command.downgrade(cfg, "0003_auth_tables")
     engine.dispose()
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
     restored = _index_names(engine, "detection")

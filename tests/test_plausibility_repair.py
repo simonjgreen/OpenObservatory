@@ -167,6 +167,29 @@ class TestFindImplausibleDetections:
             )
         assert findings == []
 
+    def test_a_human_reviewed_detection_is_never_flagged(
+        self, settings, seeded_detections
+    ) -> None:
+        """ADR-043 / charter priority 5: a human's ear outranks a later
+        machine refinement. A detection a human has already looked at --
+        confirmed, rejected, corrected or held, it does not matter which --
+        must never be re-flagged by this repair pass, even though nothing
+        about the machine's own plausibility finding changed."""
+        with session_scope() as session:
+            session.add(
+                orm.Review(
+                    detection_id=seeded_detections["Flammulated Owl"],
+                    actor="op",
+                    status="confirmed",
+                )
+            )
+
+        with session_scope() as session:
+            findings = repair.find_implausible_detections(
+                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+            )
+        assert findings == []
+
 
 class TestApplyPlausibilityFlag:
     def test_flags_without_deleting_or_overwriting_the_original_claim(
@@ -201,3 +224,24 @@ class TestApplyPlausibilityFlag:
                 session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
             )
         assert findings_again == []
+
+    def test_apply_is_a_no_op_if_reviewed_since_the_finding_was_computed(
+        self, settings, seeded_detections
+    ) -> None:
+        """Defensive re-check in `apply_plausibility_flag` itself: real time
+        passes between an interactive CLI's finding step and its confirm
+        step, so a human review landing in that window must still win."""
+        with session_scope() as session:
+            [finding] = repair.find_implausible_detections(
+                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+            )
+            session.add(
+                orm.Review(detection_id=finding.detection_id, actor="op", status="confirmed")
+            )
+
+        with session_scope() as session:
+            repair.apply_plausibility_flag(session, finding)
+
+        with session_scope() as session:
+            row = session.get(orm.Detection, finding.detection_id)
+            assert "plausibility_review" not in (row.native_result or {})

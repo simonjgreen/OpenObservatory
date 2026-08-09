@@ -480,11 +480,18 @@ authority; the short version:
     harness, `App.tsx` state extraction, operator/diagnostic disclosure
     (ADR-028), CSV/JSON export, the tiered retention backend and its UI
     (ADR-026, ADR-029) and the authentication foundation (ADR-034, closing
-    ADR-015) have all landed. **Still open:** the review workflow is minimal —
-    `POST`/`GET /api/v1/detections/{id}/review` plus confirm/reject in the
-    drawer. The `review` table *is* now written to; correcting a misidentified
-    taxon (`corrected_taxon_id`) is always written `None` and is deliberately
-    left for a future ADR.
+    ADR-015) have all landed. **Review workflow closed (2026-08-09, ADR-043):**
+    `POST`/`GET /api/v1/detections/{id}/review` now support `confirmed`,
+    `rejected`, `corrected` (with `corrected_taxon_id`, resolved against a new
+    `GET /api/v1/taxa/search`) and `held`. The correction is denormalised onto
+    the `review` row and surfaced everywhere an identification is shown
+    (detail, list, CSV/JSON export) without ever editing the original
+    detection; a human review now outranks `plausibility_repair.py`'s
+    machine refinement; and a `held` review exempts a detection's evidence
+    from the retention sweeper's age-based tiers (not the watermark safety
+    valve — see ADR-043's "known limitations"). Known gap: the aggregate
+    `GET /api/v1/history` species/timeline view does not yet fold corrections
+    into its `GROUP BY`.
 12. **Milestone 6 — publisher delivered, alert engine not.** The MQTT publisher
     and Home Assistant Discovery are live against the operator's real broker,
     six entities under one device (ADR-025). **Still open, and unchanged from

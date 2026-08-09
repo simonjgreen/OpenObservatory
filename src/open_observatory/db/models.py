@@ -337,6 +337,14 @@ class Review(Base):
     actor: Mapped[str] = mapped_column(String(120), default="local")
     status: Mapped[str] = mapped_column(String(24))
     corrected_taxon_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    #: Denormalised from `Detection.common_name`/`scientific_name` for the
+    #: matched taxon at the moment of correction (see `review.resolve_taxon`),
+    #: so a corrected identification can be displayed -- in history, export,
+    #: the review drawer -- without a runtime join or a taxonomy service that
+    #: doesn't exist. Set together with `corrected_taxon_id`, only when
+    #: `status == "corrected"` (ADR-043).
+    corrected_common_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    corrected_scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     supersedes_review_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("review.id"), nullable=True

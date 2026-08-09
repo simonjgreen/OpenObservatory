@@ -56,13 +56,14 @@ import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import display_channel as display_state
 from .. import history as history_queries
 from .. import models as model_registry
+from .. import review as review_queries
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
 from ..auth import AuthError, AuthService, Principal
 from ..config import Settings, get_settings
@@ -96,11 +97,30 @@ _ALWAYS_PUBLIC_PATHS = frozenset(
 
 
 class ReviewIn(BaseModel):
-    """Body for `POST /api/v1/detections/{id}/review` — the minimal review
-    workflow (confirm/reject a detection, optionally with a note)."""
+    """Body for `POST /api/v1/detections/{id}/review`.
 
-    status: str = Field(pattern="^(confirmed|rejected)$")
+    Four review actions (ADR-043):
+
+    * ``confirmed`` / ``rejected`` — the original Milestone 4 workflow.
+    * ``corrected`` — the original identification was wrong, and
+      ``corrected_taxon_id`` says what it actually was. Required only for
+      this status; the id must be one `GET /api/v1/taxa/search` would return
+      (see that endpoint and ``review.resolve_taxon``).
+    * ``held`` — no verdict, but keep the evidence: exempts the detection
+      from the retention sweeper's age-based tiers (``retention.py``).
+    """
+
+    status: str = Field(pattern="^(confirmed|rejected|corrected|held)$")
     note: str = Field(default="", max_length=2000)
+    corrected_taxon_id: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def _check_correction(self) -> ReviewIn:
+        if self.status == "corrected" and not self.corrected_taxon_id:
+            raise ValueError("corrected_taxon_id is required when status is 'corrected'")
+        if self.status != "corrected" and self.corrected_taxon_id:
+            raise ValueError("corrected_taxon_id is only valid when status is 'corrected'")
+        return self
 
 
 class LoginIn(BaseModel):
@@ -911,9 +931,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         query = query.order_by(orm.Detection.event_start_utc.desc()).limit(limit)
         rows = session.execute(query).all()
+        review_map = review_queries.latest_reviews_by_detection(
+            session, (detection.id for detection, _ in rows)
+        )
         return {
             "detections": [
-                _detection_payload(detection, source_kind=source_kind)
+                _detection_payload(
+                    detection, source_kind=source_kind, review=review_map.get(detection.id)
+                )
                 for detection, source_kind in rows
             ],
             "range": resolved.to_dict() if resolved else None,
@@ -977,7 +1002,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         query = query.order_by(orm.Detection.event_start_utc.desc()).limit(limit)
 
         rows = session.execute(query).all()
-        records = [_detection_payload(detection, source_kind=source_kind) for detection, source_kind in rows]
+        review_map = review_queries.latest_reviews_by_detection(
+            session, (detection.id for detection, _ in rows)
+        )
+        records = [
+            _detection_payload(detection, source_kind=source_kind, review=review_map.get(detection.id))
+            for detection, source_kind in rows
+        ]
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
         if format == "json":
@@ -1002,6 +1033,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "display_name",
             "common_name",
             "scientific_name",
+            # A human correction never overwrites the columns above -- the
+            # original claim stays exactly as the detector wrote it. These
+            # four are the annotation layered on top (ADR-043): empty unless
+            # a reviewer corrected this row.
+            "identification_source",
+            "effective_common_name",
+            "effective_scientific_name",
+            "review_status",
+            "reviewed_by",
+            "reviewed_at",
             "score",
             "calibrated_probability",
             "peak_frequency_hz",
@@ -1019,11 +1060,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for record in records:
                 buffer.seek(0)
                 buffer.truncate(0)
+                review = record.get("review") or {}
                 writer.writerow(
                     {
                         **record,
                         "detector_plugin_id": record["detector"]["plugin_id"],
                         "detector_calibrated": record["detector"]["calibrated"],
+                        "review_status": review.get("status", ""),
+                        "reviewed_by": review.get("actor", ""),
+                        "reviewed_at": review.get("created_at", ""),
                     }
                 )
                 yield buffer.getvalue()
@@ -1061,48 +1106,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "microphone. Retry with include_synthetic=true to see it."
                 ),
             )
-        return _detection_payload(detection, include_native=True, source_kind=source_kind)
+        review = review_queries.latest_review(session, detection.id)
+        return _detection_payload(
+            detection, include_native=True, source_kind=source_kind, review=review
+        )
 
     @app.post(f"{API_PREFIX}/detections/{{detection_id}}/review")
     def post_detection_review(
         detection_id: str,
         body: ReviewIn,
         session: Session = Depends(get_session),
+        principal: Principal | None = Depends(get_optional_principal),
     ) -> dict[str, Any]:
-        """Record a human review of one detection. Append-only, matching
-        `orm.Review`'s own docstring ("current status is derived from the
-        latest valid review") — this always inserts a new row rather than
-        mutating one, so the review history for a detection is never lost,
-        only superseded. The minimal Milestone 4 review workflow: confirm or
-        reject, plus an optional free-text note. Correcting a taxon
-        (`corrected_taxon_id`) is left for a future pass; this endpoint
-        always writes it as `None`.
+        """Record a human review of one detection (ADR-043). Append-only,
+        matching `orm.Review`'s own docstring ("current status is derived
+        from the latest valid review") — this always inserts a new row
+        rather than mutating one, so the review history for a detection is
+        never lost, only superseded. `Detection.common_name` /
+        `scientific_name` etc. are never touched: the original machine
+        claim stays visible and attributable, and a correction is a new,
+        clearly-attributed row layered on top of it, not an edit to it.
+
+        `actor` is the logged-in operator's username when auth is enabled
+        and a session/token was presented, else `"local"` — same anonymous
+        default the rest of this debug-slice API uses when auth is off
+        (ADR-034).
         """
         detection = session.get(orm.Detection, _uuid(detection_id))
         if detection is None:
             raise HTTPException(status_code=404, detail="detection not found")
-        previous = session.execute(
-            select(orm.Review)
-            .where(orm.Review.detection_id == detection.id)
-            .order_by(orm.Review.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        previous = review_queries.latest_review(session, detection.id)
+
+        corrected_common_name: str | None = None
+        corrected_scientific_name: str | None = None
+        if body.status == review_queries.CORRECTED_STATUS:
+            target = review_queries.resolve_taxon(session, cast(str, body.corrected_taxon_id))
+            if target is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"unknown taxon_id {body.corrected_taxon_id!r}: this station has "
+                        f"never identified it itself. Search {API_PREFIX}/taxa/search for "
+                        "a valid taxon_id."
+                    ),
+                )
+            corrected_common_name = target.common_name
+            corrected_scientific_name = target.scientific_name
+
         review = orm.Review(
             detection_id=detection.id,
-            actor="local",
+            actor=principal.username if principal else "local",
             status=body.status,
             note=body.note or "",
+            corrected_taxon_id=(
+                body.corrected_taxon_id if body.status == review_queries.CORRECTED_STATUS else None
+            ),
+            corrected_common_name=corrected_common_name,
+            corrected_scientific_name=corrected_scientific_name,
             supersedes_review_id=previous.id if previous else None,
         )
         session.add(review)
         session.commit()
-        return {
-            "id": str(review.id),
-            "detection_id": detection_id,
-            "status": review.status,
-            "note": review.note,
-            "created_at": _iso(review.created_at),
-        }
+        return _review_payload(review)
 
     @app.get(f"{API_PREFIX}/detections/{{detection_id}}/review")
     def get_detection_review(
@@ -1110,22 +1175,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
         """The latest review for a detection, or `null` if none exists yet."""
-        latest = session.execute(
-            select(orm.Review)
-            .where(orm.Review.detection_id == _uuid(detection_id))
-            .order_by(orm.Review.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        latest = review_queries.latest_review(session, _uuid(detection_id))
         if latest is None:
             return {"review": None}
-        return {
-            "review": {
-                "id": str(latest.id),
-                "status": latest.status,
-                "note": latest.note,
-                "created_at": _iso(latest.created_at),
-            }
-        }
+        return {"review": _review_payload(latest)}
+
+    @app.get(f"{API_PREFIX}/taxa/search")
+    def search_taxa(
+        q: str = Query(..., min_length=1, max_length=120),
+        limit: int = Query(20, ge=1, le=100),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Taxon lookup for the review drawer's correction control (ADR-043).
+
+        Matches `q` against common or scientific name, case-insensitively,
+        among species this station has *itself* already identified — see
+        `review.search_taxa`'s docstring for why this deliberately does not
+        reach for a bundled or fetched taxonomy database.
+        """
+        return {"taxa": review_queries.search_taxa(session, q, limit=limit), "source": "station_history"}
 
     @app.get(f"{API_PREFIX}/taxa/activity")
     def taxa_activity(
@@ -1891,8 +1959,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+def _review_payload(review: orm.Review) -> dict[str, Any]:
+    """The full shape of one review, shared by the POST and GET review
+    endpoints and by `_detection_payload`'s embedded summary -- one place
+    defines what a client is told about a review."""
+    return {
+        "id": str(review.id),
+        "detection_id": str(review.detection_id),
+        "status": review.status,
+        "note": review.note,
+        "actor": review.actor,
+        "corrected_taxon_id": review.corrected_taxon_id,
+        "corrected_common_name": review.corrected_common_name,
+        "corrected_scientific_name": review.corrected_scientific_name,
+        "created_at": _iso(review.created_at),
+    }
+
+
 def _detection_payload(
-    row: orm.Detection, *, include_native: bool = False, source_kind: str | None = None
+    row: orm.Detection,
+    *,
+    include_native: bool = False,
+    source_kind: str | None = None,
+    review: orm.Review | None = None,
 ) -> dict[str, Any]:
     display_name, title_hint = display_title(
         common_name=row.common_name,
@@ -1950,6 +2039,25 @@ def _detection_payload(
             for link in row.media
         ],
     }
+    # A human correction is the highest-quality information this system ever
+    # holds about an event (ADR-043). `common_name`/`scientific_name` above
+    # stay exactly as the detector wrote them -- the original claim is never
+    # edited -- and a correction is surfaced alongside it, not instead of it:
+    # `review` carries the full annotation (who, when, what changed, and to
+    # what), and `identification_source`/`effective_common_name`/
+    # `effective_scientific_name` are what a consumer that just wants "the
+    # best available name" should read.
+    is_corrected = review is not None and review.status == review_queries.CORRECTED_STATUS
+    payload["review"] = _review_payload(review) if review is not None else None
+    payload["identification_source"] = "human" if is_corrected else "model"
+    payload["effective_common_name"] = (
+        review.corrected_common_name if is_corrected and review is not None else row.common_name
+    )
+    payload["effective_scientific_name"] = (
+        review.corrected_scientific_name
+        if is_corrected and review is not None
+        else row.scientific_name
+    )
     if include_native:
         payload["native_result"] = row.native_result
     return payload
