@@ -146,6 +146,7 @@ version of this list omitted the three repair/maintenance commands.
 | `oo audio probe` | enumerate capture devices; record formats, stable identity and native rate support. `--json`, `--write PATH`, `--test-rates` |
 | `oo audio test-capture` | capture briefly and report frames delivered vs elapsed, levels and clipping. `--seconds`, `--out` |
 | `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms` |
+| `oo audio window-dump` | inspect a specific segmenter window with ground truth: actual frame bounds, actual sample count cross-checked against an independent `RingBuffer` read, UTC and local-time rendering, and `--gap-at-s`/`--gap-frames` to show a capture gap's real effect on the segmenter. Runs against a replayed WAV (`--source`) or a synthetic scene, never the live station — see its own `--help` for why. `--stream-kind native\|audible48`, `--duration-s`, `--stride-s`, `--index`, `--write-wav PATH`, `--timezone`, `--json` |
 | `oo models status` | what model assets are installed |
 | `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |
 | `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
@@ -158,8 +159,6 @@ version of this list omitted the three repair/maintenance commands.
 
 There is no `oo preflight-upgrade` command or anything like it; a much earlier
 version of this document referred to one, and it does not exist in the code.
-Neither does `oo audio window-dump` — Milestone 2 asked for a window inspection
-CLI and it remains outstanding.
 
 **The two `reconcile-*` commands write to the database when given `--apply`.**
 Both default to dry-run, both require a confirmation, and neither has ever been
