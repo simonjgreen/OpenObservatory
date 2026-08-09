@@ -64,6 +64,11 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     "birdnet_threshold_out_of_range": LiveTarget(
         "detector", "threshold_out_of_range", "birdnet-v2.4"
     ),
+    # ADR-052: rebinds a bounded deque, keeping the newest records. No
+    # allocation proportional to anything but the new depth, and the
+    # cumulative histograms and species tally survive the change -- comparing
+    # them either side of a threshold edit is the whole use.
+    "birdnet_near_miss_ring": LiveTarget("detector", "near_miss_ring", "birdnet-v2.4"),
     # -- ultrasonic pass detector -------------------------------------------
     "ultrasonic_band_hz": LiveTarget("detector", "band_hz", "ultrasonic-pass-v1"),
     "ultrasonic_min_snr_db": LiveTarget("detector", "min_snr_db", "ultrasonic-pass-v1"),

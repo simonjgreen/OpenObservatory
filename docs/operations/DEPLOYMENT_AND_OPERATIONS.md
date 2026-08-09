@@ -469,6 +469,51 @@ reset, so an experiment always has a way back. Note that none of this fixes a
 mounting problem: it makes the station's *reports* survive one. Move the
 microphone.
 
+### Tuning BirdNET on evidence: what it rejected (ADR-052)
+
+The opposite complaint — birds you can *hear* and no detections for them — is
+not answered by any of the above, because the suppression counters say how
+many candidates were refused and never which. `GET
+/api/v1/detectors/near-misses` says which, at what score, with what occurrence
+prior, in which band, against which bar; the same thing appears in the web UI
+under `diagnostics` as **Rejected candidates**, directly under the detector
+panel. Metadata only: no audio is kept for a rejected candidate and nothing is
+persisted — the record is in memory and dies with the process.
+
+```bash
+# The whole picture, as an operator reads it.
+curl -s 'http://<station-host>:8080/api/v1/detectors/near-misses' | python3 -m json.tool
+
+# The one-line version: what got thrown away most, and how close it came.
+curl -s 'http://<station-host>:8080/api/v1/detectors/near-misses' | python3 -c '
+import json,sys
+for d in json.load(sys.stdin)["detectors"]:
+    print(d["plugin_id"], d["rejected_total"], "rejected /", d["admitted_total"], "kept")
+    for s in d["species"][:15]:
+        print(f"  {s[\"common_name\"]:34.34} {s[\"rejected\"]:5d}  best {s[\"best_score\"]:.3f}"
+              f"  short by {s[\"shortfall\"]}  {s[\"band\"]}  prior {s[\"occurrence_probability\"]}")'
+
+# Where the rejected scores sit, per band -- the histogram that actually
+# decides whether moving a bar buys anything.
+curl -s 'http://<station-host>:8080/api/v1/detectors/near-misses?limit=0&species_limit=0' \
+  | python3 -c '
+import json,sys
+for d in json.load(sys.stdin)["detectors"]:
+    for b in d["bands"]:
+        if b["rejected"]:
+            print(f"{b[\"band\"]:16.16} bar {b[\"threshold\"]} ", b["histogram"]["counts"])'
+```
+
+Read it as: everything to the *right* of the bar's bin is what a lower bar
+would admit. If the mass is all at 0.15 and the bar is 0.55, lowering the bar
+buys noise, not birds — the model is not nearly identifying those. If there is
+a pile between 0.45 and 0.55 and it is named `Eurasian Blackbird` with a prior
+of 0.93, that is a bar set too high for this garden.
+
+`birdnet_near_miss_ring` (live-tier, in the browser) sets how many individual
+rejections are held. Raise it for a tuning session; 0 keeps the histograms and
+the per-species table and stops keeping individual rows.
+
 ### The full settings reference
 
 Generated from the code — regenerate with
@@ -536,6 +581,7 @@ Generated from the code — regenerate with
 | `birdnet_threshold_in_range` | live (pushed) | `0.55` | confidence bar: in range |
 | `birdnet_threshold_uncommon` | live (pushed) | `0.75` | confidence bar: uncommon |
 | `birdnet_threshold_out_of_range` | live (pushed) | `0.9` | confidence bar: out of range |
+| `birdnet_near_miss_ring` | live (pushed) | `200` | near-miss records kept |
 | `birdnet_window_stride_s` | restart-pinned | `1.5` s | BirdNET window stride |
 | `birdnet_use_location_filter` | restart-pinned | `False` | use the range model |
 

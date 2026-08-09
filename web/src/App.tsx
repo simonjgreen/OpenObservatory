@@ -10,6 +10,7 @@ import { DetectionDrawer } from './components/DetectionDrawer'
 import { FirmwarePanel } from './components/FirmwarePanel'
 import { FirstRun } from './components/FirstRun'
 import { History } from './components/History'
+import { NearMissPanel } from './components/NearMissPanel'
 import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
 import { RetentionPanel } from './components/RetentionPanel'
@@ -365,6 +366,12 @@ export default function App() {
             <div className="column middle">
               {live.status && <CapturePanel status={live.status} />}
               {live.status && <DetectorPanel detectors={live.status.detectors} />}
+              {/* ADR-052. Immediately under the detector panel, because that
+                  panel is where an operator reads "998 windows, 0 dropped"
+                  and concludes the detector is fine while hearing birds it
+                  never reported. The answer to that is here. Mounted only in
+                  the diagnose depth, so it polls for nobody. */}
+              <NearMissPanel localTimeZone={timeZone} />
               {live.status && <StoragePanel status={live.status} />}
               <RetentionPanel />
             </div>
