@@ -230,6 +230,14 @@ class Station:
             batch_budget_s=settings.retention_batch_budget_s,
         )
 
+        #: What the running detector pipeline was actually built with, recorded
+        #: at `_build_detectors` time. The settings object can change under a
+        #: live process (the UI settings page persists and applies edits), but
+        #: coordinates are deliberately *not* re-injected into a running BirdNET
+        #: range filter or night schedule -- see site_settings.py. This snapshot
+        #: is what lets the API report "saved, in force after restart" honestly
+        #: instead of pretending.
+        self.applied_site: dict[str, Any] | None = None
         self.workers: list[DetectorWorker] = []
         self.recent_detections: list[DetectionRecord] = []
         self._detector_rows: dict[str, uuid.UUID] = {}
@@ -630,6 +638,10 @@ class Station:
 
     async def _build_detectors(self, native_rate: int) -> None:
         settings = self.settings
+        self.applied_site = {
+            "latitude": settings.latitude,
+            "longitude": settings.longitude,
+        }
         context = DetectorContext(
             station_name=settings.station_name,
             timezone=settings.timezone,
@@ -1171,6 +1183,27 @@ class Station:
                 asyncio.to_thread(self._insert_health_row, severity, event_type, detail)
             )
 
+    def site_pending_restart(self) -> list[str]:
+        """Restart-pinned site fields whose saved value differs from the one
+        the running detectors were built with. Empty before detectors exist:
+        nothing has been pinned yet, so nothing can be stale."""
+        if self.applied_site is None:
+            return []
+        return [
+            name
+            for name, applied in self.applied_site.items()
+            if applied != getattr(self.settings, name)
+        ]
+
+    async def apply_site_identity(self) -> None:
+        """Push the (already-mutated) settings' identity fields to the station
+        row, so /api/v1/station and MQTT discovery reflect a UI edit without a
+        restart. Coordinates are written to the row too -- the row records the
+        operator's declaration; `applied_site` records what the detectors are
+        actually using, and `site_pending_restart` reports any daylight
+        between the two."""
+        self.station_id = await asyncio.to_thread(self._ensure_station_row)
+
     def _set_capture_state(self, state: str, detail: str = "") -> None:
         self.capture_state = state
         self.capture_detail = detail
@@ -1710,6 +1743,12 @@ class Station:
                 "longitude": self.settings.longitude,
                 "software_version": version,
                 "uptime_s": round(uptime_s, 1),
+                # First-run honesty: with no location the station is healthy but
+                # runs unfiltered -- the UI banners this rather than anyone
+                # discovering it from confidently unfiltered candidate lists.
+                "location_configured": self.settings.latitude is not None
+                and self.settings.longitude is not None,
+                "site_pending_restart": self.site_pending_restart(),
             },
             "capture": {
                 "state": self.capture_state,

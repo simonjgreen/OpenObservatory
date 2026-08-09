@@ -11,6 +11,7 @@ import { History } from './components/History'
 import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
 import { RetentionPanel } from './components/RetentionPanel'
+import { SettingsPanel } from './components/SettingsPanel'
 
 import { useAuth } from './hooks/useAuth'
 import { useClock } from './hooks/useClock'
@@ -47,6 +48,7 @@ export default function App() {
   const view = useViewMode()
 
   const [selected, setSelected] = useState<Detection | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
 
   const timeZone = live.status?.station.timezone ?? 'UTC'
   const diagnosing = view.depth === 'diagnose'
@@ -91,6 +93,13 @@ export default function App() {
           </button>
         </div>
         <button
+          className={`diagnostics-toggle ${showSettings ? 'on' : ''}`}
+          onClick={() => setShowSettings((open) => !open)}
+          title="Site configuration: station name, timezone, location, MQTT. Stored on the device, never in the repository."
+        >
+          settings
+        </button>
+        <button
           className={`diagnostics-toggle ${diagnosing ? 'on' : ''}`}
           onClick={() => view.toggle()}
           title="Pipeline internals: frame counts, queue depth, drop counters, detector lag. Never a substitute for the measurements above it."
@@ -120,6 +129,24 @@ export default function App() {
           </button>
         )}
       </Header>
+
+      {live.status && live.status.station.location_configured === false && !showSettings && (
+        <div className="site-banner" role="note">
+          No station location is configured — species plausibility filtering and night
+          scheduling are inactive.{' '}
+          <button className="linklike" onClick={() => setShowSettings(true)}>
+            set it in settings
+          </button>
+        </div>
+      )}
+      {live.status && (live.status.station.site_pending_restart?.length ?? 0) > 0 && (
+        <div className="site-banner" role="note">
+          Saved settings awaiting a restart:{' '}
+          {live.status.station.site_pending_restart.join(', ')}
+        </div>
+      )}
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
       <OperatorSummary status={live.status} />
 

@@ -73,6 +73,13 @@ from ..db.session import ensure_schema_at_head, get_session, init_engine, sessio
 from ..display import detection_flags, display_title
 from ..events import EventType
 from ..mqtt import MqttPublisher
+from ..site_settings import (
+    EDITABLE_BY_NAME,
+    RuntimeEnvStore,
+    SettingValueError,
+    coerce_updates,
+    describe_settings,
+)
 from ..station import Station
 from .metrics import PrometheusExporter
 
@@ -577,6 +584,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         return snapshot
 
+    # -- site settings (ADR: site parameters are runtime state) -------------
+    #
+    # The settings page's persistence is config/runtime.env -- the same
+    # gitignored file the environment path reads -- so the UI and hand-editing
+    # are two writers of one configuration, not two configurations.
+    env_store = RuntimeEnvStore(settings.runtime_env_path)
+
+    @app.get(f"{API_PREFIX}/settings")
+    def get_site_settings() -> dict[str, Any]:
+        return describe_settings(settings, applied_site=station.applied_site)
+
+    @app.put(f"{API_PREFIX}/settings")
+    async def put_site_settings(payload: dict[str, Any]) -> dict[str, Any]:
+        """Save operator-editable site settings.
+
+        Persist first (runtime.env, atomically), then apply live where that is
+        safe: identity fields mutate the running settings object and re-upsert
+        the station row; MQTT changes restart the publisher so it reconnects
+        with the new broker details. Latitude/longitude are persisted and
+        reported, never injected into running detectors -- the response and
+        every later GET name them as pending a restart (see site_settings.py
+        for why a live coordinate swap under the BirdNET range model is the
+        wrong kind of clever).
+        """
+        try:
+            updates = coerce_updates(payload)
+        except SettingValueError as exc:
+            raise HTTPException(status_code=422, detail={"errors": exc.errors}) from exc
+
+        merged_lat = updates.get("latitude", settings.latitude)
+        merged_lon = updates.get("longitude", settings.longitude)
+        if (merged_lat is None) != (merged_lon is None):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "errors": {
+                        "latitude": "set both coordinates, or clear both",
+                        "longitude": "set both coordinates, or clear both",
+                    }
+                },
+            )
+
+        changed = {
+            name: value for name, value in updates.items() if getattr(settings, name) != value
+        }
+        await asyncio.to_thread(env_store.apply, changed)
+        for name, value in changed.items():
+            setattr(settings, name, value)
+
+        if {"station_name", "timezone", "latitude", "longitude"} & changed.keys():
+            await station.apply_site_identity()
+        mqtt_changed = [name for name in changed if name.startswith("mqtt_")]
+        if mqtt_changed:
+            # Stop/start rather than poking fields into a live client: the
+            # publisher reads its settings at start, and this is the same code
+            # path a process restart would take -- no second reconfigure path
+            # to test or to drift.
+            await mqtt_publisher.stop()
+            await mqtt_publisher.start()
+
+        log.info(
+            "settings.updated",
+            fields=sorted(changed),
+            # Values are logged only for non-secret fields.
+            values={
+                k: v for k, v in changed.items() if not EDITABLE_BY_NAME[k].secret
+            },
+        )
+        result = describe_settings(settings, applied_site=station.applied_site)
+        result["saved"] = sorted(changed)
+        return result
+
     def _health_payload() -> dict[str, Any]:
         """Shared by GET /health and the MQTT publisher's periodic health sensor,
         so `binary_sensor.<station>_station_healthy` in Home Assistant means
@@ -631,10 +710,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "OO_AUTH_ENABLED=false to regain access, or restore a user row."
                 )
 
+        # Notes are honest disclosures that do not make the station unhealthy.
+        # An unset location is a correct first-run state -- but it must be
+        # said, because its silent consequence (no plausibility filtering, no
+        # night scheduling) is exactly the kind of omission the charter's
+        # honesty constraint forbids.
+        notes: list[str] = []
+        if settings.latitude is None or settings.longitude is None:
+            notes.append(
+                "no station location configured: BirdNET runs without range-based "
+                "plausibility filtering and the ultrasonic night schedule stays "
+                "always-on. Set coordinates in the web UI settings page."
+            )
+        pending = station.site_pending_restart()
+        if pending:
+            notes.append(
+                f"settings saved but not yet in force (restart required): {', '.join(pending)}"
+            )
+
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
         return {
             "status": status,
             "problems": problems,
+            "notes": notes,
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "capture": capture,
             "storage": {

@@ -26,6 +26,8 @@ def settings(tmp_path: Path) -> Settings:
         birdnet_enabled=False,
         metrics_enabled=True,
         web_dist=tmp_path / "nonexistent-dist",
+        # Never the real config/runtime.env: the settings API writes here.
+        runtime_env_path=tmp_path / "runtime.env",
     )
     configured.ensure_directories()
     set_settings(configured)

@@ -28,10 +28,27 @@ class Settings(BaseSettings):
     )
 
     # ---- station identity -------------------------------------------------
+    #: Site parameters. None of these ship with a site-specific value: the
+    #: repository describes a system, a deployment describes a site, and a
+    #: plausible-looking default location would silently poison plausibility
+    #: filtering and night scheduling for anyone who cloned this. All four are
+    #: editable from the web UI settings page (see site_settings.py), which
+    #: persists them to the gitignored config/runtime.env.
     station_name: str = "Garden Observatory"
-    timezone: str = "Europe/London"
+    #: UTC, not any particular country's zone: presentation-only, and the only
+    #: timezone that is not somebody's local assumption. Set your IANA zone via
+    #: the UI or OO_TIMEZONE.
+    timezone: str = "UTC"
+    #: Unset by default, loudly (health and the UI both say so): with no
+    #: coordinates the station runs unfiltered and the night schedule stays
+    #: always-on rather than silently using someone else's garden.
     latitude: float | None = None
     longitude: float | None = None
+
+    #: Where the web UI settings page persists edits (site_settings.py). The
+    #: same file the env source above reads, so UI edits and hand edits are one
+    #: configuration. Overridable mainly so tests never touch the real file.
+    runtime_env_path: Path = REPO_ROOT / "config" / "runtime.env"
 
     # ---- storage ----------------------------------------------------------
     data_dir: Path = REPO_ROOT / "data"
@@ -533,6 +550,27 @@ class Settings(BaseSettings):
     #: than a species, which is a positive claim about what happened, not an
     #: absence of one.
     mqtt_publish_unidentified: bool = False
+
+    @field_validator(
+        "latitude",
+        "longitude",
+        "audio_device",
+        "mqtt_username",
+        "mqtt_password",
+        "replay_path",
+        "birdnet_model_dir",
+        mode="before",
+    )
+    @classmethod
+    def _empty_env_is_unset(cls, value: object) -> object:
+        # `OO_LATITUDE=` (an empty value, exactly what config/example.env ships
+        # for every optional key) used to raise a float-parsing ValidationError
+        # at startup, so copying the example file verbatim crashed the station.
+        # An empty string for an optional field means "unset", same as the key
+        # being absent.
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     @field_validator("mqtt_qos")
     @classmethod
