@@ -36,6 +36,21 @@ criteria pass a continuous 72-hour soak on the Pi, and that soak has never been
 run. See [`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) for an
 honest account of what works.
 
+### The repository ships no site (ADR-042)
+
+The repository describes a *system*; a deployment describes a *site*. Anything
+true of exactly one installation — coordinates, place names, LAN addresses,
+usernames, home directories — is runtime state: it lives in the gitignored
+`config/runtime.env` (or the ESP32's NVS) and is set through the web UI's
+settings page or the display's provisioning portal, never committed. Committed
+defaults are universal or honestly **unset** — an unconfigured location is
+reported by `/api/v1/health`, the station snapshot and a UI banner rather than
+silently defaulting to wherever this software was first developed. Tests and
+doc examples that need a location use the Royal Observatory, Greenwich; hosts
+in examples are placeholders (`<station-host>`). Do not hardcode a real site
+back in; see ADR-042 for the full reasoning and the settings whitelist's
+tiers.
+
 ### The pipeline in one diagram
 
 ```
