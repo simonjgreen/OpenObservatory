@@ -205,3 +205,49 @@ class TestAConnectingClientIsNeverShownAStaleCanvas:
         station = build_station(spectrogram_encode_min_viewers=0)
         described = station.describe_spectrograms()
         assert all(spec["viewer_gated"] is False for spec in described)
+
+
+class TestUltrasonicSpectrogramHasItsOwnRange:
+    """The ultrasonic channel's noise floor sits far higher than the audible
+    channel's, because the AudioMoth's gain is documented as too hot
+    (HANDOVER.md sec6.3 item 4) and the two channels were sharing one
+    floor/ceiling pair meant for 48 kHz audio. Measured on the live station,
+    2026-08-09 (30 s, viewer connected, `scripts/measure_ultrasonic_contrast.py`):
+
+    15-45 kHz (bat band): p1 -72.1 dB, p50 -66.7 dB, p95 -60.8 dB, p99 -58.3 dB
+    >=50 kHz (quiet band): p1 -82.1 dB, p50 -76.1 dB, p95 -69.9 dB, p99 -59.2 dB
+
+    That noise sat at roughly 48-58% up the shared -105..-25 dB ramp -- squarely
+    in the ramp's orange band -- which is the saturation the operator reported.
+    """
+
+    def test_ultrasonic_channel_gets_its_own_default_range(self) -> None:
+        station = build_station()
+        ultrasonic = station.spectrograms[SPECTROGRAM_ULTRASONIC]
+        assert ultrasonic.floor_db == pytest.approx(-85.0)
+        assert ultrasonic.ceiling_db == pytest.approx(-30.0)
+
+    def test_audible_channel_keeps_its_own_unrelated_default_range(self) -> None:
+        station = build_station()
+        audible = station.spectrograms[SPECTROGRAM_AUDIBLE]
+        assert audible.floor_db == pytest.approx(-95.0)
+        assert audible.ceiling_db == pytest.approx(-15.0)
+
+    def test_ultrasonic_range_is_independently_configurable(self) -> None:
+        station = build_station(
+            ultrasonic_spectrogram_floor_db=-90.0,
+            ultrasonic_spectrogram_ceiling_db=-40.0,
+        )
+        ultrasonic = station.spectrograms[SPECTROGRAM_ULTRASONIC]
+        assert ultrasonic.floor_db == pytest.approx(-90.0)
+        assert ultrasonic.ceiling_db == pytest.approx(-40.0)
+        # And the audible channel is unaffected by that override.
+        audible = station.spectrograms[SPECTROGRAM_AUDIBLE]
+        assert audible.floor_db == pytest.approx(-95.0)
+        assert audible.ceiling_db == pytest.approx(-15.0)
+
+    def test_the_new_range_is_published_for_the_ui_badges(self) -> None:
+        station = build_station()
+        described = {spec["name"]: spec for spec in station.describe_spectrograms()}
+        assert described["ultrasonic"]["floor_db"] == pytest.approx(-85.0)
+        assert described["ultrasonic"]["ceiling_db"] == pytest.approx(-30.0)

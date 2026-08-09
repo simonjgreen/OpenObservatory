@@ -623,8 +623,8 @@ class Station:
                 bins=128,
                 min_hz=15_000.0,
                 max_hz=min(150_000.0, native_rate / 2 * 0.98),
-                floor_db=-105.0,
-                ceiling_db=-25.0,
+                floor_db=settings.ultrasonic_spectrogram_floor_db,
+                ceiling_db=settings.ultrasonic_spectrogram_ceiling_db,
                 history_columns=settings.spectrogram_history_columns,
             )
 
