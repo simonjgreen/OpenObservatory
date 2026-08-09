@@ -359,6 +359,115 @@ class TestNormaliser:
                 make_metadata("activity-v1"), window, offender, native_sample_rate=48000
             )
 
+    def test_native_result_drops_keys_that_duplicate_persisted_columns(self) -> None:
+        """ADR-037 option C: a key is only stripped when it is provably a
+        duplicate of something already persisted -- here, of the
+        ``Detector`` row (``detector``, ``model_id``) or of a typed
+        ``Detection`` column set on this very row (``label`` vs
+        ``detector_label``, ``confidence`` vs ``score``, ``peak_frequency_hz``
+        vs the typed column). None of this is guesswork: every one of these
+        was confirmed byte-for-byte (or float32-rounding) equal against the
+        live station's own data before this test was written.
+        """
+        normaliser = Normaliser()
+        window = self._window()
+        metadata = make_metadata("birdnet-v2.4")
+        detection = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.822631,
+            label="robin",
+            common_name="European Robin",
+            native_result={
+                "detector": "birdnet-v2.4",  # duplicates metadata.plugin_id
+                "model_id": "test",  # duplicates metadata.model_id
+                "label": "robin",  # duplicates detector_label
+                "confidence": 0.822631,  # duplicates score (float32 rounding)
+                "occurrence_probability": 0.995384,  # ADR-032: never dropped
+                "plausibility_band": "in_range",  # ADR-032: never dropped
+                "week": 29,  # not a duplicate of anything: kept
+            },
+        )
+        result = normaliser.normalise(metadata, window, detection, native_sample_rate=48000)
+        assert result is not None
+        assert result.native_result == {
+            "occurrence_probability": 0.995384,
+            "plausibility_band": "in_range",
+            "week": 29,
+        }
+
+    def test_native_result_keeps_a_key_whose_value_does_not_actually_match(self) -> None:
+        """A same-named key is only a duplicate if its *value* matches this
+        row's typed columns -- matching by key name alone would silently
+        destroy information the moment a detector's output legitimately
+        diverges from a typed column (as happened on the live database: two
+        detections under the same detector row carried different
+        ``score_definition`` text, so name-based stripping would have been
+        provably wrong there)."""
+        normaliser = Normaliser()
+        window = self._window()
+        metadata = make_metadata("birdnet-v2.4")
+        detection = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.5,
+            label="robin",
+            native_result={"label": "not-actually-robin", "confidence": 0.99},
+        )
+        result = normaliser.normalise(metadata, window, detection, native_sample_rate=48000)
+        assert result is not None
+        assert result.native_result == {"label": "not-actually-robin", "confidence": 0.99}
+
+    def test_native_result_peak_frequency_hz_duplicate_is_dropped_within_rounding(self) -> None:
+        """The live activity-v1 detector rounds its own copy to 1 dp while the
+        typed column keeps full precision; that rounding difference (observed
+        up to 0.05 Hz on the live database) must not defeat the duplicate
+        check."""
+        normaliser = Normaliser()
+        window = self._window()
+        metadata = make_metadata("activity-v1")
+        detection = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.5,
+            label=None,
+            taxonomic_group="acoustic_event",
+            peak_frequency_hz=1218.75,
+            native_result={"peak_frequency_hz": 1218.8, "snr_db": 16.19},
+        )
+        result = normaliser.normalise(metadata, window, detection, native_sample_rate=48000)
+        assert result is not None
+        assert result.native_result == {"snr_db": 16.19}
+
+    def test_native_result_keeps_configurable_and_formula_fields(self) -> None:
+        """band_hz, score_definition and confidence_definition are NOT
+        stripped: they describe operator-configurable parameters
+        (``activity_band_hz`` / ``ultrasonic_band_hz`` in ``config.py``) or a
+        formula that, on the live database, changed for the *same* detector
+        row without a version bump -- so "the detector version recorded on
+        the row" cannot reliably stand in for them. Dropping them would be
+        unrecoverable, not merely inconvenient."""
+        normaliser = Normaliser()
+        window = self._window()
+        metadata = make_metadata("activity-v1")
+        detection = NativeDetection(
+            offset_start_s=0.0,
+            offset_end_s=1.0,
+            score=0.5,
+            label=None,
+            taxonomic_group="acoustic_event",
+            native_result={
+                "band_hz": [1200.0, 11000.0],
+                "score_definition": "clamp((snr_db - min_snr_db) / 30 dB, 0, 1)",
+            },
+        )
+        result = normaliser.normalise(metadata, window, detection, native_sample_rate=48000)
+        assert result is not None
+        assert result.native_result == {
+            "band_hz": [1200.0, 11000.0],
+            "score_definition": "clamp((snr_db - min_snr_db) / 30 dB, 0, 1)",
+        }
+
 
 class TestClipPolicy:
     def _manager(self, tmp_path, **kwargs) -> ClipManager:

@@ -13,11 +13,16 @@ Three jobs:
    stride, the same bird call is analysed twice and would otherwise be recorded
    twice.
 
-The complete original detector output is always preserved in ``native_result``.
+The detector's own output is preserved in ``native_result`` for every row, minus
+a small set of keys dropped when (and only when) they are *provably* redundant
+for that specific row -- see ``_strip_redundant_native_result`` (ADR-037 option
+C). This only affects rows written from here on; nothing already in the
+database is rewritten.
 """
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -106,6 +111,71 @@ class CanonicalDetection:
             else None,
             "native_result": self.native_result,
         }
+
+
+def _strip_redundant_native_result(
+    native_result: dict[str, object],
+    *,
+    metadata: DetectorMetadata,
+    detector_label: str | None,
+    score: float,
+    peak_frequency_hz: float | None,
+) -> dict[str, object]:
+    """Drop only the keys proven redundant for *this* row, and no others.
+
+    ADR-037 option C. Every key considered here duplicates something that is
+    *already persisted elsewhere on the same database row* -- the ``Detector``
+    row this detection joins to (``detector``, ``model_id``), or a typed
+    ``Detection`` column set on this row (``label`` vs ``detector_label``,
+    ``confidence`` vs ``score``, ``peak_frequency_hz`` vs the typed column).
+    A key is stripped only if its *value* matches, not merely its name: a
+    same-named key with a different value is kept, because a name match alone
+    is not proof of duplication -- confirmed necessary by the live database,
+    where two detections under the very same ``Detector`` row carried
+    different ``score_definition`` text (a config value changed without a
+    ``model_version`` bump). That is also why formula/config fields such as
+    ``band_hz``, ``score_definition`` and ``confidence_definition`` are never
+    in this function's candidate set: they are not persisted anywhere else on
+    the row, so "the detector version recorded on the row" cannot reliably
+    stand in for them, and dropping them would be unrecoverable rather than
+    merely redundant. ``occurrence_probability`` and ``plausibility_band``
+    (ADR-032's audit trail for why a candidate was or was not admitted) are
+    likewise never touched -- they are not duplicates of anything, they are
+    the evidence.
+    """
+    if not native_result:
+        return dict(native_result)
+
+    result = dict(native_result)
+
+    if result.get("detector") == metadata.plugin_id:
+        del result["detector"]
+
+    if result.get("model_id") == metadata.model_id:
+        del result["model_id"]
+
+    label = result.get("label")
+    if isinstance(label, str) and label == detector_label:
+        del result["label"]
+
+    confidence = result.get("confidence")
+    if (
+        isinstance(confidence, int | float)
+        and not isinstance(confidence, bool)
+        and math.isclose(confidence, score, rel_tol=1e-4, abs_tol=1e-6)
+    ):
+        del result["confidence"]
+
+    native_peak = result.get("peak_frequency_hz")
+    if (
+        isinstance(native_peak, int | float)
+        and not isinstance(native_peak, bool)
+        and peak_frequency_hz is not None
+        and math.isclose(native_peak, peak_frequency_hz, rel_tol=1e-3, abs_tol=0.1)
+    ):
+        del result["peak_frequency_hz"]
+
+    return result
 
 
 class ClaimViolation(ValueError):
@@ -198,7 +268,13 @@ class Normaliser:
             score=float(detection.score),
             calibrated_probability=detection.calibrated_probability,
             peak_frequency_hz=detection.peak_frequency_hz,
-            native_result=dict(detection.native_result),
+            native_result=_strip_redundant_native_result(
+                detection.native_result,
+                metadata=metadata,
+                detector_label=detection.label,
+                score=float(detection.score),
+                peak_frequency_hz=detection.peak_frequency_hz,
+            ),
             display_name=display_name,
             title_hint=title_hint,
         )
