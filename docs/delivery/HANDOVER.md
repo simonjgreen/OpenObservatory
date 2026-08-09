@@ -345,13 +345,26 @@ useful addition and is not currently planned.
    showed 2.79 hours of actual audio. See ADR-024, `history.coverage()`, and
    `oo history reconcile-streams` for the repair path.
 9. **Close the event-envelope schema gap.** `schemas/detection-event.schema.json`
-   sets `additionalProperties: false` and omits `rank` and `taxonomic_group`, which
-   internal records carry. It was flagged for Milestone 3 and not done. The MQTT
-   publisher of Milestone 6 is the forcing function, because that is the point at
-   which something outside this repository starts depending on the shape.
+   set `additionalProperties: false` and omitted `rank` and `taxonomic_group`,
+   which internal records carry.
+   **Done (ADR-025 session, 2026-08-08):** the schema now describes the full bus
+   envelope, adds `rank`, `taxonomic_group` and `media`, and is bumped to
+   `schema_version` 1.1 — a version bump rather than a silent widening, because a
+   strict consumer validating against 1.0 would have rejected the new fields.
+   `tests/test_mqtt_schema.py` validates real emitted events against it so it
+   cannot drift again. The MQTT publisher was indeed the forcing function.
 10. **Write the Alembic migration environment before, not during, the PostgreSQL
-    move.** `alembic` is a declared dependency with no `alembic/` directory;
-    `create_all()` is what actually builds the schema. ADR-007 now records this.
+    move.**
+    **Done (ADR-035, 2026-08-08):** `alembic/` now exists with three revisions,
+    wired to `Settings` and the declarative metadata, `render_as_batch=True` for
+    SQLite. The live station was adopted by `alembic stamp 0001_initial` then
+    `alembic upgrade head` and now reports `0003_auth_tables (head)` with its
+    50,396 detections intact. Building it found a real latent bug:
+    `media_asset.reclaimed_at` existed but its index never did, because
+    `ALTER TABLE ADD COLUMN` cannot create one — revision 0002 repairs it.
+    **Still open:** nothing calls `alembic upgrade head` at startup, so
+    `create_all()` and the ALTER TABLE patcher in `db/session.py` are deliberately
+    kept. Wire migrations into startup or `deploy.sh`, *then* retire the patcher.
 
 ### 6.4 Then the plan's own next milestones
 

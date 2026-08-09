@@ -120,7 +120,7 @@ Note the test deliberately uses a denser analysis stride (0.25 s) than productio
 entirely between two windows, which would make the assertion flaky rather than
 wrong.
 
-## Milestone 4 — Product dashboard and review — **foundation in place, not started**
+## Milestone 4 — Product dashboard and review — **largely delivered 2026-08-08; review workflow minimal**
 
 Reassessed 2026-08-05. ADR-016 supersedes the part of ADR-011 that treated the debug
 UI as a surface to be replaced: this milestone **promotes** it instead. The plan's own
@@ -130,28 +130,37 @@ single surface with two depths.
 | Deliverable | State |
 |---|---|
 | React dashboard | foundation done — application shell and component set; surface-agnostic WebSocket and audio clients |
-| Styling | **not foundation** — `styles.css` is a colour-token header over ad-hoc component CSS, no spacing or type scale |
-| Frontend test harness | **absent** — no component testing library installed; only pure functions are testable, which is why `geometry.test.ts` stands alone |
+| Styling | done (ADR-027) — spacing and type scales applied to new surfaces; ~700 lines of pre-existing component CSS deliberately not migrated, recorded as scoped-out |
+| Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **136 frontend tests**, up from 1 file |
 | Timeline, filters, detail | foundation done — HISTORY mode: named windows, stacked timeline, species summary, click-to-focus, coverage bar |
 | Spectrogram and playback | done — two orientations, live listening, per-detection clips including audible ultrasound |
-| Health/system page | partial — the diagnostic half exists; no operator-facing view |
-| Operator/diagnostic disclosure | **not started** |
-| `App.tsx` state extraction | **not started** — around 25 `useState` hooks in one 425-line component; a prerequisite, not a tidy-up |
-| Review workflow | **not started** — no table writer, no endpoint, no UI |
-| Retention job and UI | **not started** |
-| CSV/JSON export | **not started** — required by the acceptance criteria, absent from the original plan |
-| Authentication foundation | **not started** — ADR-015 records the deviation this must close |
+| Health/system page | done (ADR-028) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
+| Operator/diagnostic disclosure | done (ADR-028) — one depth toggle via `?view=operate\|diagnose`, not a second route |
+| `App.tsx` state extraction | done — decomposed into `web/src/hooks/*` and `web/src/state/*`; `useLiveAudio.test.tsx` guards the ADR-022 retune fix from regressing |
+| Review workflow | **minimal** — append-only `POST`/`GET /api/v1/detections/{id}/review` plus confirm/reject in the drawer. The `review` table is finally written to; a fuller workflow is still open |
+| Retention job and UI | done — tiered age-out backend (ADR-026) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions |
+| CSV/JSON export | done — `GET /api/v1/detections/export`, registered before `/detections/{id}` so it is not swallowed by the path parameter |
+| Authentication foundation | done (ADR-034) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 wall display keeps working |
 
-## Milestone 4.5 — Close the Milestone 1–3 exit gates — **not started**
+## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture gate closed; soak and drift run outstanding**
 
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
 mutually exclusive, because deploying restarts capture and voids the run.
 
-**Committed species fixture test: added 2026-08-08** (`tests/test_birdnet_fixture.py`,
-see the Milestone 3 exit-gate note above for what it asserts and its provenance). Not
-yet run on the target Pi 5 — see that note for why. The 72-hour soak, the full-hour
-drift run and `oo audio window-dump` remain untouched by this change.
+**Committed species fixture test: done, and passing on the target Pi 5**
+(`tests/test_birdnet_fixture.py`; 3 passed in 6.83 s on aarch64, 2026-08-08). See the
+Milestone 3 exit-gate note above for what it asserts and its provenance.
+
+Still outstanding in this milestone:
+
+* **The 72-hour soak.** The single biggest remaining item, and the one CLAUDE.md
+  names before the word "complete" may be used. A soak and a deploy are mutually
+  exclusive, because deploying restarts capture and voids the run — so it needs a
+  deliberate quiet period with no changes landing.
+* **The one-hour drift run.** Verified at 5 minutes only.
+* **`oo audio window-dump`.** Milestone 2 asked for a window inspection CLI; only
+  `oo audio resample-check` exists.
 
 ## Milestone 5 — Ultrasonic and bat support — **complete**
 
@@ -197,7 +206,27 @@ interpolation fix, so they are not an artefact, but distinguishing a Myotis from
 mislabelled pipistrelle needs the audible renderings reviewed by ear. That is what
 the false-positive review deliverable is for, and it needs a human.
 
-## Milestone 6 — MQTT and Home Assistant — **partially implemented, not verified on target**
+## Milestone 6 — MQTT and Home Assistant — **publisher live on the operator's broker; alert engine not built**
+
+**Updated 2026-08-08, later the same day:** deployed and running against the
+operator's real Home Assistant broker at broker.example:1883. Six entities appear
+under one device, "the development station Observatory": last detection, species today,
+bat passes tonight, bat activity, station healthy, and a `detection` event
+entity for automations. Measured live: connected first attempt, zero publish
+failures, zero drops.
+
+One fix after deployment, found by checking the counter against reality rather
+than trusting a green test: unidentified "acoustic event" detections were being
+forwarded to Home Assistant despite the filter written to stop them, because
+`activity-v1` sets `taxonomic_group="acoustic_event"` — a truthy sentinel — and
+the check treated any non-null group as an identification. Now filtered
+(`mqtt_publish_unidentified`, default false) and verified on the live station at
+6 suppressed against 6 unidentified detections, exactly matching. Bat passes are
+explicitly exempt and asserted by test: a pass claims something positive
+happened even though it names no species.
+
+The original off-target assessment follows, for the record.
+
 
 Built and unit/integration tested off-target (see below): the MQTT publisher
 (`src/open_observatory/mqtt/`), Home Assistant MQTT Discovery, and the
