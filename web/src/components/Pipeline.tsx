@@ -17,6 +17,24 @@ function bytes(value: number): string {
   return `${value} B`
 }
 
+/** Seconds as something a person can read: "11.9 h", "3.4 m", "42 s". */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} h`
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} m`
+  return `${seconds.toFixed(0)} s`
+}
+
+/** Lost audio, where sub-second amounts matter and "0" should read as none.
+ *  Deliberately more precise than `formatDuration`: the difference between
+ *  0 s and 0.06 s is the difference between a clean run and a real gap. */
+export function formatDeficit(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'none'
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} m`
+  if (seconds >= 1) return `${seconds.toFixed(2)} s`
+  return `${(seconds * 1000).toFixed(0)} ms`
+}
+
 function Bar({ fraction, tone = 'ok' }: { fraction: number; tone?: string }) {
   return (
     <div className={`minibar tone-${tone}`}>
@@ -31,6 +49,11 @@ export function CapturePanel({ status }: { status: StationStatus }) {
   const native = status.rings.native
   const audible = status.rings.audible
   const continuity = capture.continuity_ratio ?? 0
+  // The only defensible measure of lost audio: what the clock says should have
+  // arrived, minus what did. Clamped at zero because the device runs on its own
+  // crystal (about -43 ppm here), so a stream can legitimately deliver a few
+  // frames more than nominal wall time implies without having gained audio.
+  const realDeficitFrames = Math.max(0, (capture.expected_frames ?? capture.frames) - capture.frames)
 
   return (
     <section className="panel">
@@ -63,15 +86,36 @@ export function CapturePanel({ status }: { status: StationStatus }) {
           </dd>
         </div>
         <div>
-          <dt>frames</dt>
-          <dd className="mono">{capture.frames.toLocaleString()}</dd>
+          {/* Duration, not the raw count. `frames` is an eleven-digit number
+              (16,462,694,400 after twelve hours at 384 kHz) that no one can
+              read at a glance; the count itself is a debugging primitive, so
+              it lives in the tooltip where it is still available. */}
+          <dt title={`${capture.frames.toLocaleString()} frames captured`}>captured</dt>
+          <dd className="mono">{formatDuration(capture.frames / (capture.sample_rate || 1))}</dd>
         </div>
         <div>
-          <dt title="Gaps detected as a step in the frames-behind-wall-clock figure">
-            gaps / missing
+          {/* The honest deficit: frames the clock says should have arrived,
+              minus frames that did. NOT `estimated_missing_frames`, which this
+              row used to show and which over-reports by about 12.9x — measured
+              on 2026-08-08, it claimed 52.4 s lost when the true figure was
+              4.06 s (ADR-033). The estimator credits a late read as lost audio
+              even when ALSA reported no overrun, which was right for the old
+              80 ms ring and wrong for the 500 ms one. */}
+          <dt title="Frames elapsed time implies, minus frames actually delivered. The estimator's own missing-frame figure over-reports; see ADR-033.">
+            audio lost
+          </dt>
+          <dd className={`mono ${realDeficitFrames > 0 ? 'warn-text' : ''}`}>
+            {capture.expected_frames === null
+              ? '—'
+              : formatDeficit(realDeficitFrames / (capture.sample_rate || 1))}
+          </dd>
+        </div>
+        <div>
+          <dt title="Discontinuities detected as a step in the frames-behind-wall-clock figure. A gap is not the same as lost audio: most are absorbed by the ALSA ring.">
+            gaps
           </dt>
           <dd className={`mono ${capture.discontinuities > 0 ? 'warn-text' : ''}`}>
-            {capture.discontinuities} / {capture.estimated_missing_frames.toLocaleString()}
+            {capture.discontinuities}
           </dd>
         </div>
         <div>
