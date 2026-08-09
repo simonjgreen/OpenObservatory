@@ -173,16 +173,28 @@ Still outstanding in this milestone:
 Brought forward because the device turned out to capture at 384 kHz, which makes
 the native stream genuinely useful rather than theoretical. **Exit gate met
 2026-08-05**: a known bat fixture is processed on the target device
-(`tests/test_batdetect2.py`), provenance is retained in
-`results/batdetect2-pi5.json`, and capture continuity was unaffected (0.999318,
+(`tests/test_batdetect2.py`) and capture continuity was unaffected (0.999318,
 0 overruns). The bat adapter is deliberately *not* built: the benchmark measured
 BatDetect2 at 0.52x realtime, below the threshold, and ADR-017 records that.
+
+> ⚠️ **The provenance half of this gate is not actually satisfied. Checked
+> 2026-08-09.** This entry claimed "provenance is retained in
+> `results/batdetect2-pi5.json`". That file does not exist in the working tree, in
+> git history, or on the live station, and `results/` is not gitignored — it was
+> never committed. The measured figures are retained (see
+> `docs/detectors/BATDETECT2_EVALUATION.md`) but cannot currently be traced to an
+> artefact, and the plan's exit gate for this milestone asks explicitly for
+> "provenance retained". **Re-run
+> `scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` on the Pi
+> and commit the output** to close it properly. This does not affect the other
+> half of the gate: `tests/test_batdetect2.py` is committed and skips cleanly when
+> the unbundled assets are absent.
 
 | Deliverable | State |
 |---|---|
 | Native high-rate window profile | done |
 | Ultrasonic detection | done, but as a **pulse-train detector, not a classifier** — `ultrasonic-pass-v1`, no species claim |
-| BatDetect2 evaluation harness | **done** — `scripts/benchmark_batdetect2.py`, `tests/test_batdetect2.py`, `docs/detectors/BATDETECT2_EVALUATION.md`, results in `results/batdetect2-pi5.json` |
+| BatDetect2 evaluation harness | **done** — `scripts/benchmark_batdetect2.py`, `tests/test_batdetect2.py`, `docs/detectors/BATDETECT2_EVALUATION.md`. **The `results/batdetect2-pi5.json` this row used to cite does not exist** — see the provenance warning above |
 | Pi 5 benchmark report | **done** — BatDetect2 measured on the target: p95 968 ms per 0.5 s clip, **0.52× realtime in isolation**, +459 MB RSS. Against BirdNET at ~40× and the pass detector at ~36–40×. Verdict: not sustainable for real-time inference |
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |

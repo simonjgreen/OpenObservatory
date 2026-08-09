@@ -204,7 +204,24 @@ capability the passing test actually exercised.
 ## Measured results
 
 Measured on the Raspberry Pi 5 on **2026-08-05**, by
-`scripts/benchmark_batdetect2.py`. Raw output: `results/batdetect2-pi5.json`.
+`scripts/benchmark_batdetect2.py`.
+
+> ⚠️ **Provenance is missing. Checked 2026-08-09.** Three documents cite
+> `results/batdetect2-pi5.json` as the retained raw output of this run. **That
+> file does not exist**: not in the working tree, not anywhere in git history
+> (`git log --all --diff-filter=A -- results/` returns nothing), not on the live
+> station (`~/open-observatory/results/` does not exist), and `results/` is not
+> gitignored, so it was never committed rather than deliberately excluded. The
+> benchmark script's `--json` flag writes it, so the run was probably done without
+> that flag, or the file was written somewhere transient and lost.
+>
+> The figures below are **retained as recorded, not deleted** — they are internally
+> consistent, they match the verdict ADR-017 was written against, and inventing a
+> reason to distrust them would be as unfounded as inventing the numbers. But they
+> are currently **unverifiable**: nobody can re-derive them from an artefact.
+> Anyone re-running this should use
+> `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` and
+> **commit the result**, which closes this gap permanently.
 
 **Do not extend this table from expectations, precedent, or extrapolation from
 other detectors.** `CLAUDE.md` forbids claiming detector support without a fixture

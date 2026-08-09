@@ -303,8 +303,10 @@ uncalibrated dBFS, never SPL.
 BatDetect2 has been **evaluated and deliberately not adopted as a live detector**, not
 left unimplemented by omission. The evaluation harness that this sentence previously
 called "not started" is done: `scripts/benchmark_batdetect2.py`,
-`tests/test_batdetect2.py`, `BATDETECT2_EVALUATION.md` and
-`results/batdetect2-pi5.json`, measured on the Pi on 2026-08-05 (ADR-017). What is
+`tests/test_batdetect2.py` and `BATDETECT2_EVALUATION.md`, measured on the Pi on
+2026-08-05 (ADR-017). The `results/batdetect2-pi5.json` this sentence also used to
+cite **does not exist and never has** — see the provenance warning in
+`BATDETECT2_EVALUATION.md`; the figures survive, their raw artefact does not. What is
 genuinely open is whether to promote the offline cascade in
 `scripts/classify_clips_batdetect2.py` into a live, queued plugin against
 `DeferredDetectorWorker` — an unmade decision, not a technical blocker.

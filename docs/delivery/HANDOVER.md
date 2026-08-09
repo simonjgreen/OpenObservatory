@@ -229,6 +229,15 @@ unless noted.
    live. Needs a freely-licensable reference recording (Xeno-canto CC0/BY are
    candidates — check each recording's own licence, they vary).
 3. **Run the one-hour drift test at full duration.** Currently verified at 5 min.
+4. **Re-run the BatDetect2 benchmark and commit its output.** Found 2026-08-09:
+   three documents cited `results/batdetect2-pi5.json` as the retained provenance
+   for Milestone 5's exit gate, and that file does not exist anywhere — not in the
+   working tree, not in git history, not on the Pi, and `results/` is not
+   gitignored. The measured figures are retained and are not in doubt, but they
+   cannot be traced to an artefact, and "provenance retained" is literally what
+   the plan's exit gate asks for. Cheap to close:
+   `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json`
+   on the Pi, then commit the file. Needs BatDetect2 installed there.
 
 ### 6.2 History browsing, and what it still lacks
 
