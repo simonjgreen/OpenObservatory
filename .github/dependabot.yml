@@ -1,0 +1,104 @@
+# Dependency updates.
+#
+# CLAUDE.md requires every dependency and container image to be pinned, and they
+# are: `pyproject.toml` uses `==` throughout, `web/package.json` is exact apart
+# from React, and `docker-compose.yml` names image tags. Pinning is what makes a
+# capture station reproducible, but it also means nothing ever moves without
+# someone deciding it should. This is that someone, on a schedule.
+#
+# Grouped deliberately. Patch and minor updates arrive as one pull request per
+# ecosystem per week, because twelve separate PRs for point releases is how a
+# solo maintainer learns to ignore Dependabot. Majors stay separate: they are
+# the ones that need a human to think, and this project has already been broken
+# once by an unpinned major (`click` 8.2 removed a parameter every `oo --help`
+# depended on).
+#
+# Security updates are not configured here -- they come from the repository's
+# Dependabot alerts and are opened regardless of this schedule.
+version: 2
+
+updates:
+  # --- Python: the station itself -----------------------------------------
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "07:00"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Python itself is constrained by `requires-python` (>=3.12,<3.14), which
+      # is an ADR-backed decision about Raspberry Pi ecosystem compatibility,
+      # not something to bump because a newer release exists.
+      - dependency-name: python
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+
+  # --- Frontend ------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "07:00"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      # Testing tooling moves often and breaks little; keeping it apart means a
+      # vitest bump never sits in the same PR as a React one.
+      frontend-testing:
+        patterns:
+          - "@testing-library/*"
+          - "vitest"
+          - "@vitest/*"
+          - "jsdom"
+    labels: ["dependencies", "frontend"]
+    commit-message:
+      prefix: "deps"
+
+  # --- Container images ----------------------------------------------------
+  # The compose file is the development baseline (ADR-008 chose native systemd
+  # for the station itself), so these images are not what runs in the garden.
+  # Still worth tracking: PostgreSQL 16 is the documented migration target.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+      timezone: Europe/London
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "deps"
+
+  # --- GitHub Actions ------------------------------------------------------
+  # No workflows exist yet. Configured now so that the first one added is
+  # covered from the day it lands rather than whenever someone remembers.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      timezone: Europe/London
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "deps"
+
+# Not covered by Dependabot, and needing a human:
+#
+#   * PlatformIO (`firmware/inside-observer/platformio.ini`) -- the platform,
+#     framework and every library are pinned there, and no Dependabot ecosystem
+#     understands that file. A firmware dependency bump is a reflash, and since
+#     ADR-050 that is an over-the-air rollout rather than a cable, but it is
+#     still a deliberate act. Check it when you touch the firmware.
+#   * BirdNET and BatDetect2 model assets -- fetched by `oo models fetch`
+#     against a checksummed manifest (ADR-006), never installed from a package
+#     index, and licensed separately from the code.
