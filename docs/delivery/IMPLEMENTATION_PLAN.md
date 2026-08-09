@@ -8,11 +8,16 @@
 >
 > **For what is actually delivered, read
 > [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
-> summary as of 2026-08-09: Milestones 0–3 and 5 complete, Milestone 4 largely
-> delivered with a minimal review workflow, Milestone 4.5 outstanding (the
-> 72-hour soak and the full-hour drift run; `oo audio window-dump` is now done),
-> Milestone 6's publisher live but its alert engine unbuilt, Milestone 7 not
-> started.
+> summary as of 2026-08-09: Milestones 0–3 and 5 complete; Milestone 4 delivered,
+> including the review workflow, which ADR-043 closed; Milestone 4.5 outstanding
+> (the 72-hour soak and the full-hour drift run — the species fixture and
+> `oo audio window-dump` are done); Milestone 6's publisher live but its alert
+> engine unbuilt; Milestone 7 not started; Milestone 8 has one of its six
+> deliverables done (ADR-050's display OTA, flashed and verified on hardware);
+> Milestone 9 not started, by design.
+>
+> **The 72-hour soak has never run**, and `CLAUDE.md` forbids describing the
+> system as complete until it passes.
 
 ## Milestone 0 — Repository and target diagnostics
 
@@ -187,6 +192,14 @@ after capture, reporting lag honestly rather than dropping silently. The schedul
 what makes this tractable, because it bounds what can enter the queue. Build it when
 BatDetect2's benchmark shows whether it is needed, not before.
 
+> **Outcome, 2026-08-09:** `DeferredDetectorWorker` was built and is **unused**, and
+> ADR-045 decided it is the *wrong* mechanism for the BatDetect2 cascade — its
+> central safety property is dropping anything older than
+> `max_delivery_latency_s`, which is exactly what a six-hour-old stored clip is.
+> The cascade ships instead as a separate CPU-fenced process at propose-only
+> authority. The deferred worker remains the right mechanism for a *live* detector
+> too slow to run inline, and that case has not arisen.
+
 **4. Feeding-buzz flagging.** Specified in
 `docs/design/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
 The pulse timing is already computed and discarded; a buzz is a terminal collapse in
@@ -247,6 +260,13 @@ It comes *after* Milestone 7 deliberately: shipping an image to other people
 makes every remaining rough edge someone else's problem, and an update
 mechanism you cannot roll back is worse than no update mechanism at all.
 
+**One deliverable landed early and that is not a violation of the sequencing.**
+The display OTA (ADR-050) was justified on its own terms — every firmware change
+was otherwise a physical trip and a USB cable, forever — and it carries the
+rollback this milestone's own reasoning demands rather than deferring it. Nothing
+else here should be started before Milestone 7, and in particular not the
+published image.
+
 Deliver:
 
 - **a prebuilt Raspberry Pi image**, published as a GitHub release, that boots
@@ -259,12 +279,14 @@ Deliver:
 - **remote update of the station after deployment**, versioned, staged and
   rolled back on failure. Capture must survive a failed update: the charter's
   first item does not pause for a release;
-- **over-the-air update of the counter-top display, triggered from the Pi**, so
-  the ESP32 never has to be unplugged and carried to a laptop. The station
-  already knows the display's address and already pushes to it. *(ADR-050:
-  written, and **unflashed** — the two-slot partition table it needs has not yet
-  been installed on the operator's unit, which takes one cable trip. Not done
-  until that flash and its smoke test have happened.)*;
+- ~~**over-the-air update of the counter-top display, triggered from the Pi**~~ —
+  **DONE, 2026-08-09 (ADR-050).** Two OTA app slots, a digest verified before
+  anything becomes bootable, and a rollback the display owns. Flashed and verified
+  on the operator's own unit, including a deliberate rollback drill; the station
+  reports it at firmware `0.2.4` and up to date. The drill is what found that
+  `arduino-esp32` was disarming the rollback net before `setup()` ran, making the
+  whole mechanism unreachable code — which is the argument for doing these on
+  hardware rather than in a test suite;
 - **backup and restore of a station's identity and history**, so replacing the
   hardware does not lose the record;
 - a signed, checksummed release process for images and firmware, with model

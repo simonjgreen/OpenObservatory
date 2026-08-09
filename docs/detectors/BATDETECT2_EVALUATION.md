@@ -12,15 +12,24 @@ first, and the top-ranked detection matched the filename label on only one of th
 three example clips. See "What these numbers close, and what they do not".
 
 So: real-time inference on this hardware is **closed — not viable**. Accuracy is
-**not closed**. There is no `open_observatory.detectors.batdetect2` adapter and
-`oo models fetch` does not know about BatDetect2's assets. The only viable route,
-per ADR-017, is the deferred/cascade path: `ultrasonic-pass-v1` decides *when*
+**not closed**. There is no `open_observatory.detectors.batdetect2` *detector*
+adapter and `oo models fetch` does not know about BatDetect2's assets. The only
+viable route, per ADR-017, is the cascade: `ultrasonic-pass-v1` decides *when*
 something happened at 36–40× realtime, and the expensive classifier only ever
 sees the few seconds already flagged. Measured on this station's own clips
 trimmed to 1.5 s, that costs 2.1 s per pass — about 36 minutes of classifier work
-for the 1015 passes of a whole night. `scripts/classify_clips_batdetect2.py`
-implements that offline and writes nothing to the database; whether to promote it
-into a live queued plugin is an undecided question, not a blocked one.
+for the 1015 passes of a whole night.
+
+**Updated 2026-08-09: the cascade was promoted, and not in the way this document
+originally anticipated.** ADR-045 rules the deferred queue out explicitly — it
+drops anything older than `max_delivery_latency_s`, which is precisely what a
+six-hour-old stored clip is. The cascade ships instead as a separate CPU-fenced
+process, `oo refine run` / `src/open_observatory/refinement/`, on a systemd timer
+at 01:00 UTC, at **propose-only** authority: it writes append-only `refinement`
+rows and never edits a detection's claim. `scripts/classify_clips_batdetect2.py`
+still exists and still writes nothing to the database, but it is now the
+experiment, not the implementation. See `DETECTOR_STRATEGY.md`, "The refinement
+runner", and ADR-045.
 
 **This header previously said the fixture test "has not yet been run to a pass on
 the Pi" and that this document held an "(currently empty) table". Both were false:
@@ -177,19 +186,22 @@ pytest tests/test_batdetect2.py -v
 
 This skips (not fails) when `batdetect2` or the example recordings are
 absent — the same discipline `tests/test_detectors.py` already applies to
-BirdNET. When both are present, it asserts that BatDetect2's top detection
-on a known recording matches the labelled species. A pass here, on the
+BirdNET. When both are present, it asserts that the labelled species **appears
+among** BatDetect2's detections (`expected_species in found`) — deliberately not
+that it ranks first; see "What these numbers close, and what they do not" for
+why top-1 would not be evidence. A pass here, on the
 target device, is what would let this project describe BatDetect2 as
 "supported" rather than merely "evaluated" — and even then, only for the
 capability the passing test actually exercised.
 
 ## Known gaps in this evaluation
 
-- There is no `open_observatory.detectors.batdetect2` adapter yet, and this
-  work does not add one. ADR-017 reserves that for once a measured benchmark
-  shows real-time inference is viable; until then BatDetect2 sits behind the
-  deferred-queue path described in `docs/detectors/DETECTOR_STRATEGY.md`, if
-  it is adopted at all.
+- There is no `open_observatory.detectors.batdetect2` *detector* adapter, and
+  this work does not add one. ADR-017 reserves that for once a measured
+  benchmark shows real-time inference is viable. Since 2026-08-09 BatDetect2
+  does ship as a **refiner** — `src/open_observatory/refinement/batdetect2.py`,
+  ADR-045 — which is a different thing in a different process, at propose-only
+  authority, and does not make it a supported live detector.
 - BatDetect2 asset acquisition is not yet wired into `oo models fetch` /
   `models/manifest.tsv` the way BirdNET's is. This evaluation deliberately
   keeps its own fetch instructions self-contained (a `git clone` for the
@@ -200,6 +212,14 @@ capability the passing test actually exercised.
   own tests are not an accuracy benchmark, and this path resamples through the
   project's soxr stage rather than BatDetect2's own preprocessing, which is a
   genuine confound. See "What these numbers close, and what they do not".
+
+  There is now one further piece of accuracy evidence, recorded because it is
+  what set the refiner's authority: on this station's own 33–36 kHz cluster,
+  BatDetect2 leaned *Myotis* on 6 of 8 clips at only 0.20–0.30, and returned
+  **0.77 for *Pipistrellus pygmaeus* on a call measured at 34 kHz** — soprano
+  pipistrelle peaks near 55 kHz. One confident contradiction on this station's
+  own audio is why ADR-045's runner may only propose. It is still not an
+  accuracy benchmark; eight clips with no ground truth is not one.
 
 ## Measured results
 
@@ -274,9 +294,12 @@ it from `results/batdetect2-pi5.json` or a fresh run before quoting it.
 **Closed: real-time inference is not viable on this hardware.** At 0.52× realtime
 *in isolation* — with no capture, no BirdNET and no ultrasonic detector competing —
 BatDetect2 cannot keep up with the audio it is given, and the existing detectors run
-at 36–40× realtime for comparison. This is not a tuning problem. Per ADR-017 the
-deferred-queue path in `DETECTOR_STRATEGY.md` is the only viable route, and the night
-scheduler is what bounds the queue.
+at 36–40× realtime for comparison. This is not a tuning problem. Per ADR-017 the cascade
+is the only viable route. **What bounds the work is not the ultrasonic night scheduler**
+— that bounds live detection — but ADR-045's UTC window
+(`refinement_window_start_hour_utc` 1 to `refinement_window_end_hour_utc` 3), its item and
+time budgets (`refinement_max_items` 1200, `refinement_max_seconds` 5400) and its systemd
+CPU fence.
 
 **Not closed: accuracy.** The top-ranked detection matched the filename label for one
 of three example recordings. That is a real observation and is recorded as such, but
@@ -297,6 +320,8 @@ detections, not that it ranks first. Asserting top-1 would either fail permanent
 force the choice of a fixture that makes the test pass, and neither would be evidence.
 
 ADR-017's question — "is real-time BatDetect2 inference viable on this hardware" —
-is therefore **closed: no.** The question that replaces it is whether to promote
-the offline cascade into a live queued plugin, and that one is open. See ADR-017's
-2026-08-05 update and `DETECTOR_STRATEGY.md`'s "Deferred mode — as implemented".
+is therefore **closed: no.** The question that replaced it, whether to promote the
+offline cascade, is **also now closed** (ADR-045, 2026-08-09): promoted, as a
+separate CPU-fenced process at propose-only authority, not as a queued plugin. What
+remains open is accuracy, and only a human ear closes that. See ADR-017's
+2026-08-05 update, ADR-045, and `DETECTOR_STRATEGY.md`'s "The refinement runner".

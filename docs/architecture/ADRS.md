@@ -7,11 +7,18 @@ Every material deviation from `TECHNICAL_SPEC.md` is recorded here, numbered.
 - **Never delete an ADR**, including a superseded one. Mark it, keep it.
 - **Never renumber an ADR.** The gaps at 031 and 036 are numbers that were
   reserved and not needed; a gap is harmless, a broken cross-reference is not.
-- Two ADRs appear out of numeric order in this file (016 sits between 011 and
-  012; 034 sits after 035), because each was appended where it was written.
+- Several ADRs appear out of numeric order in this file, because each was
+  appended where it was written and because the 2026-08-09 fan-out renumbered
+  three of them by hand across rebases. As of 2026-08-09 the out-of-order pairs
+  are: **016** between 011 and 012; **034** after 035; **043** after 044;
+  **046** after 047; and **053** between 050 and 051.
   The index below is the authoritative ordering. Do not reorder the file to fix
   it — that would produce a large diff for no gain and conflict with appends.
 - New ADRs are **appended** to the end of this file, and added to the index.
+  **Adding a body without adding an index row is the failure mode that actually
+  happens** — 037, 038 and 040 were each missing from this index until
+  2026-08-09. If you add an ADR, `grep '^## ADR-' ADRS.md` and check the count
+  against the index before you commit.
 
 ## Index
 
@@ -42,7 +49,7 @@ reasoning is retained and is often the most useful part.
 | 020 | Non-live-source detections excluded from browsing views by default | active |
 | 021 | Evidence clips live on their own device, mounted over the clips directory | active |
 | 022 | Live ultrasonic retuning as a plain HTTP control call | active |
-| 023 | The inside observer is an ESP32 counter-top display that never shows a score | active; its premise that "no code in this repository publishes to a broker" is **superseded by ADR-025**, but the polling decision stands |
+| 023 | The inside observer is an ESP32 counter-top display that never shows a score | active on the no-score rule and the device choice; its premise that "no code in this repository publishes to a broker" is **superseded by ADR-025**, its **polling decision is superseded by ADR-038** (push, with polling retained as an exercised fallback), and the **single-app-slot partition table it froze is superseded by ADR-050** |
 | 024 | Capture coverage is bounded by delivered frames, not a stream row's claim | active; its "no Alembic environment exists" note is **superseded by ADR-035** |
 | 025 | MQTT publisher and Home Assistant Discovery, off by default | active |
 | 026 | NVR-style tiered clip retention; detection metadata kept forever | active; **amended by ADR-033** (sweep cadence), and its "no Alembic migrations anywhere" note is **superseded by ADR-035** |
@@ -56,7 +63,10 @@ reasoning is retained and is often the most useful part.
 | 034 | An authentication foundation closes ADR-015, off by default | active; its "no Alembic migration is written here" note is **closed** — revision `0003_auth_tables` was added afterwards |
 | 035 | A real Alembic migration environment, written before the PostgreSQL move | active; its startup-wiring follow-up ("`api/app.py` and `cli.py` calling Alembic instead of `create_all()`") is **closed by ADR-042** |
 | 036 | *(number reserved and not used — do not reuse)* | — |
-| 039 | A deficit step is only lost audio once it fails to come back | active; closes the open item in ADR-033 and amends ADR-030's estimator |
+| 037 | Detection-table growth is real but slow; prune the five indexes nothing reads, and defer the rest | **options B and C accepted and implemented** 2026-08-09 (revision `0004`); options A and D–K remain open and unchosen. The research above the "B and C" section is preserved verbatim as the reasoning, not as current schema truth |
+| 038 | The inside observer is pushed to over a lean WebSocket, and shows elapsed times | active; **supersedes ADR-023's polling decision**, though polling stays in the firmware as an exercised fallback. Extended by ADR-050, which adds one frame to this wire |
+| 039 | A deficit step is only lost audio once it fails to come back | active; closes the open item in ADR-033 and amends ADR-030's estimator. **Confirmed on target** 2026-08-09 against its own pass criteria; its remaining question is resolved by ADR-046 |
+| 040 | The live view's pictures are drawn only while somebody is looking | active; the charter's "item 8 loses to items 1–2" precedent |
 | 041 | The ultrasonic spectrogram gets its own floor/ceiling, measured on the live station | active |
 | 042 | `alembic upgrade head` wired into `deploy/deploy.sh`; `create_all()`/the ALTER TABLE patcher retired from startup | active; closes ADR-035's remaining follow-up |
 | 043 | Taxon correction closes the review workflow; a human's ear outranks a machine's | active; closes the open item in ADR-029 |
@@ -260,8 +270,9 @@ cleanly. State extraction is the first task of Milestone 4, not an optional tidy
 > **Status 2026-08-08: the "not foundation" list above is historical, and all of
 > it was addressed.** Measured on 2026-08-09: `App.tsx` is 323 lines with 3
 > `useState` hooks, decomposed into `web/src/hooks/*` and `web/src/state/*`;
-> `@testing-library/react` is installed and there are **140 frontend tests across
-> 15 files**, not one; `?view=operate|diagnose` gives URL-driven state that
+> `@testing-library/react` is installed and there are **235 frontend tests across
+> 22 files** — re-measured on merged `main` late on 2026-08-09; it read 140 across
+> 15 files earlier the same day — not one; `?view=operate|diagnose` gives URL-driven state that
 > survives a refresh (ADR-028); and `styles.css` gained spacing and type scales
 > (ADR-027 — which also records that ~700 lines of older component CSS were
 > deliberately *not* migrated, so that part of the assessment still stands). The
@@ -3887,9 +3898,13 @@ cat /sys/fs/cgroup/system.slice/open-observatory-refine.service/cpuset.cpus.effe
 # 3. What has never been examined -- the number the retention safeguard needs.
 .venv/bin/oo refine status --json
 
-# 4. Capture, before and after. Judge loss by frames vs expected_frames, never by
-#    estimated_missing_seconds (SETUP.md trap 10, ADR-039), and cross-check the
-#    gap counters against the database rather than believing either alone.
+# 4. Capture, before and after. NOTE: this instruction was written before ADR-046
+#    and had it backwards. `expected_frames - frames` is ~98% crystal drift plus
+#    block-sampling phase (+-50 ms on a single reading), NOT lost audio; it grows
+#    ~0.18 s/hour on this device while nothing is lost. Judge loss by
+#    estimated_missing_seconds, which ADR-039 made a decomposition of the deficit
+#    rather than a second number, and cross-check the gap counters against the
+#    database rather than believing either alone.
 curl -s localhost:8080/api/v1/health | python3 -c \
   'import json,sys; c=json.load(sys.stdin)["capture"]; print(c["frames"], c["expected_frames"], c["gaps_with_loss"], c["gaps_without_loss"], c["loop_lag_max_s"], c["loop_lag_events"])'
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
@@ -4534,8 +4549,11 @@ curl -s http://<station-host>:8080/api/v1/status \
 
 ## ADR-050: The counter-top display gets two OTA app slots and updates itself from the station, with its own rollback
 
-**Status:** active. **Written and unflashed** — see "What is unverified" near
-the end, which is part of this decision rather than a caveat on it.
+**Status:** active. **Written unflashed, then flashed and verified on hardware
+the same day, 2026-08-09** — including a deliberate rollback drill. The
+"What is unverified" section near the end is kept as it was written, with the
+verification appended after it, because what a cable found that a test suite
+could not is the transferable part.
 
 **Decision:** Replace the inside observer's single-app-slot partition table with
 two equal OTA slots, and give the station a firmware image to serve and a button
@@ -4726,7 +4744,11 @@ release back. A station that accepts a version the display refuses to parse is a
 rollout that silently never lands — which is also why the Python side rejects
 the non-ASCII digits `str.isdigit()` would otherwise accept.
 
-### What is unverified, and this is not a footnote
+### What was unverified when this was written, and it was not a footnote
+
+> **Superseded the same day — see "Verified on hardware" immediately below.**
+> Kept verbatim because it named exactly the right risks, and because three of
+> the things it said only a cable could verify turned out to be defects.
 
 **Nothing here has been flashed.** The device was not connected while this was
 written. Verified: the host test suite (89 cases, up from 53), the `cyd` build
@@ -4740,6 +4762,96 @@ deliberately broken build rolls back, and that the update screen renders.
 This matters more than usual because the *first* flash is the one that installs
 the new table, and it is the one that must be right — after it, a mistake is
 recoverable over the air; before it, nothing is.
+
+### Verified on hardware, 2026-08-09 — and what only a cable could find
+
+Every item the section above said only a cable could settle was settled the same
+day, in this order:
+
+1. **The partition table took.** Flashed over the cable and then *read back off
+   the device* rather than inferred from the upload: `app1` at `0x200000`,
+   subtype `0x11`, two slots. NVS at `0x9000` was never inside an erase range,
+   and the display rejoined WiFi on its inherited credentials with no
+   reprovisioning — the property this ADR was most careful about, confirmed in
+   practice rather than by reading offsets.
+2. **Two images installed over the air from the Pi.** `0.2.1` then `0.2.2`:
+   digest verified against real bytes before anything became bootable, slots
+   alternating `app1` → `app0`, ending
+   `[ota] running image marked valid (ESP_OK)`. The update screen rendered.
+3. **A deliberate rollback drill, with no cable.** A build that could never reach
+   the station booted `(PENDING VERIFY - on probation)` at 17:51:41 and rolled
+   *itself* back at 18:01:40 — exactly the 600 s deadline — returning to the
+   previous known-good image, which rejoined WiFi six seconds later.
+4. `0.2.4` shipped over the air afterwards and is what the device runs now.
+
+**Two real defects were found by doing this, and neither could have been found
+any other way.** They are recorded here rather than quietly fixed, because an ADR
+that reads as though it worked first time teaches nothing:
+
+1. **The rollback net was disarmed by the framework, and the whole probation
+   machinery was unreachable code.** `arduino-esp32` declares
+   `verifyRollbackLater()` as a weak symbol returning `false` and acts on it
+   inside `initArduino()`, *before* `setup()` runs — so a `PENDING_VERIFY` image
+   was marked valid immediately, and `evaluateProbation` could only ever return
+   `kNotOnProbation`. Overriding the weak symbol hands the decision back. This is
+   the most important sentence in this ADR: **a safety net that never arms is
+   indistinguishable, from the outside, from one that never needs to fire.** The
+   89 host tests all passed against it.
+2. **This ADR's own verification step would have reported failure on success.**
+   It told the operator to read `sketch <n> of 2031616` and treat `3145728` as
+   the failure signature. The banner did not print that — it printed
+   `ESP.getFreeSketchSpace() + ESP.getSketchSize()`, and `getFreeSketchSpace()`
+   returns the size of the *next* OTA partition, so a correctly repartitioned
+   board read `1134224 of 3165840`. An operator following these instructions
+   would have concluded a successful flash had failed and reflashed. The banner
+   now prints the running slot's own size and states the two-slot question
+   outright. Separately, `scripts/serial_capture.py` — which the firmware README
+   told the operator to run at the one moment that matters — did not exist. It
+   does now.
+3. **Two smaller findings from the drill itself.** The provisioning AP was named
+   `Aura`, the stock DIYmalls name: two boards in one house would raise two
+   identically named open networks. It is now
+   `Observatory-<last three MAC bytes>`. And the WiFi failure path printed "no
+   usable credentials" for *any* association failure including a plain timeout —
+   it fired on a transient radio failure mid-drill and sent the operator hunting
+   for wiped NVS when the credentials were fine and the device rejoined by itself
+   two minutes later. It now reports the actual `wl_status_t` and says outright
+   that this path clears nothing.
+
+**Three defects surfaced that the 89 host tests, the size check and the
+framework-config check could not have surfaced.** They are the argument for the
+"and this is not a footnote" heading above, so they are recorded rather than
+quietly fixed:
+
+1. **The entire rollback machinery was unreachable code.** `arduino-esp32`
+   declares `verifyRollbackLater()` as a weak symbol returning `false` and acts
+   on it inside `initArduino()`, *before* `setup()` runs — so a pending image was
+   marked valid immediately, `evaluateProbation` could only ever return
+   `kNotOnProbation`, and nothing this ADR designed could fire. Overriding the
+   weak symbol hands the decision back. Confirmed with `0.2.2`: the display boots
+   `(PENDING VERIFY - on probation)`, alternates `app1` → `app0`, logs
+   `this build reached the station (hello frame); confirming` and then
+   `running image marked valid (ESP_OK)`, and `otadata` reads VALID afterwards.
+   **The first flash is not the only thing a cable is needed for; a safety net
+   that never arms looks exactly like one that never fires.**
+2. **The check meant to verify the flash would have reported failure on
+   success.** The boot banner printed
+   `ESP.getFreeSketchSpace() + ESP.getSketchSize()`, and `getFreeSketchSpace()`
+   returns the size of the *next* OTA partition — so a correctly repartitioned
+   board read `1134224 of 3165840`, and an operator following this ADR's own
+   instructions would have concluded the flash had failed. It now prints the
+   running slot's own size and states the two-slot question outright. Also,
+   `scripts/serial_capture.py`, which the firmware README told the operator to
+   run at the one moment that matters, did not exist. It does now.
+3. **Two findings from the drill itself.** The provisioning AP was named `Aura`
+   (the stock DIYmalls name, chosen for recognisability), which gives two boards
+   in one house two identically named open networks; it is now
+   `Observatory-<last three MAC bytes>`. And the WiFi failure path printed
+   "no usable credentials" for *any* association failure including a plain
+   timeout — it fired on a transient radio failure mid-drill and sent the
+   operator hunting for wiped NVS when the credentials were fine and the device
+   rejoined by itself two minutes later. It now reports the actual `wl_status_t`
+   and says outright that this path clears nothing.
 
 ### Rollback and smoke test (ADR-050)
 

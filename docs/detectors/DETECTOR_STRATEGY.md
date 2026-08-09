@@ -7,7 +7,13 @@ shipped system differs from what this document proposed — most notably, that B
 below was never implemented as a live detector.
 
 Configuration keys and defaults in the "As implemented" sections were re-verified against
-`src/open_observatory/config.py` on **2026-08-09**.
+`src/open_observatory/config.py` on **2026-08-09**, after the ADR-045/049/052 work landed
+on `main`.
+
+**One thing this document used to leave open is now decided.** The BatDetect2 cascade was
+promoted on 2026-08-09 — not to a live detector and not onto `DeferredDetectorWorker`, but
+to a **separate CPU-fenced process** that may only *propose* (ADR-045). See "The refinement
+runner" at the end.
 
 ## Bird detection
 
@@ -22,10 +28,12 @@ Expected windowing is typically approximately three seconds at 48 kHz, but adapt
 *As implemented: not this.* A non-ML pulse-train detector (`ultrasonic-pass-v1`) shipped
 instead and is running on the target device. **BatDetect2 was benchmarked on the target
 on 2026-08-05 and deliberately not adopted as a live detector** — measured at 0.52×
-realtime, against 36–40× for the detectors that do ship. There is no
-`open_observatory.detectors.batdetect2` adapter and none is planned unless the cascade
-below is promoted. See `BATDETECT2_EVALUATION.md` for the figures and ADR-017 for the
-decision.
+realtime, against 36–40× for the detectors that do ship. There is still no
+`open_observatory.detectors.batdetect2` *detector* adapter and none is planned. What does
+now ship is `src/open_observatory/refinement/batdetect2.py`, a **refiner** — a different
+thing, running in a different process, at propose-only authority (ADR-045). See
+`BATDETECT2_EVALUATION.md` for the figures, ADR-017 for the not-a-live-detector decision,
+and "The refinement runner" below for what was built instead.
 
 Initial candidate: BatDetect2, a deep-learning detector/classifier for bat echolocation in high-frequency recordings. Validate:
 
@@ -139,20 +147,37 @@ environment table in `TARGET_DIAGNOSTICS.md`).
 | `birdnet_window_stride_s` | `1.5` |
 | `birdnet_use_location_filter` | `False` |
 | `birdnet_plausibility_floor` | `0.0005` |
-| `range_threshold` (constructor default) | `0.03` |
-| `threshold_in_range` | `0.55` |
-| `threshold_uncommon` | `0.75` |
-| `threshold_out_of_range` | `0.90` |
+| `birdnet_range_threshold` | `0.03` |
+| `birdnet_common_prior` | `0.15` |
+| `birdnet_threshold_in_range` | `0.55` |
+| `birdnet_threshold_uncommon` | `0.75` |
+| `birdnet_threshold_out_of_range` | `0.90` |
+| `birdnet_near_miss_ring` | `200` |
+
+All of these are real `Settings` fields, not constructor defaults, and all are live-tunable
+through the settings page (ADR-048) — `birdnet_threshold_in_range` among them. **The
+operator's own station currently runs `OO_BIRDNET_THRESHOLD_IN_RANGE=0.35` as a deliberate
+tuning experiment**, written by the web UI into `config/runtime.env`; `0.55` is the shipped
+default and this table is the shipped default, not the station's live value.
 
 Plausibility is banded by whether the range/occurrence model considers a species likely at
-this station's location and week: species in range clear `threshold_in_range` (0.55),
-uncommon species must clear 0.75, and species the model considers merely out of range must
-clear 0.90 before being reported at all. With no range model loaded, every candidate is
-judged against `threshold_in_range` only — there is no invented prior. Two further bands,
-added by ADR-032, sit outside that score-space ladder entirely: a species at or below
+this station's location and week: species whose occurrence reaches `birdnet_common_prior`
+(0.15) clear `birdnet_threshold_in_range` (0.55), uncommon species must clear 0.75, and
+species the model considers merely out of range must clear 0.90 before being reported at
+all. With no range model loaded, every candidate is judged against
+`birdnet_threshold_in_range` only — there is no invented prior. Two further bands, added by
+ADR-032, sit outside that score-space ladder entirely: a species at or below
 `birdnet_plausibility_floor` (0.0005) is suppressed at any score, and a species the *loaded*
 range model is simply silent about (`occurrence is None`) is judged against
-`threshold_out_of_range`, not `threshold_in_range` — see "Known limitation" below.
+`birdnet_threshold_out_of_range`, not `birdnet_threshold_in_range` — see "Known limitation"
+below.
+
+A sixth band, `non_biological`, was added by ADR-049 and is checked **first**, before the
+range model is consulted at all (`band_for` in `detectors/birdnet.py`, class list in
+`detectors/birdnet_classes.py`). BirdNET's eleven sound categories — Engine, Human vocal,
+Dog and the rest — are not taxa, so a range model that returns 4e-06 for "Engine" is saying
+nothing about whether a car went past. Without this exemption ADR-032's floor was about to
+withdraw a stack of true observations; the dry run that found it is in ADR-049.
 
 The shipped default is `birdnet_use_location_filter=False` with no coordinates, so out of
 the box every species is judged on confidence alone. On the development station the coordinates and
@@ -186,8 +211,16 @@ exit-gate note for the full output and the stride caveat.
 
 BatDetect2, proposed above under "Bat detection", was never implemented. What shipped
 instead is a non-ML pulse-train detector operating on the native 384 kHz stream. It detects
-bat *passes* — never species — and the normaliser rejects any detection from a
-non-taxonomic plugin that carries a species name.
+bat *passes* — never species.
+
+**Be precise about what enforces that**, because it is easy to over-claim.
+`NON_TAXONOMIC_PLUGINS` in `normaliser.py` contains exactly one member, `activity-v1`, so
+the `ClaimViolation` guard that rejects a species name from a non-taxonomic plugin does
+**not** cover `ultrasonic-pass-v1`. Two other things do: the detector never populates the
+claim fields, and ADR-049 added a generic per-detection backstop in the normaliser that
+raises when a detection claims `rank == "species"` without a real binomial. If a future
+change made this detector emit a species, the first line of defence would be a test, not
+the plugin allow-list.
 
 Every threshold below is now a configuration key on `Settings` — previously `station.py`
 constructed `UltrasonicDetector` with no configuration path at all, so none of these could
@@ -290,10 +323,11 @@ Bat pass event titles now carry the peak frequency and a candidate group name, f
 "36 kHz - Myotis / barbastelle?" and "54 kHz - soprano pipistrelle?"; the question mark is
 mandatory and always present. The 17–21 kHz band additionally carries "may be a bush-cricket"
 — an insect, not a bat. This is presentational only: the stored record keeps
-`label = "bat pass"` with no species name anywhere in it, and the normaliser's
-`ClaimViolation` guard, which rejects any species claim from a non-taxonomic plugin, is
-unchanged and covered by test. The candidate name is a hint for a human to weigh, never an
-identification, and it must not be read as one.
+`label = "bat pass"` with no species name anywhere in it, and this is covered by test. (On
+what actually enforces the no-species rule for this plugin, see the caveat above — the
+`NON_TAXONOMIC_PLUGINS` guard does not cover it; ADR-049's per-detection binomial backstop
+does.) The candidate name is a hint for a human to weigh, never an identification, and it
+must not be read as one.
 
 Evidence clips for this plugin get an audible derivative via
 `src/open_observatory/audio/ultrasound.py` (time-expansion or heterodyne — see
@@ -308,10 +342,9 @@ called "not started" is done: `scripts/benchmark_batdetect2.py`,
 `tests/test_batdetect2.py` and `BATDETECT2_EVALUATION.md`, measured on the Pi on
 2026-08-05 (ADR-017). The `results/batdetect2-pi5.json` this sentence also used to
 cite **does not exist and never has** — see the provenance warning in
-`BATDETECT2_EVALUATION.md`; the figures survive, their raw artefact does not. What is
-genuinely open is whether to promote the offline cascade in
-`scripts/classify_clips_batdetect2.py` into a live, queued plugin against
-`DeferredDetectorWorker` — an unmade decision, not a technical blocker.
+`BATDETECT2_EVALUATION.md`; the figures survive, their raw artefact does not. **Whether to
+promote the offline cascade was the open question here until 2026-08-09; it is now closed
+by ADR-045** — see "The refinement runner" below.
 
 Nothing shipped should be read as a substitute classifier: `ultrasonic-pass-v1` answers
 "was there a bat pass here" with supporting measurements, not "which species".
@@ -365,7 +398,54 @@ Tested with a synthetic slow plugin (`tests/test_deferred.py`), not BatDetect2 �
 still no BatDetect2 adapter, per ADR-017, and this capability makes no assumption about
 which model eventually uses it. The capability is not yet wired into `station.py`: no
 shipped plugin declares itself deferred, so there is nothing for it to run against yet.
-`deferred_enabled` defaults to `False`.
+`deferred_enabled` defaults to `False`. Verified 2026-08-09: `DeferredDetectorWorker` is
+instantiated nowhere outside `tests/test_deferred.py`.
+
+**And ADR-045 decided it is not the mechanism for the BatDetect2 cascade either**, which
+is the use this section was written in anticipation of. Its central safety property is
+dropping anything older than `max_delivery_latency_s`; a clip written six hours ago is
+exactly what it would, correctly, reject. It remains the right mechanism for a *live*
+detector too slow to run inline, and the wrong one for stored evidence.
+
+## The refinement runner — the cascade, as it actually shipped (ADR-045)
+
+The cascade this document anticipated ships as a **separate process**, not a plugin:
+`oo refine run`, `src/open_observatory/refinement/`, on `open-observatory-refine.timer` at
+01:00 UTC, fenced by systemd to `AllowedCPUs=2-3` / `Nice=19` / `MemoryMax=1G` (all three
+verified on the target under systemd 255). It shares neither a GIL nor a core with capture,
+which is what makes it safe in a way an in-process queue would not have been.
+
+`batdetect2-cascade` is a **refiner**, not a detector plugin. It does not appear in
+`GET /api/v1/detectors`, it never sees a live `AudioWindow`, and its `authority` is
+`"propose"` — the runner writes append-only `refinement` rows and stamps each event with
+`refined_at` / `refinement_version` / `refinement_outcome`, and **never** edits a
+detection's species, score or `native_result`. A before/after comparison of the claim
+columns raises if anything moved.
+
+| Config key | Default |
+|---|---|
+| `refinement_enabled` | `True` |
+| `refinement_window_start_hour_utc` | `1` |
+| `refinement_window_end_hour_utc` | `3` |
+| `refinement_max_items` | `1200` |
+| `refinement_max_seconds` | `5400` |
+| `refinement_trim_s` | `1.5` |
+| `refinement_min_det_prob` | `0.05` |
+| `refinement_threads` | `2` |
+
+What bounds the work is that UTC window plus the item and time budgets and the CPU fence —
+**not** the ultrasonic night scheduler, which bounds live detection only.
+
+**Why propose-only, and it is a measurement not a caution:** BatDetect2 returned 0.77 for
+*Pipistrellus pygmaeus* on a call this station measured at 34 kHz, when soprano pipistrelle
+peaks near 55 kHz, and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing the runner
+writes reaches the API, MQTT, the web UI or the counter-top display.
+
+**Not yet run against the live station:** as of 2026-08-09 the station's `refinement` table
+holds **0 rows**. Two further gaps ADR-045 records and does not close: nothing connects a
+proposal to the review workflow (`refinement.resolved_at` stays NULL; `oo refine status` is
+the only way to see one), and `retention.py` still deletes clips on age alone, so a clip no
+refiner has examined can still be reclaimed at 7/30/90 days.
 
 ## Known limitation: fixed for new detections; historical rows need repair (ADR-032)
 

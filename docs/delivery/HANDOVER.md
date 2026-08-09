@@ -4,7 +4,8 @@ Written at the end of the first implementation session, 2026-08-04, against the
 live development station; revised 2026-08-08 to cover Milestone 5's
 completion, an AudioMoth outage and its fix, live playback being rebuilt onto a
 different transport, and evidence storage moving to a USB SSD; **claims
-re-verified against the code and the live station on 2026-08-09.**
+re-verified against the code and the live station on 2026-08-09, after that day's
+87 commits (ADR-041 through ADR-053) merged to `main`.**
 
 Read `MILESTONE_STATUS.md` for progress against the plan; this file is the
 operational and engineering context a successor needs. Read the ADR index in
@@ -28,23 +29,37 @@ checksummed evidence clips (including audible renderings of ultrasound) to a USB
 and serves a real-time debug UI over two WebSocket channels plus a plain-HTTP audio
 stream — in scrolling or waterfall orientation, with unidentified and non-live-source
 events hidden by default — plus a history mode for browsing what was persisted. The
-same API now also feeds an **ESP32 counter-top display** (ADR-023) and an **MQTT publisher**
-running live against the operator's Home Assistant broker (ADR-025), and an
-**authentication foundation** exists, off by default (ADR-034).
+same API now also feeds an **ESP32 counter-top display** over a push channel it can
+also update itself from, over the air (ADR-023, ADR-038, ADR-050), and an **MQTT
+publisher** running live against the operator's Home Assistant broker (ADR-025). An
+**authentication foundation** exists, off by default (ADR-034); **every setting is
+editable from the browser** in three declared tiers (ADR-048); and a **refinement
+runner** examines stored bat evidence nightly in its own CPU-fenced process, at
+propose-only authority (ADR-045).
 
-Measured 2026-08-09 on the development laptop against this branch: **389 Python
-tests pass, 6 skip** (`pytest -q --deselect tests/test_api.py::TestLiveChannels`;
-the skips are the unbundled-model fixture tests, by design) and **140 frontend
-tests pass**. `ruff check .` is clean; `mypy src` reports 29 pre-existing errors
-and has never been clean. The last recorded full run *on the target device* was
-197 Python tests on 2026-08-08 — that number is a snapshot of that run, not the
-current suite. It runs as a systemd unit and survives reboots.
+Measured 2026-08-09 on the development laptop against merged `main`: **817 Python
+tests pass, 8 skip, 12 deselected** (`pytest -q --deselect
+tests/test_api.py::TestLiveChannels`), or **826 pass, 11 skip** with a bare
+`pytest -q`; the skips are the unbundled-model fixture tests plus three
+`TestLiveChannels` cases carrying `@pytest.mark.skip`. **235 frontend tests pass**
+in 22 files. `ruff check .` is clean; `mypy src` reports **22** pre-existing
+errors in 11 files and has never been clean. The last recorded full run *on the
+target device* was 197 Python tests on 2026-08-08 — that number is a snapshot of
+that run, not the current suite, and neither is any number in this paragraph. It
+runs as a systemd unit and survives reboots.
 
 Milestone 5 (ultrasonic and bat support) is complete: a bat pass detector runs
 live, gated to night by a solar scheduler, and BatDetect2 was benchmarked on the
 target and deliberately *not* adopted as a live detector — see §1a. It is
-**not complete** as a whole system: no 72-hour soak, an open capture-gap
-investigation, a minimal review workflow, and Milestone 7 not started.
+**not complete** as a whole system, and `CLAUDE.md` forbids that word until the
+acceptance criteria pass a continuous 72-hour soak on the Pi. **That soak has
+never been run.** Also outstanding: the one-hour drift run at full duration, what
+remains of the capture-gap investigation, the three plausibility/taxonomy/privacy
+repair commands never applied to the live database, Milestone 6's alert engine,
+Milestone 7 entirely, and most of Milestone 8.
+
+(The review workflow is no longer on that list — ADR-043 closed it on 2026-08-09,
+and the live station's `review` table holds 65 rows.)
 
 ## 1a. The cascade finding — the most reusable idea from Milestone 5
 
@@ -77,14 +92,35 @@ mechanism for a *live* detector too slow to run inline.
 
 A long multi-agent session. The transferable parts:
 
-**Delivered:** an ESP32 counter-top display (ADR-023, ADR-038); MQTT + Home Assistant,
-live on the operator's broker (ADR-025); tiered retention (ADR-026); live
-ultrasonic retuning restored (ADR-022); coverage bounded by delivered frames
+**Delivered on 2026-08-08:** an ESP32 counter-top display (ADR-023, ADR-038); MQTT +
+Home Assistant, live on the operator's broker (ADR-025); tiered retention (ADR-026);
+live ultrasonic retuning restored (ADR-022); coverage bounded by delivered frames
 (ADR-024); the capture-gap root cause and fix (ADR-033); BirdNET plausibility
 filtering (ADR-032); an Alembic environment (ADR-035); an authentication
 foundation, off by default (ADR-034); the deficit estimator corrected (ADR-039);
 a committed species fixture passing on target; a documentation audit; and
 `docs/CHARTER.md`.
+
+**Delivered on 2026-08-09**, a second and larger fan-out of 87 commits — read the
+ADRs, not this list, which exists only so nothing is invisible:
+
+| ADR | What landed |
+|---|---|
+| 041 | The ultrasonic spectrogram gets its own measured floor and ceiling |
+| 042 | `alembic upgrade head` runs in `deploy.sh`; `create_all()` and the ALTER TABLE patcher retired from production |
+| 043 | Taxon correction closes the review workflow; a human's ear outranks the machine |
+| 044 | A withdrawn detection is marked in the record and suppressed on claim surfaces; the BirdNET week index audited and confirmed correct |
+| 045 | The refinement runner: a separate CPU-fenced process, propose-only, on a timer |
+| 046 | The frame deficit is 98% crystal drift — stop showing it as lost audio |
+| 047 | Site parameters are runtime state; the repository ships no site |
+| 048 | Every setting web-configurable, in three declared tiers |
+| 049 | BirdNET's sound categories are not species; no clip is kept for human speech |
+| 050 | Counter-top display OTA — **flashed and verified on hardware**, rollback drill included |
+| 051 | The spectrogram marks where the sound being played back is, as an interval |
+| 052 | A near-miss ledger: what BirdNET proposed and refused, with per-band histograms |
+| 053 | Taxonomic grouping above species — **proposed only**, nothing implemented |
+
+Milestones 8 (distribution) and 9 (nice-to-have) were added to the plan the same day.
 
 **Four bugs that had been silently lying, all found by checking an instrument
 against the thing it claimed to measure:**
@@ -253,9 +289,10 @@ unless noted.
 
 | Property | Value |
 |---|---|
-| Capture continuity | 0.9990–0.9997; **0.999907** on the live station 2026-08-09 over 12.4 h |
-| Gaps / overruns in normal running | 0 — **but see the open investigation.** On 2026-08-09 the station reported 369 `capture.gap` records and 3 ALSA overruns over 12.4 h, and its real frame deficit over that period was ~4.1 s (0.0095%) against an `estimated_missing_seconds` of 54.5 — a ~13× over-report by the deficit estimator, not lost audio. See `OPEN_INVESTIGATION_CAPTURE_GAPS.md` finding 2 and ADR-033 |
-| Device clock offset | −43 ppm (a real crystal property, not an error) |
+| Capture continuity | 0.9990–0.9997; **0.999474** on the live station 2026-08-09 21:46Z over a 4.03 h restart-free run |
+| Gaps / overruns in normal running | Usually 0. On that same 4.03 h run: **12 ALSA overruns, 12 gaps with loss, 0 without**, `estimated_missing_seconds` 6.82. **The estimator is now believable and this is the first on-target case of a real loss**: the raw deficit was 7.64 s, of which 0.75 s is crystal drift at the measured −51.5 ppm, leaving 6.89 s — agreeing with the estimate to 0.08 s over four hours. Contrast the pre-ADR-039 behaviour, which over-reported by 8–13× *while losing nothing*. See `OPEN_INVESTIGATION_CAPTURE_GAPS.md` |
+| `late_read_max_frames` | **155,243 of a 192,000-frame ring (81%)** on that run, against 114,362 (60%) and 57,952 (30%) on the two previous readings. Nothing was lost to it, but the trend is the wrong way and `OO_CAPTURE_BUFFER_MS` is the lever |
+| Device clock offset | −43 to −52 ppm (a real crystal property, not an error; it moves a few ppm with temperature) |
 | Per-block hot-path CPU | 10.9% of one core (was 9.5% before ultrasonic sub-windowing) |
 | Whole-process CPU | ~29% of 4 cores with all three detectors |
 | Resampler group delay | 0 frames |
@@ -277,11 +314,15 @@ unless noted.
    acceptance criteria require it before the word "complete" may be used. Watch
    `oo_capture_continuity_ratio`, `oo_ring_extraction_misses_total`,
    `oo_detector_windows_dropped_total`, RSS, and the clip budget.
-2. **Commit a fixture test that proves a known species from a known recording.**
-   Milestone 3's exit gate asks for this and it is currently only demonstrated
-   live. Needs a freely-licensable reference recording (Xeno-canto CC0/BY are
-   candidates — check each recording's own licence, they vary).
-3. **Run the one-hour drift test at full duration.** Currently verified at 5 min.
+2. ~~**Commit a fixture test that proves a known species from a known recording.**~~
+   **Done 2026-08-08** — `tests/test_birdnet_fixture.py`, a committed CC BY-SA
+   European Robin recording, passing on the target Pi 5. Struck rather than
+   deleted so the record of what was outstanding survives.
+3. **Run the one-hour drift test at full duration.** Still outstanding. ADR-046's
+   42.7-minute restart-free sampling run is the best evidence so far and its
+   longest *clean* segment was 22.2 minutes, which does not reach a mechanism with
+   an hourly or nightly period. The method is written down and takes 15 minutes;
+   what it needs is a window with nobody deploying.
 4. **Re-run the BatDetect2 benchmark and commit its output.** Found 2026-08-09:
    three documents cited `results/batdetect2-pi5.json` as the retained provenance
    for Milestone 5's exit gate, and that file does not exist anywhere — not in the
@@ -387,10 +428,11 @@ useful addition and is not currently planned.
      path (`detection_feed.cpp`, including its streaming JSON filter). The web UI
      marks it everywhere and explains it in the detection drawer. The split — a
      *record* is marked, a *claim* is suppressed — is argued from charter items 5
-     and 6 in ADR-044. **The firmware change is committed but NOT flashed: the
-     ESP32 was not connected.** The push path already protects an unflashed
-     device, since the station never sends a withdrawn row; the firmware change
-     only matters for the HTTP fallback.
+     and 6 in ADR-044. ~~The firmware change is committed but NOT flashed.~~
+     **Flashed 2026-08-09** as part of ADR-050's OTA work; the station reported
+     the display at firmware `0.2.4`. (The push path already protected an
+     unflashed device anyway, since the station never sends a withdrawn row; the
+     firmware change only ever mattered for the HTTP fallback.)
    - ~~**The week index passed to the range model was not re-audited.**~~
      **Done (ADR-044): it is correct.** Re-derived from the code and asserted for
      every day of a common and a leap year (48 weeks, four per calendar month,
@@ -438,8 +480,13 @@ useful addition and is not currently planned.
      `oo clips purge-human-audio` removes the existing ones and keeps the
      detection rows.
 
-   None of the three commands has been run with `--apply` on the live station.
-   The order to run them in is privacy, taxonomy, then plausibility.
+   **None of the three commands has been run with `--apply` on the live
+   station** — re-confirmed 2026-08-09. The order to run them in is privacy,
+   taxonomy, then plausibility. Until then the historical rows, including the
+   measured *Western Screech-Owl* and *Flammulated Owl*, are still presented
+   everywhere. This is the largest remaining item in §6.3 and it is an operator
+   decision, not a code one: the code side is finished and takes effect
+   immediately on `--apply`, with no restart.
 
 4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
    needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID
@@ -559,11 +606,14 @@ useful addition and is not currently planned.
     `api/app.py`/`cli.py` call a new `ensure_schema_at_head()` instead of
     `create_all()`. The `create_all()`+ALTER TABLE patcher is retired from every
     production code path (`create_all()` itself survives only as a test helper).
-    A fourth revision (`0004_drop_dead_detection_indexes`, ADR-037) landed since
-    this item was written; the live station is confirmed at
-    `0004_drop_dead_detection_indexes (head)` with 65,515 detections and 28,183
-    media assets, verified against a read-only backup — `alembic upgrade head`
-    against that copy is a true idempotent no-op.
+    **There are now six revisions, and the live station is at `0006_refinement`,
+    which is `head`** — read from its own `alembic_version` table, read-only, on
+    2026-08-09 at 21:46Z, holding 74,969 detections, 35,285 media assets, 65
+    reviews and 0 refinements. ADR-042's deploy step has therefore carried a real
+    station across three revisions (`0004` → `0005` → `0006`) unattended, which is
+    the thing that was untested when that ADR was written. An earlier reading at
+    `0004` (65,515 detections, 28,183 media assets) also confirmed
+    `alembic upgrade head` a true idempotent no-op against a read-only copy.
 
 ### 6.3a Small, known, and unfixed
 
@@ -642,10 +692,11 @@ authority; the short version:
 - **PostgreSQL migration.** ADR-007 keeps SQLite for the debug slice. Anything
   needing concurrent writers, `LISTEN/NOTIFY` or JSON indexing must wait for this.
   The DSN is intended to be the only change. **The Alembic environment now
-  exists** (ADR-035, three revisions, live station at `0003_auth_tables`), so the
-  prerequisite this entry used to name is met — but it has only ever been
-  exercised against SQLite, so "the DSN swap is configuration-only" stays
-  unverified until someone runs it against a real PostgreSQL 16 instance.
+  exists** (ADR-035; six revisions as of 2026-08-09, live station at
+  `0006_refinement`), so the prerequisite this entry used to name is met — but it
+  has only ever been exercised against SQLite, so "the DSN swap is
+  configuration-only" stays unverified until someone runs it against a real
+  PostgreSQL 16 instance.
   **Done (ADR-042, 2026-08-09):** startup now calls `ensure_schema_at_head()`
   and `deploy/deploy.sh` runs `alembic upgrade head` before every restart (see
   §6.3 item 10). PostgreSQL itself remains unexercised in this repository.
@@ -699,6 +750,16 @@ authority; the short version:
   "not measured", not "nothing lost" — and the uncredited deficit dragged
   `rate_offset_ppm` to −245 against a true device offset near −43. Use
   `gaps_with_loss` / `gaps_without_loss` from `/api/v1/health`.
+- **`expected_frames - frames` is not a measure of lost audio, and an earlier
+  round of this project told people it was.** It is loss *plus* crystal drift
+  (~0.18 s per hour at this device's ≈−50 ppm — 4.4 s a day with nothing lost)
+  *plus* a block-sampling phase artefact worth about **±50 ms on any single
+  reading**, because `frames` advances in whole 100 ms blocks while
+  `expected_frames` comes from a continuous clock. Since ADR-039,
+  **`estimated_missing_seconds` is the figure to judge loss by** — it is a
+  decomposition of the deficit, not a rival to it — and ADR-046 is why the UI
+  shows the two separately as "audio lost" and "behind clock". If a document tells
+  you to prefer the raw deficit, it predates ADR-046.
 - **A stream row's `end_utc` is when the process noticed, not when audio stopped**,
   and `frame_count` is written only on a graceful close. 48 of 49 rows on the station
   carried `frame_count = 0`. The station now checkpoints frames into the open row
