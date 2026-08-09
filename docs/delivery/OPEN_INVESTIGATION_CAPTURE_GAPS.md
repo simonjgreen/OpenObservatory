@@ -276,7 +276,7 @@ occurrence will say so instead of vanishing.
 ## Smoke test on the target
 
 ```bash
-ssh observer@station.example
+ssh <user>@<station-host>
 curl -s localhost:8080/api/v1/health | python3 -m json.tool | head -40
 # Expect, after several minutes of running:
 #   alsa_buffer_frames  192000        (500 ms; must exceed block_frames 38400)
@@ -298,8 +298,8 @@ The change is confined to `src/`, with no schema change and no new dependency.
 
 ```bash
 git revert 3db9092
-rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
-ssh observer@station.example sudo systemctl restart open-observatory
+rsync -a --delete --exclude __pycache__ ./src/ <user>@<station-host>:open-observatory/src/
+ssh <user>@<station-host> sudo systemctl restart open-observatory
 ```
 
 The ring depth alone can be rolled back without reverting anything, by setting
@@ -503,7 +503,7 @@ echo 'OO_RETENTION_ENABLED=false' >> ~/open-observatory/config/runtime.env
 Smoke test on the target, after several minutes of running:
 
 ```bash
-ssh observer@station.example
+ssh <user>@<station-host>
 curl -s localhost:8080/api/v1/station | python3 -m json.tool | grep -E \
   'loop_lag_max_s|loop_lag_events|housekeeping_blocking_s|continuity_ratio|overruns'
 # Expect: housekeeping_blocking_s < 0.01, overruns 0, continuity_ratio >= 0.9990.
@@ -577,7 +577,7 @@ are one defect and not two.
 Run this **before** deploying, on the station as it is:
 
 ```bash
-ssh observer@station.example "curl -s localhost:8080/api/v1/station" | python3 -c '
+ssh <user>@<station-host> "curl -s localhost:8080/api/v1/station" | python3 -c '
 import json,sys; c=json.load(sys.stdin)["capture"]
 d=c["expected_frames"]-c["frames"]
 print("deficit      ", d, "frames =", round(d/c["sample_rate"],4), "s")
@@ -592,8 +592,8 @@ Then deploy (this is a deploy the orchestrator must serialise — it restarts
 capture and resets every counter):
 
 ```bash
-rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
-ssh observer@station.example sudo systemctl restart open-observatory
+rsync -a --delete --exclude __pycache__ ./src/ <user>@<station-host>:open-observatory/src/
+ssh <user>@<station-host> sudo systemctl restart open-observatory
 sleep 1800   # 30 minutes, so the ratio is not dominated by startup
 ```
 
@@ -620,8 +620,8 @@ Confined to `src/`, no schema change, no new dependency, no new setting.
 
 ```bash
 git revert <this commit>
-rsync -a --delete --exclude __pycache__ ./src/ observer@station.example:open-observatory/src/
-ssh observer@station.example sudo systemctl restart open-observatory
+rsync -a --delete --exclude __pycache__ ./src/ <user>@<station-host>:open-observatory/src/
+ssh <user>@<station-host> sudo systemctl restart open-observatory
 ```
 
 There is no configuration lever to disable the new behaviour, deliberately: a

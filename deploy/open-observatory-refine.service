@@ -1,6 +1,8 @@
+# Template unit: @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
+# deploy/deploy.sh at install time. No committed default user or path.
 [Unit]
 Description=Open Observatory refinement runner (charter item 5, ADR-045)
-Documentation=file:///home/observer/open-observatory/docs/architecture/ADRS.md
+Documentation=file://@DEPLOY_ROOT@/docs/architecture/ADRS.md
 # Deliberately NOT Requires=open-observatory.service. Refinement reads the
 # database and clip files; it does not talk to the station process, and it must
 # still run (and still report honestly) on a night when capture was down --
@@ -9,12 +11,12 @@ After=open-observatory.service
 
 [Service]
 Type=oneshot
-User=observer
-Group=observer
-WorkingDirectory=/home/observer/open-observatory
+User=@DEPLOY_USER@
+Group=@DEPLOY_USER@
+WorkingDirectory=@DEPLOY_ROOT@
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/home/observer/open-observatory/config/runtime.env
-ExecStart=/home/observer/open-observatory/.venv/bin/oo refine run
+EnvironmentFile=-@DEPLOY_ROOT@/config/runtime.env
+ExecStart=@DEPLOY_ROOT@/.venv/bin/oo refine run
 
 # --- the fence -------------------------------------------------------------
 # Charter item 1: capture always wins. ADR-033 measured what happens when
@@ -62,7 +64,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/home/observer/open-observatory/data
+ReadWritePaths=@DEPLOY_ROOT@/data
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

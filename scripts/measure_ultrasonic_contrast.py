@@ -15,7 +15,7 @@ Reports p1/p50/p95/p99 dBFS split by frequency: 15-45 kHz (where bats are
 expected and the operator reported saturation) versus >=50 kHz (which looked
 fine in the reported screenshot).
 
-    python scripts/measure_ultrasonic_contrast.py --host station.example --seconds 30
+    python scripts/measure_ultrasonic_contrast.py --host <station-host> --seconds 30
 """
 
 from __future__ import annotations
@@ -93,7 +93,11 @@ async def sample(host: str, seconds: float) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="station.example")
+    parser.add_argument(
+        "--host",
+        required=True,
+        help="the station to measure (required: no station address is committed, ADR-042)",
+    )
     parser.add_argument("--seconds", type=float, default=30.0)
     args = parser.parse_args()
     asyncio.run(sample(args.host, args.seconds))

@@ -1506,7 +1506,7 @@ migration — it fixes a real gap found while building this environment:
 an index, so the live station's `media_asset.reclaimed_at` column had no
 index despite the model declaring one. Confirmed against a local read-only
 copy of the live station's `openobservatory.sqlite`
-(`ssh observer@station.example`, then `scp` the file — never opened for writing).
+(`ssh <user>@<station-host>`, then `scp` the file — never opened for writing).
 Written as `CREATE INDEX IF NOT EXISTS` / `DROP INDEX IF EXISTS` so it is a
 safe no-op on a database that reached `0001_initial` through a normal
 `upgrade` (which already creates the index) and a real fix on one that
@@ -1777,7 +1777,7 @@ implemented"** at the end of this entry — read that section for the current
 truth about the schema; everything above it is the research that led there.
 Every number below was measured on **2026-08-09** against a
 read-only copy of the live station's `openobservatory.sqlite`
-(`ssh observer@station.example`, `scp`, opened `mode=ro` or on a local copy; the
+(`ssh <user>@<station-host>`, `scp`, opened `mode=ro` or on a local copy; the
 station's own file was never opened for writing and the station was never
 deployed to or restarted).
 
@@ -2943,9 +2943,9 @@ Target smoke test — with no browser open, columns must not advance, and a
 browser must start them within a couple of blocks:
 
 ```bash
-curl -s http://station.example:8080/api/v1/station \
+curl -s http://<station-host>:8080/api/v1/station \
   | python3 -c 'import json,sys; print([(s["name"], s["columns_emitted"], s["viewer_gated"], s["history_seconds"]) for s in json.load(sys.stdin)["spectrograms"]])'
-# then open http://station.example:8080/ and run it again: columns_emitted rises,
+# then open http://<station-host>:8080/ and run it again: columns_emitted rises,
 # history_seconds climbs towards spectrogram_backfill_s, and the canvas carries
 # "filling ..." until it does.
 
@@ -3057,11 +3057,11 @@ by setting `OO_ULTRASONIC_SPECTROGRAM_FLOOR_DB=-105` and
 restarting -- no deploy needed -- or `git revert` the commit.
 
 ```bash
-python scripts/measure_ultrasonic_contrast.py --host station.example --seconds 30
-curl -s http://station.example:8080/api/v1/station \
+python scripts/measure_ultrasonic_contrast.py --host <station-host> --seconds 30
+curl -s http://<station-host>:8080/api/v1/station \
   | python3 -c 'import json,sys; print([(s["name"], s["floor_db"], s["ceiling_db"]) for s in json.load(sys.stdin)["spectrograms"]])'
 # expect [("audible", -95.0, -15.0), ("ultrasonic", -85.0, -30.0)]
-# then open http://station.example:8080/ with the ultrasonic panel selected and
+# then open http://<station-host>:8080/ with the ultrasonic panel selected and
 # confirm the noise floor reads dark rather than saturated orange.
 ## ADR-042: `alembic upgrade head` runs in `deploy/deploy.sh`, not application startup; `create_all()`/the ALTER TABLE patcher are retired from production use
 

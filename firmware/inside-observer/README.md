@@ -362,7 +362,7 @@ A complete 4 MB flash image of the stock DIYmalls firmware was taken before any
 of this was written:
 
 ```
-/home/observer/.claude/jobs/JOBID/tmp/firmware-backup.bin   (4,194,304 bytes)
+~/.claude/jobs/JOBID/tmp/firmware-backup.bin   (4,194,304 bytes, on the development laptop)
 ```
 
 Keep a copy somewhere durable — that path is a scratch directory.
@@ -393,7 +393,7 @@ pio test -e native
 
 # 2. What the push channel actually costs on the wire, against the live station.
 #    Expect ~11 B/s: a 49-byte detection, a 43-byte heartbeat every 10 s.
-python scripts/probe_display_channel.py station.example 90
+python scripts/probe_display_channel.py <station-host> 90
 
 # 3. Flash, then read the board's own account of itself for two minutes.
 sudo pio run -e cyd -t upload
@@ -419,7 +419,7 @@ side effect. `dropped` must stay 0, and free heap must be flat.
 Then confirm the station is unharmed:
 
 ```bash
-curl -s http://station.example:8080/api/v1/station | jq '.capture, .display_channel'
+curl -s http://<station-host>:8080/api/v1/station | jq '.capture, .display_channel'
 ```
 
 Judge continuity by `frames` against `expected_frames`, not by

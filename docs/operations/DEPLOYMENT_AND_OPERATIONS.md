@@ -19,7 +19,7 @@ server. There is no message broker; the event bus is in-process (ADR-009).
 ### Layout on the target
 
 ```text
-/home/observer/open-observatory/        REMOTE_DIR, synced source + venv
+/home/<user>/open-observatory/        REMOTE_DIR, synced source + venv
   .venv/                             created by deploy.sh, not synced
   config/
     runtime.env                      operator-owned, NOT in the repo, NOT synced by rsync --delete
@@ -53,7 +53,7 @@ It is idempotent — safe to run repeatedly — and takes flags:
 | `./deploy/deploy.sh` | full deploy |
 | `./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
 | `./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source and restart |
-| `HOST=user@host ./deploy/deploy.sh` | target a machine other than the default `station.example` |
+| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-042) |
 
 `REMOTE_DIR` (default `open-observatory`, relative to the SSH login home) is
 also overridable as an environment variable, though this is rarely needed.
@@ -70,7 +70,7 @@ file was destroyed by a deploy once, before the exclude existed. Do not
 remove that exclude line, and do not assume any file under `config/` survives
 a plain sync unless it is likewise excluded.
 
-The systemd unit loads it with `EnvironmentFile=-/home/observer/open-observatory/config/runtime.env`
+The systemd unit loads it with `EnvironmentFile=-/home/<user>/open-observatory/config/runtime.env`
 — the leading `-` means a missing file is not an error, so a freshly
 provisioned host with no `runtime.env` still starts (with defaults from
 `config/example.env`/`Settings`, not with the real station's identity).
@@ -93,7 +93,8 @@ by a later deploy, and are not shipped from the developer machine either
 ### The systemd unit
 
 `deploy/open-observatory.service` runs `ExecStart=.venv/bin/oo serve` as user
-`observer`, group `observer`, with `SupplementaryGroups=audio plugdev` for `/dev/snd`
+the deploy user (substituted by `deploy.sh` at install time), with
+`SupplementaryGroups=audio plugdev` for `/dev/snd`
 and AudioMoth `hidraw` access. Relevant settings and why they are there:
 
 | Setting | Value | Purpose |
@@ -104,7 +105,7 @@ and AudioMoth `hidraw` access. Relevant settings and why they are there:
 | `NoNewPrivileges=true` | | no privilege escalation |
 | `ProtectSystem=full` | | most of the filesystem read-only to the service |
 | `ProtectHome=read-only` | | home directories read-only, including the working directory's parent |
-| `ReadWritePaths=/home/observer/open-observatory/data` | | the one path the service may write, explicitly carved out of `ProtectHome` |
+| `ReadWritePaths=/home/<user>/open-observatory/data` | | the one path the service may write, explicitly carved out of `ProtectHome` |
 | `PrivateTmp=true`, `ProtectKernelTunables=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true` | | further privilege reduction per technical spec §13 |
 | `StandardOutput=journal`, `StandardError=journal` | | logs go to the journal, not files, so log rotation is `journald`'s problem, not this project's |
 
@@ -162,28 +163,28 @@ than classifying. `oo refine run --force` is the deliberate override.
 
 ```bash
 # deploy (from the developer machine, repo root)
-./deploy/deploy.sh                     # full deploy to station.example
+HOST=<user>@<station-host> ./deploy/deploy.sh   # full deploy
 ./deploy/deploy.sh --no-web            # skip the UI build
 HOST=user@otherhost ./deploy/deploy.sh # different target
 
 # service control (run these, not process signals, from an SSH session — see trap below)
-ssh station.example sudo systemctl status open-observatory
-ssh station.example sudo systemctl restart open-observatory
-ssh station.example sudo systemctl stop open-observatory     # required before probing hardware directly; only one process may own the mic
-ssh station.example sudo journalctl -u open-observatory -f
-ssh station.example sudo journalctl -u open-observatory -n 100 --no-pager
+ssh <station-host> sudo systemctl status open-observatory
+ssh <station-host> sudo systemctl restart open-observatory
+ssh <station-host> sudo systemctl stop open-observatory     # required before probing hardware directly; only one process may own the mic
+ssh <station-host> sudo journalctl -u open-observatory -f
+ssh <station-host> sudo journalctl -u open-observatory -n 100 --no-pager
 
 # on-device diagnostics (see docs/operations/TARGET_DIAGNOSTICS.md for recorded output)
-ssh station.example '~/open-observatory/.venv/bin/oo audio probe'
-ssh station.example '~/open-observatory/.venv/bin/oo audio test-capture --seconds 8'
-ssh station.example '~/open-observatory/.venv/bin/oo audio resample-check'
-ssh station.example '~/open-observatory/.venv/bin/oo audiomoth info'   # switch must be in USB/OFF
-ssh station.example '~/open-observatory/.venv/bin/oo models status'
-ssh station.example '~/open-observatory/.venv/bin/oo system-report'
-ssh station.example '~/open-observatory/.venv/bin/oo config'          # effective settings, resolved DSN
+ssh <station-host> '~/open-observatory/.venv/bin/oo audio probe'
+ssh <station-host> '~/open-observatory/.venv/bin/oo audio test-capture --seconds 8'
+ssh <station-host> '~/open-observatory/.venv/bin/oo audio resample-check'
+ssh <station-host> '~/open-observatory/.venv/bin/oo audiomoth info'   # switch must be in USB/OFF
+ssh <station-host> '~/open-observatory/.venv/bin/oo models status'
+ssh <station-host> '~/open-observatory/.venv/bin/oo system-report'
+ssh <station-host> '~/open-observatory/.venv/bin/oo config'          # effective settings, resolved DSN
 
 # test suite on the target
-ssh station.example 'cd ~/open-observatory && .venv/bin/pytest'
+ssh <station-host> 'cd ~/open-observatory && .venv/bin/pytest'
 ```
 
 ### The full operator CLI surface
@@ -377,7 +378,7 @@ device details (partition, UUID, `fstab` line). The database stays on the SD car
 
 This has one operational consequence that is easy to get wrong: **the systemd unit
 runs in a mount namespace** (`ProtectHome=read-only` with
-`ReadWritePaths=/home/observer/open-observatory/data`), so a filesystem mounted on the
+`ReadWritePaths=/home/<user>/open-observatory/data`), so a filesystem mounted on the
 host *while the service is already running* is not visible inside it. Mounting (or
 remounting, or replugging) the SSD always requires
 `sudo systemctl restart open-observatory` afterwards to take effect — the mount
@@ -437,7 +438,7 @@ Pre-existing and unfixed. If `config/example.env` is copied verbatim to
 `runtime.env` rather than edited, those are the lines to comment out first.
 `OO_AUTH_PUBLIC_READ_PATHS` does not have this problem — it declares `NoDecode`.
 
-### the development station station's `runtime.env`, as it now stands
+### The development station's `runtime.env`, as it now stands
 
 Because `runtime.env` is gitignored (see above), its actual contents are not visible
 from the repository. As of the 2026-08-08 storage work, the station's copy sets, in

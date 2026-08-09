@@ -1,7 +1,7 @@
 # Handover: state, decisions, and what to do next
 
 Written at the end of the first implementation session, 2026-08-04, against the
-live station at `station.example`; revised 2026-08-08 to cover Milestone 5's
+live development station; revised 2026-08-08 to cover Milestone 5's
 completion, an AudioMoth outage and its fix, live playback being rebuilt onto a
 different transport, and evidence storage moving to a USB SSD; **claims
 re-verified against the code and the live station on 2026-08-09.**
@@ -120,7 +120,7 @@ same `detector_id` does not imply the same operational config over time.
 
 ```bash
 # From a workstation with the repo checked out:
-HOST=station.example ./deploy/deploy.sh          # build UI, sync, install unit, restart
+HOST=<user>@<station-host> ./deploy/deploy.sh          # build UI, sync, install unit, restart
 ./deploy/deploy.sh --no-web --no-deps          # fast code-only redeploy
 
 # On the Pi:
@@ -130,7 +130,7 @@ cd ~/open-observatory && .venv/bin/oo audio probe
 .venv/bin/python -m pytest -q
 ```
 
-UI: `http://station.example:8080`. API: `/api/v1/…`. Metrics: `/metrics`. Live
+UI: `http://<station-host>:8080`. API: `/api/v1/…`. Metrics: `/metrics`. Live
 listening now defaults to `GET /api/v1/live/audio.wav` (a plain `<audio>` element),
 not the WebSocket channel — see ADR-019 and
 `docs/operations/DEPLOYMENT_AND_OPERATIONS.md`.
@@ -265,7 +265,7 @@ unless noted.
 | BirdNET | p95 77–109 ms, ~40× realtime, 6522 labels |
 | Ultrasonic detector | p95 54–104 ms, ~36–40× realtime |
 | Activity detector | p95 13–16 ms, ~95× realtime, fires on ~9% of windows |
-| BirdNET plausibility | week 29, 139 species plausible at the development station |
+| BirdNET plausibility | week 29, 139 species plausible at the station's configured location |
 | BatDetect2 (measured, not adopted live) | p95 968 ms per 0.5 s clip, 0.52× realtime, +459 MB RSS |
 | BatDetect2 cascade (offline, trimmed 1.5 s clips) | 2.1 s inference per pass; ~36 min classifier work for 1015 passes in one night |
 
@@ -304,7 +304,7 @@ useful addition and is not currently planned.
 
 ### 6.3 Fix the things I know are wrong or unfinished
 
-0. **North American owls are being reported at the development station, and they now reach a
+0. **North American owls are being reported by the station, and they now reach a
    screen in the operator's house.** — **Fixed in code by ADR-032 (detector) and
    ADR-044 (consumers, plus the week audit). One operator action remains:
    `oo detections reconcile-plausibility` has still never been run against the
@@ -319,7 +319,8 @@ useful addition and is not currently planned.
    synthetic, so ADR-020's filter does not hide them.
 
    The location filter was **on** and correctly configured
-   (`OO_BIRDNET_USE_LOCATION_FILTER=true`, 51.4769/−0.0005), and **the range model
+   (`OO_BIRDNET_USE_LOCATION_FILTER=true`, with the station's real coordinates
+   set in its untracked `runtime.env`), and **the range model
    itself is working**. Priors read straight from the station database are sane:
    Common Woodpigeon 0.995, European Goldfinch 0.781, Western House Martin 0.771,
    and "Engine" 4e-06. This is not a wrong-coordinates problem.
@@ -682,7 +683,7 @@ authority; the short version:
   has no ALSA card at all. §3a's incident was diagnosed by this exact confusion.
 - **A mount created while the service is running is invisible to it.** The systemd
   unit runs in a mount namespace (`ProtectHome=read-only`,
-  `ReadWritePaths=/home/observer/open-observatory/data`). Mounting or replugging the
+  `ReadWritePaths=/home/<user>/open-observatory/data`). Mounting or replugging the
   USB SSD at `data/clips` always needs
   `sudo systemctl restart open-observatory` afterwards — `mount`/`df` showing it on
   the host is not sufficient. See ADR-021.

@@ -1060,8 +1060,8 @@ class Station:
             # Evidence writing must not run in the detector's own task. Awaiting it
             # here blocks the worker until the clips are on disk, and an ultrasonic
             # detection writes four of them — including a time expansion that turns
-            # 6 s of 384 kHz audio into ~54 s of output. Measured on a busy night at
-            # the development station, that stalled `ultrasonic-pass-v1` badly enough to drop
+            # 6 s of 384 kHz audio into ~54 s of output. Measured on a busy night on
+            # the live station, that stalled `ultrasonic-pass-v1` badly enough to drop
             # 69 of 98 windows with a 42 s lag, while its own inference p95 was
             # 57 ms. The detector was missing bats because of disk I/O.
             try:

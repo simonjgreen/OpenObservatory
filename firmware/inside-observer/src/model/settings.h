@@ -58,7 +58,8 @@ struct Settings {
   bool touchFlipY = false;
 
   // Fallback UTC offset in minutes, used only until the station tells us its
-  // real one (see offsetFromLocalMidnight). Europe/London standard time.
+  // real one (see offsetFromLocalMidnight). Zero -- UTC -- deliberately: the
+  // only offset that is not somebody's local assumption (ADR-042).
   int16_t fallbackUtcOffsetMinutes = 0;
 
   MqttSettings mqtt;

@@ -15,10 +15,13 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
   },
   server: {
-    // `npm run dev` against a live Pi: proxy both REST and WebSocket traffic.
+    // `npm run dev`: proxy both REST and WebSocket traffic to the station.
+    // Point OO_TARGET at a live Pi (e.g. OO_TARGET=http://<station-host>:8080);
+    // the default assumes a station running locally. No real station address
+    // is committed here, deliberately (ADR-042).
     proxy: {
       '/api': {
-        target: process.env.OO_TARGET ?? 'http://station.example:8080',
+        target: process.env.OO_TARGET ?? 'http://localhost:8080',
         changeOrigin: true,
         ws: true,
       },

@@ -5,13 +5,15 @@
 # syncs the source, installs Python dependencies if they changed, and restarts the
 # systemd unit. Idempotent: safe to run repeatedly.
 #
-#   ./deploy/deploy.sh                 full deploy
-#   ./deploy/deploy.sh --no-web        skip the UI build
-#   ./deploy/deploy.sh --no-deps       skip pip install
-#   HOST=user@host ./deploy/deploy.sh  target a different machine
+#   HOST=user@host ./deploy/deploy.sh            full deploy
+#   HOST=user@host ./deploy/deploy.sh --no-web   skip the UI build
+#   HOST=user@host ./deploy/deploy.sh --no-deps  skip pip install
+#
+# HOST is required, deliberately (ADR-042): the repository ships no station
+# address, so a deploy always says where it is going.
 set -euo pipefail
 
-HOST="${HOST:-station.example}"
+HOST="${HOST:?Set HOST=user@station-address (this repository ships no default station; see ADR-042)}"
 REMOTE_DIR="${REMOTE_DIR:-open-observatory}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -90,17 +92,17 @@ echo "==> running database migrations"
 ssh "$HOST" "cd $REMOTE_DIR && .venv/bin/python -m alembic upgrade head"
 
 echo "==> installing systemd units"
+# The committed units are templates (ADR-042 site principle): the deploy user
+# and install path are this deployment's, not anybody's committed defaults.
 # The refinement units (ADR-045) are installed alongside the station but are a
 # separate service on a timer: `enable --now` on a .timer arms the schedule
 # without starting a pass, so deploying never puts BatDetect2 on the CPU. The
 # .service itself is Type=oneshot and is deliberately not enabled -- the timer
 # is what starts it.
-ssh "$HOST" "sudo install -m 644 $REMOTE_DIR/deploy/open-observatory.service \
-        /etc/systemd/system/open-observatory.service && \
-    sudo install -m 644 $REMOTE_DIR/deploy/open-observatory-refine.service \
-        /etc/systemd/system/open-observatory-refine.service && \
-    sudo install -m 644 $REMOTE_DIR/deploy/open-observatory-refine.timer \
-        /etc/systemd/system/open-observatory-refine.timer && \
+ssh "$HOST" "for unit in open-observatory.service open-observatory-refine.service open-observatory-refine.timer; do \
+        sed -e \"s|@DEPLOY_USER@|\$(id -un)|g\" -e \"s|@DEPLOY_ROOT@|\$HOME/$REMOTE_DIR|g\" \
+            $REMOTE_DIR/deploy/\$unit | sudo tee /etc/systemd/system/\$unit >/dev/null; \
+    done && \
     sudo install -m 644 $REMOTE_DIR/deploy/99-audiomoth.rules \
         /etc/udev/rules.d/99-audiomoth.rules && \
     sudo udevadm control --reload-rules && \

@@ -1,20 +1,24 @@
+# Template unit (ADR-042): @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
+# deploy/deploy.sh at install time with the deploy user and the synced tree's
+# path. Installing this file verbatim will not start; there is deliberately no
+# committed default user or path.
 [Unit]
 Description=Open Observatory station (capture, detectors, API, debug UI)
-Documentation=file:///home/observer/open-observatory/docs/operations/DEPLOYMENT_AND_OPERATIONS.md
+Documentation=file://@DEPLOY_ROOT@/docs/operations/DEPLOYMENT_AND_OPERATIONS.md
 After=network-online.target sound.target
 Wants=network-online.target
 
 [Service]
 Type=exec
-User=observer
-Group=observer
+User=@DEPLOY_USER@
+Group=@DEPLOY_USER@
 # Capture needs the audio group for /dev/snd, and hidraw access for AudioMoth
 # configuration reads. Nothing here needs root.
 SupplementaryGroups=audio plugdev
-WorkingDirectory=/home/observer/open-observatory
+WorkingDirectory=@DEPLOY_ROOT@
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/home/observer/open-observatory/config/runtime.env
-ExecStart=/home/observer/open-observatory/.venv/bin/oo serve
+EnvironmentFile=-@DEPLOY_ROOT@/config/runtime.env
+ExecStart=@DEPLOY_ROOT@/.venv/bin/oo serve
 
 Restart=always
 RestartSec=5
@@ -36,7 +40,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/home/observer/open-observatory/data
+ReadWritePaths=@DEPLOY_ROOT@/data
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
