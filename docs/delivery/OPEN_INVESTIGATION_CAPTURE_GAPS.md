@@ -671,3 +671,43 @@ The one thing still not verified is the case ADR-039's off-target tests cover bu
 the station has not produced: a stall the 500 ms ring genuinely fails to absorb.
 No overrun occurred here, so the "estimate what a real loss cost" path remains
 proven only against `RingedDevice`.
+
+
+## Follow-up, 2026-08-09: the deficit has a bias of its own
+
+ADR-039's fix is confirmed in production — `rate_offset_ppm` reads −49.88
+against +878 before, and `estimated_missing_seconds` no longer over-reports.
+
+But a first post-deploy reading raises a question worth resolving rather than
+waving through. At 7.5 minutes' uptime, with zero gaps and zero overruns:
+
+```
+estimated_missing_seconds : 0.0
+expected_frames - frames  : 39,781 frames = 0.104 s
+```
+
+Those disagree, and this whole session used `expected_frames - frames` as the
+ground truth against which the estimator was judged. It has its own bias:
+
+- `expected_frames` is derived from elapsed time at the **nominal** rate. This
+  device runs about **50 ppm slow**, so it legitimately delivers fewer frames
+  than nominal implies. Over 450 s that is ~0.022 s of pure crystal offset,
+  with **no audio lost**.
+- The remainder is plausibly the frame-zero anchor, which matters
+  proportionally more at short uptimes.
+
+So the deficit is not a clean loss figure either — it is loss *plus* crystal
+drift *plus* anchoring. Over a long run the drift term grows linearly (~0.18 s
+per hour at 50 ppm) and will dominate, which means **a naive deficit reading
+will eventually look like a slow leak of audio that is not happening**.
+
+Neither number is wrong; they measure different things. What is missing is a
+figure that subtracts the measured crystal offset from the deficit, which is
+the quantity a human actually wants when they ask "did we lose any audio".
+
+**To resolve:** take a reading at several hours' uptime and check whether the
+deficit grows at the rate the measured ppm predicts. If it does, the estimator
+and the deficit agree and the deficit simply needs drift-correcting before it
+is displayed — `web/src/components/Pipeline.tsx` currently shows it raw as
+"audio lost". If it grows faster, there is a real loss the estimator is now
+missing, and ADR-039's confirmation window is too permissive.
