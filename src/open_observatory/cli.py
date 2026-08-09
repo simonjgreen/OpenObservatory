@@ -39,6 +39,19 @@ app.add_typer(detections_app, name="detections")
 console = Console()
 
 
+def emit_json(payload: Any) -> None:
+    """Write machine-readable JSON to stdout, and nothing else.
+
+    Not `console.print_json`: rich colourises its output and emits ANSI escape
+    sequences even when stdout is a pipe, so every `--json` flag in this CLI
+    used to produce something `jq` and `json.load` both reject with a parse
+    error at column 2. A `--json` option exists to be piped; output that only
+    works when a human is looking at it is not machine-readable.
+    """
+    sys.stdout.write(json.dumps(payload, indent=2, default=str) + "\n")
+    sys.stdout.flush()
+
+
 def configure_logging(settings: Settings) -> None:
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stderr, level=level)
@@ -99,7 +112,7 @@ def audio_probe(
             report["rate_support"] = {str(rate): state for rate, state in support.items()}
 
     if json_out:
-        console.print_json(json.dumps(report))
+        emit_json(report)
     else:
         if not devices:
             console.print("[bold red]No ALSA capture device found.[/bold red]")
@@ -640,7 +653,7 @@ def audio_window_dump(
     report = asyncio.run(run())
 
     if json_out:
-        console.print_json(json.dumps(report))
+        emit_json(report)
         if not report["windows"]:
             raise typer.Exit(1)
         return
@@ -886,7 +899,7 @@ def history_reconcile_streams(
         suspects = find_suspect_streams(session, ratio_threshold=ratio_threshold)
 
         if json_out:
-            console.print_json(json.dumps([item.to_dict() for item in suspects]))
+            emit_json([item.to_dict() for item in suspects])
         elif not suspects:
             console.print("[green]No suspect stream rows found.[/green]")
         else:
@@ -1006,7 +1019,7 @@ def detections_reconcile_plausibility(
             raise typer.Exit(1) from exc
 
         if json_out:
-            console.print_json(json.dumps([item.to_dict() for item in findings]))
+            emit_json([item.to_dict() for item in findings])
         elif not findings:
             console.print("[green]No implausible detections found.[/green]")
         else:
@@ -1151,7 +1164,7 @@ def system_report_command(json_out: bool = typer.Option(False, "--json")) -> Non
 
     report = system_report()
     if json_out:
-        console.print_json(json.dumps(report))
+        emit_json(report)
         return
     for key, value in report.items():
         console.print(f"[bold]{key}[/bold]: {value}")
@@ -1198,7 +1211,7 @@ def show_config() -> None:
     settings = get_settings()
     payload = settings.model_dump(mode="json")
     payload["resolved_database_dsn"] = settings.resolved_database_dsn
-    console.print_json(json.dumps(payload, default=str))
+    emit_json(payload)
 
 
 if __name__ == "__main__":
