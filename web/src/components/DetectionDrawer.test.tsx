@@ -189,7 +189,7 @@ describe('DetectionDrawer review controls', () => {
               detection_id: 'abc-123',
               status: 'corrected',
               note: 'heard it myself',
-              actor: 'observer',
+              actor: 'reviewer',
               corrected_taxon_id: 'sci:turdus_merula',
               corrected_common_name: 'Common Blackbird',
               corrected_scientific_name: 'Turdus merula',
@@ -205,7 +205,7 @@ describe('DetectionDrawer review controls', () => {
     render(<DetectionDrawer detection={detection()} localTimeZone="UTC" onClose={() => {}} />)
 
     await screen.findByText('Common Blackbird', { selector: 'strong' })
-    expect(screen.getByText(/last reviewed: corrected by observer/)).toBeTruthy()
+    expect(screen.getByText(/last reviewed: corrected by reviewer/)).toBeTruthy()
   })
 })
 

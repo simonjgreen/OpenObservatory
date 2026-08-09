@@ -39,7 +39,7 @@ you don't have one yet; it is gitignored and never checked in):
 
 ```env
 OO_MQTT_ENABLED=true
-OO_MQTT_HOST=192.0.2.50        # your Home Assistant / broker box
+OO_MQTT_HOST=192.0.2.50          # your Home Assistant / broker box (RFC 5737 example address)
 OO_MQTT_PORT=1883
 OO_MQTT_TLS=false
 OO_MQTT_USERNAME=openobservatory  # blank if the broker allows anonymous

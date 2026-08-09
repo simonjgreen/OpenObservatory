@@ -362,7 +362,7 @@ A complete 4 MB flash image of the stock DIYmalls firmware was taken before any
 of this was written:
 
 ```
-~/.claude/jobs/JOBID/tmp/firmware-backup.bin   (4,194,304 bytes, on the development laptop)
+<backup-dir>/firmware-backup.bin   (4,194,304 bytes, kept off-repo on the development laptop)
 ```
 
 Keep a copy somewhere durable — that path is a scratch directory.
