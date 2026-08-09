@@ -21,6 +21,15 @@ dist/
 /models/*.txt
 !/models/manifest.tsv
 
+# scripts/benchmark_batdetect2.py --json writes here. Bulk/ad-hoc benchmark
+# output is not committed, but results/batdetect2-pi5.json is a deliberate
+# exception: it is the provenance record Milestone 5's BatDetect2 exit gate
+# cites (see docs/detectors/BATDETECT2_EVALUATION.md). Anyone re-running that
+# benchmark should `git add -f` that one file over the top of this ignore
+# rule and commit it -- everything else under results/ stays untracked.
+/results/*
+!/results/batdetect2-pi5.json
+
 # Build output
 *.egg-info/
 web/dist/
