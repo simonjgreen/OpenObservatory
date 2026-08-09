@@ -7,6 +7,7 @@ cloud default.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -48,8 +49,17 @@ class Settings(BaseSettings):
     #: Stable device key, e.g. ``usb-10c4:0002:0100`` or an ALSA card id.
     audio_device: str | None = None
     #: Tried in order; the first that the device accepts is used.
-    preferred_sample_rates: tuple[int, ...] = (384000, 250000, 192000, 96000, 48000)
-    preferred_formats: tuple[str, ...] = ("S16_LE", "S32_LE")
+    #: `NoDecode`: see `auth_public_read_paths` below for why -- this is the
+    #: field that bug was originally found against, whenever it is actually
+    #: set (see `config/example.env`).
+    preferred_sample_rates: Annotated[tuple[int, ...], NoDecode] = (
+        384000,
+        250000,
+        192000,
+        96000,
+        48000,
+    )
+    preferred_formats: Annotated[tuple[str, ...], NoDecode] = ("S16_LE", "S32_LE")
     capture_channels: int = 1
     capture_block_ms: int = 100
     #: Depth of the kernel-side ALSA ring, and so the longest stall the capture
@@ -101,7 +111,11 @@ class Settings(BaseSettings):
     #: Calibrated against measured noise; see detectors/activity.py.
     activity_min_snr_db: float = 18.0
     activity_min_duration_ms: float = 60.0
-    activity_band_hz: tuple[float, float] = (1200.0, 11000.0)
+    #: `NoDecode`: same pre-existing pydantic-settings bug as
+    #: `preferred_sample_rates`, found while auditing for it -- not
+    #: previously reported to crash because nothing in this repository or
+    #: `config/example.env` sets it from the environment yet.
+    activity_band_hz: Annotated[tuple[float, float], NoDecode] = (1200.0, 11000.0)
 
     birdnet_enabled: bool = True
     birdnet_model_dir: Path | None = None
@@ -149,7 +163,13 @@ class Settings(BaseSettings):
     #: clip of 384 kHz mono is about 5 MB, so clipping it wrote 640 GB/day when
     #: first measured on the target. Clips are evidence for identifications, not a
     #: continuous archive, which the audio pipeline spec rules out by default.
-    clip_plugins: tuple[str, ...] = ("birdnet-v2.4", "ultrasonic-pass-v1")
+    #: `NoDecode`: see `auth_public_read_paths` below for why -- this is one
+    #: of the three fields `config/example.env` warns an operator away from
+    #: setting because of it.
+    clip_plugins: Annotated[tuple[str, ...], NoDecode] = (
+        "birdnet-v2.4",
+        "ultrasonic-pass-v1",
+    )
     #: Hard rate limit across all detectors, so a pathological night cannot fill
     #: the disk however the per-plugin rules are configured.
     clip_max_per_minute: int = 20
@@ -245,7 +265,11 @@ class Settings(BaseSettings):
     ultrasonic_enabled: bool = True
     #: Matches UltrasonicDetector's own default band; below 15 kHz is where the
     #: audible activity/BirdNET detectors already have coverage.
-    ultrasonic_band_hz: tuple[float, float] = (15000.0, 125000.0)
+    #: `NoDecode`: same pre-existing pydantic-settings bug as
+    #: `preferred_sample_rates`, found while auditing for it -- not
+    #: previously reported to crash because nothing in this repository or
+    #: `config/example.env` sets it from the environment yet.
+    ultrasonic_band_hz: Annotated[tuple[float, float], NoDecode] = (15000.0, 125000.0)
     #: Matches UltrasonicDetector's own default; see detectors/ultrasonic.py.
     ultrasonic_min_snr_db: float = 12.0
     #: Matches UltrasonicDetector's own default pulse-duration bounds — short
@@ -310,12 +334,12 @@ class Settings(BaseSettings):
     #: this class's own `_split_csv` validator ever runs, and a plain
     #: comma-separated value like `/a,/b` is not valid JSON -- discovered
     #: while adding this field: the same failure (`SettingsError` at
-    #: startup) already exists for `preferred_sample_rates`,
-    #: `preferred_formats` and `clip_plugins` whenever they are actually set
-    #: via the environment, pre-dating this change. `NoDecode` opts this one
-    #: field out of that broken path so it is safe to set from
-    #: `config/runtime.env`; the other three are left as found, since fixing
-    #: them is outside this change's territory.
+    #: startup) also existed for `preferred_sample_rates`, `preferred_formats`
+    #: and `clip_plugins` whenever they were actually set via the environment
+    #: (see `config/example.env`'s former warning), and for `activity_band_hz`
+    #: / `ultrasonic_band_hz`, found by auditing every other tuple-typed
+    #: field for the same bug. All five now carry the same `NoDecode`
+    #: annotation and are covered by `tests/test_config.py`.
     auth_public_read_paths: Annotated[tuple[str, ...], NoDecode] = ("/api/v1/detections",)
     #: Minimum password length enforced at account creation and password
     #: change. NIST 800-63B's floor; no composition rules on top of it, which
@@ -431,16 +455,27 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _split_csv(cls, value: object) -> object:
+        # `NoDecode` (see the field definitions above) means pydantic-settings
+        # no longer JSON-decodes this field's raw string for us, so a value
+        # that was already a JSON list in someone's existing `runtime.env` --
+        # which worked before these fields carried `NoDecode` -- has to be
+        # handled here too, not just the comma-separated form the docs show.
         if isinstance(value, str):
-            return tuple(part.strip() for part in value.split(",") if part.strip())
+            stripped = value.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return tuple(part.strip() for part in stripped.split(",") if part.strip())
         return value
 
-    @field_validator("activity_band_hz", mode="before")
+    @field_validator("activity_band_hz", "ultrasonic_band_hz", mode="before")
     @classmethod
     def _split_band(cls, value: object) -> object:
         if isinstance(value, str):
-            low, _, high = value.partition(",")
-            return (float(low), float(high))
+            stripped = value.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            low, _, high = stripped.partition(",")
+            return (float(low.strip()), float(high.strip()))
         return value
 
     @property
