@@ -188,15 +188,16 @@ naming where the built system diverges from it.
 ## Tests
 
 ```bash
-# Note the deselect: tests/test_api.py::TestLiveChannels hangs forever, because
-# starlette 0.41.3's TestClient cannot stream an infinite generator. Pre-existing.
-.venv/bin/python -m pytest -q --deselect tests/test_api.py::TestLiveChannels
+.venv/bin/python -m pytest -q
 ( cd web && npm ci && npm test )
 ```
 
-Measured 2026-08-09: **389 Python tests pass, 6 skip** (the fixture tests for the
-deliberately-unbundled BirdNET and BatDetect2 model assets, which skip rather than
-fail by design), and **140 frontend tests pass**. `ruff check .` is clean.
+Measured 2026-08-09: **419 Python tests pass, 9 skip** (6 are the fixture tests
+for the deliberately-unbundled BirdNET and BatDetect2 model assets, which skip
+rather than fail by design; 3 are `tests/test_api.py::TestLiveChannels` cases
+that starlette 0.41.3's synchronous `TestClient` cannot represent — see
+[`docs/development/SETUP.md`](docs/development/SETUP.md) trap 3), and **140
+frontend tests pass**. `ruff check .` is clean.
 `mypy src` reports 29 pre-existing errors and has never been clean.
 
 The Python tests run without a microphone, against the mandated replay/synthetic
