@@ -711,3 +711,255 @@ and the deficit agree and the deficit simply needs drift-correcting before it
 is displayed — `web/src/components/Pipeline.tsx` currently shows it raw as
 "audio lost". If it grows faster, there is a real loss the estimator is now
 missing, and ADR-039's confirmation window is too permissive.
+
+---
+
+# RESOLVED, 2026-08-09: the deficit grows at the rate the measured ppm predicts
+
+**Answer to the resolving check above: yes — and under artificial CPU load it
+grows *slower*, not faster, which is the opposite of the failure mode being
+tested for.** The deficit is crystal drift. The estimator's `0.0` is right.
+**ADR-039's confirmation window is not too permissive**; there is no real loss it
+is missing. The display was the only thing wrong, and that is fixed in ADR-046.
+
+| | ppm |
+|---|---|
+| growth of the phase-corrected deficit, clean window A (10.5 min) | **+51.17** [50.52, 51.81] |
+| growth of the phase-corrected deficit, clean window C (22.2 min) | **+51.00** [50.74, 51.30] |
+| asymptote of `rate_offset_ppm` over the whole run | **+50.43** [50.20, 50.55] |
+| a concurrent agent's independent figure, same station, same hour | **+49.96** |
+
+At about 50.4 ppm the drift term is **0.18 s per hour, 4.4 s per day**. That is
+the whole of the deficit, and none of it is lost audio. Counters at the end of
+the run: `estimated_missing_frames` **0**, `gaps_with_loss` **0**,
+`gaps_without_loss` **0**, `overruns` **0**.
+
+Three things had to be fixed about the *method* before the check could be run,
+and they are more transferable than the answer.
+
+## First: the raw deficit is mostly a sampling artefact, not a measurement
+
+`counters.frames` advances in whole blocks of **38,400 frames (100 ms)** while
+`expected_frames` is computed from a continuous monotonic clock at snapshot
+time. So `expected_frames - frames` sawtooths across an entire block *while the
+station is perfectly healthy*. Measured over 43 minutes with zero gaps, zero
+overruns and `estimated_missing_frames` at 0, the raw figure ranged **−162 ms to
++185 ms**, a spread of **347 ms**.
+
+**A single reading of `expected_frames - frames` carries about ±50 ms of pure
+artefact**, and larger transients on a late read. The **0.104 s** that opened
+this question is inside that noise. Every figure quoted for this row anywhere in
+this document — 0.055 s, 0.066 s, 0.104 s, 0.114 s — is one draw from that
+distribution, and none of them should have been treated as a point measurement.
+That, and not any leak, is most of what "the two measurements disagree" was.
+
+The artefact is removable because the station already publishes the phase.
+`block_age_s` is the age of the **last block's start**, so re-evaluating the
+deficit at that instant cancels it:
+
+```
+corrected = expected_frames − block_age_s × sample_rate − (frames − 38,400)
+```
+
+That took the scatter from ~100 ms to **0.3 ms** (median absolute residual) — a
+hundredfold — and is what made a 10-minute window sufficient where hours had
+been assumed necessary.
+
+Two traps found while using it. `block_age_s` sweeps **0.112 → 0.199 s** in
+normal running, not 0 → 0.1 s, because it is measured to the block's *start* and
+the block is one duration long; a filter written for the wrong range silently
+discards half the samples and biases the slope. And a late read corrupts the
+correction for a sample or two, because a block's `monotonic_start_ns` is
+computed as read-completion minus one block duration, so a stalled read reports a
+start later than the true one — visible as a −200 ms excursion that fully
+recovers. Theil-Sen (median pairwise slope) over per-minute medians is immune to
+both; ordinary least squares is not, and read 6 ppm high on the same data.
+
+## Second: the station was being restarted every ~18 minutes
+
+Every earlier reading was taken at short uptime because concurrent agent deploys
+were restarting `open-observatory` — `station.started` at **09:52:43Z,
+10:10:31Z and 10:29:05Z**, an 18-minute cadence, with `NRestarts=0` (systemd
+never restarted it; each was a deliberate stop/start). Every counter resets on
+each one. That, not any property of the capture path, is why "several hours'
+uptime" was never available, and why the anchor-bias term was proportionally
+large in every reading taken.
+
+## Third: this window was contaminated by another agent's load probe, and it is declared
+
+**This must be stated rather than reported through.** While this run was in
+progress, a concurrent agent pinned two busy-loops to cores 2–3 under a systemd
+cgroup fence. From the station's own journal (prefix BST, log lines UTC):
+
+```
+11:42:03+01:00 systemd[1]: Started oo-refine-loadprobe.service
+                 - /bin/sh -c "for i in 1 2; do (while :; do :; done) & done; sleep 600; ..."
+11:52:03+01:00 systemd[1]: oo-refine-loadprobe.service: Main process exited
+11:52:03+01:00 systemd[1]: oo-refine-loadprobe.service: Consumed 19min 57.966s CPU time
+```
+
+**19 min 58 s of CPU in 10 min of wall clock — two cores saturated, exactly as
+designed.** In UTC that is **10:42:03 → 10:52:03**, the middle of the sampling
+run. Four earlier `oo-fence-probe{,2,3,4}` units (10:30:14–10:30:57 UTC) were
+instantaneous configuration probes — started and deactivated in the same second,
+no CPU — and they precede this window's opening at 10:31:32 UTC.
+
+The load is visible in the station's own counters, which is how it was confirmed
+rather than taken on trust: `loop_lag_max_s` stepped **0.2139 → 0.2553** at
+10:43 UTC and **→ 0.2928** at 10:50, matching the other agent's independently
+reported 214 ms → 293 ms; `late_reads` accrued at **1.1/min under load against
+0.7/min clean**; and `hot_path_cpu_ratio` *fell* 0.1055 → 0.0913 as the station
+was descheduled.
+
+Rather than discard the run, it was split at the probe's own boundaries. That
+turns the contamination into a control experiment — a stronger test than the one
+originally planned, because the failure mode under suspicion (losses too small
+for ADR-039's window to credit) is precisely the one that should get *worse*
+under scheduling pressure.
+
+## The measurement
+
+`/api/v1/health` sampled every 2 s from the development laptop. **All times UTC**
+unless a command is shown, in which case its own timezone is stated.
+
+- Stream `728ac7be-4fad-4bb5-b864-b604dae77852`, started **10:29:05.474916Z**.
+  Process 354105, `ExecMainStartTimestamp` 11:29:02 BST, `NRestarts=0`, still
+  running at the end — **no restart inside any window below**.
+- Sampling window **10:31:32 → 11:14:13 UTC** (= 11:31:32 → 12:14:13 BST),
+  1,268 samples, uptime 147 s → 2,708 s. AudioMoth at 384 kHz, `alsa`, mono.
+
+| segment | window (UTC) | length | growth of phase-corrected deficit | max residual | late reads |
+|---|---|---|---|---|---|
+| **A** control, pre-load | 10:31:32 → 10:42:01 | 10.5 min | **+51.17 ppm** [50.52, 51.81] | 0.30 ms | +7 |
+| **B** two cores saturated | 10:42:03 → 10:52:01 | 10.0 min | **+48.25 ppm** [47.12, 48.75] | 0.25 ms | +11 |
+| **C** control, post-load | 10:52:03 → 11:14:13 | 22.2 min | **+51.00 ppm** [50.74, 51.30] | 0.44 ms | +22 |
+| whole run (mixed — do not quote) | 10:31:32 → 11:14:13 | 42.7 min | +50.32 ppm [50.13, 50.45] | 0.79 ms | +40 |
+
+Intervals are 95% bootstrap over per-minute medians. The two **clean** windows,
+32 minutes apart, agree: **+51.17 and +51.00 ppm, overlapping**. Under load the
+deficit grew at **+48.25 ppm — nearly 3 ppm slower**, which is the opposite
+direction from uncredited loss and cannot be explained by it. (The likeliest
+cause is thermal: two cores at 100% warms the enclosure, and a crystal's rate
+moves with temperature. It is not lost audio in either direction.)
+
+**The shape is the evidence, not just the slope.** Per-minute medians of the
+phase-corrected deficit in the clean window A:
+
+| uptime (s) | corrected deficit (frames) | ms | step vs previous |
+|---|---|---|---|
+| 163 | 2,973 | 7.7 | — |
+| 210 | 3,841 | 10.0 | +48.7 ppm |
+| 270 | 5,111 | 13.3 | +55.0 ppm |
+| 330 | 6,312 | 16.4 | +51.7 ppm |
+| 391 | 7,486 | 19.5 | +50.5 ppm |
+| 450 | 8,637 | 22.5 | +50.3 ppm |
+| 510 | 9,784 | 25.5 | +50.2 ppm |
+| 571 | 10,982 | 28.6 | +51.3 ppm |
+| 630 | 12,117 | 31.6 | +49.7 ppm |
+| 690 | 13,449 | 35.0 | +58.3 ppm |
+| 750 | 14,486 | 37.7 | +44.6 ppm |
+
+A straight line to within **0.30 ms** over eleven medians. Real loss arrives as a
+step that stays up; there is no step anywhere in this run, clean or loaded,
+larger than 0.5 ms.
+
+Independently, `rate_offset_ppm` is a cumulative average from its own anchor and
+so converges as `−D + B/t`. Fitted over the run's per-minute medians:
+
+```
+rate_offset_ppm(t) → asymptote −50.43 ppm  [−50.55, −50.20]
+                     anchor bias 131 frames = 0.34 ms
+```
+
+The deficit's growth and the crystal's own rate therefore agree to within about
+**1 ppm — 3.6 ms per hour, 0.09 s per day — and of ambiguous sign.** There is no
+leak at any rate this run could have detected.
+
+Counters at the end: `estimated_missing_frames` **0**, `gaps_with_loss` **0**,
+`gaps_without_loss` **0**, `overruns` **0**, `late_reads` **40**,
+`late_read_max_frames` **114,362** of a 192,000-frame ring (**60%** — see
+"worth watching" below).
+
+## Log cross-check, with the timezone stated
+
+`journalctl --since` takes **local time (BST = UTC+1)**; the log lines themselves
+are **UTC**. The UTC window 10:29:05 → 10:42:00 is the BST window 11:29:05 →
+11:42:00, and that is what must be typed:
+
+```bash
+sudo journalctl -u open-observatory \
+  --since "2026-08-09 11:29:05" --until "2026-08-09 11:42:00" -o cat   # BST
+```
+
+- `capture.late_read`: **7 lines**, matching the `late_reads` counter for that
+  window exactly. Stalls of **101.6, 112.6, 117.6, 122.3, 123.0, 147.6,
+  168.4 ms** against a 500 ms ring, every one logged
+  `note=absorbed by the ring; no audio lost`.
+- `loss_confirmed`, `lost_audio=True`, `capture.overrun`, `capture.gap`:
+  **none**.
+- The 10:32:38.3Z late read is the same event as the −200 ms excursion at uptime
+  214 s in the sampled data, which recovered in full — the correction artefact
+  described above, seen from both sides.
+
+**The trap, demonstrated rather than described:** pasting the UTC digits into the
+local-time flag (`--since "2026-08-09 10:29:05"`) returns **208 lines from a
+different hour**, spanning two service restarts. It does not error and it does
+not return nothing — it returns a confident, wrong answer.
+
+## Worth watching, found incidentally
+
+`late_read_max_frames` reached **114,362 of 192,000** — 60% of the ring, a 298 ms
+stall — during this run, against 57,952 (30%) recorded in the previous round. The
+ring still absorbed everything and no audio was lost, but the headroom counter
+ADR-039 added is doing its job and the trend is the wrong way.
+`OO_CAPTURE_BUFFER_MS` is the lever if it keeps climbing. Note that part of this
+run was under deliberate two-core load, so it is not a clean baseline.
+
+## What this does *not* prove, stated plainly
+
+- **The longest clean window is 22.2 minutes, not hours.** A loss mechanism with
+  a period longer than that — an hourly sweep, a nightly rotation, a thermal
+  cycle — would not appear. The linearity is strong evidence against a
+  *continuous* leak, which was the specific worry, and is not evidence about rare
+  events. **A restart-free multi-hour run is still worth taking**, and is now
+  cheap: the method above needs 15 minutes and about 150 lines, and both are
+  written down here.
+- **The load segment shows the crystal rate is not a constant of nature.** It
+  moved about 3 ppm under a thermal change inside one hour. Any figure derived
+  from it — including the drift term the UI now displays — is a live measurement,
+  not a calibration, and the UI derives it live rather than hardcoding it.
+- **The two numbers were never independent.** `rate_offset_ppm` is
+  `-(deficit − missing_frames)/expected × 1e6` computed inside `AlsaSource`, so
+  subtracting the drift term from the deficit returns `estimated_missing_frames`
+  *algebraically*. The check above is still evidence — different anchors, and a
+  slope against a cumulative average, cross-checked against a clean/loaded
+  contrast and a second agent's independent figure — but **the station has one
+  measurement of lost audio, not two that can corroborate each other.** The plan
+  recorded in the previous section, to "drift-correct the deficit and display
+  that", would have produced a rename of the estimator's own figure presented as
+  a second opinion. That is why ADR-046 separates the terms instead.
+- **The unabsorbed-stall path is still unproven on target.** No overrun has
+  occurred on this station since ADR-039 shipped, so "estimate what a real loss
+  cost" remains proven only against `RingedDevice` in
+  `tests/test_alsa_source.py`. Unchanged from the previous round, and the load
+  probe did not produce one either.
+
+## What was changed as a result
+
+Nothing on the station — no capture code, schema, setting or dependency, so this
+work cannot have affected the measurement it reports. `web/` only (ADR-046):
+`audio lost` now shows `estimated_missing_seconds`; the deficit is shown
+separately as `behind clock` with its drift term named and its ±50 ms phase
+uncertainty stated; `late_reads` is shown beside `overruns`. `describeDeficit` is
+exported from `Pipeline.tsx` and unit-tested in `Pipeline.test.ts` against the
+readings above, including the 0.104 s one that started this;
+`CapturePanel.test.tsx` asserts the labels in the rendered DOM, which is the part
+that was actually wrong.
+
+**The better fix, deliberately not taken:** evaluate `expected_frames` at the
+last block's start inside `Station.status_snapshot` instead of at snapshot time.
+That removes the sawtooth at source and would stabilise `continuity_ratio` too,
+and it is a few lines. It is left for whoever can deploy and soak it, because it
+changes a measured quantity in the capture path and a deploy would have voided
+two agents' measurements running concurrently. The UI states the uncertainty
+rather than hiding it in the meantime.
