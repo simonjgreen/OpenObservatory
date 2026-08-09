@@ -3875,7 +3875,7 @@ curl -s localhost:8080/api/v1/health | python3 -c \
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
 
-## ADR-046: Site parameters are runtime state, managed through the web UI; the repository ships no site
+## ADR-047: Site parameters are runtime state, managed through the web UI; the repository ships no site
 
 **Decision:** Anything true of exactly one installation — coordinates, place
 names, LAN addresses, hostnames, account names, filesystem homes — is **site
@@ -3943,7 +3943,7 @@ rather than naming where it stands. If a new component needs a site
 parameter, add it to the `site_settings.py` whitelist (choosing its tier
 deliberately) rather than inventing a parallel mechanism.
 
-### Rollback and smoke test (ADR-046)
+### Rollback and smoke test (ADR-047)
 
 No schema change, no new dependency. The settings endpoints and panel are
 additive; revert the commits to remove them. Site values already present in a
@@ -4066,7 +4066,7 @@ character`.
 
 ```bash
 # Note: this reads UTC. `journalctl --since` below takes LOCAL time (BST = UTC+1).
-curl -s http://station.example:8080/api/v1/station | python3 - <<'PY'
+curl -s http://<station-host>:8080/api/v1/station | python3 - <<'PY'
 import json, sys
 c = json.load(sys.stdin)["capture"]
 r = c["sample_rate"]
@@ -4083,9 +4083,9 @@ print("gaps", c["gaps_with_loss"], c["gaps_without_loss"], "overruns", c["overru
 PY
 
 # Every late read must say it cost nothing; nothing may say it did.
-ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
+ssh <user>@<station-host> 'sudo journalctl -u open-observatory --since "-30 min" \
   | grep -cE "capture.late_read"'
-ssh observer@station.example 'sudo journalctl -u open-observatory --since "-30 min" \
+ssh <user>@<station-host> 'sudo journalctl -u open-observatory --since "-30 min" \
   | grep -E "loss_confirmed|lost_audio=True"'   # must print nothing
 ```
 

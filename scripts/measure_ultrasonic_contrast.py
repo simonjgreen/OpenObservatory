@@ -96,7 +96,7 @@ def main() -> None:
     parser.add_argument(
         "--host",
         required=True,
-        help="the station to measure (required: no station address is committed, ADR-046)",
+        help="the station to measure (required: no station address is committed, ADR-047)",
     )
     parser.add_argument("--seconds", type=float, default=30.0)
     args = parser.parse_args()
