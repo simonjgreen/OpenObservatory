@@ -219,9 +219,24 @@ Measured on the Raspberry Pi 5 on **2026-08-05**, by
 > consistent, they match the verdict ADR-017 was written against, and inventing a
 > reason to distrust them would be as unfounded as inventing the numbers. But they
 > are currently **unverifiable**: nobody can re-derive them from an artefact.
-> Anyone re-running this should use
-> `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` and
-> **commit the result**, which closes this gap permanently.
+>
+> `results/` is now gitignored (`.gitignore`), with a single deliberate exception
+> for `results/batdetect2-pi5.json` — a small provenance record a milestone gate
+> depends on is worth committing; ad-hoc benchmark output is not, and nothing else
+> under `results/` will be tracked. **Nobody currently owns the live station** to
+> re-run this — it needs BatDetect2 installed on the Pi (see "Install procedure"
+> above) and exclusive access to a station that, at time of writing, another agent
+> owns for an unrelated capture investigation. Whoever next has both, run exactly
+> this from the project root on the Pi and commit what it writes:
+>
+> ```bash
+> python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json
+> git add -f results/batdetect2-pi5.json   # -f: the directory is gitignored by default
+> git commit -m "Add BatDetect2 Pi 5 benchmark provenance"
+> ```
+>
+> That closes this gap permanently. Do not hand-write or otherwise fabricate this
+> file — if the script cannot run, leave the gap open and say so.
 
 **Do not extend this table from expectations, precedent, or extrapolation from
 other detectors.** `CLAUDE.md` forbids claiming detector support without a fixture

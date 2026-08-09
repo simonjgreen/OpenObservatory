@@ -96,8 +96,8 @@ The full CLI surface is listed in
 ## Tests and quality gates
 
 ```bash
-# Python — note the deselect, see trap 3
-./.venv/bin/python -m pytest -q --deselect tests/test_api.py::TestLiveChannels
+# Python — a bare run is safe now, see trap 3
+./.venv/bin/python -m pytest -q
 ./.venv/bin/ruff check .
 ./.venv/bin/mypy src            # NOT clean — see trap 5
 
@@ -108,14 +108,16 @@ Measured on 2026-08-09 on this branch:
 
 | Gate | Result |
 |---|---|
-| `pytest -q --deselect tests/test_api.py::TestLiveChannels` | **389 passed, 6 skipped, 12 deselected** in 84 s |
+| `pytest -q` | **419 passed, 9 skipped** in ~96 s |
 | `npm test` (web) | **140 passed** |
 | `ruff check .` | clean |
 | `mypy src` | **29 errors in 12 files** — all pre-existing, see trap 5 |
 
-The 6 skips are the BatDetect2 and BirdNET fixture tests, which skip cleanly
-when the (deliberately unbundled) model assets are absent. That is the designed
-behaviour, not a broken environment.
+Of the 9 skips: 6 are the BatDetect2 and BirdNET fixture tests, which skip
+cleanly when the (deliberately unbundled) model assets are absent — that is
+the designed behaviour, not a broken environment. The other 3 are
+`tests/test_api.py::TestLiveChannels` cases that are marked `skip` outright
+(not conditionally), for the starlette limitation described in trap 3 below.
 
 `tests/test_api.py` drives the real FastAPI app over the real pipeline end to
 end against a synthetic source, so it is a genuine integration test rather than
@@ -137,11 +139,22 @@ These are the ones that waste time. None of them is a bug in your setup.
    failures look like a hang rather than an error. Always install
    `".[dev,resample]"`.
 
-3. **Three tests hang forever: `tests/test_api.py::TestLiveChannels`.** Starlette
-   0.41.3's `TestClient` cannot stream an infinite generator, so these never
-   return. This is pre-existing and is not a regression you introduced. Always
-   run the suite with `--deselect tests/test_api.py::TestLiveChannels`. A bare
-   `pytest` will appear to hang partway through.
+3. **Three `tests/test_api.py::TestLiveChannels` cases would hang forever if run.**
+   Starlette 0.41.3's synchronous `TestClient` (`_TestClientTransport.handle_request`)
+   blocks until the ASGI app coroutine returns, so `client.stream(...)` cannot
+   represent a still-open connection to `live_audio_wav`'s genuinely infinite
+   generator. This is pre-existing and not a regression. The three affected
+   tests — `test_audio_wav_streams_a_valid_riff_header_then_pcm`,
+   `test_audio_wav_ultrasonic_channel_honours_tune_hz`, and
+   `test_audio_wav_disconnect_releases_the_broadcaster_listener` — are marked
+   `@pytest.mark.skip` with this reason, so a bare `pytest` no longer needs a
+   `--deselect` and completes normally. They are not deleted: they document
+   intent and should run again if a dependency upgrade fixes the underlying
+   limitation. To exercise that code path for real today, use the WebSocket
+   `TestClient` (genuinely concurrent — see
+   `test_live_tune_endpoint_retunes_the_shared_oscillator_without_disturbing_an_open_listener`
+   in the same file for the pattern) or `httpx.AsyncClient` with `ASGITransport`,
+   which supports real async streaming.
 
 4. **`pytest` escalates `DeprecationWarning` to an error**, by configuration and
    on purpose — it is what forced the FastAPI lifespan migration. A dependency
