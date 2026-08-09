@@ -63,6 +63,8 @@ void parseHealth(JsonObjectConst response, StationHealth& out) {
 
 void buildHealthFilter(JsonDocument& filter) {
   filter["status"] = true;
+  // ADR-038: the only "now" the HTTP fallback can anchor relative times to.
+  filter["checked_at"] = true;
   filter["problems"] = true;
   JsonObject capture = filter["capture"].to<JsonObject>();
   capture["state"] = true;

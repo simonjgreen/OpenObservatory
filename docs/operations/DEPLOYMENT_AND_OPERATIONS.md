@@ -447,14 +447,20 @@ network path. Until then, treat a session cookie or API token exactly like
 the plaintext HTTP that carries it: readable by anything already positioned
 on the LAN, same as ADR-015 always implied.
 
-**The ESP32 wall display's exemption.** `firmware/inside-observer` polls
-`GET /api/v1/detections` and `GET /api/v1/health` with no way to carry a
-credential and cannot be reflashed as part of an ordinary station upgrade.
-Both of those paths (plus `GET /metrics`, scraped by Prometheus with no
+**The ESP32 wall display's exemption.** `firmware/inside-observer` reads
+`/api/v1/display` (its WebSocket push channel since ADR-038) and, when that is
+down, polls `GET /api/v1/detections` and `GET /api/v1/health` — with no way to
+carry a credential, and it cannot be reflashed as part of an ordinary station
+upgrade. Those paths (plus `GET /metrics`, scraped by Prometheus with no
 login flow of its own) stay reachable with **no credential** even when auth
 is enabled — `/api/v1/health` and `/metrics` unconditionally, and
-`GET /api/v1/detections` via the configurable `auth_public_read_paths`
-setting (default: exactly that one path, GET only). This means recent
+`GET /api/v1/detections` plus `/api/v1/display` via the configurable
+`auth_public_read_paths` setting (default: exactly those two). `/api/v1/display`
+is a WebSocket upgrade rather than a GET, so the HTTP gate never sees it; its
+handler consults the same list, so the display's two transports are exempt
+together or not at all. Note that the push channel leaks *less* than the polled
+one it replaced: it carries species names and timestamps but **no scores**, no
+media, no UUIDs and no detector metadata. This means recent
 detections (species, timestamps, scores — not clip audio, not station
 coordinates, not history/export/anything else) remain readable by anything
 on the LAN even with auth turned on, until a future firmware update adds

@@ -147,6 +147,7 @@ single surface with two depths.
 | Retention job and UI | done — tiered age-out backend (ADR-026) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions |
 | CSV/JSON export | done — `GET /api/v1/detections/export`, registered before `/detections/{id}` so it is not swallowed by the path parameter |
 | Authentication foundation | done (ADR-034) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 wall display keeps working |
+| Inside-observer push channel | done (ADR-038) — `GET /api/v1/display`, a detections-only WebSocket. 49 B a detection against the polled transport's ~127 kB/20 s; deployed to the Pi and flashed to the board on 2026-08-09. Elapsed times ("4s ago") ticking once a second, partial repaints only. HTTP polling retained and exercised as the fallback |
 
 ## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture gate closed; soak and drift run outstanding**
 

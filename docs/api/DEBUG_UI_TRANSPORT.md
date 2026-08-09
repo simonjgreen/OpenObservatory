@@ -1,14 +1,19 @@
-# Live transport for the debug UI
+# Live transport for the debug UI, and for the wall display
 
 The API specification only commits to SSE for detection updates. A real-time
 spectrogram and a live listen button need more than that, so this document
 records what was added and why, rather than leaving it implicit in the code.
 
-Three channels: two WebSockets, deliberately separate (ADR-012), plus a
-chunked-WAV HTTP stream added by ADR-019 as the default playback path after
-Web Audio proved silent on a real laptop. ADR-012's single-writer rule still
-governs both WebSockets and is unaffected by the WAV addition, which has no
-socket and so no writer to serialise.
+Four channels now: two WebSockets for the debug UI, deliberately separate
+(ADR-012); a chunked-WAV HTTP stream added by ADR-019 as the default playback
+path after Web Audio proved silent on a real laptop; and a fourth, much smaller
+WebSocket added by ADR-038 for the ESP32 wall display, which needs detections and
+nothing else. ADR-012's single-writer rule governs every WebSocket here — the WAV
+addition has no socket and so no writer to serialise.
+
+If you only want the wall display's channel, skip to
+[`GET /api/v1/display`](#get-apiv1display--the-inside-observers-push-channel) at
+the end; nothing above it applies to that client.
 
 ## `GET /api/v1/live` — visual channel
 
@@ -373,6 +378,129 @@ one. Server-side gain applied to the stream itself is the fix if that proves
 a problem in practice; a client-side Web Audio `GainNode` is not an option,
 because it reintroduces the exact failure this endpoint exists to route
 around.
+
+## `GET /api/v1/display` — the inside observer's push channel
+
+A fourth channel, added by ADR-038 for one client: the ESP32 wall display
+(`firmware/inside-observer`). Detections only, in compact JSON, sized so that
+every frame this channel can produce fits inside a single Ethernet MTU with room
+to spare.
+
+Deliberately **not** a mode of `/api/v1/live`. That socket carries binary
+spectrogram columns, a `hello` with forty full detection records and sixty
+events, a full station snapshot every two seconds and a 30 s spectrogram
+backfill — none of which an ESP32 can use, so filtering it would have meant
+replacing every frame it sends while still paying ADR-012's warning that any
+change to that channel must be re-measured over real Wi-Fi. See ADR-038.
+
+ADR-012's single-writer rule holds here exactly as it does on the other two
+sockets: `DisplayClient.run()` is the only code in the process that writes a
+display socket. The pump and the receive loop only ever queue and receive.
+
+### Query parameters
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `min_score` | `0.75` | Named detections below this are **not sent**. Never appears in any frame. |
+| `bats` | `true` | Whether bat passes are sent at all. They are never score-filtered. |
+| `rows` | server config (6) | Rows in the connect snapshot. 1–12. |
+
+Filtering is server-side so the device never receives-and-discards, which is the
+whole point of the change. The filter lives in the URL, so changing it means
+reconnecting.
+
+### Frames
+
+All text, all compact JSON (`separators=(",", ":")`, no whitespace). Every frame
+carries `t`.
+
+| `t` | When | Example | Measured |
+|---|---|---|---|
+| `h` | once, on connect | `{"t":"h","v":1,"now":1786263065,"hb":10,"st":"L","sp":30,"f":[…]}` | 150–294 B |
+| `d` | as detections occur | `{"t":"d","n":"Common Woodpigeon","at":1786263086}` | 40–57 B |
+| `s` | every `hb` seconds | `{"t":"s","now":1786263075,"st":"L","sp":30}` | 43 B |
+
+Frame keys:
+
+| Key | Frames | Meaning |
+|---|---|---|
+| `v` | `h` | Wire version, currently `1`. A client that does not know it must refuse the frame rather than half-parse it. |
+| `now` | `h`, `s` | The station's Unix epoch seconds. The display has no RTC and no NTP; this is its only clock. |
+| `hb` | `h` | Heartbeat period in seconds. The display treats three missed beats as a stale feed. |
+| `st` | `h`, `s` | `L` listening, `D` degraded. **Never offline** — that is a fact only the client can know. |
+| `d` | `h`, `s` | The station's own words for a degraded state. Absent when listening. |
+| `sp` | any | Distinct species today. On a `d` frame only when the count moved. |
+| `f` | `h` | The connect snapshot: `rows` rows, already run-collapsed. |
+
+Row keys, shared by `f` entries and by the body of a `d` frame:
+
+| Key | Meaning |
+|---|---|
+| `n` | Species display name. **Absent on a bat pass.** |
+| `at` | Event start, whole Unix epoch seconds, UTC. |
+| `b` | `1` when this is a bat pass. Absent otherwise. |
+| `k` | Peak frequency in kHz, one decimal. Bat passes only. |
+| `r` | Detections collapsed into this row. Absent when 1. |
+
+### What is not on this wire
+
+`native_result`, the media list and its checksums, every UUID, detector
+plugin/model/licence metadata, `rank`, `canonical_taxon_id`, `duration_s`, frame
+bounds, `stream_id`, `title_hint` — and **`score`**.
+
+There is no score field and no way to add one without editing both
+`src/open_observatory/display_channel.py` and
+`firmware/inside-observer/src/model/push_frame.h`. ADR-023's rule that no number
+readable as a confidence figure reaches the glass is structural here rather than
+behavioural: the threshold is applied on the station and the number never leaves
+it.
+
+A bat pass carries no name — only `b` and `k`. The words "Bat pass" are supplied
+by the firmware, so no server change can put a species on a pass
+(`ultrasonic-pass-v1` detects passes, not species; ADR-013). The frequency-band
+candidate that `title_hint` carries elsewhere ("45 kHz · common pipistrelle?") is
+deliberately not forwarded: it is a legitimate hint in a UI that can print the
+sentence explaining it, and a species claim on a wall.
+
+### Snapshot, then deltas
+
+Connect costs one short, column-limited SQL read run off the event loop: the rows
+the screen shows, plus one `DISTINCT` for today's species names. Once per
+connection — a display connects and then stays connected for days — rather than
+once per 20 s. After that the species count is advanced in memory, because a
+species counts exactly when one of its detections cleared the threshold, which is
+exactly when a frame was sent.
+
+While the station is not capturing from the real microphone, **no detections are
+sent at all** (ADR-020). The `st`/`d` fields say why, and the display shows the
+banner. A test scene is not an observation of the garden.
+
+### Back-pressure
+
+One bounded queue per client (`display_channel_queue_max`, default 64). When it
+is full the **oldest detection frame** is shed — never a status frame, because
+losing the banner to a burst of woodpigeons would make a broken station look
+merely quiet. Counters are reported in `/api/v1/station` under `display_channel`,
+including `mean_frame_bytes`.
+
+Capture always wins: nothing on this path can block or apply back-pressure to the
+capture loop.
+
+### Configuration
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `display_channel_heartbeat_s` | `10.0` | Heartbeat period. Also sets how long a dead station takes to look dead (3 beats). |
+| `display_channel_snapshot_rows` | `6` | Connect snapshot size when `rows` is not given. |
+| `display_channel_queue_max` | `64` | Frames a display may fall behind by. |
+
+### Measuring it
+
+`scripts/measure_display_wire.py` prints the byte cost of each frame type
+offline. `scripts/probe_display_channel.py <host> <seconds>` connects to a real
+station and reports what actually crossed the network. Measured against the live
+station on 2026-08-09: **1,030 bytes in 90 s, 11.4 B/s**, against the polled
+transport's ~6,350 B/s.
 
 ## Making ultrasound audible in evidence clips
 

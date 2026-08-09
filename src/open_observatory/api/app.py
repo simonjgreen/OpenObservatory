@@ -50,6 +50,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -59,6 +60,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import display_channel as display_state
 from .. import history as history_queries
 from .. import models as model_registry
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
@@ -240,6 +242,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     station = Station(settings)
     hub = LiveHub()
+    #: Connected inside-observer displays (ADR-038). A plain set rather than a
+    #: hub: this channel has no broadcast -- every client is filtered by its own
+    #: threshold, so each gets its own frames.
+    display_clients: set[display_state.DisplayClient] = set()
     exporter = PrometheusExporter(station)
     auth_service = AuthService(settings)
     station.set_spectrogram_sink(lambda columns: hub.broadcast_binary(columns.to_binary()))
@@ -535,7 +541,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{API_PREFIX}/station")
     def get_station() -> dict[str, Any]:
-        return station.status_snapshot()
+        snapshot = station.status_snapshot()
+        # Every other queue in this system reports its depth and its drops here;
+        # so does this one. `mean_frame_bytes` is the number the ADR-038 budget
+        # is actually judged against, measured on the wire rather than asserted.
+        snapshot["display_channel"] = {
+            "clients": len(display_clients),
+            "per_client": [client.stats() for client in display_clients],
+        }
+        return snapshot
 
     def _health_payload() -> dict[str, Any]:
         """Shared by GET /health and the MQTT publisher's periodic health sensor,
@@ -1593,6 +1607,254 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "available": heterodyne is not None,
             "reason": None if heterodyne is not None else station.heterodyne_unavailable_reason,
         }
+
+    # -- inside-observer push channel (ADR-038) --------------------------
+
+    #: `_health_payload()` costs a full `status_snapshot()` (~18 ms measured on
+    #: the Pi). One display asking for it every heartbeat would be cheap; several
+    #: asking independently would not, and neither would a future one that
+    #: reconnects in a loop. Cached briefly and shared, so the cost is bounded by
+    #: the clock rather than by the number of clients.
+    display_health_cache: dict[str, Any] = {"at": 0.0, "value": ("L", "")}
+
+    def _display_health() -> tuple[str, str]:
+        now = time.monotonic()
+        if now - display_health_cache["at"] > 5.0:
+            display_health_cache["value"] = display_state.health_state(_health_payload())
+            display_health_cache["at"] = now
+        value = display_health_cache["value"]
+        assert isinstance(value, tuple)
+        return value
+
+    def _display_day_key(moment: datetime | None = None) -> str:
+        """Today, in the station's configured zone. UTC internally; local only
+        for the one presentation decision this channel makes, which is where a
+        day ends -- the display has no timezone database of its own."""
+        moment = moment or datetime.now(UTC)
+        return moment.astimezone(ZoneInfo(settings.timezone)).date().isoformat()
+
+    def _display_snapshot(filt: display_state.DisplayFilter) -> tuple[list[dict[str, Any]], set[str]]:
+        """The rows a display needs on connect, plus today's species names.
+
+        Two small, column-limited queries, run once per connection rather than
+        every 20 s. Deliberately does not go through `_detection_payload`: that
+        builds the ~1.8 kB record (media checksums, detector metadata, UUIDs)
+        this whole channel exists to stop sending.
+        """
+        # A dominant species can fill the feed, so read a multiple of the rows
+        # and collapse. Bounded so a pathological threshold cannot turn the
+        # connect handshake into a large query.
+        fetch = min(200, max(filt.rows * 12, filt.rows))
+        groups = ["bird", "bat"] if filt.show_bats else ["bird"]
+        with session_scope() as session:
+            query = (
+                select(
+                    orm.Detection.event_start_utc,
+                    orm.Detection.common_name,
+                    orm.Detection.scientific_name,
+                    orm.Detection.taxonomic_group,
+                    orm.Detection.score,
+                    orm.Detection.peak_frequency_hz,
+                )
+                .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
+                .where(orm.Detection.taxonomic_group.in_(groups))
+                .where(history_queries.is_live(orm.AudioStream.source_kind))
+                .where(
+                    (orm.Detection.taxonomic_group == display_state.BAT_GROUP)
+                    | (orm.Detection.score >= filt.min_score)
+                )
+                .order_by(orm.Detection.event_start_utc.desc())
+                .limit(fetch)
+            )
+            rows = session.execute(query).all()
+
+            today = history_queries.resolve_named_range("today", settings.timezone)
+            species_rows = session.execute(
+                select(orm.Detection.scientific_name, orm.Detection.common_name)
+                .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
+                .where(orm.Detection.event_start_utc >= today.start)
+                .where(orm.Detection.event_start_utc < today.end)
+                .where(orm.Detection.taxonomic_group == "bird")
+                .where(orm.Detection.score >= filt.min_score)
+                .where(history_queries.is_live(orm.AudioStream.source_kind))
+                .distinct()
+            ).all()
+
+        items = [
+            item
+            for item in (
+                display_state.wire_item(
+                    {
+                        "event_start_utc": row.event_start_utc,
+                        "common_name": row.common_name,
+                        "scientific_name": row.scientific_name,
+                        "taxonomic_group": row.taxonomic_group,
+                        "score": row.score,
+                        "peak_frequency_hz": row.peak_frequency_hz,
+                    },
+                    filt,
+                )
+                for row in rows
+            )
+            if item is not None
+        ]
+        names = {
+            str(row.scientific_name)
+            for row in species_rows
+            if display_state.is_taxonomic_name(row.scientific_name, row.common_name)
+        }
+        return display_state.collapse_runs(items, filt.rows), names
+
+    @app.websocket(f"{API_PREFIX}/display")
+    async def display_socket(
+        socket: WebSocket,
+        min_score: float = Query(0.75, ge=0.0, le=1.0),
+        bats: bool = Query(True),
+        rows: int = Query(0, ge=0, le=12),
+    ) -> None:
+        """The inside observer's feed: detections only, a few dozen bytes each.
+
+        Deliberately *not* a mode of `/api/v1/live`. That socket's whole
+        vocabulary is wrong for this client -- binary spectrogram columns an
+        ESP32 cannot use, a hello frame carrying forty full detection records and
+        sixty events, a 2 s full-station status -- so "filtering" it would mean
+        replacing every frame it sends while still paying ADR-012's warning that
+        any change to that channel must be re-measured from a real browser over
+        real Wi-Fi. A separate endpoint leaves the debug UI's transport untouched
+        and lets this one be exactly as small as it needs to be.
+
+        ADR-012's single-writer rule holds here as it does there: `client.run()`
+        is the only code that writes this socket. The pump and the receive loop
+        never touch it.
+        """
+        await socket.accept()
+        # Same allow-list the display's HTTP poll already uses: an ESP32 with no
+        # keyboard cannot log in, and ADR-034's public-read exemption exists for
+        # exactly this client. Not exempt by default is not an option that leaves
+        # the display working.
+        if (
+            settings.auth_enabled
+            and f"{API_PREFIX}/display" not in settings.auth_public_read_paths
+            and _ws_principal(socket) is None
+        ):
+            log.info("auth.ws_rejected", path=API_PREFIX + "/display")
+            await socket.close(code=4401)
+            return
+
+        filt = display_state.DisplayFilter(
+            min_score=min_score,
+            show_bats=bats,
+            rows=rows or settings.display_channel_snapshot_rows,
+        )
+        heartbeat_s = max(1, int(settings.display_channel_heartbeat_s))
+        client = display_state.DisplayClient(socket, maxsize=settings.display_channel_queue_max)
+        display_clients.add(client)
+        # Only detections. Subscribing to the whole bus would queue capture.levels
+        # at ~1 Hz and every window event for a client that renders none of them.
+        subscription = station.bus.subscribe(
+            [EventType.DETECTION_CREATED], maxsize=128, label="display-ws"
+        )
+        writer = asyncio.create_task(client.run(), name="display-writer")
+        pump: asyncio.Task[None] | None = None
+        try:
+            # One short DB read, off the event loop. Once per connection, not
+            # once per 20 s -- a display connects and then stays connected for
+            # days, so this is the only query it ever costs the station.
+            items, names = await asyncio.to_thread(_display_snapshot, filt)
+            tracker = display_state.SpeciesToday(day_key=_display_day_key(), names=names)
+            state, detail = _display_health()
+            client.offer(
+                display_state.hello_frame(
+                    now=int(time.time()),
+                    state=state,
+                    detail=detail,
+                    species_today=tracker.count,
+                    items=items,
+                    heartbeat_s=heartbeat_s,
+                )
+            )
+            log.info(
+                "display_channel.connected",
+                rows=len(items),
+                species_today=tracker.count,
+                min_score=filt.min_score,
+                bats=filt.show_bats,
+            )
+            pump = asyncio.create_task(
+                _pump_display(client, subscription, filt, tracker, heartbeat_s),
+                name="display-pump",
+            )
+            while True:
+                # Nothing the display sends is acted on; reading is how a
+                # disconnect is noticed promptly.
+                await socket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            log.exception("display_socket.error")
+        finally:
+            log.info("display_channel.disconnected", **client.stats())
+            display_clients.discard(client)
+            client.close()
+            subscription.close()
+            for task in (pump, writer):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+
+    async def _pump_display(
+        client: display_state.DisplayClient,
+        subscription: Any,
+        filt: display_state.DisplayFilter,
+        tracker: display_state.SpeciesToday,
+        heartbeat_s: int,
+    ) -> None:
+        """Turn detection events into wire frames, and keep the heartbeat going.
+
+        Never writes the socket -- it only ever calls `client.offer`, which is
+        synchronous, bounded and non-blocking.
+        """
+        next_beat = time.monotonic() + heartbeat_s
+        last_sent_count = tracker.count
+        while not client.closed:
+            timeout = max(0.05, next_beat - time.monotonic())
+            try:
+                event = await asyncio.wait_for(subscription.queue.get(), timeout=timeout)
+            except TimeoutError:
+                event = None
+            if event is not None:
+                if event.get("event_type") == "_bus.closed":
+                    return
+                state, _ = _display_health()
+                detection = event.get("data") or {}
+                # ADR-020: while the station is not on the real microphone its
+                # detections are records of a test scene, not observations of the
+                # garden. The banner already says so; the feed must not quietly
+                # keep filling with them.
+                if state == "L":
+                    item = display_state.wire_item(detection, filt)
+                    if item is not None:
+                        tracker.observe(_display_day_key(), detection)
+                        moved = tracker.count if tracker.count != last_sent_count else None
+                        last_sent_count = tracker.count
+                        client.offer(display_state.detection_frame(item, species_today=moved))
+            if time.monotonic() >= next_beat:
+                next_beat = time.monotonic() + heartbeat_s
+                state, detail = _display_health()
+                # Rolls the count over at local midnight even on a silent night.
+                day = _display_day_key()
+                if day != tracker.day_key:
+                    tracker.day_key, tracker.names = day, set()
+                last_sent_count = tracker.count
+                client.offer(
+                    display_state.status_frame(
+                        now=int(time.time()),
+                        state=state,
+                        detail=detail,
+                        species_today=tracker.count,
+                    )
+                )
 
     # -- static UI ------------------------------------------------------
 

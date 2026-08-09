@@ -96,6 +96,20 @@ class Settings(BaseSettings):
     #: all of it in one burst delayed the audio consumer on the same event loop.
     spectrogram_backfill_s: float = 30.0
 
+    # ---- inside-observer push channel (ADR-038) ---------------------------
+    #: Seconds between heartbeat frames on `/api/v1/display`. Also what the
+    #: display uses to decide the feed has gone stale (it allows three misses),
+    #: so lengthening this makes a dead station take longer to look dead.
+    display_channel_heartbeat_s: float = 10.0
+    #: Detection rows fetched once, on connect, so a display joining mid-day is
+    #: not blank. Six is what the 240x320 panel renders; the query reads a
+    #: multiple of it and collapses repeats down to this.
+    display_channel_snapshot_rows: int = 6
+    #: Frames a display may fall behind by before the oldest detection is shed.
+    #: Bounded like every other queue here: capture always wins, and this channel
+    #: must never be able to apply back-pressure to anything upstream.
+    display_channel_queue_max: int = 64
+
     # ---- detectors --------------------------------------------------------
     activity_enabled: bool = True
     #: Calibrated against measured noise; see detectors/activity.py.
@@ -316,7 +330,14 @@ class Settings(BaseSettings):
     #: field out of that broken path so it is safe to set from
     #: `config/runtime.env`; the other three are left as found, since fixing
     #: them is outside this change's territory.
-    auth_public_read_paths: Annotated[tuple[str, ...], NoDecode] = ("/api/v1/detections",)
+    #: `/api/v1/display` is the push channel of ADR-038. It is not a GET, so the
+    #: HTTP gate never sees it; the WebSocket handler consults this same list so
+    #: the display's two transports are exempt or not exempt together, rather
+    #: than the fallback working and the primary path silently not.
+    auth_public_read_paths: Annotated[tuple[str, ...], NoDecode] = (
+        "/api/v1/detections",
+        "/api/v1/display",
+    )
     #: Minimum password length enforced at account creation and password
     #: change. NIST 800-63B's floor; no composition rules on top of it, which
     #: is also 800-63B guidance -- composition rules push people toward

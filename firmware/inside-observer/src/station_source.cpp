@@ -66,6 +66,7 @@ bool HttpStationSource::poll(const Settings& settings,
     snapshot.health.detail = "NO WIFI";
     snapshot.lastError = "wifi disconnected";
     ++snapshot.consecutiveFailures;
+    lastPollOk_ = false;
     return false;
   }
 
@@ -85,9 +86,19 @@ bool HttpStationSource::poll(const Settings& settings,
       snapshot.lastError = err;
       ++snapshot.consecutiveFailures;
       Serial.printf("[station] health failed: %s\n", err.c_str());
+      lastPollOk_ = false;
       return false;
     }
-    parseHealth(doc.as<JsonObjectConst>(), snapshot.health);
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    parseHealth(root, snapshot.health);
+    // The station's own idea of now, which is the only thing that can anchor
+    // this device's relative times while the push channel is down. `checked_at`
+    // is generated at the moment the response is built, so it is as close to
+    // "now" as anything this transport can offer.
+    const int64_t checkedAt = parseIso8601Utc(root["checked_at"]);
+    if (checkedAt != kInvalidTime) {
+      snapshot.clock.anchor(checkedAt);
+    }
   }
 
   FeedFilter feedFilter;
@@ -118,6 +129,7 @@ bool HttpStationSource::poll(const Settings& settings,
       snapshot.lastError = err;
       ++snapshot.consecutiveFailures;
       Serial.printf("[station] detections failed: %s\n", err.c_str());
+      lastPollOk_ = false;
       return false;
     }
     collectDetections(doc.as<JsonObjectConst>(), feedFilter, candidates);
@@ -177,6 +189,8 @@ bool HttpStationSource::poll(const Settings& settings,
   snapshot.lastSuccessMillis = millis();
   snapshot.consecutiveFailures = 0;
   snapshot.lastError.clear();
+  snapshot.transport = transportName();
+  lastPollOk_ = true;
 
   Serial.printf("[station] poll ok in %lu ms: state=%s rows=%u species=%d "
                 "offset=%+ld s heap=%u\n",

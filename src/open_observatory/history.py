@@ -16,11 +16,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, Select, cast, func, select
 from sqlalchemy.engine import Dialect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .db import models as orm
@@ -41,12 +42,19 @@ IDENTIFIED_GROUPS = ("bird", "bat")
 LIVE_SOURCE_KIND = "alsa"
 
 
-def is_live(column: ColumnElement) -> ColumnElement:
+#: Every caller passes an ORM attribute (`orm.AudioStream.source_kind`), which is
+#: an `InstrumentedAttribute`, not a `ColumnElement` -- so the narrower annotation
+#: these two functions carried was wrong at every single call site, and mypy said
+#: so eight times. Widened rather than silenced: both are usable as either.
+SourceKindColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
+
+
+def is_live(column: SourceKindColumn) -> ColumnElement[Any]:
     """True for a genuine microphone stream, false for synthetic/replay/unknown."""
     return column == LIVE_SOURCE_KIND
 
 
-def is_not_live(column: ColumnElement) -> ColumnElement:
+def is_not_live(column: SourceKindColumn) -> ColumnElement[Any]:
     """The complement of :func:`is_live`, including a missing/NULL source_kind.
 
     Plain ``!=`` would silently drop NULLs (SQL three-valued logic), which here
