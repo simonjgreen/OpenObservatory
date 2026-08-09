@@ -63,6 +63,7 @@ from sqlalchemy.orm import Session
 from .. import display_channel as display_state
 from .. import history as history_queries
 from .. import models as model_registry
+from .. import plausibility
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
 from ..auth import AuthError, AuthService, Principal
 from ..config import Settings, get_settings
@@ -1004,6 +1005,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "scientific_name",
             "score",
             "calibrated_probability",
+            # A CSV opened in a spreadsheet is exactly the surface where a
+            # withdrawn owl would be read as an observation and then cited, so
+            # the marker travels with the export (ADR-044) rather than being a
+            # property only the JSON API knows about.
+            "withdrawn",
             "peak_frequency_hz",
             "detector_plugin_id",
             "detector_calibrated",
@@ -1131,6 +1137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def taxa_activity(
         hours: int = Query(24, ge=1, le=168),
         include_synthetic: bool = False,
+        include_withdrawn: bool = False,
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
         since = datetime.now(UTC) - timedelta(hours=hours)
@@ -1162,6 +1169,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or 0
             )
             query = query.where(history_queries.is_live(orm.AudioStream.source_kind))
+
+        # Same reasoning as history.species_summary (ADR-044): this groups by
+        # species and has no row to mark, so a withdrawn claim would come back
+        # as an ordinary "seen in the last 24 h" entry.
+        excluded_withdrawn = 0
+        if not include_withdrawn:
+            excluded_withdrawn = (
+                session.execute(
+                    select(func.count(orm.Detection.id))
+                    .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
+                    .where(
+                        orm.Detection.event_start_utc >= since,
+                        history_queries.is_withdrawn(),
+                    )
+                ).scalar_one()
+                or 0
+            )
+            query = query.where(history_queries.is_not_withdrawn())
 
         rows = session.execute(
             query.group_by(
@@ -1204,6 +1229,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "entries": entries,
             "include_synthetic": include_synthetic,
             "excluded_synthetic_count": excluded_count,
+            "include_withdrawn": include_withdrawn,
+            "excluded_withdrawn_count": excluded_withdrawn,
         }
 
     @app.get(f"{API_PREFIX}/history")
@@ -1239,6 +1266,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "range": resolved.to_dict(),
             "timezone": settings.timezone,
             "include_synthetic": include_synthetic,
+            # Withdrawn rows (ADR-044) are excluded from `species`/`unidentified`
+            # -- an aggregate that names a species has nowhere to put a marker --
+            # but *not* from `timeline`, which counts detections rather than
+            # naming anything. Reported here so the exclusion is never silent.
+            "excluded_withdrawn_count": history_queries.excluded_withdrawn_count(
+                session, resolved, min_score=min_score
+            ),
             "timeline": history_queries.timeline(
                 session,
                 resolved,
@@ -1662,6 +1696,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .outerjoin(orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id)
                 .where(orm.Detection.taxonomic_group.in_(groups))
                 .where(history_queries.is_live(orm.AudioStream.source_kind))
+                # ADR-044. Filtered in SQL rather than by fetching
+                # `native_result` and testing it in Python: this query's narrow
+                # column list is the whole point of ADR-038's connect snapshot,
+                # and the ~1.8 kB blob is exactly what it exists to not read.
+                .where(history_queries.is_not_withdrawn())
                 .where(
                     (orm.Detection.taxonomic_group == display_state.BAT_GROUP)
                     | (orm.Detection.score >= filt.min_score)
@@ -1680,6 +1719,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .where(orm.Detection.taxonomic_group == "bird")
                 .where(orm.Detection.score >= filt.min_score)
                 .where(history_queries.is_live(orm.AudioStream.source_kind))
+                # The footer count has to agree with the feed above it.
+                .where(history_queries.is_not_withdrawn())
                 .distinct()
             ).all()
 
@@ -1912,6 +1953,15 @@ def _detection_payload(
         "display_name": display_name,
         "title_hint": title_hint,
         "flags": detection_flags(row.native_result),
+        #: ADR-044. The row is *kept* and answered with, not hidden: the charter's
+        #: item 5 says the prior verdict stays visible and attributable, and a
+        #: record the system got wrong is evidence about the system. What changes
+        #: is that no client can now render it as a live claim by accident --
+        #: `withdrawn` is a top-level boolean on every detection payload (present
+        #: and false on the overwhelming majority), and `withdrawal` carries the
+        #: reviewer's recomputed prior, threshold, reason and timestamp verbatim.
+        "withdrawn": plausibility.is_withdrawn(row.native_result),
+        "withdrawal": plausibility.withdrawal(row.native_result),
         "common_name": row.common_name,
         "scientific_name": row.scientific_name,
         "canonical_taxon_id": row.canonical_taxon_id,

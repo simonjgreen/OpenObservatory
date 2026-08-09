@@ -34,6 +34,11 @@ interface SpeciesRow {
   displayName: string
   titleHint: string | null
   feedingBuzz: boolean
+  /** True when every detection grouped into this row has had its claim
+   *  withdrawn (ADR-044). Not "any": a row that also holds standing detections
+   *  is still a live claim, and marking the whole group withdrawn would be as
+   *  wrong in the other direction. */
+  withdrawn: boolean
   scientificName: string | null
   group: string
   bestScore: number
@@ -94,6 +99,7 @@ export function Suggestions({
           displayName: title.label,
           titleHint: title.hint,
           feedingBuzz: title.feedingBuzz,
+          withdrawn: title.withdrawn,
           scientificName: detection.scientific_name,
           group: detection.taxonomic_group,
           bestScore: detection.score,
@@ -109,6 +115,8 @@ export function Suggestions({
         existing.count += 1
         existing.bestScore = Math.max(existing.bestScore, detection.score)
         existing.members.push(detection)
+        // Every member, not the latest one: see SpeciesRow.withdrawn.
+        existing.withdrawn = existing.withdrawn && title.withdrawn
         if (at >= existing.lastSeen) {
           existing.lastSeen = at
           existing.latestScore = detection.score
@@ -224,6 +232,7 @@ export function Suggestions({
                   <span className="name">{row.displayName}</span>
                   {row.titleHint && <span className="title-hint">{row.titleHint}</span>}
                   {row.feedingBuzz && <span className="feeding-buzz-marker">feeding buzz</span>}
+                  {row.withdrawn && <span className="withdrawn-marker">withdrawn</span>}
                   {row.count > 1 && (
                     <button
                       className={`count ${expanded.has(row.key) ? 'on' : ''}`}

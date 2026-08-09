@@ -54,6 +54,7 @@ import aiomqtt
 import structlog
 from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
+from .. import plausibility
 from ..config import Settings
 from ..events import EventBus, EventType
 from .discovery import BAT_GROUP, BAT_PLUGIN_ID, TopicLayout, build_entities
@@ -96,6 +97,10 @@ class MqttStats:
     #: Detections that named nothing, withheld from Home Assistant
     #: (settings.mqtt_publish_unidentified). Counted, not silent.
     suppressed_unidentified_total: int = 0
+    #: Detections withheld because a plausibility review withdrew the claim
+    #: (ADR-044). Expected to stay at zero on a healthy station -- see
+    #: `_handle_detection` for why a non-zero value here is worth investigating.
+    suppressed_withdrawn_total: int = 0
     last_error: str | None = None
     last_connected_utc: str | None = None
     last_disconnected_utc: str | None = None
@@ -187,6 +192,7 @@ class MqttPublisher:
             "queued": self.stats.queued,
             "suppressed_synthetic_total": self.stats.suppressed_synthetic_total,
             "suppressed_unidentified_total": self.stats.suppressed_unidentified_total,
+            "suppressed_withdrawn_total": self.stats.suppressed_withdrawn_total,
             "last_error": self.stats.last_error,
             "last_connected_utc": self.stats.last_connected_utc,
             "last_disconnected_utc": self.stats.last_disconnected_utc,
@@ -224,6 +230,12 @@ class MqttPublisher:
             "Detections withheld from MQTT because capture was not live (ADR-020)",
             registry=registry,
         ).set(float(snap["suppressed_synthetic_total"]))
+        Gauge(
+            "oo_mqtt_suppressed_withdrawn_total",
+            "Detections withheld from MQTT because a plausibility review withdrew "
+            "the claim (ADR-044)",
+            registry=registry,
+        ).set(float(snap["suppressed_withdrawn_total"]))
         return generate_latest(registry), "text/plain; version=0.0.4; charset=utf-8"
 
     # ------------------------------------------------------------------
@@ -374,6 +386,23 @@ class MqttPublisher:
             return
 
         data = event.get("data", {})
+
+        if plausibility.is_withdrawn(data.get("native_result")) or data.get("withdrawn"):
+            # ADR-044. A Home Assistant entity state is a bare claim: a name, a
+            # time, and no room for "we no longer stand behind this". Nothing
+            # subscribed to `.../detection` can render a caveat, and a retained
+            # `last_detection` would sit on a dashboard indefinitely. So a
+            # withdrawn row is not published at all, exactly as it is not put on
+            # the wall display.
+            #
+            # This is expected to be dead code on a healthy station, and is here
+            # anyway: withdrawal is written by a repair CLI run *after* capture,
+            # so a live bus event should never carry one. If this counter ever
+            # moves, something is republishing historical rows onto the bus, and
+            # that is worth knowing about rather than quietly forwarding.
+            self.stats.suppressed_withdrawn_total += 1
+            log.info("mqtt.suppressed_withdrawn_detection", detection=data.get("id"))
+            return
 
         plugin_id = data.get("detector", {}).get("plugin_id")
         taxonomic_group = data.get("taxonomic_group")

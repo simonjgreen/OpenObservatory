@@ -14,7 +14,12 @@ describe('formatDetectionTitle', () => {
       display_name: 'European Robin',
       title_hint: null,
     })
-    expect(result).toEqual({ label: 'European Robin', hint: null, feedingBuzz: false })
+    expect(result).toEqual({
+      label: 'European Robin',
+      hint: null,
+      feedingBuzz: false,
+      withdrawn: false,
+    })
     expect(formatDetectionTitleText({ display_name: 'European Robin', title_hint: null })).toBe(
       'European Robin',
     )
@@ -95,7 +100,56 @@ describe('formatDetectionTitle', () => {
       label: 'unknown',
       hint: null,
       feedingBuzz: false,
+      withdrawn: false,
     })
+  })
+
+  // ---- ADR-044: a withdrawn identification --------------------------------
+  //
+  // The station keeps the row and marks it, so the UI must never print the
+  // species name on its own. Three shapes reach these render sites and all
+  // three carry the fact differently.
+
+  it('marks a row the API reported as withdrawn', () => {
+    const result = formatDetectionTitle({
+      display_name: 'Western Screech-Owl',
+      withdrawn: true,
+    })
+    expect(result.label).toBe('Western Screech-Owl')
+    expect(result.withdrawn).toBe(true)
+  })
+
+  it('marks it from flags.withdrawn on a list row', () => {
+    expect(
+      formatDetectionTitle({
+        display_name: 'Western Screech-Owl',
+        flags: { feeding_buzz: false, withdrawn: true },
+      }).withdrawn,
+    ).toBe(true)
+  })
+
+  it('marks it from a raw native_result on a live WebSocket frame', () => {
+    expect(
+      formatDetectionTitle({
+        display_name: 'Flammulated Owl',
+        native_result: { plausibility_review: { implausible: true } },
+      }).withdrawn,
+    ).toBe(true)
+  })
+
+  it('does not mark a row that was reviewed and cleared', () => {
+    // The block records that a review happened; the boolean records the
+    // verdict. Confusing the two would withdraw every row anyone checked.
+    expect(
+      formatDetectionTitle({
+        display_name: 'Tawny Owl',
+        native_result: { plausibility_review: { implausible: false } },
+      }).withdrawn,
+    ).toBe(false)
+  })
+
+  it('does not mark an ordinary detection', () => {
+    expect(formatDetectionTitle({ display_name: 'European Robin' }).withdrawn).toBe(false)
   })
 })
 

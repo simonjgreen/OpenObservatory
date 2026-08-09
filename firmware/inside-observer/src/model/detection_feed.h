@@ -16,6 +16,10 @@
 //    score threshold entirely - the threshold is a bird-naming control.
 //  * A BirdNET label whose scientific name is not a binomial (Engine, Siren,
 //    Human vocal, ...) is not a species and is not presented as one.
+//  * A detection the station has marked `withdrawn` never reaches the screen
+//    (ADR-044). The API keeps such rows and marks them, because the record
+//    stays visible and attributable there; this display has nowhere to put a
+//    caveat, so it shows nothing rather than an unqualified claim.
 #pragma once
 
 #include <cstdint>

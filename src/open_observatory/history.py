@@ -24,6 +24,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from . import plausibility
 from .db import models as orm
 from .display import display_title
 
@@ -63,6 +64,41 @@ def is_not_live(column: SourceKindColumn) -> ColumnElement[Any]:
     unproven rows out of the wildlife-facing views.
     """
     return (column != LIVE_SOURCE_KIND) | column.is_(None)
+
+
+def _withdrawn_flag() -> ColumnElement[Any]:
+    """The stored withdrawal boolean, as a SQL expression (ADR-044).
+
+    ``native_result`` is a ``JSON`` column, so this compiles to
+    ``json_extract`` on SQLite and to ``->>``/``CAST`` on PostgreSQL without
+    either dialect being named here (ADR-007 keeps one schema for both).
+    """
+    return orm.Detection.native_result[plausibility.REVIEW_KEY][
+        plausibility.WITHDRAWN_KEY
+    ].as_boolean()
+
+
+def is_withdrawn() -> ColumnElement[Any]:
+    """True for a detection whose claim has been withdrawn by review (ADR-044).
+
+    Takes no column argument, unlike :func:`is_live`: the withdrawal lives in
+    ``detection.native_result`` and nowhere else, so there is nothing for a
+    caller to choose.
+    """
+    return _withdrawn_flag().is_(True)
+
+
+def is_not_withdrawn() -> ColumnElement[Any]:
+    """The complement, and NULL-safe on purpose.
+
+    The overwhelming majority of rows have no review block at all, so the
+    extracted value is SQL ``NULL`` for them; a plain ``= false`` would drop
+    every single one. Same three-valued-logic trap :func:`is_not_live` documents,
+    with the opposite consequence if you get it wrong -- there it hid too little,
+    here it would hide almost everything.
+    """
+    flag = _withdrawn_flag()
+    return flag.is_(None) | flag.is_(False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +235,31 @@ def excluded_synthetic_count(session: Session, window: Range, *, min_score: floa
     return session.execute(query).scalar_one()
 
 
+def excluded_withdrawn_count(session: Session, window: Range, *, min_score: float = 0.0) -> int:
+    """How many detections in this window ``species_summary`` hides as withdrawn.
+
+    Exactly the same argument as :func:`excluded_synthetic_count`, for exactly
+    the same reason: a species that vanished from the summary because its only
+    detections were withdrawn must leave a trace an operator can find, or the
+    correction is indistinguishable from the detector having missed it. Counted
+    over live-source rows only, since a synthetic row is already excluded and
+    would otherwise be reported twice.
+    """
+    query = (
+        _in_range(
+            select(func.count(orm.Detection.id)).outerjoin(
+                orm.AudioStream, orm.AudioStream.id == orm.Detection.stream_id
+            ),
+            window,
+        )
+        .where(is_live(orm.AudioStream.source_kind))
+        .where(is_withdrawn())
+    )
+    if min_score > 0:
+        query = query.where(orm.Detection.score >= min_score)
+    return session.execute(query).scalar_one()
+
+
 def timeline(
     session: Session,
     window: Range,
@@ -268,12 +329,22 @@ def species_summary(
     min_score: float = 0.0,
     include_unidentified: bool = False,
     include_synthetic: bool = False,
+    include_withdrawn: bool = False,
 ) -> list[dict[str, object]]:
     """What was detected in the window, once per distinct label, with its extent.
 
     Excludes synthetic/replay detections by default (see LIVE_SOURCE_KIND): this is
     presented as a list of things heard, and a detector running against a test
     scene has not heard anything.
+
+    Excludes withdrawn detections by default for the same reason (ADR-044). This
+    is the one shape in this module that *names a species*, and it is an
+    aggregate -- there is no row here to hang a "withdrawn" marker on, so a
+    withdrawn *Western Screech-Owl* would appear in a list of things heard as a
+    plain factual claim. The individual rows remain reachable and marked through
+    ``GET /api/v1/detections``; ``excluded_withdrawn_count`` reports the size of
+    what this hid. ``include_withdrawn=True`` is the diagnostic escape hatch,
+    matching ``include_synthetic``.
     """
     query = _in_range(
         select(
@@ -297,6 +368,8 @@ def species_summary(
         query = query.where(orm.Detection.taxonomic_group.in_(IDENTIFIED_GROUPS))
     if not include_synthetic:
         query = query.where(is_live(orm.AudioStream.source_kind))
+    if not include_withdrawn:
+        query = query.where(is_not_withdrawn())
 
     rows = session.execute(
         query.group_by(

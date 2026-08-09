@@ -295,9 +295,12 @@ useful addition and is not currently planned.
 ### 6.3 Fix the things I know are wrong or unfinished
 
 0. **North American owls are being reported at the development station, and they now reach a
-   screen in the operator's house.** — **Partially fixed by ADR-032.** Both defects
-   below are fixed for every *new* detection; the ~5833 detections already in the
-   database, and three consumers, are not.
+   screen in the operator's house.** — **Fixed in code by ADR-032 (detector) and
+   ADR-044 (consumers, plus the week audit). One operator action remains:
+   `oo detections reconcile-plausibility` has still never been run against the
+   live database, so the historical rows are still unflagged and therefore still
+   presented.** Read "What is still open" at the end of this item before doing
+   anything.
 
    Measured 2026-08-08 on the live station: *Western Screech-Owl* at score **0.96**,
    and *Flammulated Owl* separately, both above threshold. Neither occurs in the UK.
@@ -360,27 +363,42 @@ useful addition and is not currently planned.
      station's actual database** (only against synthetic fixtures and a stubbed
      range model); do that read-only/dry-run first (`--json` piped to a file) and
      review the output before ever passing `--apply` there.
-   - **No consumer hides a flagged historical row.** Suppression happens at the
-     detector for new detections, so the API, MQTT publisher and ESP32 display are
-     automatically consistent going forward — there is nothing left for any of
-     them to filter. But nothing yet reads
-     `native_result.plausibility_review.implausible` to stop presenting an
-     already-flagged historical row (e.g. a still-unflagged Western
-     Screech-Owl/Flammulated Owl) as an observation on the wall display or the API.
-     This was out of scope for ADR-032's territory (`detectors/birdnet.py`,
-     `config.py`, `cli.py`, metrics, docs — explicitly not the API, MQTT publisher
-     or ESP32 firmware) and needs a follow-up agent.
-   - **The week index passed to the range model was not re-audited.** A wrong week
-     would make the priors wrong globally; ADR-032 did not investigate this, since
-     the measured priors (Common Woodpigeon 0.995 etc.) already look sane for the
-     season they were captured in, but it was not independently re-derived here.
+   - ~~**No consumer hides a flagged historical row.**~~ **Done (ADR-044,
+     2026-08-09.)** `plausibility.py` is now the single definition of "withdrawn"
+     and five surfaces read it: `GET /api/v1/detections` (and the detail view and
+     the CSV/JSON export) keep the row and mark it `withdrawn: true` with a
+     `withdrawal` block carrying the reviewer's recomputed prior, threshold,
+     reason and timestamp; `/api/v1/history`'s species list and
+     `/api/v1/taxa/activity` exclude it and report `excluded_withdrawn_count`;
+     the MQTT publisher does not publish it (counted as
+     `oo_mqtt_suppressed_withdrawn_total`); the `/api/v1/display` channel filters
+     it in SQL *and* on the wire; and the ESP32 refuses it on the HTTP fallback
+     path (`detection_feed.cpp`, including its streaming JSON filter). The web UI
+     marks it everywhere and explains it in the detection drawer. The split — a
+     *record* is marked, a *claim* is suppressed — is argued from charter items 5
+     and 6 in ADR-044. **The firmware change is committed but NOT flashed: the
+     ESP32 was not connected.** The push path already protects an unflashed
+     device, since the station never sends a withdrawn row; the firmware change
+     only matters for the HTTP fallback.
+   - ~~**The week index passed to the range model was not re-audited.**~~
+     **Done (ADR-044): it is correct.** Re-derived from the code and asserted for
+     every day of a common and a leap year (48 weeks, four per calendar month,
+     range exactly [1, 48] — *not* an ISO week: 2026-08-08 is BirdNET week 30 and
+     ISO week 32), then verified empirically by running the real MData model at
+     the station's coordinates for all 48 weeks: Common Swift peaks w22, Cuckoo
+     w17, Fieldfare in w45-w5, Woodpigeon flat, both North American owls 0.000 in
+     *every* week. `scripts/birdnet_week_audit.py` re-runs it. Note found on the
+     way: a week outside [1, 48] is not rejected by the model, it returns the
+     year-round prior (Swift 0.913 rather than 0.000 in January), so a wrong week
+     would have disabled seasonality silently rather than failing.
 
-   **Why this is still urgent, not resolved:** the inside observer (ADR-023) puts
-   detections above 0.75 on a wall in the operator's living room, with no score
-   shown. An implausible species there still reads as a plain factual claim that a
-   screech-owl was in the garden, for any of the ~202+ historical rows until the
-   repair CLI is run with `--apply` *and* a consumer-side follow-up ships to
-   respect the flag.
+   **What is still open, and it is an operator decision, not a code one:**
+   `oo detections reconcile-plausibility` has **never been run against the live
+   station's database**, so no row there is flagged yet — which means the
+   ~202+ historical rows, including the measured Western Screech-Owl and
+   Flammulated Owl, are still presented everywhere. The consumer side is now
+   ready and takes effect immediately on `--apply`, with no restart. Do the
+   dry run first (`--json` piped to a file), read it, and only then decide.
 
 4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
    needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID

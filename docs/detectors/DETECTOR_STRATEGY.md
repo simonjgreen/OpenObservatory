@@ -408,8 +408,7 @@ suppressed *out-of-range* species. It is now split into
 `BirdNetDetector.plausibility_snapshot()` and as `oo_birdnet_suppressed_total{reason=...}`
 in `api/metrics.py`.
 
-**What is not fixed by this change: the ~5833 already-persisted rows, three of them are
-consumers.** Going forward, an implausible candidate is suppressed by the detector before a
+**What is not fixed by this change: the ~5833 already-persisted rows.** Going forward, an implausible candidate is suppressed by the detector before a
 row is ever created, so the API, the MQTT publisher and the ESP32 wall display are
 automatically consistent — there is nothing for any of them to filter. But the ~202
 historical rows already in the database were written under the old logic and still read as
@@ -418,8 +417,24 @@ reconcile-plausibility` (dry-run by default, `cli.py`) re-evaluates stored detec
 against the *current* range model and *floor*, and on `--apply` writes a
 `native_result.plausibility_review` block recording the finding — it never deletes a row or
 overwrites the original `native_result`, mirroring `oo history reconcile-streams`'s
-`detail.reconciliation` pattern. **This agent's territory did not include the API, the MQTT
-publisher or the ESP32 firmware**, so nothing yet reads `plausibility_review` to actually
-hide a flagged historical row from a consumer — that is a follow-up, tracked in
-`HANDOVER.md` §6.3 item 0, and until it lands, a flagged historical row is still visible
-everywhere it was before, just auditable as flagged in the database.
+`detail.reconciliation` pattern.
+
+**The consumers do read that flag now (ADR-044).** `plausibility.py` holds the single
+definition of "withdrawn". A flagged row is *kept and marked* where there is room for
+nuance — `GET /api/v1/detections`, the detail view, the CSV/JSON export, and the web UI,
+which explains the withdrawal in the detection drawer — and *suppressed* where there is
+not: `/api/v1/history`'s species list and `/api/v1/taxa/activity` drop it and report
+`excluded_withdrawn_count`, and the MQTT publisher and the ESP32 wall display do not
+present it at all. Charter item 5 ("withdraw, not delete; the prior verdict stays visible
+and attributable") is why the row survives; item 6 and the honesty constraint are why the
+two surfaces that cannot render a caveat show nothing instead. What remains is an operator
+action, not a code change: the repair command has still never been run against the live
+station, so its historical owls are still unflagged and therefore still presented. Tracked
+in `HANDOVER.md` §6.3 item 0.
+
+**The week index feeding all of this was audited and is correct (ADR-044):** 48 weeks,
+four per calendar month, range exactly [1, 48] for every day of a common and a leap year,
+and not an ISO week. Verified against the real MData model's seasonality at the station's
+coordinates — Common Swift peaks at week 22, Cuckoo at 17, Fieldfare in winter, and both
+North American owls sit at 0.000 in every week of the year. `scripts/birdnet_week_audit.py`
+re-runs it.

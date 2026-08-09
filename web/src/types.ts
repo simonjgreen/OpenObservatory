@@ -248,7 +248,14 @@ export interface Detection {
   peak_frequency_hz: number | null
   /** Small derived markers computed from native_result, present even where
    *  native_result itself is not (list responses). */
-  flags?: { feeding_buzz: boolean }
+  flags?: { feeding_buzz: boolean; withdrawn?: boolean }
+  /** True when a plausibility review has withdrawn this claim (ADR-044). The row
+   *  is deliberately still returned — withdrawn, not deleted — so it must be
+   *  rendered with its marker and never as a plain observation. */
+  withdrawn?: boolean
+  /** The reviewer's recomputed prior, threshold, reason and timestamp, verbatim.
+   *  Null unless `withdrawn`. */
+  withdrawal?: Record<string, unknown> | null
   /** Present on `GET /detections/{id}` and on live WebSocket frames; omitted from
    *  `GET /detections` list rows unless `include_native=true` was requested. */
   native_result?: Record<string, unknown>

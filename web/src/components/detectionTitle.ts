@@ -19,7 +19,8 @@
 export interface DetectionTitleSource {
   display_name: string
   title_hint?: string | null
-  flags?: { feeding_buzz?: boolean | null } | null
+  flags?: { feeding_buzz?: boolean | null; withdrawn?: boolean | null } | null
+  withdrawn?: boolean | null
   native_result?: Record<string, unknown> | null
 }
 
@@ -31,6 +32,11 @@ export interface DetectionTitle {
   hint: string | null
   /** True when this pass contains a feeding/terminal buzz. */
   feedingBuzz: boolean
+  /** True when a plausibility review has withdrawn this claim (ADR-044). The
+   *  station still returns the row — the prior verdict stays visible and
+   *  attributable — so every render site must show it *as withdrawn* rather
+   *  than dropping it or, worse, printing the species name unqualified. */
+  withdrawn: boolean
 }
 
 /** Compose the three pieces of a detection's title from whatever shape of
@@ -40,7 +46,7 @@ export function formatDetectionTitle(
   detection: DetectionTitleSource | null | undefined,
 ): DetectionTitle {
   if (!detection) {
-    return { label: 'unknown', hint: null, feedingBuzz: false }
+    return { label: 'unknown', hint: null, feedingBuzz: false, withdrawn: false }
   }
   const label = detection.display_name || 'unknown'
   const hint = detection.title_hint ?? null
@@ -51,7 +57,25 @@ export function formatDetectionTitle(
   const feedingBuzz = Boolean(
     detection.flags?.feeding_buzz ?? detection.native_result?.has_feeding_buzz ?? false,
   )
-  return { label, hint, feedingBuzz }
+  // Three sources, same reason as feedingBuzz: the list rows carry `flags` and a
+  // top-level `withdrawn`, while a live WebSocket envelope carries only the raw
+  // `native_result`. Missing the flag would print a retracted species name as
+  // fact, so every shape this function accepts is checked.
+  const withdrawn = Boolean(
+    detection.withdrawn ??
+      detection.flags?.withdrawn ??
+      isWithdrawnNativeResult(detection.native_result),
+  )
+  return { label, hint, feedingBuzz, withdrawn }
+}
+
+/** The station writes its review under `native_result.plausibility_review`
+ *  (`src/open_observatory/plausibility.py`). Read defensively: this is the only
+ *  place the raw shape is known in the UI. */
+function isWithdrawnNativeResult(native: Record<string, unknown> | null | undefined): boolean {
+  const review = native?.plausibility_review
+  if (!review || typeof review !== 'object') return false
+  return Boolean((review as Record<string, unknown>).implausible)
 }
 
 /** Convenience for plain-text contexts (canvas labels, mono summary lines) that
@@ -60,9 +84,13 @@ export function formatDetectionTitle(
 export function formatDetectionTitleText(
   detection: DetectionTitleSource | null | undefined,
 ): string {
-  const { label, hint, feedingBuzz } = formatDetectionTitle(detection)
+  const { label, hint, feedingBuzz, withdrawn } = formatDetectionTitle(detection)
   const parts = [label]
   if (hint) parts.push(hint)
   if (feedingBuzz) parts.push('feeding buzz')
+  // Last, but never omitted: a plain-text context (a canvas label on the
+  // spectrogram) is exactly where an unqualified species name would be read as
+  // an observation.
+  if (withdrawn) parts.push('withdrawn')
   return parts.join(' · ')
 }

@@ -151,7 +151,7 @@ version of this list omitted the three repair/maintenance commands.
 | `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |
 | `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
 | `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
-| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block |
+| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the wall display |
 | `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
 | `oo system-report` | host facts worth recording with a diagnostic. `--json` |
 | `oo serve` | run the station. `--host`, `--port`, `--source auto\|alsa\|replay\|synthetic`, `--reload` |

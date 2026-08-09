@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from . import plausibility
+
 #: Bumped whenever a field changes meaning. The firmware refuses a wire version
 #: it does not understand rather than rendering a frame it has half-parsed.
 WIRE_VERSION = 1
@@ -108,6 +110,24 @@ def _epoch_seconds(value: Any) -> int | None:
     return int(moment.timestamp())
 
 
+def _is_withdrawn(detection: Mapping[str, Any]) -> bool:
+    """Withdrawn (ADR-044), from either shape this module is fed.
+
+    The REST payload carries a top-level ``withdrawn`` boolean and a
+    ``flags.withdrawn``; a bus event's ``DetectionRecord.to_dict`` carries the
+    whole ``native_result`` instead. All three are checked, because the
+    connect snapshot and the live deltas must not be able to disagree about a
+    single row -- and the snapshot is additionally filtered in SQL, so this is
+    the second of two independent barriers rather than the only one.
+    """
+    if detection.get("withdrawn"):
+        return True
+    flags = detection.get("flags")
+    if isinstance(flags, Mapping) and flags.get("withdrawn"):
+        return True
+    return plausibility.is_withdrawn(detection.get("native_result"))
+
+
 def _is_bat(detection: Mapping[str, Any]) -> bool:
     if detection.get("taxonomic_group") == BAT_GROUP:
         return True
@@ -136,9 +156,19 @@ def wire_item(detection: Mapping[str, Any], filt: DisplayFilter) -> dict[str, An
     ``r``  detections collapsed into this row. Snapshot rows only, and
            only when greater than 1.
     ==== ============================================================
+
+    A detection whose claim has been withdrawn (ADR-044) returns ``None``,
+    whatever else it carries. This wire has no vocabulary for doubt -- there is
+    no score, no marker and no room to add one inside an MTU -- so a withdrawn
+    *Western Screech-Owl* on this channel would read as a plain factual claim
+    that a screech-owl was in the garden, in a living room, with no way for the
+    person looking at it to know otherwise. Suppression, not annotation, is the
+    only honest option here.
     """
     at = _epoch_seconds(detection.get("event_start_utc"))
     if at is None:
+        return None
+    if _is_withdrawn(detection):
         return None
 
     if _is_bat(detection):
@@ -316,6 +346,11 @@ class SpeciesToday:
         if self.names is None:
             return changed
 
+        if _is_withdrawn(detection):
+            # Never sent to the glass, so it must never be in the count either
+            # (ADR-044). The footer has to agree with what a person can read
+            # off the feed.
+            return changed
         if _is_bat(detection):
             # A pass is not a species and is never counted -- the footer has to
             # agree with what a person can actually read off the feed.
