@@ -8,7 +8,7 @@
 
 import { useState } from 'react'
 import { formatDetectionTitleText, type DetectionTitleSource } from './detectionTitle'
-import type { DetectorStatus, Envelope, StationStatus } from '../types'
+import type { CaptureStatus, DetectorStatus, Envelope, StationStatus } from '../types'
 
 function bytes(value: number): string {
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GB`
@@ -35,6 +35,67 @@ export function formatDeficit(seconds: number): string {
   return `${(seconds * 1000).toFixed(0)} ms`
 }
 
+/** What `expected_frames - frames` is actually made of.
+ *
+ *  This row used to be labelled "audio lost" and showed the raw deficit. That
+ *  label was not true, and the charter's honesty constraint says a number shown
+ *  to a human must mean what its label says. The deficit is four things added
+ *  together, and on this station only one of them is lost audio (ADR-046):
+ *
+ *  1. **Sampling phase.** `frames` advances in whole blocks (38,400 frames =
+ *     100 ms at 384 kHz) while `expected_frames` advances continuously, so the
+ *     raw deficit sawtooths across a whole block *while nothing at all is
+ *     wrong*. Measured on the station over a clean run with zero gaps, zero
+ *     overruns and zero estimated loss, the raw figure ranged −162 ms to
+ *     +133 ms. A single reading of it therefore carries about ±50 ms of pure
+ *     artefact — the same order as the numbers this row was being read for.
+ *  2. **Crystal drift.** This AudioMoth runs about 50.4 ppm slow against the
+ *     host, so it legitimately delivers fewer frames than nominal wall time
+ *     implies: 0.18 s per hour, 4.4 s per day, forever, with nothing lost. Over
+ *     a night that term alone reaches 2 s and looks exactly like a slow leak.
+ *  3. **Anchor bias**, a constant few milliseconds from where frame zero is
+ *     pinned.
+ *  4. **Lost audio** — the only term anybody wants — which is what
+ *     `estimated_missing_frames` measures, being by construction the part of
+ *     the deficit that never came back.
+ *
+ *  So `lost` is reported from the estimator, and the deficit is reported
+ *  separately as what it is, with its drift term named rather than hidden.
+ */
+export interface DeficitBreakdown {
+  /** Confirmed lost audio: deficit steps that never came back (ADR-039). */
+  lostSeconds: number
+  /** Raw `expected_frames - frames`. Loss + drift + anchor + sampling phase. */
+  deficitSeconds: number
+  /** The part of the deficit the measured crystal offset accounts for. */
+  driftSeconds: number
+  /** Deficit less loss and drift: anchor bias plus up to one block of phase. */
+  residualSeconds: number
+  /** Half a block — the amount a single reading of the deficit is uncertain by. */
+  phaseSeconds: number
+}
+
+export function describeDeficit(capture: CaptureStatus): DeficitBreakdown | null {
+  const rate = capture.sample_rate
+  if (!rate || capture.expected_frames === null) return null
+  const lostSeconds = capture.estimated_missing_seconds ?? 0
+  const deficitSeconds = (capture.expected_frames - capture.frames) / rate
+  // Elapsed since frame zero, taken from the same clock the deficit is built on
+  // rather than from `started_utc`, so the two cannot drift apart.
+  const elapsedSeconds = capture.expected_frames / rate
+  // `rate_offset_ppm` is negative when the device runs slow, and a slow device
+  // is what *creates* deficit, hence the sign flip.
+  const driftSeconds = Math.max(0, -(capture.rate_offset_ppm ?? 0) * 1e-6 * elapsedSeconds)
+  const blockFrames = Number(capture.stream_detail?.block_frames)
+  return {
+    lostSeconds,
+    deficitSeconds,
+    driftSeconds,
+    residualSeconds: deficitSeconds - driftSeconds - lostSeconds,
+    phaseSeconds: Number.isFinite(blockFrames) && blockFrames > 0 ? blockFrames / rate / 2 : 0,
+  }
+}
+
 function Bar({ fraction, tone = 'ok' }: { fraction: number; tone?: string }) {
   return (
     <div className={`minibar tone-${tone}`}>
@@ -49,11 +110,7 @@ export function CapturePanel({ status }: { status: StationStatus }) {
   const native = status.rings.native
   const audible = status.rings.audible
   const continuity = capture.continuity_ratio ?? 0
-  // The only defensible measure of lost audio: what the clock says should have
-  // arrived, minus what did. Clamped at zero because the device runs on its own
-  // crystal (about -43 ppm here), so a stream can legitimately deliver a few
-  // frames more than nominal wall time implies without having gained audio.
-  const realDeficitFrames = Math.max(0, (capture.expected_frames ?? capture.frames) - capture.frames)
+  const deficit = describeDeficit(capture)
 
   return (
     <section className="panel">
@@ -94,20 +151,44 @@ export function CapturePanel({ status }: { status: StationStatus }) {
           <dd className="mono">{formatDuration(capture.frames / (capture.sample_rate || 1))}</dd>
         </div>
         <div>
-          {/* The honest deficit: frames the clock says should have arrived,
-              minus frames that did. NOT `estimated_missing_frames`, which this
-              row used to show and which over-reports by about 12.9x — measured
-              on 2026-08-08, it claimed 52.4 s lost when the true figure was
-              4.06 s (ADR-033). The estimator credits a late read as lost audio
-              even when ALSA reported no overrun, which was right for the old
-              80 ms ring and wrong for the 500 ms one. */}
-          <dt title="Frames elapsed time implies, minus frames actually delivered. The estimator's own missing-frame figure over-reports; see ADR-033.">
+          {/* Lost audio, and nothing else. This row showed the raw
+              `expected_frames - frames` deficit until ADR-046, under this same
+              label — and that deficit is loss plus crystal drift plus anchor
+              bias plus up to a whole block of sampling phase. It read 0.104 s
+              on a station that had lost nothing, and its drift term grows at
+              0.18 s/hour forever. The estimator's figure is the one that means
+              what this label says; see `describeDeficit` above. */}
+          <dt title="Audio confirmed gone: deficit steps that never came back (ADR-039). Losses smaller than one ALSA period (10 ms) are below its resolution.">
             audio lost
           </dt>
-          <dd className={`mono ${realDeficitFrames > 0 ? 'warn-text' : ''}`}>
-            {capture.expected_frames === null
-              ? '—'
-              : formatDeficit(realDeficitFrames / (capture.sample_rate || 1))}
+          <dd className={`mono ${(deficit?.lostSeconds ?? 0) > 0 ? 'warn-text' : ''}`}>
+            {deficit === null ? '—' : formatDeficit(deficit.lostSeconds)}
+          </dd>
+        </div>
+        <div>
+          {/* Reported separately, because it is a different claim: the stream
+              is behind wall clock, which on a device with its own crystal is
+              expected and is not a loss. Naming the drift term inline is what
+              stops the row being read as a leak. */}
+          <dt title="expected_frames - frames: how far the stream is behind what elapsed time at the NOMINAL rate implies. This is not lost audio — it is mostly the device's own crystal offset, plus up to one 100 ms block of sampling phase. Read 'audio lost' for loss.">
+            behind clock
+          </dt>
+          <dd className="mono">
+            {deficit === null ? (
+              '—'
+            ) : (
+              <>
+                {formatDeficit(deficit.deficitSeconds)}
+                <span className="dim">
+                  {' '}
+                  ({formatDeficit(deficit.driftSeconds)} drift
+                  {deficit.phaseSeconds > 0
+                    ? `, ±${(deficit.phaseSeconds * 1000).toFixed(0)} ms phase`
+                    : ''}
+                  )
+                </span>
+              </>
+            )}
           </dd>
         </div>
         <div>
@@ -119,9 +200,12 @@ export function CapturePanel({ status }: { status: StationStatus }) {
           </dd>
         </div>
         <div>
-          <dt title="ALSA overrun count reported by the driver">overruns</dt>
+          <dt title="ALSA overruns reported by the driver, and late reads the ring absorbed at no cost (ADR-039). A late read is a scheduling stall, not lost recording.">
+            overruns
+          </dt>
           <dd className={`mono ${(capture.overruns ?? 0) > 0 ? 'warn-text' : ''}`}>
             {capture.overruns ?? 0}
+            <span className="dim"> · {capture.late_reads ?? 0} late reads</span>
           </dd>
         </div>
         <div>

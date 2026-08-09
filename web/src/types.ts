@@ -61,7 +61,11 @@ export interface CaptureStatus {
   expected_frames: number | null
   continuity_ratio: number | null
   discontinuities: number
+  /** Deficit steps that never came back: the estimator's confirmed loss (ADR-039). */
   estimated_missing_frames: number
+  estimated_missing_seconds: number
+  gaps_with_loss: number
+  gaps_without_loss: number
   stream_restarts: number
   open_failures: number
   block_age_s: number | null
@@ -69,6 +73,10 @@ export interface CaptureStatus {
   observed_rate_hz: number | null
   rate_offset_ppm: number | null
   overruns: number | null
+  /** Reads that arrived late and cost nothing, because the ring held the audio. */
+  late_reads: number | null
+  late_read_max_frames: number | null
+  alsa_buffer_frames: number | null
 }
 
 export interface RingStatus {
