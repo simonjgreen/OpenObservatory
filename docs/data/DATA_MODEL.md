@@ -17,10 +17,19 @@ Neither is true of the current model: `latitude` and `longitude` are plain
 nullable `Float` columns, stored in the clear, with no separate
 lower-precision field for external disclosure and no access control on them.
 
-**Open gap:** this overstates a privacy protection that does not exist. It is
-relevant because ADR-015 records that there is currently no authentication at
-all, so anyone who can reach the API can read exact station coordinates via
-`GET /api/v1/station`.
+**Open gap, still open on 2026-08-09:** this overstates a privacy protection that
+does not exist. There is no encryption, no access control on these two columns,
+and no lower-precision field for external disclosure — which `PRD.md` §10 asks
+for ("location precision exposed through APIs must be configurable; external
+integrations should default to coarse location") and which the acceptance
+criteria list.
+
+Authentication now exists (ADR-034, closing ADR-015) but is **off by default**,
+and `GET /api/v1/station` is not in the credential-free allow-list — so with auth
+enabled, exact coordinates are gated; with auth off, which is the default and is
+the live station's state, anyone who can reach the port can read them. Enabling
+auth is therefore the mitigation available today; a coarse-location field is not
+implemented.
 
 Columns as implemented:
 
@@ -209,13 +218,18 @@ Columns as implemented:
 - media_asset_id
 - role
 
-### review — Table exists; nothing writes to it
+### review — Implemented, and written to since 2026-08-08
 
-The `review` table is implemented in `db/models.py` exactly as specified
-below, but no code path currently creates a row in it: there is no
-`POST /detections/{id}/reviews` endpoint (see `API_AND_INTEGRATIONS.md`) and
-nothing else in the codebase inserts into this table. It is schema-only at
-present.
+The `review` table is implemented in `db/models.py` exactly as specified below.
+**This entry previously said nothing wrote to it; that is no longer true.**
+`POST /api/v1/detections/{id}/review` (ADR-029) inserts a row on every call —
+append-only, setting `supersedes_review_id` to the prior row for that detection —
+and `GET /api/v1/detections/{id}/review` returns the latest. The debug UI's
+detection drawer has confirm/reject controls wired to it.
+
+One column is still unused: `corrected_taxon_id` is always written `None`.
+Correcting a misidentified taxon implies a re-labelling or re-training pipeline
+downstream and is deliberately deferred to a future ADR rather than half-built.
 
 - id
 - detection_id
@@ -264,6 +278,47 @@ May be moved to a TimescaleDB hypertable when volume warrants it, if built.
 Note: the implemented model does not carry a separate `station_id` column or
 an `acknowledged_by` field, only `acknowledged_at`.
 
+### user / auth_session / api_token — Implemented (ADR-034), added after this seed spec
+
+Three tables the seed spec did not anticipate at all, added by the authentication
+foundation on 2026-08-08 and migrated by revision `0003_auth_tables`. They are
+only consulted when `auth_enabled` is true; with it false (the default) they exist
+and are simply unused, which is what makes disabling auth a safe rollback.
+
+`user` — a local operator account. Deliberately no roles, groups or org model:
+this is authentication, not authorisation, for a single-operator LAN appliance.
+
+- id UUID
+- username — unique, indexed
+- password_hash — always an Argon2id PHC string; the plaintext is never stored or logged
+- must_change_password — set on the bootstrap account; login still succeeds so an
+  operator can never be simply locked out
+- disabled_at nullable
+- created_at
+- last_login_at nullable
+
+`auth_session` — a browser session backing an `HttpOnly` cookie.
+
+- id UUID
+- user_id → `user.id`, indexed
+- token_hash — SHA-256 of the opaque cookie token only, unique and indexed. Fast
+  and unsalted on purpose: the token already carries ~256 bits of entropy, and
+  this lookup runs on every authenticated request, where an Argon2id cost would
+  be a real per-request tax
+- created_at / expires_at (indexed) / revoked_at nullable
+- user_agent — free text, never parsed, never trusted
+
+`api_token` — a long-lived, revocable credential for a machine client.
+
+- id UUID
+- user_id → `user.id`, indexed
+- name — operator-supplied, so "which client is this" has an answer
+- token_prefix — first 8 characters, in the clear, indexed, so a token can be
+  located without a full-table scan
+- token_hash — SHA-256 of the whole token, unique; shown in full exactly once at
+  creation and never again
+- created_at / last_used_at nullable / revoked_at nullable
+
 ### alert_rule / alert_event — Planned, not implemented
 
 Neither table exists. Retained as design intent: rules are versioned JSON
@@ -295,10 +350,20 @@ Implemented:
 - `detection (taxonomic_group, event_start_utc desc)`
 - `media_asset.kind`
 - `media_asset.created_at`
+- `media_asset.reclaimed_at` — added by Alembic revision `0002`, because
+  `ALTER TABLE ADD COLUMN` (how the column reached the live station) creates a
+  column but never its index
 - `review.detection_id`
 - `health_event.service`
 - `health_event.severity`
 - `health_event.start_utc`
+- `user.username` — unique
+- `auth_session.user_id`
+- `auth_session.token_hash` — unique
+- `auth_session.expires_at`
+- `api_token.user_id`
+- `api_token.token_prefix`
+- `api_token.token_hash` — unique
 
 Planned only (would apply if the corresponding table is built):
 
@@ -323,6 +388,16 @@ Planned only (would apply if the corresponding table is built):
 - logs: 14 days default.
 
 ## Migrations (Alembic, ADR-035)
+
+**Revisions as of 2026-08-09**, in `alembic/versions/`:
+
+| Revision | What it does |
+|---|---|
+| `0001_initial` | the baseline, autogenerated from an empty database against `Base.metadata` and verified by stamping a `create_all()`-built database and running `alembic check` |
+| `0002_media_asset_reclaimed_at_index` | a real fix, not a demonstration: `ALTER TABLE ADD COLUMN` creates a column but never an index, so the live station's `media_asset.reclaimed_at` had none despite the model declaring one. Written `IF NOT EXISTS`, so it is a no-op on a database that reached the baseline by a normal upgrade |
+| `0003_auth_tables` | `user`, `auth_session`, `api_token` (ADR-034) |
+
+The live station reports `0003_auth_tables (head)`.
 
 `alembic/` (`env.py`, `script.py.mako`, `versions/`) and `alembic.ini` at the
 repository root are a real migration environment, wired to
@@ -371,7 +446,8 @@ the stamp case.
    this by hand as `alter_column`/`execute` with a backfill), or check
    constraints. Give the revision a plain (not autogenerated) revision id
    matching the existing `NNNN_description` style once satisfied — see
-   `0001_initial` / `0002_media_asset_reclaimed_at_index` for the pattern.
+   `0001_initial` / `0002_media_asset_reclaimed_at_index` /
+   `0003_auth_tables` for the pattern.
 4. Verify: `alembic upgrade head` then `alembic downgrade -1` then
    `alembic upgrade head` again against a throwaway database. Add a case to
    `tests/test_migrations.py` if the change is non-trivial (a rename, a

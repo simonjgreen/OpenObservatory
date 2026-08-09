@@ -760,7 +760,8 @@ claimed always agrees with what a person can actually see listed.
 ### Why a silent screen must not look like a broken one
 
 The failure that motivates this is the same one behind ADR-020. When the AudioMoth's
-mode switch was moved on 2026-08-05 the station fell back to a synthetic source,
+mode switch was moved [date corrected 2026-08-09: **2026-08-08**, matching ADR-020
+and `TARGET_DIAGNOSTICS.md`; this ADR said 2026-08-05] the station fell back to a synthetic source,
 correctly reported itself degraded, and kept detecting — and every browsing view that
 existed at the time showed the results as observations. An ambient display is worse
 than a debug UI here, because the whole point of it is to be glanced at rather than
