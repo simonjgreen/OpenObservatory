@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     #: configuration. Overridable mainly so tests never touch the real file.
     runtime_env_path: Path = REPO_ROOT / "config" / "runtime.env"
 
+    #: Set true once an operator has finished (or explicitly dismissed) the
+    #: guided first-run flow. Stored server-side rather than in one browser's
+    #: localStorage: "have I commissioned this station" is a property of the
+    #: station, not of whichever laptop happened to open it first, and a second
+    #: device should not be told to configure a station that is already
+    #: configured. Nothing behaves differently when it is false except that the
+    #: UI offers guidance -- capture, detection and the API are unaffected.
+    setup_completed: bool = False
+
     # ---- storage ----------------------------------------------------------
     data_dir: Path = REPO_ROOT / "data"
     database_dsn: str = ""
@@ -196,6 +205,19 @@ class Settings(BaseSettings):
     #: 0.019253. The default sits comfortably between the two, with margin on
     #: both sides -- it must keep the Tawny Owl and reject the owls.
     birdnet_plausibility_floor: float = 0.0005
+    #: The three plausibility *band* thresholds, and the two occurrence
+    #: probabilities that decide which band a species falls in. These existed
+    #: as ``BirdNetDetector`` constructor defaults from Milestone 2 and were
+    #: the only detector tuning with no environment surface at all, so the one
+    #: knob an operator most wants after a week of watching false positives --
+    #: "hold out-of-range species to a higher bar" -- required editing Python.
+    #: Values are BirdNET confidence scores, not probabilities: raising a
+    #: threshold makes that band quieter, never more accurate.
+    birdnet_common_prior: float = 0.15
+    birdnet_range_threshold: float = 0.03
+    birdnet_threshold_in_range: float = 0.55
+    birdnet_threshold_uncommon: float = 0.75
+    birdnet_threshold_out_of_range: float = 0.90
 
     detector_queue_depth: int = 16
 

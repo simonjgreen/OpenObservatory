@@ -21,6 +21,9 @@ The implemented list below was regenerated from that file on **2026-08-09**.
 | `GET /station` | station identity and the full pipeline snapshot |
 | `GET /health` | always credential-free, even with auth on |
 | `GET /system` | host facts |
+| `GET /settings` | the whole operator-editable catalogue, with tier, bounds, units and shipped defaults (ADR-047/048) |
+| `PUT /settings` | partial update; validates, persists to `config/runtime.env`, applies live where safe |
+| `GET /setup` | guided first-run state: what a new station still needs (ADR-048) |
 | `GET /retention/status` | tiered clip retention state (ADR-026/029) |
 | `GET /audio/devices` | |
 | `POST /audio/probe` | |
@@ -272,6 +275,115 @@ published as `device_class: probability`, and bat detections never carry a
 species name — see the full entity table and the calibration caveat in
 `docs/operations/HOME_ASSISTANT.md`. One entity per detected species is
 deliberately not created, per the original design intent below.
+
+## Settings — implemented (ADR-047, widened by ADR-048)
+
+A station is configured from the browser. `config/runtime.env` on the device is
+the only store; the UI is a second *writer* of that file, not a second
+configuration, so a hand edit and a UI edit are indistinguishable at the next
+startup. Writes are atomic, preserve comments and keys outside the catalogue,
+and are mode 0600.
+
+### `GET /api/v1/settings`
+
+```json
+{
+  "fields": [
+    {
+      "name": "ultrasonic_min_snr_db",
+      "category": "detect-ultrasonic",
+      "tier": "live",
+      "kind": "float",
+      "label": "pulse SNR threshold",
+      "help": "How far above the tracked band noise floor a pulse must sit…",
+      "unit": "dB",
+      "minimum": 0.0, "maximum": 90.0,
+      "choices": [],
+      "danger": null,
+      "secret": false,
+      "restart_required": false,
+      "note": null,
+      "default": 12.0,
+      "value": 20.0
+    }
+  ],
+  "categories": [{ "id": "station", "title": "Station", "description": "…", "hidden": false }],
+  "non_editable": [{ "name": "bind_port", "reason": "…lockout…" }],
+  "pending_restart": ["latitude", "longitude"],
+  "location_configured": false
+}
+```
+
+- `tier` is `"live"` (in force now) or `"restart"` (saved, applied at next
+  start). `restart_required` is the same fact under the name the field has
+  carried since ADR-047.
+- `default` is the value shipped in `config.py` — the operator's documented way
+  back to a known state, including ADR-041's measured spectrogram floors.
+- `pending_restart` names every field whose **saved** value differs from what
+  the running components are actually using, live-tier fields included: a live
+  setting whose target object does not exist (no ultrasonic encoder at 48 kHz)
+  is reported as pending, never as applied. The same list appears in
+  `GET /station` as `station.site_pending_restart` and in `GET /health` under
+  `notes`.
+- Secrets (`mqtt_password`) report `"value": null` with `"is_set": true|false`
+  and are never echoed.
+- Sequence-valued fields (`preferred_sample_rates`, `activity_band_hz`,
+  `clip_plugins`, …) are rendered and accepted as the comma-separated form
+  `runtime.env` stores.
+- `danger` is set on settings that are legitimate but can cost recordings
+  (`source`, `audio_device`, `clip_plugins`, `mqtt_tls_insecure`). The UI
+  requires an explicit acknowledgement; the API does not — it is advice, not a
+  gate.
+- `non_editable` lists what is deliberately not editable from a browser, with
+  the hazard. See ADR-048 for the reasoning on each.
+
+### `PUT /api/v1/settings`
+
+Body is a partial object of `field: value`. Strings are coerced; `null` or `""`
+**restores the shipped default** (for an optional field that means unset).
+Unknown or excluded fields are refused rather than ignored.
+
+`200` returns the same shape as `GET`, plus `"saved": [names]`.
+
+`422` returns `{"detail": {"errors": {"<field>": "<message>"}}}` naming **every**
+failing field at once, so a form round-trips one correction pass. Validation
+runs before anything is written: a rejected request changes neither the file
+nor the process, and cross-field rules (floor below ceiling, ring at least two
+capture blocks, retention ladder in order, at least one sample rate offered)
+mean it cannot leave the station unable to start capture. A rule fires only
+when one of its own fields is in the request, so a pre-existing inconsistency
+never blocks an unrelated edit.
+
+```bash
+curl -s -X PUT http://<station-host>:8080/api/v1/settings \
+  -H 'content-type: application/json' \
+  -d '{"ultrasonic_min_snr_db": 20, "ultrasonic_min_pulses_per_pass": 5}'
+```
+
+### `GET /api/v1/setup`
+
+```json
+{
+  "completed": false,
+  "required_outstanding": ["location", "microphone"],
+  "steps": [
+    {
+      "id": "microphone",
+      "title": "Is the microphone working?",
+      "detail": "Recording from AudioMoth USB at 384000 Hz.",
+      "done": true,
+      "optional": false,
+      "fields": ["audio_device", "preferred_sample_rates", "source"]
+    }
+  ]
+}
+```
+
+Four steps: `location`, `timezone` (optional), `microphone`, `mqtt` (optional).
+The microphone step reads **live capture state**, not a stored flag, so a
+station running on the synthetic fallback reports that rather than ticking a
+box. Dismissal is the ordinary setting `setup_completed`, written through
+`PUT /settings` — it is a fact about the station, not about one browser.
 
 ## Authentication — implemented, off by default (ADR-034)
 

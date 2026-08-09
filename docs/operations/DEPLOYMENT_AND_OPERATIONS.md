@@ -393,10 +393,303 @@ synthetic-source fallback pattern — it only reports the problem loudly.
 
 ## Configuration
 
+**Since ADR-048, the browser is the primary way to configure a station.**
+Open the station's UI, click `settings`, and every field below is there, with
+its help text, units, bounds and shipped default. You do not need an SSH
+session, and you do not need to know the `OO_*` spelling of anything. The
+sections that follow are the reference and the escape hatch, not the
+recommended route.
+
 `config/example.env` is the checked-in template; copy it to
 `config/runtime.env` on the target and edit in place (see the operator-owned
 state section above — do not let a sync remove it). All settings are read by
-`Settings` in `src/open_observatory/config.py` with an `OO_` prefix.
+`Settings` in `src/open_observatory/config.py` with an `OO_` prefix. The web UI
+writes that same file, atomically and preserving your comments, so a hand edit
+and a UI edit are one configuration rather than two that can disagree.
+
+### Which settings take effect immediately, and which need a restart
+
+Three tiers, declared in `src/open_observatory/site_settings.py` and enforced
+by tests:
+
+- **live** — in force the moment you press save. Most of these the station
+  re-reads from its settings object on every use; the rest
+  (`src/open_observatory/tuning.py`) are pushed into the object that holds
+  them — a spectrogram encoder's dB window, a detector's thresholds, the clip
+  manager, the retention sweeper.
+- **restart-pinned** — saved and reported immediately, applied at the next
+  start. Coordinates, because they bind into the BirdNET range filter and the
+  night schedule when detectors start; and capture geometry, because
+  re-negotiating a rate or a ring depth means tearing capture down, and capture
+  always wins. The UI, `GET /api/v1/settings` and `/api/v1/health` all name
+  these as "saved, not yet in force" until you restart.
+- **not editable from a browser** — listed at the bottom of the settings page
+  with the hazard, and at the end of this section. These are `runtime.env` and
+  a restart.
+
+A live-tier setting whose target does not exist — an ultrasonic spectrogram
+floor on a station capturing at 48 kHz — is reported as pending too. The
+station will not claim something is in force when nothing is using it.
+
+### Restarting to apply a pinned change
+
+```bash
+sudo systemctl restart open-observatory
+curl -s http://<station-host>:8080/api/v1/health \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["notes"])'
+# expect the "settings saved but not yet in force" note to be gone
+```
+
+Note the obvious cost: a restart interrupts capture for as long as it takes the
+device to be reopened. Batch pinned changes into one save and one restart.
+
+### Tuning a noisy site
+
+The knobs, in the order to reach for them, all live-tier:
+
+1. `ultrasonic_min_snr_db` — how far above the tracked band noise floor a pulse
+   must sit. The first thing to raise when a mechanical noise source (a plant
+   against a shed, a fan, rain on a roof) is producing false bat passes.
+2. `ultrasonic_min_pulses_per_pass` — periodic mechanical noise rarely produces
+   a long pulse train; a genuine pass does.
+3. `ultrasonic_band_hz` — raise the low edge to ignore a source that only
+   reaches the bottom of the band.
+4. `activity_min_snr_db` / `activity_band_hz` — the same two moves on the
+   audible detector.
+5. `spectrogram_floor_db` / `ultrasonic_spectrogram_floor_db` — *seeing*
+   rather than detecting. Raising the floor pushes a noisy background to black.
+   These change the picture only; they change nothing about what is detected.
+6. `birdnet_threshold_out_of_range` and `birdnet_plausibility_floor` — for
+   implausible species rather than noise (ADR-032).
+
+Every one of these carries its measured default in the UI as a one-click
+reset, so an experiment always has a way back. Note that none of this fixes a
+mounting problem: it makes the station's *reports* survive one. Move the
+microphone.
+
+### The full settings reference
+
+Generated from the code — regenerate with
+`PYTHONPATH=src python scripts/settings_table.py` after adding a field.
+
+#### Station
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `station_name` | live | `Garden Observatory` | station name |
+| `timezone` | live | `UTC` | timezone |
+| `latitude` | restart-pinned | `None` ° | latitude |
+| `longitude` | restart-pinned | `None` ° | longitude |
+| `clips_require_mount` | live | `False` | evidence storage must be its own mount |
+
+#### Capture
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `source` | restart-pinned | `auto` | **warns before saving.** audio source |
+| `audio_device` | restart-pinned | `None` | **warns before saving.** capture device key |
+| `preferred_sample_rates` | restart-pinned | `384000,250000,192000,96000,48000` Hz | preferred sample rates |
+| `preferred_formats` | restart-pinned | `S16_LE,S32_LE` | preferred sample formats |
+| `capture_channels` | restart-pinned | `1` | channels |
+| `capture_block_ms` | restart-pinned | `100` ms | capture block |
+| `capture_buffer_ms` | restart-pinned | `500.0` ms | ALSA ring depth |
+| `native_ring_seconds` | restart-pinned | `120` s | native ring buffer |
+| `audible_ring_seconds` | restart-pinned | `120` s | audible ring buffer |
+| `audible_sample_rate` | restart-pinned | `48000` Hz | derived audible rate |
+| `hardware_recheck_s` | live | `30.0` s | recheck for the microphone every |
+| `reopen_backoff_min_s` | live | `1.0` s | reopen backoff, minimum |
+| `reopen_backoff_max_s` | live | `30.0` s | reopen backoff, maximum |
+
+#### Live view
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `spectrogram_floor_db` | live (pushed) | `-95.0` dB | audible floor |
+| `spectrogram_ceiling_db` | live (pushed) | `-15.0` dB | audible ceiling |
+| `ultrasonic_spectrogram_floor_db` | live (pushed) | `-85.0` dB | ultrasonic floor |
+| `ultrasonic_spectrogram_ceiling_db` | live (pushed) | `-30.0` dB | ultrasonic ceiling |
+| `spectrogram_fft` | restart-pinned | `2048` | FFT size |
+| `spectrogram_hop_ms` | restart-pinned | `24.0` ms | column hop |
+| `spectrogram_bins` | restart-pinned | `192` | frequency bins |
+| `spectrogram_min_hz` | restart-pinned | `80.0` Hz | lowest frequency shown |
+| `spectrogram_max_hz` | restart-pinned | `15000.0` Hz | highest frequency shown |
+| `spectrogram_history_columns` | restart-pinned | `2400` | retained columns |
+| `spectrogram_backfill_s` | live | `30.0` s | history sent on connect |
+| `spectrogram_encode_min_viewers` | live | `1` | viewers required before encoding |
+| `spectrogram_keep_audible_warm` | live | `False` | keep the audible encoder warm |
+
+#### Audible detection
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `activity_enabled` | restart-pinned | `True` | activity detector |
+| `activity_min_snr_db` | live (pushed) | `18.0` dB | activity SNR threshold |
+| `activity_min_duration_ms` | live (pushed) | `60.0` ms | minimum event duration |
+| `activity_band_hz` | live (pushed) | `1200.0,11000.0` Hz | activity band |
+| `birdnet_enabled` | restart-pinned | `True` | BirdNET |
+| `birdnet_min_confidence` | live (pushed) | `0.12` | BirdNET minimum confidence |
+| `birdnet_plausibility_floor` | live (pushed) | `0.0005` | plausibility floor |
+| `birdnet_common_prior` | live (pushed) | `0.15` | common-species prior |
+| `birdnet_range_threshold` | live (pushed) | `0.03` | out-of-range prior |
+| `birdnet_threshold_in_range` | live (pushed) | `0.55` | confidence bar: in range |
+| `birdnet_threshold_uncommon` | live (pushed) | `0.75` | confidence bar: uncommon |
+| `birdnet_threshold_out_of_range` | live (pushed) | `0.9` | confidence bar: out of range |
+| `birdnet_window_stride_s` | restart-pinned | `1.5` s | BirdNET window stride |
+| `birdnet_use_location_filter` | restart-pinned | `False` | use the range model |
+
+#### Ultrasonic detection
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `ultrasonic_enabled` | restart-pinned | `True` | ultrasonic pass detector |
+| `ultrasonic_min_snr_db` | live (pushed) | `12.0` dB | pulse SNR threshold |
+| `ultrasonic_min_pulses_per_pass` | live (pushed) | `3` | minimum pulses per pass |
+| `ultrasonic_band_hz` | live (pushed) | `15000.0,125000.0` Hz | ultrasonic band |
+| `ultrasonic_min_pulse_ms` | live (pushed) | `1.5` ms | minimum pulse length |
+| `ultrasonic_max_pulse_ms` | live (pushed) | `40.0` ms | maximum pulse length |
+| `ultrasonic_merge_gap_ms` | live (pushed) | `2.0` ms | pulse merge gap |
+| `ultrasonic_pass_gap_s` | live (pushed) | `1.5` s | pass gap |
+| `ultrasonic_buzz_max_interval_ms` | live (pushed) | `12.0` ms | feeding buzz: maximum interval |
+| `ultrasonic_buzz_min_pulses` | live (pushed) | `5` | feeding buzz: minimum pulses |
+| `ultrasonic_buzz_interval_ratio` | live (pushed) | `0.4` | feeding buzz: interval collapse ratio |
+| `ultrasonic_schedule` | restart-pinned | `always` | when to run |
+| `ultrasonic_schedule_dusk_margin_min` | restart-pinned | `30.0` min | start before dusk |
+| `ultrasonic_schedule_dawn_margin_min` | restart-pinned | `30.0` min | stop after dawn |
+
+#### Making ultrasound listenable
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `ultrasonic_audible_method` | live (pushed) | `both` | rendering method |
+| `ultrasonic_time_expansion_factor` | live (pushed) | `0.0` | time-expansion factor |
+| `ultrasonic_target_hz` | live (pushed) | `4000.0` Hz | target frequency |
+| `ultrasonic_highpass_hz` | live (pushed) | `12000.0` Hz | high-pass before rendering |
+| `ultrasonic_heterodyne_bandwidth_hz` | live (pushed) | `5000.0` Hz | heterodyne bandwidth |
+| `ultrasonic_audible_max_s` | live (pushed) | `60.0` s | maximum rendered length |
+| `ultrasonic_audible_min_peak_hz` | live (pushed) | `15000.0` Hz | render anything peaking above |
+| `ultrasonic_live_tune_hz` | live | `45000.0` Hz | live monitor default tuning |
+
+#### Evidence clips
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `clips_enabled` | live | `True` | write evidence clips |
+| `clip_pre_roll_s` | live (pushed) | `3.0` s | pre-roll |
+| `clip_post_roll_s` | live (pushed) | `3.0` s | post-roll |
+| `clip_max_s` | live (pushed) | `12.0` s | maximum clip length |
+| `clip_min_score` | live (pushed) | `0.25` | minimum score to clip |
+| `clip_plugins` | live (pushed) | `birdnet-v2.4,ultrasonic-pass-v1` | **warns before saving.** detectors that produce clips |
+| `clip_max_per_minute` | live (pushed) | `20` /min | clip rate limit |
+| `clip_max_total_gb` | live (pushed) | `20.0` GB | clip directory budget |
+| `clip_min_free_gb` | live (pushed) | `5.0` GB | stop clipping below free space |
+| `clip_retention_days` | live (pushed) | `30` days | clip manager retention |
+
+#### Retention
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `retention_enabled` | live | `True` | tiered retention |
+| `retention_native_days` | live (pushed) | `7` days | keep full-rate audio for |
+| `retention_audible_only_days` | live (pushed) | `30` days | keep every audible clip for |
+| `retention_exemplar_only_days` | live (pushed) | `90` days | keep exemplar clips for |
+| `retention_watermark_ratio` | live (pushed) | `0.85` | reclaim above disk usage |
+| `retention_batch_size` | live (pushed) | `200` | assets per sweep |
+| `retention_batch_budget_s` | live (pushed) | `1.5` s | sweep time budget |
+| `retention_interval_s` | live | `300.0` s | sweep interval |
+
+#### Overnight refinement
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `refinement_enabled` | live | `True` | overnight refinement |
+| `refinement_window_start_hour_utc` | live | `1` | window start (UTC hour) |
+| `refinement_window_end_hour_utc` | live | `3` | window end (UTC hour) |
+| `refinement_max_items` | live | `1200` | maximum items per pass |
+| `refinement_max_seconds` | live | `5400.0` s | wall-clock budget per pass |
+| `refinement_trim_s` | live | `1.5` s | seconds classified per clip |
+| `refinement_min_det_prob` | live | `0.05` | minimum detection probability |
+| `refinement_threads` | live | `2` | inference threads |
+| `refinement_refiner` | live | `batdetect2-cascade` | refiner |
+
+#### Counter-top display
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `display_channel_heartbeat_s` | live | `10.0` s | heartbeat interval |
+| `display_channel_snapshot_rows` | live | `6` | rows sent on connect |
+| `display_channel_queue_max` | live | `64` | queue depth |
+
+#### MQTT / Home Assistant
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `mqtt_enabled` | live | `False` | publish to MQTT |
+| `mqtt_host` | live | `localhost` | broker host |
+| `mqtt_port` | live | `1883` | broker port |
+| `mqtt_tls` | live | `False` | TLS |
+| `mqtt_tls_insecure` | live | `False` | **warns before saving.** skip TLS certificate verification |
+| `mqtt_username` | live | `None` | username |
+| `mqtt_password` | live | `None` | password |
+| `mqtt_client_id` | live | `open-observatory` | client id |
+| `mqtt_topic_prefix` | live | `openobservatory` | topic prefix |
+| `mqtt_qos` | live | `1` | QoS |
+| `mqtt_retain_state` | live | `True` | retain state topics |
+| `mqtt_discovery_enabled` | live | `True` | Home Assistant discovery |
+| `mqtt_discovery_prefix` | live | `homeassistant` | discovery prefix |
+| `mqtt_publish_unidentified` | live | `False` | publish unidentified events |
+| `mqtt_bat_activity_window_s` | live | `900.0` s | bat activity sensor window |
+| `mqtt_health_publish_interval_s` | live | `15.0` s | health republish interval |
+| `mqtt_queue_depth` | live | `256` | publisher queue depth |
+| `mqtt_reconnect_min_s` | live | `1.0` s | reconnect backoff, minimum |
+| `mqtt_reconnect_max_s` | live | `60.0` s | reconnect backoff, maximum |
+| `mqtt_keepalive_s` | live | `30` s | keepalive |
+
+#### Advanced
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `detector_queue_depth` | restart-pinned | `16` | live detector queue depth |
+| `deferred_enabled` | restart-pinned | `False` | deferred detector queue |
+| `deferred_queue_depth` | restart-pinned | `512` | deferred queue depth |
+| `deferred_shutdown_drain_timeout_s` | live | `5.0` s | deferred drain timeout on shutdown |
+| `replay_loop` | restart-pinned | `True` | loop the replay file |
+| `replay_speed` | restart-pinned | `1.0` | replay speed |
+| `synthetic_scene` | restart-pinned | `dawn-chorus` | synthetic scene |
+| `synthetic_sample_rate` | restart-pinned | `48000` Hz | synthetic sample rate |
+| `log_level` | restart-pinned | `INFO` | log level |
+| `log_json` | restart-pinned | `False` | JSON logs |
+| `metrics_enabled` | restart-pinned | `True` | Prometheus /metrics |
+
+#### Setup
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `setup_completed` | live | `False` | first-run flow completed |
+
+#### Not editable from a browser
+
+| setting | why |
+|---|---|
+| `auth_argon2_memory_cost_kib` | part of the authentication configuration (see auth_enabled). |
+| `auth_argon2_parallelism` | part of the authentication configuration (see auth_enabled). |
+| `auth_argon2_time_cost` | part of the authentication configuration (see auth_enabled). |
+| `auth_bootstrap_username` | part of the authentication configuration (see auth_enabled). |
+| `auth_cookie_secure` | part of the authentication configuration (see auth_enabled). |
+| `auth_enabled` | authentication must not be editable through the surface it protects: an unauthenticated session could disable the gate, and a half-configured one could lock every operator out with no recovery path but SSH. Set OO_AUTH_ENABLED in config/runtime.env. |
+| `auth_login_rate_limit_attempts` | part of the authentication configuration (see auth_enabled). |
+| `auth_login_rate_limit_window_s` | part of the authentication configuration (see auth_enabled). |
+| `auth_password_min_length` | part of the authentication configuration (see auth_enabled). |
+| `auth_public_read_paths` | part of the authentication configuration (see auth_enabled). |
+| `auth_session_cookie_name` | part of the authentication configuration (see auth_enabled). |
+| `auth_session_ttl_hours` | part of the authentication configuration (see auth_enabled). |
+| `bind_host` | changing where the API listens, from the API, is a remote-hands lockout: the next request goes to an address that no longer answers and there is no way back except SSH. |
+| `bind_port` | same lockout as bind_host: the browser cannot follow the station to a new port. |
+| `birdnet_model_dir` | chooses which model binary the station loads. Selecting the file a process loads and executes is not a settings decision made from a form; use 'oo models fetch', which records provenance and the licence acceptance. |
+| `data_dir` | repointing storage under a running station orphans the database mid-write and strands every existing clip; this is a stop, move, migrate, start operation. |
+| `database_dsn` | the same shutdown-and-migrate operation as data_dir, plus a DSN can carry credentials for a host this station has no business reaching. |
+| `replay_path` | the replay source plays a file of the operator's choosing into the live audio stream and the spectrogram. From a browser -- on a station whose shipped default is anonymous LAN access -- that is an arbitrary-file-read tool wearing a settings field. The 'replay' source is likewise not offered in the source picker. |
+| `runtime_env_path` | this is the settings store itself. Repointing it makes the UI write to a file the process does not read, which is exactly the two-configurations-that-disagree failure the whole mechanism exists to prevent. |
+| `web_dist` | the API serves this directory's contents over HTTP. Pointing it at an arbitrary path publishes that path to anyone on the LAN. |
 
 `oo config` prints the effective configuration on the target, including the
 resolved database DSN, and is the authoritative way to check what a given
@@ -420,7 +713,28 @@ key in `config/example.env` now maps to a declared `Settings` field.**
 `src/open_observatory/config.py` declares well over a hundred fields and is the
 complete reference.
 
-### A real trap: three tuple-typed settings crash the station if you set them
+### Resolved: the tuple-typed settings no longer crash the station
+
+**Re-verified on 2026-08-09**, because the web UI can now write these keys and
+an operator reading the historical warning below would reasonably avoid a
+feature that is safe:
+
+```
+$ OO_PREFERRED_SAMPLE_RATES=384000,48000 OO_CLIP_PLUGINS=birdnet-v2.4 \
+  OO_ACTIVITY_BAND_HZ=800,9000 python -c \
+  'from open_observatory.config import Settings; s=Settings(_env_file=None); \
+   print(s.preferred_sample_rates, s.clip_plugins, s.activity_band_hz)'
+(384000, 48000) ('birdnet-v2.4',) (800.0, 9000.0)
+```
+
+All five tuple-typed fields (`preferred_sample_rates`, `preferred_formats`,
+`clip_plugins`, `activity_band_hz`, `ultrasonic_band_hz`) now carry `NoDecode`
+so this project's comma-separated parsing runs instead of `pydantic-settings`'
+JSON decode, and `tests/test_config.py` covers them. The settings page writes
+the same comma-separated form. **The historical account is retained below**,
+unchanged, because the failure mode is worth recognising if it ever returns.
+
+### The historical trap: three tuple-typed settings crashed the station if you set them
 
 `OO_PREFERRED_SAMPLE_RATES`, `OO_PREFERRED_FORMATS` and `OO_CLIP_PLUGINS` are
 tuple-typed. `pydantic-settings` tries to JSON-decode a tuple-typed field's raw
@@ -434,9 +748,9 @@ $ OO_PREFERRED_SAMPLE_RATES=384000,48000 python -c 'from open_observatory.config
 SettingsError: error parsing value for field "preferred_sample_rates" from source "EnvSettingsSource"
 ```
 
-Pre-existing and unfixed. If `config/example.env` is copied verbatim to
-`runtime.env` rather than edited, those are the lines to comment out first.
-`OO_AUTH_PUBLIC_READ_PATHS` does not have this problem — it declares `NoDecode`.
+Was pre-existing and unfixed at the time of writing; `OO_AUTH_PUBLIC_READ_PATHS`
+never had the problem because it declared `NoDecode`. The fix was to give the
+other four the same annotation — see the re-verification above.
 
 ### The development station's `runtime.env`, as it now stands
 

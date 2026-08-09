@@ -1061,5 +1061,37 @@ code {
 .settings-field .restart-tag { color: var(--text-dim); font-style: normal; font-size: 10.5px; }
 .settings-field .restart-tag.pending { color: #d4a017; }
 .settings-field .field-error { color: #d0454c; font-style: normal; font-size: 11px; }
-.settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .settings-message { font-size: 11.5px; color: var(--text-dim); }
+
+/* ADR-048: the settings page now carries every field, so it needs structure
+   -- collapsible categories, a search, a visible default per field, and an
+   explicit acknowledgement on the ones that can cost recordings. */
+.settings-search { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); }
+.settings-search input { max-width: 260px; }
+.settings-category { border-top: 1px solid var(--line, #2a2a2a); }
+.settings-category-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  width: 100%; background: none; border: 0; padding: 6px 0; cursor: pointer;
+  color: inherit; text-align: left;
+}
+.settings-category-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px; }
+.settings-control { display: flex; align-items: center; gap: 8px; }
+.settings-field-bool .settings-control { order: -1; }
+.settings-unit { color: var(--text-dim); font-weight: 400; }
+.settings-field-name { font-weight: 600; }
+.settings-help { margin: 0; font-size: 11px; color: var(--text-dim); max-width: 62ch; }
+.settings-note-field { font-style: italic; }
+.settings-reset { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
+.settings-reset:disabled { opacity: 0.45; cursor: default; }
+.settings-danger {
+  font-size: 11px; color: #d4a017; align-items: flex-start;
+  border-left: 2px solid #d4a017; padding-left: 8px; max-width: 62ch;
+}
+.settings-non-editable { font-size: 11px; color: var(--text-dim); }
+.settings-non-editable ul { margin: 6px 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+
+.first-run-steps { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0; padding: 0; list-style: none; font-size: 12px; }
+.first-run-steps li.current button { font-weight: 700; }
+.first-run-steps li.done button { color: var(--text-dim); }
+.first-run-step { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }

@@ -100,6 +100,31 @@ class ActivityDetector:
         #: more than once. Suppress repeats by absolute stream frame.
         self._last_emitted_end_frame = -1
 
+    def retune(
+        self,
+        *,
+        band_hz: tuple[float, float] | None = None,
+        min_snr_db: float | None = None,
+        min_duration_ms: float | None = None,
+        max_duration_ms: float | None = None,
+    ) -> None:
+        """Change the detection thresholds on a running detector.
+
+        Every value here is read fresh inside :meth:`analyse` -- none is baked
+        into an FFT plan or a cached array -- so rebinding them between windows
+        is a complete change, not a partial one. The noise-floor tracker is
+        deliberately *not* reset: it is an estimate of the room, which a
+        threshold edit does not invalidate.
+        """
+        if band_hz is not None:
+            self._band = (float(band_hz[0]), float(band_hz[1]))
+        if min_snr_db is not None:
+            self._min_snr_db = float(min_snr_db)
+        if min_duration_ms is not None:
+            self._min_duration_s = float(min_duration_ms) / 1000.0
+        if max_duration_ms is not None:
+            self._max_duration_s = float(max_duration_ms) / 1000.0
+
     async def initialise(self, context: DetectorContext) -> None:
         self._noise_floor_db = None
         self._frames_seen = 0

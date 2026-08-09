@@ -94,6 +94,61 @@ Useful during development:
 The full CLI surface is listed in
 [`../operations/DEPLOYMENT_AND_OPERATIONS.md`](../operations/DEPLOYMENT_AND_OPERATIONS.md).
 
+## Configuring a station: the browser, not a text editor (ADR-048)
+
+A station is configured from its own web UI. Open it, press `settings`, and
+every operator-editable field is there with its help text, unit, valid range
+and shipped default. A first run additionally offers a short guided flow —
+where the station is, what it is called and what time it is there, whether the
+microphone is actually being recorded from, whether you want MQTT — driven by
+`GET /api/v1/setup`.
+
+The UI writes `config/runtime.env` on the device: atomically, mode 0600,
+preserving your comments and any keys it does not manage. **A hand-edited file
+and a UI edit are one configuration, not two.** `oo config` prints the merged
+result either way.
+
+### What used to need a text editor and no longer does
+
+Before ADR-048, exactly five things were web-editable — station name, timezone,
+latitude, longitude and the MQTT block — and *everything else* meant an SSH
+session, `nano config/runtime.env`, and a service restart. That included every
+knob an operator actually reaches for after the station is running:
+
+| Was `runtime.env` only, now in the browser | Why it matters |
+|---|---|
+| `spectrogram_floor_db` / `ceiling_db`, and the ultrasonic pair (ADR-041) | contrast is what makes a noisy site readable; takes effect live |
+| `ultrasonic_min_snr_db`, `ultrasonic_min_pulses_per_pass`, `ultrasonic_band_hz`, the pulse and buzz bounds | tuning out false bat passes from a noisy mounting; live |
+| `activity_min_snr_db`, `activity_min_duration_ms`, `activity_band_hz` | the same for the audible detector; live |
+| `birdnet_min_confidence`, `birdnet_plausibility_floor` | rejecting implausible species (ADR-032); live |
+| `birdnet_common_prior`, `birdnet_range_threshold`, and the three band thresholds | **new fields** — these existed only as Python constructor defaults and had no environment surface at all |
+| the whole clip block: pre/post-roll, maximum length, minimum score, rate limit, size budget, free-space floor, which detectors clip | live |
+| the whole retention ladder and its sweep pacing (ADR-026/033) | live |
+| the ultrasonic rendering block: method, expansion factor, target, high-pass, heterodyne bandwidth | live |
+| every refinement setting (ADR-045) | read by the next `oo refine run`, so in force tonight without restarting the station |
+| capture: source, device key, preferred rates and formats, block size, ring depth, ring seconds | saved now, applied at the next restart — a form submission never tears down capture |
+| logging, metrics, queue depths, the counter-top display channel | restart-pinned |
+
+`config/example.env` and `runtime.env` still work exactly as before, and remain
+the only route for the settings that are deliberately not browser-editable
+(authentication, bind address, storage paths, `replay_path`, `web_dist`,
+`birdnet_model_dir`). The settings page lists those at the bottom, each with the
+hazard that earns the exclusion, so a knob you cannot find is explained rather
+than merely absent.
+
+The complete field-by-field reference, with tiers and defaults, is in
+[`../operations/DEPLOYMENT_AND_OPERATIONS.md`](../operations/DEPLOYMENT_AND_OPERATIONS.md#the-full-settings-reference);
+regenerate it with `PYTHONPATH=src python scripts/settings_table.py` after
+adding a field.
+
+**If you add a field to `Settings`,** you must also record a decision for it in
+`src/open_observatory/site_settings.py` — either an `EditableSetting` with a
+tier, or an entry in `NON_EDITABLE` with the reason.
+`tests/test_site_settings.py::TestTheAuditIsComplete` fails until you do. If it
+is live-tier and some long-lived object holds its value, map it in
+`src/open_observatory/tuning.py` as well, or it will report itself applied
+while doing nothing.
+
 ## Tests and quality gates
 
 ```bash

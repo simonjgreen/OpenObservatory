@@ -281,6 +281,47 @@ class BirdNetDetector:
             if not (self.model_dir / name).exists()
         ]
 
+    def retune(
+        self,
+        *,
+        min_confidence: float | None = None,
+        plausibility_floor: float | None = None,
+        common_prior: float | None = None,
+        range_threshold: float | None = None,
+        threshold_in_range: float | None = None,
+        threshold_uncommon: float | None = None,
+        threshold_out_of_range: float | None = None,
+        max_per_window: int | None = None,
+    ) -> None:
+        """Change the confidence and plausibility bars on a running detector.
+
+        None of these touch the interpreter, the labels, the range model or the
+        cached per-week occurrence vector -- they are applied *after* inference,
+        when a raw score is turned into (or refused as) a detection. So this is
+        a genuinely live change: the next window is scored by the old model and
+        judged by the new bars, which is exactly the intent.
+
+        ``use_location_filter`` is deliberately absent. Turning the range model
+        on or off changes which *model files* are loaded and what the detector
+        declares about itself, and is restart-pinned in ``site_settings.py``.
+        """
+        if min_confidence is not None:
+            self._min_confidence = float(min_confidence)
+        if plausibility_floor is not None:
+            self._plausibility_floor = float(plausibility_floor)
+        if common_prior is not None:
+            self._common_prior = float(common_prior)
+        if range_threshold is not None:
+            self._range_threshold = float(range_threshold)
+        if threshold_in_range is not None:
+            self._thresholds["in_range"] = float(threshold_in_range)
+        if threshold_uncommon is not None:
+            self._thresholds["uncommon"] = float(threshold_uncommon)
+        if threshold_out_of_range is not None:
+            self._thresholds["out_of_range"] = float(threshold_out_of_range)
+        if max_per_window is not None:
+            self._max_per_window = int(max_per_window)
+
     async def initialise(self, context: DetectorContext) -> None:
         missing = self.missing_assets()
         if missing:

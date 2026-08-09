@@ -263,6 +263,32 @@ class SpectrogramEncoder:
             data=np.stack(columns),
         )
 
+    def retune(self, *, floor_db: float | None = None, ceiling_db: float | None = None) -> bool:
+        """Change the dB window this encoder maps onto the colour ramp, live.
+
+        Safe on a running encoder because the floor/ceiling are read per column
+        at encode time and touch nothing that is precomputed: no FFT plan, no
+        bin edges, no buffer geometry. The retained history *is* affected --
+        those columns were already mapped through the old window and cannot be
+        remapped (the uint8 quantisation is lossy) -- so it is cleared rather
+        than left to render the same signal at two different contrasts in one
+        picture. The operator loses backfill, not live view; the next column
+        arrives on the next hop.
+
+        Returns True if anything actually changed.
+        """
+        changed = False
+        if floor_db is not None and floor_db != self.floor_db:
+            self.floor_db = float(floor_db)
+            changed = True
+        if ceiling_db is not None and ceiling_db != self.ceiling_db:
+            self.ceiling_db = float(ceiling_db)
+            changed = True
+        if changed:
+            self.history.clear()
+            self.history_first_utc_s = None
+        return changed
+
     def reset(self, *, clear_history: bool = False) -> None:
         """Drop the part-filled buffer and re-anchor on the next block.
 
