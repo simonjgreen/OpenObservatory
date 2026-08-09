@@ -4,8 +4,15 @@ Measured facts about the actual station, not assumptions. This file is the exit
 gate for Milestone 0: "AudioMoth formats and stable device identity are recorded
 from the actual Pi."
 
-Recorded 2026-08-04 from `pi2` at `station.example`.
-Regenerate with `oo audio probe --json --write docs/operations/probe.json`.
+Recorded 2026-08-04 from `pi2` at `station.example`, extended through 2026-08-08 and
+re-checked against the live station on 2026-08-09.
+Regenerate the machine-readable portion with
+`oo audio probe --json --write docs/operations/probe.json`.
+
+**This file is the authoritative home for measured figures.** Every number here
+carries the date it was measured. Do not restate a figure from memory in another
+document; link here. Do not add a figure that cannot be traced to a measurement —
+mark it unverified instead.
 
 ## Host
 
@@ -304,10 +311,14 @@ including *Columba palumbus* (Common Woodpigeon).
 
 Re-measured on the Pi on 2026-08-05 after the night scheduler, buzz flagging and
 sub-bin frequency interpolation were added: `ultrasonic-pass-v1` p95 runtime **75.7 ms**
-per 2-second native window, still comfortably inside the 2 s budget. 197 Python tests
-pass on the Pi, of which 3 BatDetect2 tests skip pending its assets being fetched, plus
-49 frontend tests; BatDetect2 evaluation is in progress and nothing about it is proven
-yet.
+per 2-second native window, still comfortably inside the 2 s budget.
+
+**Test counts are not a target-device measurement and do not belong in this file.**
+The last full run *on the Pi* was 197 Python tests on 2026-08-08. The current
+suite is 389 Python and 140 frontend tests, measured on the development laptop on
+2026-08-09 — see `docs/delivery/MILESTONE_STATUS.md`, which is the authority.
+BatDetect2's own benchmark on this hardware *is* a target measurement and is
+recorded in `docs/detectors/BATDETECT2_EVALUATION.md`.
 
 ## Live channel delivery, measured from a real browser over Wi-Fi
 
@@ -367,11 +378,27 @@ server-side gain on the stream, not a client-side audio node.
   near 55 kHz. The AudioMoth's hot gain (see above) is a plausible confound. This
   needs more clips and a human ear on the audible renderings, not a code change.
 - **72-hour soak test not run.** The acceptance criteria require it before the
-  system may be described as complete.
+  system may be described as complete. Still true on 2026-08-09.
+- **`estimated_missing_seconds` over-reports lost audio by roughly 13×.** Measured
+  on the live station 2026-08-09 over 12.4 h: `frames` 17,170,944,000 against
+  `expected_frames` 17,172,537,849 — a real deficit of 1,593,849 frames (**4.15 s,
+  0.0095%**) — while `estimated_missing_seconds` claimed **54.5 s** and ALSA
+  reported only 3 overruns against 369 `capture.gap` records. Judge real loss by
+  `frames` vs `expected_frames`, never by that field, and read
+  `capture.gap lost_audio=True` as "the read was late". `rate_offset_ppm` is
+  contaminated by the same phantom frames — it read **+1128 ppm** in that sample
+  against a true device offset of −43 ppm. See
+  `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` finding 2 and ADR-033.
 - **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),
   gating it to civil dusk through civil dawn plus configurable margins, computed from the
   station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); Charter
   Alley's `runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`. If coordinates are unset the
   detector runs continuously rather than gating to nothing, by design — see
   `DETECTOR_STRATEGY.md`.
-- **No authentication.** The API binds LAN-only with anonymous read enabled.
+- **Authentication exists but is off by default.** ADR-034 shipped Argon2id
+  passwords, session cookies and revocable API tokens on 2026-08-08, closing
+  ADR-015. `auth_enabled` defaults to `false`, and **it is not enabled on this
+  station**, so the API here still binds LAN-only with anonymous read. Even with
+  it enabled, `GET /api/v1/detections`, `GET /api/v1/health` and `/metrics` stay
+  reachable with no credential by design (the ESP32 display cannot carry one, and
+  `deploy.sh` polls health with none). There is no TLS anywhere in this codebase.

@@ -3,11 +3,19 @@
 Written at the end of the first implementation session, 2026-08-04, against the
 live station at `station.example`; revised 2026-08-08 to cover Milestone 5's
 completion, an AudioMoth outage and its fix, live playback being rebuilt onto a
-different transport, and evidence storage moving to a USB SSD. Read
-`MILESTONE_STATUS.md` for progress against the plan; this file is the operational
-and engineering context a successor needs. Read ADR-019, ADR-020 and ADR-021 in
-`docs/architecture/ADRS.md` for the full reasoning behind 2026-08-08's changes —
-this file cross-references them rather than restating them.
+different transport, and evidence storage moving to a USB SSD; **claims
+re-verified against the code and the live station on 2026-08-09.**
+
+Read `MILESTONE_STATUS.md` for progress against the plan; this file is the
+operational and engineering context a successor needs. Read the ADR index in
+`docs/architecture/ADRS.md` for the full reasoning behind any decision — this
+file cross-references ADRs rather than restating them.
+
+**Where facts live** (these documents have drifted apart from each other before):
+measured figures are authoritative in `docs/operations/TARGET_DIAGNOSTICS.md`;
+what is done versus outstanding is authoritative in `MILESTONE_STATUS.md`; the
+map of everything is `docs/README.md`; setting up a dev environment is
+`docs/development/SETUP.md`.
 
 ---
 
@@ -19,14 +27,24 @@ windows to detectors' own specifications, normalises and persists detections, wr
 checksummed evidence clips (including audible renderings of ultrasound) to a USB SSD,
 and serves a real-time debug UI over two WebSocket channels plus a plain-HTTP audio
 stream — in scrolling or waterfall orientation, with unidentified and non-live-source
-events hidden by default — plus a history mode for browsing what was persisted. 197
-Python tests and 49 frontend tests pass on the target; ruff is clean. It runs as a
-systemd unit and survives reboots. Milestone 5 (ultrasonic and bat support) is
-complete: a bat pass detector runs live, gated to night by a solar scheduler,
-and BatDetect2 was benchmarked on the target and deliberately *not* adopted as a
-live detector — see §1a. It is **not complete** as a whole system: no 72-hour soak,
-no authentication, no product dashboard, and one Milestone 3 exit gate only
-partially met.
+events hidden by default — plus a history mode for browsing what was persisted. The
+same API now also feeds an **ESP32 wall display** (ADR-023) and an **MQTT publisher**
+running live against the operator's Home Assistant broker (ADR-025), and an
+**authentication foundation** exists, off by default (ADR-034).
+
+Measured 2026-08-09 on the development laptop against this branch: **389 Python
+tests pass, 6 skip** (`pytest -q --deselect tests/test_api.py::TestLiveChannels`;
+the skips are the unbundled-model fixture tests, by design) and **140 frontend
+tests pass**. `ruff check .` is clean; `mypy src` reports 29 pre-existing errors
+and has never been clean. The last recorded full run *on the target device* was
+197 Python tests on 2026-08-08 — that number is a snapshot of that run, not the
+current suite. It runs as a systemd unit and survives reboots.
+
+Milestone 5 (ultrasonic and bat support) is complete: a bat pass detector runs
+live, gated to night by a solar scheduler, and BatDetect2 was benchmarked on the
+target and deliberately *not* adopted as a live detector — see §1a. It is
+**not complete** as a whole system: no 72-hour soak, an open capture-gap
+investigation, a minimal review workflow, and Milestone 7 not started.
 
 ## 1a. The cascade finding — the most reusable idea from Milestone 5
 
@@ -160,26 +178,30 @@ capture will work. Streaming mode is a different USB identity, `16d0:06f3`.
   detector cannot report a probability, and a synthetic source is announced loudly
   everywhere including `/api/v1/health`.
 
-Deviations from the seed spec are ADR-007 onwards in `docs/architecture/ADRS.md`:
-SQLite in developer mode, native systemd instead of Compose, in-process event bus
-instead of Redis Streams, an owned activity detector as the first plugin, the debug
-UI as an observability surface rather than the product dashboard, the two-channel
-live transport and its single-writer rule, the ultrasonic pass detector as a second
-owned plugin, the audible rendering of ultrasonic evidence, and — the one with a real
-consequence — running with anonymous read access and no authentication until
-Milestone 4. Three more were added 2026-08-08: ADR-019 (live playback moved off Web
-Audio to a chunked-WAV HTTP stream, because Web Audio produced no audible output on
-the operator's own laptop by any route), ADR-020 (non-live detections excluded from
-browsing views by default, written in response to the microphone incident in §3a),
-and ADR-021 (evidence clips moved to a USB SSD mounted over the existing `data/clips`
-path, because the SD card could not sustain a busy bat night's write load).
+Deviations from the seed spec are ADR-007 onwards in `docs/architecture/ADRS.md`,
+which now carries an **index with a status per ADR** — read that rather than any
+list reproduced here, because such a list goes stale every time an ADR is added.
+The load-bearing ones for a successor: SQLite in developer mode (ADR-007), native
+systemd instead of Compose (ADR-008), an in-process event bus instead of Redis
+Streams (ADR-009), an owned activity detector as the first plugin (ADR-010), the
+debug UI promoted to the product surface rather than replaced (ADR-011 → ADR-016),
+the two-channel live transport and its single-writer rule (ADR-012), the
+ultrasonic pass detector as a second owned plugin (ADR-013), the audible rendering
+of ultrasonic evidence (ADR-014), and anonymous read access with authentication
+deferred (ADR-015) — **now closed by ADR-034, which is off by default, so a
+station that has not opted in is still in ADR-015's position.**
 
 ## 5. Known-good measured figures (regressions should be judged against these)
 
+**`docs/operations/TARGET_DIAGNOSTICS.md` is the authoritative home for measured
+figures.** This table is the summary a successor needs at hand; where the two
+disagree, that file wins. Measured on the Pi across 2026-08-04 to 2026-08-08
+unless noted.
+
 | Property | Value |
 |---|---|
-| Capture continuity | 0.9990–0.9997 |
-| Gaps / overruns in normal running | 0 |
+| Capture continuity | 0.9990–0.9997; **0.999907** on the live station 2026-08-09 over 12.4 h |
+| Gaps / overruns in normal running | 0 — **but see the open investigation.** On 2026-08-09 the station reported 369 `capture.gap` records and 3 ALSA overruns over 12.4 h, and its real frame deficit over that period was ~4.1 s (0.0095%) against an `estimated_missing_seconds` of 54.5 — a ~13× over-report by the deficit estimator, not lost audio. See `OPEN_INVESTIGATION_CAPTURE_GAPS.md` finding 2 and ADR-033 |
 | Device clock offset | −43 ppm (a real crystal property, not an error) |
 | Per-block hot-path CPU | 10.9% of one core (was 9.5% before ultrasonic sub-windowing) |
 | Whole-process CPU | ~29% of 4 cores with all three detectors |
@@ -207,6 +229,15 @@ path, because the SD card could not sustain a busy bat night's write load).
    live. Needs a freely-licensable reference recording (Xeno-canto CC0/BY are
    candidates — check each recording's own licence, they vary).
 3. **Run the one-hour drift test at full duration.** Currently verified at 5 min.
+4. **Re-run the BatDetect2 benchmark and commit its output.** Found 2026-08-09:
+   three documents cited `results/batdetect2-pi5.json` as the retained provenance
+   for Milestone 5's exit gate, and that file does not exist anywhere — not in the
+   working tree, not in git history, not on the Pi, and `results/` is not
+   gitignored. The measured figures are retained and are not in doubt, but they
+   cannot be traced to an artefact, and "provenance retained" is literally what
+   the plan's exit gate asks for. Cheap to close:
+   `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json`
+   on the Pi, then commit the file. Needs BatDetect2 installed there.
 
 ### 6.2 History browsing, and what it still lacks
 
@@ -368,23 +399,42 @@ useful addition and is not currently planned.
 
 ### 6.4 Then the plan's own next milestones
 
-Milestone 5 (ultrasonic and bat support) is now complete — see §1 and
-`MILESTONE_STATUS.md`. What remains of the plan:
+Milestone 5 (ultrasonic and bat support) is complete. **Milestones 4 and 6 were
+largely delivered on 2026-08-08** — this section is updated rather than removed,
+because what remains of each is the useful part. `MILESTONE_STATUS.md` is the
+authority; the short version:
 
-11. **Milestone 4**: product dashboard, review workflow, retention UI, and the
-   authentication foundation. ADR-015 records the deferred authentication as a
-   deviation with a real security consequence; this milestone is what closes it. Note the `review` table exists and nothing writes to
-   it. Keep the debug UI separate (ADR-011).
-12. **Milestone 6**: MQTT publisher and Home Assistant discovery. Cheap, because
-    the event envelope is already the published one — a publisher subscribing to
-    the existing bus needs no contract changes.
+11. **Milestone 4 — largely delivered.** Styling (ADR-027), the frontend test
+    harness, `App.tsx` state extraction, operator/diagnostic disclosure
+    (ADR-028), CSV/JSON export, the tiered retention backend and its UI
+    (ADR-026, ADR-029) and the authentication foundation (ADR-034, closing
+    ADR-015) have all landed. **Still open:** the review workflow is minimal —
+    `POST`/`GET /api/v1/detections/{id}/review` plus confirm/reject in the
+    drawer. The `review` table *is* now written to; correcting a misidentified
+    taxon (`corrected_taxon_id`) is always written `None` and is deliberately
+    left for a future ADR.
+12. **Milestone 6 — publisher delivered, alert engine not.** The MQTT publisher
+    and Home Assistant Discovery are live against the operator's real broker,
+    six entities under one device (ADR-025). **Still open, and unchanged from
+    the original scope:** environmental telemetry ingestion, the alert rule
+    engine with repetition and cooldown, and HMAC-signed outgoing webhooks.
+13. **Milestone 7 — not started.** Read-only MCP tools, export bundles,
+    backup/restore commands, a setup wizard/commissioning report, and a
+    vulnerability scan. Partial credit only: the systemd unit already applies
+    privilege reduction, model licences are surfaced through `/api/v1/models`,
+    and media paths are validated against the clip directory before being served.
 
 ### 6.5 Longer-term, and worth deciding early
 
 - **PostgreSQL migration.** ADR-007 keeps SQLite for the debug slice. Anything
   needing concurrent writers, `LISTEN/NOTIFY` or JSON indexing must wait for this.
-  The DSN is the only change; Alembic migrations need writing (none exist yet —
-  `create_all()` is used, which is fine for SQLite but not a migration path).
+  The DSN is intended to be the only change. **The Alembic environment now
+  exists** (ADR-035, three revisions, live station at `0003_auth_tables`), so the
+  prerequisite this entry used to name is met — but it has only ever been
+  exercised against SQLite, so "the DSN swap is configuration-only" stays
+  unverified until someone runs it against a real PostgreSQL 16 instance.
+  Startup still calls `create_all()` rather than Alembic; wiring migrations into
+  `deploy.sh` or startup is the next concrete step (see §6.3 item 10).
 - **Redis Streams.** ADR-009's `EventBus` protocol is the seam. The bounded queues
   and drop counters already model the back-pressure a real transport imposes.
 - **USB SSD: done (2026-08-08, ADR-021).** Evidence clips now live on a 465.8 GB

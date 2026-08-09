@@ -5,8 +5,14 @@ demonstrated on the actual Pi is marked as not done, regardless of whether the c
 exists.
 
 Recorded 2026-08-04, revised 2026-08-05 to cover the waterfall spectrogram view, the
-event-stream filtering default and history browsing. See `HANDOVER.md` for operational
+event-stream filtering default and history browsing, and **re-verified against the
+code and the live station on 2026-08-09.** See `HANDOVER.md` for operational
 context, the bugs found by measurement, and a prioritised list of what to do next.
+
+**This file is the authority on what is done and what is outstanding.** Measured
+figures live in `docs/operations/TARGET_DIAGNOSTICS.md`; design reasoning lives in
+`docs/architecture/ADRS.md`. Where another document disagrees with this one about
+delivery state, this one is meant to win — tell whoever wrote the other one.
 
 ## Milestone 0 — Repository and target diagnostics — **complete**
 
@@ -131,7 +137,7 @@ single surface with two depths.
 |---|---|
 | React dashboard | foundation done — application shell and component set; surface-agnostic WebSocket and audio clients |
 | Styling | done (ADR-027) — spacing and type scales applied to new surfaces; ~700 lines of pre-existing component CSS deliberately not migrated, recorded as scoped-out |
-| Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **136 frontend tests**, up from 1 file |
+| Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **140 frontend tests** as of 2026-08-09, up from 1 file with only pure functions testable |
 | Timeline, filters, detail | foundation done — HISTORY mode: named windows, stacked timeline, species summary, click-to-focus, coverage bar |
 | Spectrogram and playback | done — two orientations, live listening, per-detection clips including audible ultrasound |
 | Health/system page | done (ADR-028) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
@@ -167,16 +173,28 @@ Still outstanding in this milestone:
 Brought forward because the device turned out to capture at 384 kHz, which makes
 the native stream genuinely useful rather than theoretical. **Exit gate met
 2026-08-05**: a known bat fixture is processed on the target device
-(`tests/test_batdetect2.py`), provenance is retained in
-`results/batdetect2-pi5.json`, and capture continuity was unaffected (0.999318,
+(`tests/test_batdetect2.py`) and capture continuity was unaffected (0.999318,
 0 overruns). The bat adapter is deliberately *not* built: the benchmark measured
 BatDetect2 at 0.52x realtime, below the threshold, and ADR-017 records that.
+
+> ⚠️ **The provenance half of this gate is not actually satisfied. Checked
+> 2026-08-09.** This entry claimed "provenance is retained in
+> `results/batdetect2-pi5.json`". That file does not exist in the working tree, in
+> git history, or on the live station, and `results/` is not gitignored — it was
+> never committed. The measured figures are retained (see
+> `docs/detectors/BATDETECT2_EVALUATION.md`) but cannot currently be traced to an
+> artefact, and the plan's exit gate for this milestone asks explicitly for
+> "provenance retained". **Re-run
+> `scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` on the Pi
+> and commit the output** to close it properly. This does not affect the other
+> half of the gate: `tests/test_batdetect2.py` is committed and skips cleanly when
+> the unbundled assets are absent.
 
 | Deliverable | State |
 |---|---|
 | Native high-rate window profile | done |
 | Ultrasonic detection | done, but as a **pulse-train detector, not a classifier** — `ultrasonic-pass-v1`, no species claim |
-| BatDetect2 evaluation harness | **done** — `scripts/benchmark_batdetect2.py`, `tests/test_batdetect2.py`, `docs/detectors/BATDETECT2_EVALUATION.md`, results in `results/batdetect2-pi5.json` |
+| BatDetect2 evaluation harness | **done** — `scripts/benchmark_batdetect2.py`, `tests/test_batdetect2.py`, `docs/detectors/BATDETECT2_EVALUATION.md`. **The `results/batdetect2-pi5.json` this row used to cite does not exist** — see the provenance warning above |
 | Pi 5 benchmark report | **done** — BatDetect2 measured on the target: p95 968 ms per 0.5 s clip, **0.52× realtime in isolation**, +459 MB RSS. Against BirdNET at ~40× and the pass detector at ~36–40×. Verdict: not sustainable for real-time inference |
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
@@ -261,8 +279,9 @@ directory before being served.
 
 | Gate | State |
 |---|---|
-| Unit tests | 197 passing on the target device (3 BatDetect2 tests skip until its assets are fetched), plus 49 frontend tests |
-| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. **Gap:** the history endpoints have no HTTP-level test; `tests/test_history.py` exercises the aggregation functions only |
+| Unit tests | **389 passing, 6 skipped**, measured 2026-08-09 on the development laptop with `pytest -q --deselect tests/test_api.py::TestLiveChannels`. The skips are the BatDetect2 and BirdNET fixture tests, which skip cleanly when the deliberately-unbundled model assets are absent. Plus **140 frontend tests** (`npm ci && npm test` in `web/`). This number moves as work lands; it was 136 earlier the same day. The last full run *on the target device* was 197 tests on 2026-08-08 and has not been repeated since |
+| Lint / types | `ruff check .` clean. **`mypy src` is not clean and never has been** — 29 errors in 12 files as of 2026-08-09, all pre-existing. Judge a change by whether it adds errors |
+| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. The history-endpoint gap recorded here is **closed**: `tests/test_history.py::TestHistoryHTTP` now exercises `/api/v1/history` and `/api/v1/history/windows` through a real app (ADR-024) |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |
 | Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. ADR-007 records how to move to PostgreSQL and back |
 | Updated docs | done |
@@ -279,10 +298,33 @@ kept flowing). Any future work on these channels must be measured the same way.
 
 ## What must not be claimed yet
 
-Per `CLAUDE.md`, this system is **not complete**. Outstanding before that word applies:
+Per `CLAUDE.md`, this system is **not complete**. Outstanding before that word
+applies, corrected 2026-08-09 — three items on the earlier version of this list
+(a committed species fixture test, authentication, and the Milestone 4 dashboard)
+have since been delivered and are struck rather than deleted, so the record of
+what was outstanding when survives:
 
-- the 72-hour soak test;
-- the one-hour drift run at full duration;
-- a committed fixture test proving a known species from a known recording;
-- authentication;
-- the Milestone 4 product dashboard, and Milestones 6 and 7 entirely.
+- **the 72-hour soak test** — the single biggest item, never run;
+- **the one-hour drift run at full duration** — verified at 5 minutes only;
+- **`oo audio window-dump`** — Milestone 2 asked for a window inspection CLI;
+- **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
+  webhooks;
+- **Milestone 7 entirely** — MCP tools, export bundles, backup/restore, setup
+  wizard, vulnerability scan;
+- **the open capture-gap investigation** — see
+  `OPEN_INVESTIGATION_CAPTURE_GAPS.md`; in particular the deficit-step estimator
+  still over-credits, so `capture.gap lost_audio=True` currently means "the read
+  was late", not "recording was lost";
+- **~5833 historical BirdNET rows written under the pre-ADR-032 plausibility
+  logic**, which no consumer yet hides — see `HANDOVER.md` §6.3 item 0;
+- ~~a committed fixture test proving a known species from a known recording~~ —
+  done 2026-08-08, `tests/test_birdnet_fixture.py`, passing on the target;
+- ~~authentication~~ — done 2026-08-08, ADR-034, **off by default**;
+- ~~the Milestone 4 product dashboard~~ — largely delivered 2026-08-08; the
+  review workflow remains minimal.
+
+And the standing honesty rules, which no amount of delivery relaxes: no detector
+"identifies" anything it does not itself claim; `ultrasonic-pass-v1` detects
+passes, not species; a score is not a probability; levels are uncalibrated dBFS,
+never SPL; and the species list this station reports is *not* filtered to what
+actually occurs here.

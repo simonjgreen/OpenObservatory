@@ -136,12 +136,35 @@ ssh station.example '~/open-observatory/.venv/bin/oo config'          # effectiv
 ssh station.example 'cd ~/open-observatory && .venv/bin/pytest'
 ```
 
-The full operator CLI surface, verified against `src/open_observatory/cli.py`,
-is: `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`,
-`oo models status`, `oo models fetch`, `oo audiomoth info`,
-`oo system-report`, `oo serve`, `oo config`. There is no `oo preflight-upgrade`
-command or anything like it; an earlier version of this document referred to
-one, and it does not exist in the code.
+### The full operator CLI surface
+
+Regenerated from `src/open_observatory/cli.py` on **2026-08-09**. An earlier
+version of this list omitted the three repair/maintenance commands.
+
+| Command | What it does |
+|---|---|
+| `oo audio probe` | enumerate capture devices; record formats, stable identity and native rate support. `--json`, `--write PATH`, `--test-rates` |
+| `oo audio test-capture` | capture briefly and report frames delivered vs elapsed, levels and clipping. `--seconds`, `--out` |
+| `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms` |
+| `oo models status` | what model assets are installed |
+| `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |
+| `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
+| `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
+| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block |
+| `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
+| `oo system-report` | host facts worth recording with a diagnostic. `--json` |
+| `oo serve` | run the station. `--host`, `--port`, `--source auto\|alsa\|replay\|synthetic`, `--reload` |
+| `oo config` | print effective configuration, with the resolved database DSN |
+
+There is no `oo preflight-upgrade` command or anything like it; a much earlier
+version of this document referred to one, and it does not exist in the code.
+Neither does `oo audio window-dump` — Milestone 2 asked for a window inspection
+CLI and it remains outstanding.
+
+**The two `reconcile-*` commands write to the database when given `--apply`.**
+Both default to dry-run, both require a confirmation, and neither has ever been
+run with `--apply` against the live station. Run them with `--json` piped to a
+file and read the output first.
 
 ### Known operational trap: killing the service by pattern match
 
@@ -327,23 +350,41 @@ state section above — do not let a sync remove it). All settings are read by
 resolved database DSN, and is the authoritative way to check what a given
 `runtime.env` actually produced.
 
-### Unmapped keys in `config/example.env`
+### A misspelled `OO_*` key does nothing, silently
 
-`Settings` is defined with `extra="ignore"`, so unrecognised `OO_*`
-environment variables are silently accepted and do nothing rather than
-raising an error. Checking `config/example.env` against the fields declared
-on `Settings` in `src/open_observatory/config.py` shows four keys with no
-corresponding field:
+`Settings` is defined with `extra="ignore"`, so an unrecognised `OO_*`
+environment variable is accepted and has no effect rather than raising. `oo
+config` on the target is the only way to confirm what a given `runtime.env`
+actually produced.
 
-- `OO_POSTGRES_DSN`
-- `OO_REDIS_URL`
-- `OO_MQTT_ENABLED`
-- `OO_MQTT_URL`
+**Previously recorded here and now resolved:** `config/example.env` used to
+carry four keys with no corresponding `Settings` field — `OO_POSTGRES_DSN`,
+`OO_REDIS_URL`, `OO_MQTT_ENABLED` and `OO_MQTT_URL`. Three have since been
+removed from the template and `OO_MQTT_ENABLED` became a real field when the
+MQTT publisher shipped (ADR-025). Re-checked mechanically on 2026-08-09: **every
+key in `config/example.env` now maps to a declared `Settings` field.**
 
-Setting any of these currently has no effect on the running service. This is
-reported here as found, not fixed, per the scope of this document; the
-Postgres/Redis/MQTT lines in the example file describe the deferred Compose
-target above and appear to have been left in the template unintentionally.
+`config/example.env` is a curated subset, not the full surface —
+`src/open_observatory/config.py` declares well over a hundred fields and is the
+complete reference.
+
+### A real trap: three tuple-typed settings crash the station if you set them
+
+`OO_PREFERRED_SAMPLE_RATES`, `OO_PREFERRED_FORMATS` and `OO_CLIP_PLUGINS` are
+tuple-typed. `pydantic-settings` tries to JSON-decode a tuple-typed field's raw
+env value before this project's plain comma-separated parsing is ever reached,
+so **setting** one of them (as opposed to leaving it at its default) raises a
+`SettingsError` at startup and the station does not come up at all. Reproduced
+on 2026-08-09:
+
+```
+$ OO_PREFERRED_SAMPLE_RATES=384000,48000 python -c 'from open_observatory.config import Settings; Settings()'
+SettingsError: error parsing value for field "preferred_sample_rates" from source "EnvSettingsSource"
+```
+
+Pre-existing and unfixed. If `config/example.env` is copied verbatim to
+`runtime.env` rather than edited, those are the lines to comment out first.
+`OO_AUTH_PUBLIC_READ_PATHS` does not have this problem — it declares `NoDecode`.
 
 ### the development station station's `runtime.env`, as it now stands
 

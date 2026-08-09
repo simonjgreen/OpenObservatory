@@ -1,5 +1,18 @@
 # Implementation Plan
 
+> **This is the plan, not the status.** It describes what each milestone was
+> scoped to deliver and, in the later milestones, why it was sequenced that way.
+> Several sections describe the code as it stood when the milestone was *written*
+> — Milestone 4's "not foundation, despite appearances" list and Milestone 5's
+> item 1 are both descriptions of problems that have since been fixed.
+>
+> **For what is actually delivered, read
+> [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
+> summary as of 2026-08-09: Milestones 0–3 and 5 complete, Milestone 4 largely
+> delivered with a minimal review workflow, Milestone 4.5 outstanding (the
+> 72-hour soak, the full-hour drift run, `oo audio window-dump`), Milestone 6's
+> publisher live but its alert engine unbuilt, Milestone 7 not started.
+
 ## Milestone 0 — Repository and target diagnostics
 
 Deliver:
@@ -174,7 +187,7 @@ what makes this tractable, because it bounds what can enter the queue. Build it 
 BatDetect2's benchmark shows whether it is needed, not before.
 
 **4. Feeding-buzz flagging.** Specified in
-`docs/superpowers/specs/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
+`docs/design/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
 The pulse timing is already computed and discarded; a buzz is a terminal collapse in
 inter-pulse interval. Emits `min_interval_ms` on every pass so a wrong threshold can be
 re-judged from stored data rather than from audio that no longer exists.

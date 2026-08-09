@@ -3,13 +3,23 @@
 A local-first, modular, continuously operating passive acoustic observatory for a
 Raspberry Pi 5 and AudioMoth USB microphone.
 
-**Status: Milestones 0–3 running on real hardware.** The station captures a live
-384 kHz stream from an AudioMoth, derives a 48 kHz audible stream, runs three
-detectors over time-addressed windows, writes checksummed evidence clips, and
-serves a real-time debug UI. It is *not* finished — see
+**Status: Milestones 0–3 and 5 complete on real hardware; 4 largely delivered; 6
+partly; 7 not started.** The station captures a live 384 kHz stream from an
+AudioMoth, derives a 48 kHz audible stream, runs three detectors over
+time-addressed windows, writes checksummed evidence clips to a USB SSD, and
+serves them through a REST/WebSocket API to a React operator UI, an ESP32 wall
+display, an optional MQTT publisher and Prometheus.
+
+It is *not* finished — see
 [`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) for an
-honest account of what works and what does not, and do not describe it as complete
-until the acceptance criteria pass a 72-hour soak.
+honest account of what works and what does not, and **do not describe it as
+complete until the acceptance criteria pass a 72-hour soak, which has never been
+run.**
+
+**New here?** [`docs/README.md`](docs/README.md) is the map of all the
+documentation. If you are about to write code,
+[`docs/development/SETUP.md`](docs/development/SETUP.md) first — it lists the
+setup traps that will otherwise cost you an hour.
 
 ## What it does today
 
@@ -45,7 +55,7 @@ On the Pi:
 ```bash
 sudo apt install -y build-essential python3-dev python3-venv libasound2-dev \
                     alsa-utils ffmpeg libsndfile1
-python3 -m venv .venv
+python3.12 -m venv .venv        # 3.12 exactly; pyproject requires >=3.12,<3.14
 .venv/bin/pip install -e '.[alsa,resample,birdnet,dev]'
 
 .venv/bin/oo audio probe          # what is attached, and what it actually supports
@@ -119,9 +129,15 @@ spent on what a diagnostic surface needs and a product dashboard would hide
 | `oo audio resample-check` | Verify group delay, delivery-latency bounds and seam continuity |
 | `oo audiomoth info` | Firmware identity over USB HID (switch in `USB/OFF`) |
 | `oo models status` / `fetch` | Model asset state and checksummed acquisition |
+| `oo history reconcile-streams` | Repair stream rows whose claimed span the frame count contradicts (ADR-024). Dry-run by default |
+| `oo detections reconcile-plausibility` | Re-check stored BirdNET rows against the current range model (ADR-032). Dry-run by default |
+| `oo clips retention` | Run the tiered clip retention sweep by hand (ADR-026) |
 | `oo system-report` | Host facts worth recording with a diagnostic |
 | `oo serve` | Run the station |
 | `oo config` | Print effective configuration |
+
+The two `reconcile-*` commands are the only ones that can write to the database,
+and only with `--apply`. Neither has been run against the live station.
 
 ## Architecture
 
@@ -146,29 +162,47 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
                                     SQLite/PostgreSQL + clips ──▶ REST API
 ```
 
-Read in this order:
+Beyond the debug UI, the same API feeds an **ESP32 wall display** in the house
+(`firmware/inside-observer/`, HTTP polling, never shows a score — ADR-023) and an
+optional **MQTT publisher** with Home Assistant Discovery
+(`src/open_observatory/mqtt/`, off by default — ADR-025). An **authentication
+foundation** exists and is also off by default (ADR-034).
 
-1. [`CLAUDE.md`](CLAUDE.md) — operating brief
-2. [`docs/architecture/GAP_REPORT.md`](docs/architecture/GAP_REPORT.md) — where reality diverged from the spec
-3. [`docs/architecture/ADRS.md`](docs/architecture/ADRS.md) — decisions, including every deviation
-4. [`docs/operations/TARGET_DIAGNOSTICS.md`](docs/operations/TARGET_DIAGNOSTICS.md) — measured hardware facts
-5. [`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) — what is and is not done
-6. [`docs/api/DEBUG_UI_TRANSPORT.md`](docs/api/DEBUG_UI_TRANSPORT.md) — the live protocol
-7. [`docs/operations/AUDIOMOTH_FIRMWARE.md`](docs/operations/AUDIOMOTH_FIRMWARE.md) — switch positions, firmware, gain
+### Where to read next
 
-Original product and architecture specifications are unchanged under `docs/product/`
-and `docs/architecture/TECHNICAL_SPEC.md`.
+[`docs/README.md`](docs/README.md) is the full map. If you want a reading order:
+
+1. [`docs/development/SETUP.md`](docs/development/SETUP.md) — get it running, and the traps
+2. [`CLAUDE.md`](CLAUDE.md) — the operating brief
+3. [`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) — what is and is not done
+4. [`docs/architecture/ADRS.md`](docs/architecture/ADRS.md) — every decision and deviation, indexed with status
+5. [`docs/operations/TARGET_DIAGNOSTICS.md`](docs/operations/TARGET_DIAGNOSTICS.md) — measured hardware facts
+6. [`docs/delivery/HANDOVER.md`](docs/delivery/HANDOVER.md) — operational traps and the next-steps list
+7. [`docs/api/DEBUG_UI_TRANSPORT.md`](docs/api/DEBUG_UI_TRANSPORT.md) — the live protocol
+8. [`docs/operations/AUDIOMOTH_FIRMWARE.md`](docs/operations/AUDIOMOTH_FIRMWARE.md) — switch positions, firmware, gain
+
+The original product and architecture specifications are kept unedited under
+`docs/product/` and `docs/architecture/TECHNICAL_SPEC.md`, each with a header
+naming where the built system diverges from it.
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 161 tests
-( cd web && npm test )            # 38 tests
+# Note the deselect: tests/test_api.py::TestLiveChannels hangs forever, because
+# starlette 0.41.3's TestClient cannot stream an infinite generator. Pre-existing.
+.venv/bin/python -m pytest -q --deselect tests/test_api.py::TestLiveChannels
+( cd web && npm ci && npm test )
 ```
+
+Measured 2026-08-09: **389 Python tests pass, 6 skip** (the fixture tests for the
+deliberately-unbundled BirdNET and BatDetect2 model assets, which skip rather than
+fail by design), and **140 frontend tests pass**. `ruff check .` is clean.
+`mypy src` reports 29 pre-existing errors and has never been clean.
 
 The Python tests run without a microphone, against the mandated replay/synthetic
 sources; `tests/test_api.py` drives the real FastAPI app over the real pipeline end
-to end.
+to end. See [`docs/development/SETUP.md`](docs/development/SETUP.md) for the full
+list of setup traps.
 
 The frontend tests cover the display geometry, which is where a bug is most
 dangerous: a view that puts a sound at the wrong frequency or time produces

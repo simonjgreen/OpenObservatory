@@ -2,6 +2,24 @@
 
 Design, 2026-08-05. Approved in conversation before writing.
 
+> **Status: shipped. This is a historical record of a design, not current
+> documentation.** Everything below was implemented; see
+> [`../detectors/DETECTOR_STRATEGY.md`](../detectors/DETECTOR_STRATEGY.md)
+> ("Feeding-buzz flagging", "Candidate naming") for what the shipped system
+> actually does and its real configuration keys, and ADR-013 for the decision.
+>
+> Two constraints this design worked around have since been removed, and the
+> design is kept unedited rather than corrected because how it was constrained is
+> the interesting part: **the Alembic migration environment now exists** (ADR-035,
+> so "the design must add no columns" is no longer forced), and **the ultrasonic
+> detector is now fully configurable** from `Settings` — this design is what added
+> that. The test-suite sizes named under "Testing" (161 Python, 38 frontend) were
+> current in 2026-08-05 and are now 389 and 136.
+>
+> This file moved from `docs/superpowers/specs/` on 2026-08-09. `docs/design/` is
+> where dated design specs live; it is deliberately separate from
+> `docs/architecture/`, which holds decisions that are still binding.
+
 ## Problem
 
 Two requests against the live station:

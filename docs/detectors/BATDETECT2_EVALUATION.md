@@ -1,13 +1,34 @@
 # BatDetect2 evaluation
 
-Status: **evaluated, not supported**. Per `CLAUDE.md`, this project does not
-claim a detector is supported until an automated fixture test passes on the
-target architecture (Raspberry Pi 5). `tests/test_batdetect2.py` is that
-gate; it skips rather than fails until BatDetect2 and its assets are present,
-and it has not yet been run to a pass on the Pi. This document explains what
-BatDetect2 is, how to install and benchmark it, and holds the (currently
-empty) table the measured figures go into. See ADR-017 in
-`docs/architecture/ADRS.md` for the decision this evaluation is answering.
+Status: **evaluated on the target, and deliberately not adopted as a live
+detector.**
+
+The benchmark has been run: BatDetect2 measures **p95 968 ms per 0.5 s clip,
+0.52× realtime, +459 MB RSS** on the Raspberry Pi 5, against 36–40× realtime for
+the detectors that actually ship. `tests/test_batdetect2.py` passed on the target
+on 2026-08-05 — but read what it asserts before treating that as a support claim:
+it asserts the labelled species *appears among* the detections, not that it ranks
+first, and the top-ranked detection matched the filename label on only one of the
+three example clips. See "What these numbers close, and what they do not".
+
+So: real-time inference on this hardware is **closed — not viable**. Accuracy is
+**not closed**. There is no `open_observatory.detectors.batdetect2` adapter and
+`oo models fetch` does not know about BatDetect2's assets. The only viable route,
+per ADR-017, is the deferred/cascade path: `ultrasonic-pass-v1` decides *when*
+something happened at 36–40× realtime, and the expensive classifier only ever
+sees the few seconds already flagged. Measured on this station's own clips
+trimmed to 1.5 s, that costs 2.1 s per pass — about 36 minutes of classifier work
+for the 1015 passes of a whole night. `scripts/classify_clips_batdetect2.py`
+implements that offline and writes nothing to the database; whether to promote it
+into a live queued plugin is an undecided question, not a blocked one.
+
+**This header previously said the fixture test "has not yet been run to a pass on
+the Pi" and that this document held an "(currently empty) table". Both were false:
+the table below has carried real 2026-08-05 figures for some time.** Corrected
+2026-08-09.
+
+See ADR-017 in `docs/architecture/ADRS.md` for the decision this evaluation is
+answering.
 
 ## What it is
 
@@ -175,16 +196,37 @@ capability the passing test actually exercised.
   example data, `pip install` for the code and weights) rather than
   extending that CLI, since `cli.py` and `models.py` are outside this
   deliverable's scope.
-- No measured figures exist yet — see the table below.
+- Accuracy is **not** evaluated. Three 0.5-second clips shipped for a library's
+  own tests are not an accuracy benchmark, and this path resamples through the
+  project's soxr stage rather than BatDetect2's own preprocessing, which is a
+  genuine confound. See "What these numbers close, and what they do not".
 
 ## Measured results
 
-**Not yet measured.** Do not fill this in from expectations, precedent, or
-extrapolation from other detectors — `CLAUDE.md` forbids claiming detector
-support without a fixture test that has actually passed on the target
-architecture, and a fabricated number here would be worse than a blank one.
-Run `scripts/benchmark_batdetect2.py` on the Raspberry Pi 5 and paste the
-real figures in.
+Measured on the Raspberry Pi 5 on **2026-08-05**, by
+`scripts/benchmark_batdetect2.py`.
+
+> ⚠️ **Provenance is missing. Checked 2026-08-09.** Three documents cite
+> `results/batdetect2-pi5.json` as the retained raw output of this run. **That
+> file does not exist**: not in the working tree, not anywhere in git history
+> (`git log --all --diff-filter=A -- results/` returns nothing), not on the live
+> station (`~/open-observatory/results/` does not exist), and `results/` is not
+> gitignored, so it was never committed rather than deliberately excluded. The
+> benchmark script's `--json` flag writes it, so the run was probably done without
+> that flag, or the file was written somewhere transient and lost.
+>
+> The figures below are **retained as recorded, not deleted** — they are internally
+> consistent, they match the verdict ADR-017 was written against, and inventing a
+> reason to distrust them would be as unfounded as inventing the numbers. But they
+> are currently **unverifiable**: nobody can re-derive them from an artefact.
+> Anyone re-running this should use
+> `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` and
+> **commit the result**, which closes this gap permanently.
+
+**Do not extend this table from expectations, precedent, or extrapolation from
+other detectors.** `CLAUDE.md` forbids claiming detector support without a fixture
+test that has actually passed on the target architecture, and a fabricated number
+here would be worse than a blank one. Re-run the script and paste real figures.
 
 | Metric | Value | Notes |
 |---|---|---|
@@ -206,7 +248,11 @@ real figures in.
 | `tests/test_batdetect2.py` result on target device | passes | asserts the labelled species is found, not that it ranks first — see below |
 | Verdict (from the benchmark script) | **not sustainable** for real-time | p95 0.52× realtime, in isolation |
 
-Measured 2026-08-05 on the live station. Raw output: `results/batdetect2-pi5.json`.
+One figure in the table above could not be re-verified during the 2026-08-09
+documentation pass and is left exactly as recorded: **Torch version `2.13.0+cpu`**.
+BatDetect2 is not installed in the development environment, so it was not
+re-checked; it is retained as measured rather than corrected or removed. Confirm
+it from `results/batdetect2-pi5.json` or a fresh run before quoting it.
 
 ### What these numbers close, and what they do not
 
@@ -235,7 +281,7 @@ The fixture test therefore asserts that the labelled species appears among the
 detections, not that it ranks first. Asserting top-1 would either fail permanently or
 force the choice of a fixture that makes the test pass, and neither would be evidence.
 
-Once this table is filled in from a real run, the fixture test result and
-the verdict line together are what let ADR-017's open question — "is
-real-time BatDetect2 inference viable on this hardware" — actually be
-closed, one way or the other.
+ADR-017's question — "is real-time BatDetect2 inference viable on this hardware" —
+is therefore **closed: no.** The question that replaces it is whether to promote
+the offline cascade into a live queued plugin, and that one is open. See ADR-017's
+2026-08-05 update and `DETECTOR_STRATEGY.md`'s "Deferred mode — as implemented".

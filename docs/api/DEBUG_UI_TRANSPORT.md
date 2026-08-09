@@ -33,7 +33,7 @@ to MQTT or a webhook without translation:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "event_id": "uuid",
   "event_type": "detection.created",
   "occurred_at": "2026-08-04T19:26:14Z",

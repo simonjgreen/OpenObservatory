@@ -171,6 +171,18 @@ capture block), consistent with that setting; see `TARGET_DIAGNOSTICS.md`.
 Resampling correctness (native-rate to 48 kHz): group delay is 0 output frames, measured —
 output frame *n* maps exactly to native frame *8n* — with no cumulative drift over 5
 minutes of audio. Capture continuity, measured on the running systemd service, is
-0.9990–0.9997 with zero gaps and overruns. Both figures, and the device's measured −43 ppm
-clock offset, are recorded in `docs/operations/TARGET_DIAGNOSTICS.md` and are not restated
-in full here.
+0.9990–0.9997. Both figures, and the device's measured −43 ppm clock offset, are recorded
+in `docs/operations/TARGET_DIAGNOSTICS.md` and are not restated in full here.
+
+An earlier version of this paragraph added "with zero gaps and overruns". That is no
+longer true and should not be restated: the live station reported 369 `capture.gap`
+records and 3 ALSA overruns over 12.4 hours on 2026-08-09, at continuity 0.999907. Almost
+none of that is lost audio — the real frame deficit over the same period was 4.15 s
+(0.0095%) against an `estimated_missing_seconds` of 54.5 — because the deficit-step
+estimator credits a *late* read as lost audio. See
+`docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-033. Judge real loss by
+`frames` against `expected_frames`, never by `estimated_missing_seconds`.
+
+Note also that the one-hour no-drift test this document's "Resampling correctness" list
+asks for has been run at **five minutes**, not one hour, and the 72-hour soak has never
+run. Neither gap is closed.
