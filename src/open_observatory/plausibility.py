@@ -3,7 +3,7 @@
 ``oo detections reconcile-plausibility --apply`` (``plausibility_repair.py``,
 ADR-032) writes a ``plausibility_review`` block into a stored detection's
 ``native_result`` when that detection would no longer be admitted by today's
-BirdNET plausibility logic -- principally the North American owls measured at
+BirdNET plausibility logic -- principally the North American owls measured on
 the development station in August 2026. The original ``native_result`` is preserved
 verbatim alongside it; nothing is deleted and nothing is overwritten.
 

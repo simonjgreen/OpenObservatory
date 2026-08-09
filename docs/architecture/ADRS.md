@@ -3242,7 +3242,7 @@ way in.
 ```bash
 # Confirms deploy.sh's new step runs and the station is already at head
 # (idempotent no-op expected — this is not a migration, just a check).
-ssh observer@station.example "cd open-observatory && .venv/bin/python -m alembic current"
+ssh <user>@<station-host> "cd open-observatory && .venv/bin/python -m alembic current"
 # -> 0004_drop_dead_detection_indexes (head)
 
 ./deploy/deploy.sh --no-web --no-deps
@@ -3363,8 +3363,8 @@ BirdNET week is 30 and the ISO week is 32; on 2026-12-31 they are 48 and 53.
 
 **Verified empirically against the real model, not only against arithmetic.**
 Self-consistent arithmetic would not catch a formula that is coherent but off by
-a fortnight, so the real V2.4 MData model was run at the station's coordinates
-(51.4769, −0.0005) for all 48 weeks and checked against known UK phenology
+a fortnight, so the real V2.4 MData model was run at the station's configured coordinates
+for all 48 weeks and checked against known UK phenology
 (`scripts/birdnet_week_audit.py`, 2026-08-09):
 
 | Species | Prior by week | Reality |
@@ -3417,9 +3417,9 @@ oo detections reconcile-plausibility --json > /tmp/plausibility.json
 
 # 2. After --apply: the marker must be present, the row must still be there,
 #    and the species tally must have dropped it and said how many.
-curl -s 'http://station.example:8080/api/v1/detections?limit=200' \
+curl -s 'http://<station-host>:8080/api/v1/detections?limit=200' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin)["detections"]; print([(r["common_name"], r["withdrawn"]) for r in d if r["withdrawn"]])'
-curl -s 'http://station.example:8080/api/v1/history?window=last-24h' \
+curl -s 'http://<station-host>:8080/api/v1/history?window=last-24h' \
   | python3 -c 'import json,sys; h=json.load(sys.stdin); print(h["excluded_withdrawn_count"], [s["common_name"] for s in h["species"]])'
 
 # 3. The wall display's own feed, which is the point of the exercise.
@@ -3875,7 +3875,7 @@ curl -s localhost:8080/api/v1/health | python3 -c \
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
 
-## ADR-042: Site parameters are runtime state, managed through the web UI; the repository ships no site
+## ADR-045: Site parameters are runtime state, managed through the web UI; the repository ships no site
 
 **Decision:** Anything true of exactly one installation — coordinates, place
 names, LAN addresses, hostnames, account names, filesystem homes — is **site
@@ -3943,7 +3943,7 @@ rather than naming where it stands. If a new component needs a site
 parameter, add it to the `site_settings.py` whitelist (choosing its tier
 deliberately) rather than inventing a parallel mechanism.
 
-### Rollback and smoke test (ADR-042)
+### Rollback and smoke test (ADR-045)
 
 No schema change, no new dependency. The settings endpoints and panel are
 additive; revert the commits to remove them. Site values already present in a

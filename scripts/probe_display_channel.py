@@ -19,7 +19,7 @@ from websockets.sync.client import connect
 
 def main() -> None:
     if len(sys.argv) < 2:
-        # Required, deliberately: the repository ships no station address (ADR-042).
+        # Required, deliberately: the repository ships no station address (ADR-045).
         print("usage: probe_display_channel.py <station-host> [seconds]", file=sys.stderr)
         raise SystemExit(2)
     host = sys.argv[1]

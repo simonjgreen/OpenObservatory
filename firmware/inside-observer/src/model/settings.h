@@ -59,7 +59,7 @@ struct Settings {
 
   // Fallback UTC offset in minutes, used only until the station tells us its
   // real one (see offsetFromLocalMidnight). Zero -- UTC -- deliberately: the
-  // only offset that is not somebody's local assumption (ADR-042).
+  // only offset that is not somebody's local assumption (ADR-045).
   int16_t fallbackUtcOffsetMinutes = 0;
 
   MqttSettings mqtt;

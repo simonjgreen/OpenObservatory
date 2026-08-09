@@ -53,7 +53,7 @@ It is idempotent — safe to run repeatedly — and takes flags:
 | `./deploy/deploy.sh` | full deploy |
 | `./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
 | `./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source and restart |
-| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-042) |
+| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-045) |
 
 `REMOTE_DIR` (default `open-observatory`, relative to the SSH login home) is
 also overridable as an environment variable, though this is rarely needed.

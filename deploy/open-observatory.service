@@ -1,4 +1,4 @@
-# Template unit (ADR-042): @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
+# Template unit (ADR-045): @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
 # deploy/deploy.sh at install time with the deploy user and the synced tree's
 # path. Installing this file verbatim will not start; there is deliberately no
 # committed default user or path.

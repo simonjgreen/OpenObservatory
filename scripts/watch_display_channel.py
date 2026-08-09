@@ -31,7 +31,7 @@ def main() -> None:
     parser.add_argument(
         "--host",
         required=True,
-        help="the station to measure (required: no station address is committed, ADR-042)",
+        help="the station to measure (required: no station address is committed, ADR-045)",
     )
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=5.0)

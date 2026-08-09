@@ -322,7 +322,7 @@ void test_withdrawn_detections_never_reach_the_screen() {
   // ADR-044. `/api/v1/detections` deliberately still returns a withdrawn row -
   // marked, not deleted, so the record stays visible and attributable - and
   // this screen has no marker to render, so it must decline it. The owl below
-  // is the measured the development station case: a North American species at 0.96,
+  // is the case measured on the development station: a North American species at 0.96,
   // comfortably above any threshold the operator can set.
   FeedFilter f;
   f.minScore = 0.75;

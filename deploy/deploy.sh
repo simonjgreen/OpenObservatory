@@ -9,11 +9,11 @@
 #   HOST=user@host ./deploy/deploy.sh --no-web   skip the UI build
 #   HOST=user@host ./deploy/deploy.sh --no-deps  skip pip install
 #
-# HOST is required, deliberately (ADR-042): the repository ships no station
+# HOST is required, deliberately (ADR-045): the repository ships no station
 # address, so a deploy always says where it is going.
 set -euo pipefail
 
-HOST="${HOST:?Set HOST=user@station-address (this repository ships no default station; see ADR-042)}"
+HOST="${HOST:?Set HOST=user@station-address (this repository ships no default station; see ADR-045)}"
 REMOTE_DIR="${REMOTE_DIR:-open-observatory}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -92,8 +92,8 @@ echo "==> running database migrations"
 ssh "$HOST" "cd $REMOTE_DIR && .venv/bin/python -m alembic upgrade head"
 
 echo "==> installing systemd units"
-# The committed units are templates (ADR-042 site principle): the deploy user
-# and install path are this deployment's, not anybody's committed defaults.
+# The committed units are templates (ADR-046): the deploy user and install
+# path are this deployment's, not anybody's committed defaults.
 # The refinement units (ADR-045) are installed alongside the station but are a
 # separate service on a timer: `enable --now` on a .timer arms the schedule
 # without starting a pass, so deploying never puts BatDetect2 on the CPU. The
