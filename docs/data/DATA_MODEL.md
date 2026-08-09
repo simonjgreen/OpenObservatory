@@ -164,6 +164,34 @@ Columns as implemented:
 - native_result JSON
 - created_at
 
+**`native_result` since 2026-08-09 (ADR-037 option C)**: `normaliser.py`
+drops a small, fixed set of keys before persisting a *new* `native_result`,
+each only when its value (not merely its name) is proven to duplicate
+something already persisted elsewhere on the same row —
+`_strip_redundant_native_result` in `normaliser.py` is the exact logic.
+**Rows written before 2026-08-09 are untouched** and still carry every key
+the detector originally emitted; there is no migration for old data and none
+is planned.
+
+| Dropped key | Recover it from |
+|---|---|
+| `detector` | `detector.plugin_id`, via `detection.detector_id` |
+| `model_id` | `detector.model_id`, via `detection.detector_id` |
+| `label` | `detection.detector_label` (exact) |
+| `confidence` | `detection.score` (exact — the dropped copy was itself a rounded display value) |
+| `peak_frequency_hz` | `detection.peak_frequency_hz` (exact — the dropped copy had *less* precision than the typed column) |
+
+`occurrence_probability` and `plausibility_band` (ADR-032's plausibility
+audit trail) are never dropped — they are not duplicates of anything, they
+are evidence. Likewise kept, deliberately, are `band_hz`, `score_definition`
+and `confidence_definition`: these look like per-detector-version constants
+but are not — the live database shows `activity-v1`'s `score_definition`
+changed (a config value, `activity_band_hz`/`ultrasonic_band_hz`-adjacent,
+changed without a `plugin_version`/`model_version` bump) under the *same*
+`detector_id`, so "the detector version recorded on the row" cannot reliably
+reconstruct them. See ADR-037's "B and C: what was implemented" section for
+the measured before/after byte counts and the full reasoning.
+
 ### detection_cluster / detection_cluster_member — Planned, not implemented
 
 Neither table exists. Retained as design intent:
@@ -340,13 +368,10 @@ Implemented:
 - `capture_gap (stream_id, start_monotonic_ns)`
 - `detector.plugin_id`
 - `detector (plugin_id, plugin_version, model_version)` — unique
-- `detection.station_id`
 - `detection.detector_id`
 - `detection.stream_id`
 - `detection.event_start_utc`
-- `detection.canonical_taxon_id`
-- `detection.taxonomic_group`
-- `detection (station_id, event_start_utc desc)`
+- `detection.taxonomic_group` — as part of the composite below, not on its own
 - `detection (taxonomic_group, event_start_utc desc)`
 - `media_asset.kind`
 - `media_asset.created_at`
@@ -364,6 +389,20 @@ Implemented:
 - `api_token.user_id`
 - `api_token.token_prefix`
 - `api_token.token_hash` — unique
+
+**Dropped 2026-08-09 (ADR-037 option B, Alembic revision
+`0004_drop_dead_detection_indexes`)**: `detection.station_id`,
+`detection.canonical_taxon_id`, a standalone `detection.taxonomic_group`
+index, and the composite `detection (station_id, event_start_utc desc)`. None
+of them were used by any query in the codebase — `station_id` holds one
+distinct value across the whole live database, `canonical_taxon_id` is only
+ever read into Python (never filtered or ordered by), and the standalone
+`taxonomic_group` index was a dead prefix of the composite above, which
+survives. `detection.detector_id` was also proposed for removal by the
+original research but was **kept**: re-verification found
+`plausibility_repair.reconcile_plausibility` (ADR-032) joins from `detector`
+(filtered by `plugin_id`) into `detection` and SQLite uses this exact index
+to satisfy that join. Reversible with `alembic downgrade -1`.
 
 Planned only (would apply if the corresponding table is built):
 

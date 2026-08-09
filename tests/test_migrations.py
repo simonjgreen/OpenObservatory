@@ -188,6 +188,50 @@ def test_stamp_0001_then_upgrade_head_repairs_the_missing_index(
     assert [a.id for a in assets] == [asset_id]
 
 
+def test_0004_drops_and_restores_the_four_dead_detection_indexes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-037 option B: revision 0004 drops
+    ``ix_detection_station_start``, ``ix_detection_station_id``,
+    ``ix_detection_taxonomic_group`` and ``ix_detection_canonical_taxon_id``
+    -- confirmed dead by re-verification against the live database -- and
+    keeps ``ix_detection_detector_id``, which a real query
+    (``plausibility_repair.reconcile_plausibility``) was found to use.
+    Upgrading to head must remove exactly the first four; downgrading one
+    step must restore all four.
+    """
+    db_path = tmp_path / "drop_indexes.sqlite"
+    cfg = _alembic_config(monkeypatch, db_path)
+
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    at_head = _index_names(engine, "detection")
+    assert "ix_detection_station_start" not in at_head
+    assert "ix_detection_station_id" not in at_head
+    assert "ix_detection_taxonomic_group" not in at_head
+    assert "ix_detection_canonical_taxon_id" not in at_head
+    assert "ix_detection_detector_id" in at_head
+    assert "ix_detection_group_start" in at_head
+    assert "ix_detection_event_start_utc" in at_head
+    assert "ix_detection_stream_id" in at_head
+
+    command.downgrade(cfg, "-1")
+    engine.dispose()
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    restored = _index_names(engine, "detection")
+    assert "ix_detection_station_start" in restored
+    assert "ix_detection_station_id" in restored
+    assert "ix_detection_taxonomic_group" in restored
+    assert "ix_detection_canonical_taxon_id" in restored
+
+    # And upgrading again is clean -- no "index already exists" from the
+    # restored indexes.
+    command.upgrade(cfg, "head")
+    engine.dispose()
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    command.check(cfg)
+
+
 def test_alembic_cli_x_url_override(tmp_path: Path) -> None:
     """The ``-x url=`` override documented in ``alembic/env.py`` works from the
     command line, independent of ``OO_DATABASE_DSN`` (used by tooling that

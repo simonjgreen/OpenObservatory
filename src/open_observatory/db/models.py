@@ -148,7 +148,17 @@ class Detection(Base):
     __tablename__ = "detection"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    station_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("station.id"), index=True)
+    #: Not indexed (ADR-037 option B, revision 0004). Holds exactly one distinct
+    #: value across the whole live database and no query filters or orders by
+    #: it; the composite ``ix_detection_station_start`` that used to cover it
+    #: was dropped alongside it.
+    station_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("station.id"))
+    #: Indexed, kept deliberately: ADR-037 proposed dropping this one too, but
+    #: re-verification against the live database found
+    #: ``plausibility_repair.reconcile_plausibility`` (ADR-032) joins *from*
+    #: ``detector`` (filtered by ``plugin_id``) *into* ``detection``, and
+    #: ``EXPLAIN QUERY PLAN`` shows SQLite uses this exact index to satisfy
+    #: that join rather than scanning the whole table. Confirmed 2026-08-09.
     detector_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("detector.id"), index=True)
     stream_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     window_id: Mapped[uuid.UUID] = mapped_column(Uuid)
@@ -162,9 +172,16 @@ class Detection(Base):
     detector_label: Mapped[str | None] = mapped_column(String(240), nullable=True)
     common_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    canonical_taxon_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    #: Not indexed (ADR-037 option B, revision 0004): only ever selected, never
+    #: filtered or ordered by -- ``retention.py``'s exemplar scan reads it into
+    #: Python after the query, it does not query by it.
+    canonical_taxon_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     rank: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    taxonomic_group: Mapped[str] = mapped_column(String(48), default="unknown", index=True)
+    #: Not indexed on its own (ADR-037 option B, revision 0004): every equality
+    #: filter on this column in the codebase also filters ``event_start_utc``,
+    #: and ``ix_detection_group_start`` below is a covering composite for that
+    #: shape, so a lone index here was always a dead prefix of it.
+    taxonomic_group: Mapped[str] = mapped_column(String(48), default="unknown")
 
     score: Mapped[float] = mapped_column(Float)
     calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -178,10 +195,7 @@ class Detection(Base):
     )
     detector: Mapped[Detector] = relationship(lazy="joined")
 
-    __table_args__ = (
-        Index("ix_detection_station_start", "station_id", "event_start_utc"),
-        Index("ix_detection_group_start", "taxonomic_group", "event_start_utc"),
-    )
+    __table_args__ = (Index("ix_detection_group_start", "taxonomic_group", "event_start_utc"),)
 
 
 class MediaAsset(Base):

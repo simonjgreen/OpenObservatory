@@ -1724,11 +1724,18 @@ produces.
 > station reports `0003_auth_tables (head)`.
 
 
-## ADR-037 (**PROPOSED — not accepted, nothing implemented**): Detection-table growth is real but slow; prune the five indexes nothing reads, and defer the rest
+## ADR-037: Detection-table growth is real but slow; prune the five indexes nothing reads, and defer the rest
 
-**Status: Proposed.** No schema change, no migration, no index drop and no model
-edit was made for this ADR. It exists so the operator can accept or reject each
-option separately. Every number below was measured on **2026-08-09** against a
+**Status: options B and C Accepted and implemented, 2026-08-09. Options A and
+D–K remain open, exactly as originally proposed — the operator has not chosen
+among them and this update does not relitigate them.** No schema change, no
+migration, no index drop and no model edit was made for this ADR *when it was
+first written*; the original research below is preserved verbatim except for
+this status line and the title. What was actually built, and how it differs
+from the research's predictions, is recorded in **"B and C: what was
+implemented"** at the end of this entry — read that section for the current
+truth about the schema; everything above it is the research that led there.
+Every number below was measured on **2026-08-09** against a
 read-only copy of the live station's `openobservatory.sqlite`
 (`ssh observer@station.example`, `scp`, opened `mode=ro` or on a local copy; the
 station's own file was never opened for writing and the station was never
@@ -2204,3 +2211,193 @@ the SSD is at 43 GB.
   projections use.
 - Nothing here has been run on PostgreSQL; ADR-007's "the DSN swap is
   configuration-only" is still unverified beyond SQLite, exactly as ADR-035 says.
+
+---
+
+### B and C: what was implemented (2026-08-09)
+
+**Options A and D–K above are unchanged and still open** — this section
+covers only B and C, which the operator accepted. Both were re-verified
+against `main` as it stood on 2026-08-09 (which had moved since the research
+above was written — in particular, ADR-032's `plausibility_repair.py` did not
+exist yet when the original indexes-nothing-reads grep was run) and against a
+fresh read-only copy of the live database (63,234 detections, up from 61,453),
+not merely re-trusted from the research above.
+
+#### B: four indexes dropped, one kept after re-verification found it in use
+
+Re-running the two-part check (`EXPLAIN QUERY PLAN` over every query in
+`history.py`, `api/app.py`, `plausibility_repair.py`, `retention.py`,
+`station.py`, `mqtt/publisher.py`, `mqtt/discovery.py`, plus a grep for any
+filter/order-by touching the five candidate columns) turned up exactly the
+case this ADR asked a successor to watch for:
+`plausibility_repair.reconcile_plausibility` (ADR-032, landed on `main` after
+this ADR's research) joins **from** `detector` (filtered by
+`Detector.plugin_id == BIRDNET_PLUGIN_ID`) **into** `detection`, and
+`EXPLAIN QUERY PLAN` against the live database shows SQLite satisfies that
+join with `SEARCH detection USING INDEX ix_detection_detector_id` — not the
+`detector` table's own primary key, and not a full scan of `detection`. That
+is the reverse join direction from the one the original research checked (it
+looked for filters *on* `Detection.detector_id`, which indeed does not exist
+anywhere; it did not anticipate a filter on `Detector.plugin_id` driving the
+join the other way). **`ix_detection_detector_id` is kept.**
+
+The other four were reconfirmed dead by the same method and dropped:
+
+| Index | Live DB size | Re-verified dead because |
+|---|---:|---|
+| `ix_detection_station_start` | 4.71 MB | No query filters or orders by `station_id`; one distinct value in 63,234 rows |
+| `ix_detection_station_id` | 2.85 MB | Same column, same finding, duplicates the composite above |
+| `ix_detection_taxonomic_group` | 1.44 MB | Strict prefix of `ix_detection_group_start`; `EXPLAIN QUERY PLAN` on a bare `taxonomic_group = ?` filter still chooses `ix_detection_group_start` |
+| `ix_detection_canonical_taxon_id` | 0.76 MB | Only ever appears in a `SELECT` list (`retention.py`'s exemplar scan reads it into Python after the query runs), never in `WHERE` or `ORDER BY` |
+
+**9.76 MB dropped, not the originally estimated 12.49 MB** — the difference
+is entirely `ix_detection_detector_id` (2.73 MB), kept because it is in
+active use. This is a smaller number than the research predicted, for exactly
+the reason the research itself flagged as the risk to watch.
+
+Implemented as Alembic revision `0004_drop_dead_detection_indexes`
+(`alembic/versions/20260809_0003_000000000004_drop_dead_detection_indexes.py`
+— ADR-035's baseline used `0001`–`0003`, so `0004` is the next free number;
+the `0003` this ADR originally said to use had already been taken by the
+authentication tables). Plain `DROP INDEX` / `CREATE INDEX`, following
+revision `0002`'s precedent — no batch mode needed for a bare index change on
+SQLite, and both statements are standard SQL on PostgreSQL 16 too (ADR-007).
+`alembic check` reports no drift after upgrading to head. `downgrade -1`
+recreates all four indexes in one command;
+`tests/test_migrations.py::test_0004_drops_and_restores_the_four_dead_detection_indexes`
+asserts both directions, and the existing
+`test_initial_revision_matches_create_all` / `test_upgrade_head_from_empty_matches_create_all_tables`
+tests independently confirm no drift between `create_all()` and `alembic
+upgrade head`. `db/models.py`'s `Detection.station_id`, `.canonical_taxon_id`
+and `.taxonomic_group` columns had their `index=True` removed, and
+`ix_detection_station_start` was removed from `__table_args__`, to keep
+`create_all()` and Alembic in agreement. `detector_id` keeps `index=True`,
+annotated in the model with why.
+
+**Measured insert/WAL cost was not re-benchmarked on real hardware this
+session** — ADR-037's original 44.7→13.4 µs/row and 17,355→13,162 WAL B/row
+figures were measured with all five indexes dropped, not four; dropping four
+instead of five should land close to but not exactly on that number, and the
+actual figure needs a fresh benchmark (ideally during the deploy, per the
+scheduling note below, since the soak is "the ideal place to confirm the
+insert-cost improvement on real hardware" the original research already
+named).
+
+#### C: `native_result` stripped of provably redundant keys, not the full ADR-predicted set
+
+`normaliser.py` now calls `_strip_redundant_native_result` before persisting
+`native_result` (wired into `Normaliser.normalise`). It drops a key only when
+its **value**, not merely its name, is proven to duplicate something already
+persisted elsewhere on the same row:
+
+| Key | Duplicates | Verified on live data (63,234 rows) |
+|---|---|---|
+| `detector` | `Detector.plugin_id`, reachable via `detection.detector_id` | 0 mismatches across all 3 plugins |
+| `model_id` | `Detector.model_id`, same join | 0 mismatches, 7,976/7,976 birdnet-v2.4 rows that carry the key |
+| `label` | `Detection.detector_label` | 0 mismatches, 7,976/7,976 birdnet-v2.4 rows |
+| `confidence` | `Detection.score` | matches to float32 rounding (≤ ~5e-7) on 7,976/7,976 birdnet-v2.4 rows; compared with `math.isclose(rel_tol=1e-4, abs_tol=1e-6)` |
+| `peak_frequency_hz` | `Detection.peak_frequency_hz` | matches to the native result's own 1 dp rounding (≤ 0.05 Hz observed) on 49,726/49,726 activity-v1 rows; compared with `math.isclose(rel_tol=1e-3, abs_tol=0.1)` |
+
+**`occurrence_probability` and `plausibility_band` are never touched** — they
+are ADR-032's audit trail for why a candidate was or was not admitted, not a
+duplicate of anything, exactly as this work was instructed to preserve.
+
+**This is a materially smaller set than the original research proposed, and
+the reason is a real finding, not caution for its own sake.** The research
+above listed `model_id`, `score_definition`, `confidence_definition`,
+`band_hz` and `hint_is_not_identification` together as "constant per detector
+version" and safe to drop. Re-querying the live database found that is true
+for `model_id` (persisted on the `Detector` row, so it is safe regardless)
+but **false for `score_definition`**: `activity-v1`'s `native_result` carries
+two distinct `score_definition` strings —
+`"clamp((snr_db - min_snr_db) / 25 dB, 0, 1)"` on 5,010 rows from
+2026-08-04T18:44–19:26, and `"clamp((snr_db - min_snr_db) / 30 dB, 0, 1)"` on
+44,716 rows from 2026-08-04T19:26 onward — **under the exact same
+`detector_id`, with no `plugin_version` or `model_version` bump between
+them.** `config.py` confirms why: `activity_band_hz` and
+`ultrasonic_band_hz`, and by extension the `min_snr_db`-derived formula text,
+are operator-configurable settings, not baked into the versioned model
+identity, and `Detector.configuration` (which records only `stream_kind`,
+`sample_rate`, `duration_s`, `stride_s`) does not capture them. So "the
+detector version recorded on the row" — this work's own recoverability
+requirement — **does not reliably reconstruct `score_definition`,
+`confidence_definition`, `band_hz` or `hint_is_not_identification`** on this
+station's real history: a successor reading only current source code for
+`activity-v1`'s current `plugin_version` would recover the *current* formula
+and silently misattribute it to rows written under the old one. Those four
+keys are therefore **kept**, unconditionally, for every plugin — not just
+where a second value was actually observed — because the failure mode (a
+config change with no version bump) is structural, not specific to
+`activity-v1`, and nothing rules it out for `birdnet-v2.4` or
+`ultrasonic-pass-v1` in the future.
+
+**Measured saving, real data, JSON-text bytes (`len(json.dumps(...,
+separators=(",", ":")))`), before vs. after, weighted by the live row
+counts per plugin:**
+
+| Plugin | Rows | Before (avg B/row) | After (avg B/row) | Reduction |
+|---|---:|---:|---:|---:|
+| `activity-v1` | 49,726 | 314.1 | 262.1 | 16.6% |
+| `birdnet-v2.4` | 7,976 | 354.4 | 226.7 | 36.0% |
+| `ultrasonic-pass-v1` | 5,532 | 513.9 | 481.9 | 6.2% |
+| **All detections** | **63,234** | **336.6** | **276.8** | **17.8%** |
+
+That is **17.8%, not the originally estimated 52%.** The gap is exactly the
+keys withheld above: `score_definition`/`confidence_definition`/`band_hz`/
+`hint_is_not_identification` were the largest byte contributors in the
+original 356.6 B/row estimate, and none of them turned out to be safely
+droppable on real data. `label_index`, `logit`, `week`,
+`plausibility_band`, `threshold_applied`, `range_model_used`, `snr_db`,
+`snr_statistic`, `spectral_centroid_hz`, `duration_ms`,
+`noise_floor_db_median`, `pulse_count`, `median_peak_hz`, and the rest of
+`ultrasonic-pass-v1`'s per-pulse measurements are not duplicates of anything
+and were never candidates for removal. Applied to the whole database, 17.8%
+of 21.9 MB (the measured `native_result` total from the original research,
+now larger at 63,234 rows) is on the order of **3.9 MB today, growing at
+roughly 17.8% of whatever `native_result` would otherwise cost per year** —
+a real saving, materially smaller than "roughly 3.5 GB/yr" and worth stating
+plainly rather than letting the original estimate stand uncorrected.
+
+**Historical rows are untouched, as required.** `_strip_redundant_native_result`
+only runs inside `Normaliser.normalise`, on the path that builds a new row;
+nothing rewrites `native_result` on any of the 63,234 rows already in any
+database. A successor reading an old row still sees every key it was written
+with.
+
+**Recovering a dropped key.** For `detector` and `model_id`: join
+`detection.detector_id` to `detector.id` and read `plugin_id` /
+`model_id` directly — this is exact, for every row, forever, because those
+are persisted database columns, not code. For `label`: read
+`detection.detector_label`. For `confidence`: read `detection.score` (exact
+value; `native_result`'s copy was only ever a rounded display value in the
+first place, so nothing is lost by using the typed column instead). For
+`peak_frequency_hz`: read `detection.peak_frequency_hz` (same — the typed
+column has strictly *more* precision than the dropped copy did).
+
+Tests: `tests/test_pipeline.py::TestNormaliser` —
+`test_native_result_drops_keys_that_duplicate_persisted_columns` (positive
+case, plus asserting `occurrence_probability`/`plausibility_band`/an
+unrelated key like `week` survive untouched),
+`test_native_result_keeps_a_key_whose_value_does_not_actually_match` (a
+same-named key with a different value is not a false-positive duplicate),
+`test_native_result_peak_frequency_hz_duplicate_is_dropped_within_rounding`
+(the rounding-tolerance case measured on real data), and
+`test_native_result_keeps_configurable_and_formula_fields` (`band_hz` and
+`score_definition` are never stripped — the regression test for the finding
+above).
+
+#### What is still required before this reaches the station
+
+**Not deployed.** Per this session's rule, the Pi is owned by a concurrent
+agent building a push channel and must not be restarted. Both changes are
+committed on this branch only. **A deploy is required**, and per this ADR's
+own scheduling note: land it **before or after** the operator's planned soak,
+never during — a restart resets every counter the soak measures. The soak
+remains the right moment to take the real insert/WAL measurement B's
+implementation did not get to.
+
+The full test suite (389 baseline + 5 new = 394 passed, 6 skipped),
+`ruff check .` (clean) and `mypy src` (29 pre-existing errors, none added)
+were run locally against a Python 3.12 venv; none of this was exercised
+against PostgreSQL or on the Pi 5 itself.
