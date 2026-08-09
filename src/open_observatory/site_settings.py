@@ -540,6 +540,20 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
        label="confidence bar: out of range", minimum=0, maximum=1,
        help="The bar an implausible species must clear. Raise it towards 1.0 "
             "if exotic species keep appearing."),
+    _e(
+        "birdnet_near_miss_ring",
+        "detect-audible",
+        label="near-miss records kept",
+        minimum=0,
+        maximum=5000,
+        help="ADR-052. How many individual rejected BirdNET candidates to hold "
+        "in memory for the diagnostics view, so you can see which species were "
+        "refused, at what score, against which bar. Raise it for a tuning "
+        "session; 0 keeps the per-band score histograms and the per-species "
+        "tally (which is what actually chooses a threshold) and stops keeping "
+        "individual rows. Metadata only -- no audio is kept for a rejected "
+        "candidate and nothing is written to disk.",
+    ),
     _e("birdnet_window_stride_s", "detect-audible", tier="restart",
        label="BirdNET window stride", unit="s", minimum=0.1, maximum=3.0,
        note="Part of the detector's window contract, negotiated with the "

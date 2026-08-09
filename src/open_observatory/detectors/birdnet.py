@@ -54,6 +54,7 @@ from ..audio.contracts import (
 )
 from . import birdnet_classes
 from .base import DetectorContext, DetectorUnavailable
+from .near_miss import NearMissLedger
 
 log = structlog.get_logger(__name__)
 
@@ -245,6 +246,10 @@ class BirdNetDetector:
         #: Tawny Owl and well above the owls, with margin on both sides.
         plausibility_floor: float = 0.0005,
         max_per_window: int = 5,
+        #: ADR-052. How many individual rejected candidates to keep in the
+        #: in-memory near-miss ring. 0 keeps the per-band histograms and the
+        #: per-species tally but stops recording individual rows.
+        near_miss_ring: int = 200,
     ) -> None:
         self.model_dir = Path(model_dir)
         self.window_spec = WindowSpec(
@@ -298,6 +303,15 @@ class BirdNetDetector:
         self._non_taxonomic = 0
         self._species_in_range = 0
         self._week = 0
+        #: ADR-052. What was proposed and refused, so a human can tune these
+        #: bars on evidence rather than on four totals. Always constructed:
+        #: the counting part costs a handful of integer increments per
+        #: candidate (measured at ~1.4 us per rejection, against BirdNET's own
+        #: 72 ms per window on the live Pi), so there is no version of this
+        #: worth switching off by default -- a diagnostic you must remember to
+        #: enable before the thing you want to diagnose happens is not there
+        #: when you need it. The ring depth is the operator's knob.
+        self._near_misses = NearMissLedger(capacity=near_miss_ring)
 
     # ------------------------------------------------------------------
 
@@ -319,6 +333,7 @@ class BirdNetDetector:
         threshold_uncommon: float | None = None,
         threshold_out_of_range: float | None = None,
         max_per_window: int | None = None,
+        near_miss_ring: int | None = None,
     ) -> None:
         """Change the confidence and plausibility bars on a running detector.
 
@@ -348,6 +363,11 @@ class BirdNetDetector:
             self._thresholds["out_of_range"] = float(threshold_out_of_range)
         if max_per_window is not None:
             self._max_per_window = int(max_per_window)
+        if near_miss_ring is not None:
+            # Rebinds a bounded deque; keeps the cumulative histograms and the
+            # species tally, which is what an operator retuning mid-session
+            # wants -- the comparison across a threshold change is the point.
+            self._near_misses.resize(int(near_miss_ring))
 
     async def initialise(self, context: DetectorContext) -> None:
         missing = self.missing_assets()
@@ -492,7 +512,26 @@ class BirdNetDetector:
             )
             if confidence < threshold:
                 self._count_suppressed(band)
+                # ADR-052. Every rejection, in every band -- deliberately
+                # wider than `_count_suppressed`, which by ADR-032's design
+                # counts only the plausibility bands. A candidate at 0.54
+                # against the 0.55 `in_range` bar is counted nowhere else, and
+                # it is the single most common thing an operator is actually
+                # asking about when they can hear a bird and see nothing.
+                self._near_misses.record_rejected(
+                    at_ns=window.utc_start_ns,
+                    label_index=int(index),
+                    common_name=common,
+                    scientific_name=None if non_taxonomic else scientific,
+                    score=confidence,
+                    occurrence=occurrence,
+                    band=band,
+                    threshold=threshold,
+                )
                 continue
+            self._near_misses.record_admitted(
+                band=band, label_index=int(index), score=confidence
+            )
             native_result: dict[str, object] = {
                 "detector": "birdnet-v2.4",
                 "model_id": MODEL_ID,
@@ -623,6 +662,53 @@ class BirdNetDetector:
             "suppressed_out_of_range": self._suppressed_out_of_range,
             "suppressed_uncommon": self._suppressed_uncommon,
         }
+
+    def near_miss_snapshot(
+        self, *, limit: int = 50, species_limit: int = 40
+    ) -> dict[str, object]:
+        """ADR-052: what was proposed and refused, for `GET
+        /api/v1/detectors/near-misses` and the diagnostic UI.
+
+        Duck-typed for the same reason `plausibility_snapshot` is (see its
+        docstring): only a detector with plausibility bands has anything to
+        say here, and the other two shipped detectors should not grow a no-op
+        stub to keep conforming.
+
+        The bars in force are passed in from *this* instance rather than read
+        from `Settings`, so the payload's thresholds are the ones that
+        actually judged the candidates it is showing. A settings write and a
+        detector retune are two steps (ADR-048), and reporting the saved value
+        next to rejections made under the old one would be exactly the
+        saved-vs-in-force dishonesty that ADR forbids.
+        """
+        thresholds = {
+            "in_range": self._thresholds["in_range"],
+            "unfiltered": self._thresholds["in_range"],
+            "non_biological": self._thresholds["in_range"],
+            "uncommon": self._thresholds["uncommon"],
+            "out_of_range": self._thresholds["out_of_range"],
+            "no_prior": self._thresholds["out_of_range"],
+            "implausible": math.inf,
+        }
+        snapshot = self._near_misses.snapshot(
+            thresholds=thresholds, limit=limit, species_limit=species_limit
+        )
+        snapshot["min_confidence"] = self._min_confidence
+        snapshot["plausibility_floor"] = self._plausibility_floor
+        snapshot["week"] = self._week
+        snapshot["windows_analysed"] = self._windows
+        snapshot["range_model_loaded"] = self._range is not None
+        # Stated on the payload rather than left to a reader's assumption:
+        # nothing below `min_confidence` is ever a candidate, so the
+        # histogram's lowest bins are structurally empty and are not evidence
+        # that the model is quiet down there.
+        snapshot["note"] = (
+            "Candidates only. A raw score below min_confidence "
+            f"({self._min_confidence}) is never proposed and appears nowhere here. "
+            "Scores are model outputs, not probabilities. No audio is retained "
+            "for a rejected candidate and nothing here is persisted."
+        )
+        return snapshot
 
     def non_taxonomic_admitted(self) -> int:
         """Candidates admitted as sound categories rather than species (ADR-049)."""

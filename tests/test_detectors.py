@@ -428,6 +428,117 @@ class TestBirdNetAdapter:
         jackdaw = next(d for d in detections if d.common_name == "Eurasian Jackdaw")
         assert jackdaw.native_result["plausibility_band"] == "in_range"
 
+    async def test_a_near_miss_is_recorded_with_species_score_prior_and_bar(self) -> None:
+        """ADR-052, end to end through ``analyse``.
+
+        The operator's actual complaint: birds audible, nothing reported, and
+        the station able to say only that it suppressed N candidates. Three
+        of these four candidates are refused for three different reasons, and
+        exactly one of them -- the Eurasian Blackbird at 0.538 against the
+        0.55 in-range bar -- is counted by *none* of ADR-032's four
+        suppression counters, because those cover only the plausibility
+        bands. It is also the one an operator is most likely to be asking
+        about, which is why this assertion is the point of the test.
+        """
+
+        class _StubInterpreter:
+            def __init__(self, logits: np.ndarray) -> None:
+                self._logits = logits
+
+            def set_tensor(self, index: int, value: object) -> None:
+                return None
+
+            def invoke(self) -> None:
+                return None
+
+            def get_tensor(self, index: int) -> np.ndarray:
+                return self._logits.reshape(1, -1)
+
+        class _StubRange:
+            def __init__(self, priors: np.ndarray) -> None:
+                self._priors = priors
+
+            def probabilities(self, week: int) -> np.ndarray:
+                return self._priors
+
+        labels = [
+            "Turdus merula_Eurasian Blackbird",  # plausible, just under the bar
+            "Otus flammeolus_Flammulated Owl",  # near-zero prior: refused outright
+            "Strix aluco_Tawny Owl",  # uncommon band, under its stricter bar
+            "Coloeus monedula_Eurasian Jackdaw",  # admitted
+        ]
+        scores = [0.538, 0.959, 0.700, 0.812]
+        logits = np.array([math.log(p / (1.0 - p)) for p in scores], dtype=np.float32)
+        priors = np.array([0.9312, 8e-06, 0.05, 0.772293], dtype=np.float32)
+
+        detector = BirdNetDetector(model_dir="/nonexistent", min_confidence=0.1)
+        detector._labels = labels
+        detector._parsed = [parse_label(label) for label in labels]
+        detector._expected_samples = 48000 * 3
+        detector._interpreter = _StubInterpreter(logits)
+        detector._input_index = 0
+        detector._output_index = 0
+        detector._range = _StubRange(priors)
+
+        window = make_window(np.zeros(48000 * 3, dtype=np.float32), 48000, detector.window_spec)
+        detections = await detector.analyse(window)
+        assert {d.common_name for d in detections} == {"Eurasian Jackdaw"}
+
+        snapshot = detector.near_miss_snapshot()
+        by_name = {row["common_name"]: row for row in snapshot["species"]}
+        assert set(by_name) == {"Eurasian Blackbird", "Flammulated Owl", "Tawny Owl"}
+
+        # The case no existing counter covers.
+        blackbird = by_name["Eurasian Blackbird"]
+        assert blackbird["band"] == "in_range"
+        assert blackbird["best_score"] == pytest.approx(0.538, abs=1e-3)
+        assert blackbird["occurrence_probability"] == pytest.approx(0.9312, abs=1e-4)
+        assert blackbird["shortfall"] == pytest.approx(0.012, abs=1e-3)
+        assert detector._suppressed_implausible_prior == 1
+        assert (
+            detector._suppressed_uncommon
+            + detector._suppressed_out_of_range
+            + detector._suppressed_no_prior
+            == 1
+        )
+
+        # An unreachable bar reports no distance rather than a huge one.
+        assert by_name["Flammulated Owl"]["band"] == "implausible"
+        assert by_name["Flammulated Owl"]["shortfall"] is None
+
+        # The admitted candidate gives the in_range band a denominator.
+        in_range = next(b for b in snapshot["bands"] if b["band"] == "in_range")
+        assert (in_range["rejected"], in_range["admitted"]) == (1, 1)
+
+        # And the individual record carries a timestamp, so a person can line
+        # it up against what they heard.
+        recent = {row["common_name"]: row for row in snapshot["recent"]}
+        assert recent["Eurasian Blackbird"]["at_ns"] == window.utc_start_ns
+        assert recent["Eurasian Blackbird"]["threshold"] == pytest.approx(0.55)
+
+    async def test_the_near_miss_ring_is_bounded_and_live_tunable(self) -> None:
+        """Charter item 1: this runs per candidate on the detector's path, so
+        it must have a hard ceiling, and ADR-048 requires the knob that sets
+        that ceiling to genuinely take effect on a running detector."""
+        detector = BirdNetDetector(model_dir="/nonexistent", near_miss_ring=3)
+        for index in range(50):
+            detector._near_misses.record_rejected(
+                at_ns=index,
+                label_index=0,
+                common_name="Robin",
+                scientific_name="Erithacus rubecula",
+                score=0.2,
+                occurrence=0.5,
+                band="in_range",
+                threshold=0.55,
+            )
+        assert detector.near_miss_snapshot()["held"] == 3
+        detector.retune(near_miss_ring=25)
+        assert detector.near_miss_snapshot()["capacity"] == 25
+        # The cumulative record is not reset by a resize: comparing before and
+        # after a threshold change is the entire use of this panel.
+        assert detector.near_miss_snapshot()["rejected_total"] == 50
+
     async def test_a_sound_category_is_kept_but_is_not_a_species_claim(self) -> None:
         """ADR-049, end to end through ``analyse``.
 

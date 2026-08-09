@@ -410,6 +410,20 @@ suppressed *out-of-range* species. It is now split into
 `BirdNetDetector.plausibility_snapshot()` and as `oo_birdnet_suppressed_total{reason=...}`
 in `api/metrics.py`.
 
+**And counters are not enough on their own (ADR-052).** Measured on the live station,
+2026-08-09: 152 candidates suppressed as `implausible_prior` in under an hour, with
+nothing anywhere recording *which species*, at what score, with what prior — so an
+operator hearing birds and seeing no detections could not tell 152 correct rejections of
+American owls from 152 wrongly-binned garden birds, and could not tune. Two of these four
+counters also have the wrong scope for that question: by design they cover only the
+plausibility bands, so a candidate that scores 0.54 against the ordinary 0.55 `in_range`
+bar is counted by none of them, and that is the commonest case. `detectors/near_miss.py`
+now records every rejection in every band — a per-band score histogram, a per-species
+tally, and a bounded ring of individual near misses — served at
+`GET /api/v1/detectors/near-misses` and rendered as **Rejected candidates** in the web
+UI's diagnose depth. Measured at 2.0 µs per rejection on the Pi 5, 0.028% of BirdNET's own
+72 ms window. Metadata only: no audio, nothing persisted.
+
 **What is not fixed by this change: the ~5833 already-persisted rows.** Going forward, an implausible candidate is suppressed by the detector before a
 row is ever created, so the API, the MQTT publisher and the ESP32 counter-top display are
 automatically consistent — there is nothing for any of them to filter. But the ~202

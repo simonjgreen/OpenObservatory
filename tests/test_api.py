@@ -150,6 +150,77 @@ class TestStationEndpoints:
             assert entry["licence_name"]
             assert isinstance(entry["calibrated"], bool)
 
+    def test_near_misses_endpoint_names_what_was_refused(self, client) -> None:
+        """ADR-052. The endpoint an operator tunes from.
+
+        BirdNET's model assets are deliberately unbundled (ADR-006), so this
+        test stands a ledger-bearing plugin in front of a real running worker
+        rather than skipping: what is under test is the API contract -- that
+        a detector's near misses reach a client with the species, the score,
+        the prior, the band and the bar it missed -- not BirdNET's inference.
+        """
+        from open_observatory.detectors.near_miss import NearMissLedger
+
+        station = client.app.state.station
+        worker = station.workers[0]
+
+        class _WithLedger:
+            def __init__(self, inner) -> None:
+                self._inner = inner
+                self._ledger = NearMissLedger(capacity=8)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def near_miss_snapshot(self, *, limit=50, species_limit=40):
+                snapshot = self._ledger.snapshot(
+                    thresholds={"in_range": 0.55}, limit=limit, species_limit=species_limit
+                )
+                snapshot["note"] = "candidates only"
+                snapshot["min_confidence"] = 0.12
+                snapshot["windows_analysed"] = 998
+                snapshot["range_model_loaded"] = True
+                snapshot["week"] = 30
+                snapshot["plausibility_floor"] = 0.0005
+                return snapshot
+
+        wrapper = _WithLedger(worker.plugin)
+        wrapper._ledger.record_rejected(
+            at_ns=1_700_000_000_000_000_000,
+            label_index=42,
+            common_name="Eurasian Blackbird",
+            scientific_name="Turdus merula",
+            score=0.538,
+            occurrence=0.9312,
+            band="in_range",
+            threshold=0.55,
+        )
+        original = worker.plugin
+        worker.plugin = wrapper
+        try:
+            payload = client.get("/api/v1/detectors/near-misses").json()
+        finally:
+            worker.plugin = original
+
+        entry = next(
+            item for item in payload["detectors"] if item["plugin_id"] == worker.plugin_id
+        )
+        assert entry["rejected_total"] == 1
+        row = entry["recent"][0]
+        assert row["common_name"] == "Eurasian Blackbird"
+        assert row["score"] == 0.538
+        assert row["occurrence_probability"] == 0.9312
+        assert row["band"] == "in_range"
+        assert row["threshold"] == 0.55
+        assert row["shortfall"] == 0.012
+        # The histogram is the part that chooses a threshold, so it must be
+        # on the payload whether or not the ring is holding anything.
+        in_range = next(band for band in entry["bands"] if band["band"] == "in_range")
+        assert sum(in_range["histogram"]["counts"]) == 1
+        # And a detector with no plausibility bands is absent rather than
+        # carrying an empty stub.
+        assert len(payload["detectors"]) == 1
+
     def test_resampler_reports_zero_group_delay(self, client) -> None:
         resampler = client.get("/api/v1/station").json()["resampler"]
         assert resampler["group_delay_frames"] == 0

@@ -710,6 +710,7 @@ class Station:
                     threshold_in_range=settings.birdnet_threshold_in_range,
                     threshold_uncommon=settings.birdnet_threshold_uncommon,
                     threshold_out_of_range=settings.birdnet_threshold_out_of_range,
+                    near_miss_ring=settings.birdnet_near_miss_ring,
                     use_location_filter=(
                         settings.birdnet_use_location_filter
                         and settings.latitude is not None

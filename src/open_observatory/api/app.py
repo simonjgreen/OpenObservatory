@@ -1143,6 +1143,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             health.append(snapshot)
         return {"detectors": health}
 
+    @app.get(f"{API_PREFIX}/detectors/near-misses")
+    def list_near_misses(
+        limit: int = Query(50, ge=0, le=500),
+        species_limit: int = Query(40, ge=0, le=500),
+    ) -> dict[str, Any]:
+        """ADR-052. What the detectors proposed and then refused.
+
+        The counters under `GET /api/v1/detectors` say how many candidates
+        were suppressed. They cannot say *which*, at what score, against which
+        bar -- so an operator watching 152 suppressions in an hour has no way
+        to tell 152 correct rejections of North American owls from 152
+        wrongly-binned garden birds, and cannot choose a threshold on
+        evidence. This is that evidence.
+
+        Duck-typed on `near_miss_snapshot`, matching `plausibility_snapshot`
+        in `api/metrics.py`: a detector with no plausibility bands simply does
+        not appear, rather than being made to carry an empty stub.
+
+        Metadata only. No audio is retained for a rejected candidate and
+        nothing here is persisted -- it is an in-memory diagnostic that dies
+        with the process (the charter's privacy constraint, and ADR-049's
+        decision not to write clips for human sound, are both untouched).
+        """
+        detectors = []
+        for worker in station.workers:
+            snapshot_fn = getattr(worker.plugin, "near_miss_snapshot", None)
+            if not callable(snapshot_fn):
+                continue
+            payload = snapshot_fn(limit=limit, species_limit=species_limit)
+            payload["plugin_id"] = worker.plugin_id
+            detectors.append(payload)
+        return {"detectors": detectors}
+
     @app.get(f"{API_PREFIX}/models")
     def list_models() -> dict[str, Any]:
         return {

@@ -1103,3 +1103,35 @@ code {
 .firmware-upload input[type='text'] { max-width: 180px; }
 .firmware-displays { margin: 4px 0; padding-left: 18px; font-size: 12px; }
 .firmware-displays .dim { margin-left: 6px; }
+
+/* ADR-052: what BirdNET proposed and then refused. The histogram is the
+   decision-useful shape -- where the rejected scores sit relative to the bar
+   -- so it gets the room, and the bar's own bin is marked rather than left to
+   be counted off the axis. */
+.near-miss { padding: 0 13px 10px; display: flex; flex-direction: column; gap: 10px; }
+.near-miss table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.near-miss th {
+  text-align: left; font-weight: 600; color: var(--text-dim);
+  font-size: 10px; text-transform: lowercase; padding: 2px 6px 2px 0;
+  border-bottom: 1px solid var(--line, #2a2a2a);
+}
+.near-miss td { padding: 3px 6px 3px 0; vertical-align: middle; }
+.near-miss-bands td:last-child { width: 45%; }
+.near-miss-histogram {
+  display: flex; align-items: flex-end; gap: 1px; height: 22px; min-width: 120px;
+}
+.near-miss-bin {
+  flex: 1 1 0; height: 100%; display: flex; align-items: flex-end;
+  background: rgba(255, 255, 255, 0.03);
+}
+/* Everything at or above the bar would have been admitted had the bar been
+   one bin lower -- which is exactly the question an operator is asking. */
+.near-miss-bin.above-bar { background: rgba(111, 180, 255, 0.09); }
+.near-miss-bin.at-bar { box-shadow: inset 1px 0 0 var(--warn); }
+.near-miss-bin-fill { width: 100%; background: var(--accent); min-height: 1px; }
+.near-miss-bin.above-bar .near-miss-bin-fill { background: var(--warn); }
+.near-miss-recent summary { font-size: 11px; color: var(--text-dim); cursor: pointer; }
+.near-miss-recent ul {
+  margin: 6px 0 0; padding-left: 0; list-style: none; font-size: 11px;
+  max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}

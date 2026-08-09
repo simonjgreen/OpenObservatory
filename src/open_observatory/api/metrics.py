@@ -260,6 +260,34 @@ class PrometheusExporter:
                 # series rather than another `reason` label on the counter
                 # above -- a number shown to a human must mean what its label
                 # says (charter honesty constraint).
+                # ADR-052: per-band candidate accounting. Deliberately a
+                # different series from `oo_birdnet_suppressed_total`, which
+                # by ADR-032's design covers only the plausibility bands --
+                # a candidate that failed the ordinary `in_range` bar is
+                # counted by neither of the existing metrics, and it is the
+                # commonest case an operator is asking about. The score
+                # histograms are *not* exported: 20 buckets x 7 bands is a
+                # scrape's worth of series for a diagnostic that is read
+                # interactively, and `GET /api/v1/detectors/near-misses`
+                # serves them on demand instead.
+                near_miss_fn = getattr(worker.plugin, "near_miss_snapshot", None)
+                if callable(near_miss_fn):
+                    for band in near_miss_fn(limit=0, species_limit=0)["bands"]:
+                        self._set(
+                            "oo_birdnet_candidates_rejected_total",
+                            "BirdNET candidates that failed their band's confidence bar",
+                            band["rejected"],
+                            plugin_id=plugin,
+                            band=band["band"],
+                        )
+                        self._set(
+                            "oo_birdnet_candidates_admitted_total",
+                            "BirdNET candidates that cleared their band's confidence bar",
+                            band["admitted"],
+                            plugin_id=plugin,
+                            band=band["band"],
+                        )
+
                 non_taxonomic_fn = getattr(worker.plugin, "non_taxonomic_admitted", None)
                 if callable(non_taxonomic_fn):
                     self._set(

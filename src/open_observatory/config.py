@@ -226,6 +226,14 @@ class Settings(BaseSettings):
     birdnet_threshold_in_range: float = 0.55
     birdnet_threshold_uncommon: float = 0.75
     birdnet_threshold_out_of_range: float = 0.90
+    #: ADR-052. How many individual rejected candidates BirdNET keeps in its
+    #: in-memory near-miss ring, for `GET /api/v1/detectors/near-misses` and
+    #: the diagnostic UI. The per-band score histograms and the per-species
+    #: tally are always kept and are not affected by this: they are the cheap
+    #: part and the part that actually decides a threshold. 0 keeps those and
+    #: stops recording individual rows. Nothing here is persisted or written
+    #: to disk, and no audio is retained for a rejected candidate.
+    birdnet_near_miss_ring: int = 200
 
     detector_queue_depth: int = 16
 
