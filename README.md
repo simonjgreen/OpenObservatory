@@ -210,6 +210,56 @@ dangerous: a view that puts a sound at the wrong frequency or time produces
 confident, wrong conclusions. Both orientations are asserted against the same
 properties, so adding the second view cannot silently break the first.
 
+## How this was built
+
+**The code here is almost entirely AI-authored. The thinking behind it is not.**
+
+That division is deliberate and worth stating plainly, because it changes how
+you should read the repository.
+
+**Human** — the concept and why it exists; the product design and what the
+thing is *for*; the system architecture and how the pieces divide; the
+priorities and what wins when they conflict (see
+[`docs/CHARTER.md`](docs/CHARTER.md)); what "tested" has to mean
+([`docs/development/TEST_PLAN.md`](docs/development/TEST_PLAN.md)); the hardware
+choices; and continual review, direction and correction throughout. Every
+significant decision was made, or accepted, by a person who understood the
+system as a whole.
+
+**AI** — nearly all of the implementation. The Python, the TypeScript, the
+firmware, the tests, and most of the prose in `docs/`, written under direction
+and reviewed.
+
+### Why this is stated rather than hidden
+
+Two reasons, both practical.
+
+The first is that it explains the shape of the repository. The unusual density
+of Architecture Decision Records, the measured figures attached to almost every
+claim, and the explicit lists of what is *not* verified are not stylistic
+choices. They exist because AI-written code is confidently plausible by default,
+and plausibility is not correctness. The discipline throughout has been to
+require evidence — a measurement, a test against ground truth, a reading from
+the real device — before a claim is allowed to stand. `HANDOVER.md` documents
+several occasions where that discipline was the only thing that caught a bug
+which had already passed review and its own tests.
+
+The second is that a reader deserves to know. Code written this way needs a
+different kind of scepticism than code written by hand: it fails less often at
+syntax and more often at assumptions — a test that asserts an invented value
+rather than the one the system really emits, a metric that measures something
+adjacent to what its name claims. Those failures are quiet and they look like
+success.
+
+### What this means if you contribute
+
+The bar is evidence, not authorship. It does not matter whether a change was
+written by a person or a model; it matters whether the claims attached to it
+were verified, and whether the things that could not be verified are stated as
+such. [`docs/development/TEST_PLAN.md`](docs/development/TEST_PLAN.md) sets out
+what that requires, and it opens with the bugs that passed their tests first,
+because that is the failure mode this project is built to resist.
+
 ## Honesty rules this codebase enforces in code, not just in prose
 
 - A detector declared non-taxonomic **cannot** emit a species name; the normaliser
