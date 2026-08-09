@@ -314,9 +314,8 @@ sub-bin frequency interpolation were added: `ultrasonic-pass-v1` p95 runtime **7
 per 2-second native window, still comfortably inside the 2 s budget.
 
 **Test counts are not a target-device measurement and do not belong in this file.**
-The last full run *on the Pi* was 197 Python tests on 2026-08-08. The current
-suite is 389 Python and 140 frontend tests, measured on the development laptop on
-2026-08-09 — see `docs/delivery/MILESTONE_STATUS.md`, which is the authority.
+The last full run *on the Pi* was 197 Python tests on 2026-08-08. For the current
+suite size see `docs/development/SETUP.md`, measured on the development laptop.
 BatDetect2's own benchmark on this hardware *is* a target measurement and is
 recorded in `docs/detectors/BATDETECT2_EVALUATION.md`.
 
@@ -379,16 +378,22 @@ server-side gain on the stream, not a client-side audio node.
   needs more clips and a human ear on the audible renderings, not a code change.
 - **72-hour soak test not run.** The acceptance criteria require it before the
   system may be described as complete. Still true on 2026-08-09.
-- **`estimated_missing_seconds` over-reports lost audio by roughly 13×.** Measured
-  on the live station 2026-08-09 over 12.4 h: `frames` 17,170,944,000 against
-  `expected_frames` 17,172,537,849 — a real deficit of 1,593,849 frames (**4.15 s,
-  0.0095%**) — while `estimated_missing_seconds` claimed **54.5 s** and ALSA
-  reported only 3 overruns against 369 `capture.gap` records. Judge real loss by
-  `frames` vs `expected_frames`, never by that field, and read
-  `capture.gap lost_audio=True` as "the read was late". `rate_offset_ppm` is
-  contaminated by the same phantom frames — it read **+1128 ppm** in that sample
-  against a true device offset of −43 ppm. See
-  `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` finding 2 and ADR-033.
+- **`estimated_missing_seconds` is the figure to read for lost audio, and
+  `expected_frames - frames` is not** — settled by ADR-046 on 2026-08-09, which
+  reverses the guidance an earlier version of this file gave. The raw deficit is
+  four terms added together: block-sampling phase (±50 ms of pure artefact on a
+  single reading), the crystal's ~50.4 ppm slow rate (0.18 s/hour, 4.4 s/day,
+  forever, with nothing lost), sub-millisecond anchor bias, and only then real
+  loss. Sampled every 2 s for 43 minutes on one uninterrupted stream, the
+  corrected deficit grew at **+51.0 to +51.2 ppm** in both clean windows and
+  *more slowly* under two saturated cores — a straight line, with none of the
+  step that real loss produces. The station has **one** measurement of lost
+  audio, not two: `rate_offset_ppm` is computed from the deficit and the
+  estimator, so drift-correcting the deficit returns the estimator's own number
+  rather than a second opinion. The debug UI now shows the deficit as
+  **`behind clock`**, separately from `audio lost`. Longest clean window: 22.2
+  minutes — enough to rule out a continuous leak, not a rare one. See
+  `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-046.
 - **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),
   gating it to civil dusk through civil dawn plus configurable margins, computed from the
   station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); the

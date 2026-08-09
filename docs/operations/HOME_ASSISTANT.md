@@ -1,11 +1,10 @@
 # Home Assistant integration
 
-Milestone 6. The station can publish its state and detections to an MQTT broker
-and register itself in Home Assistant automatically via [MQTT
-Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) —
-no YAML required on the Home Assistant side. This is off by default
-(`OO_MQTT_ENABLED=false`); nothing changes for an existing station until you
-opt in.
+The station publishes its state and detections to an MQTT broker and registers
+itself in Home Assistant automatically via [MQTT
+Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) — no
+YAML on the Home Assistant side. It is off by default; nothing changes for an
+existing station until you opt in.
 
 See ADR-025 in `docs/architecture/ADRS.md` for why it is built this way
 (bounded queue reused from the event bus, `aiomqtt`, no shared thread pool,
@@ -34,8 +33,20 @@ working defaults.
 
 ## Configuration
 
-Edit `config/runtime.env` on the station (copy from `config/example.env` if
-you don't have one yet; it is gitignored and never checked in):
+**From the station's own web UI.** Open it, press `settings`, find *MQTT /
+Home Assistant*, tick `mqtt_enabled` and fill in the broker host, port and
+credentials. Every MQTT setting is live-tier (ADR-048): the publisher connects
+when you press save, and **no restart is needed**. Home Assistant should show a
+new device named after the station within a few seconds, with no further action
+on the HA side — MQTT Discovery is on by default in Home Assistant's MQTT
+integration.
+
+`mqtt_tls_insecure` is the one field that asks you to acknowledge a warning
+before saving, because skipping certificate verification is a decision, not a
+default.
+
+The equivalent in `config/runtime.env` still works, and is the right route if
+you are provisioning a station from a script rather than by hand:
 
 ```env
 OO_MQTT_ENABLED=true
@@ -46,17 +57,15 @@ OO_MQTT_USERNAME=openobservatory  # blank if the broker allows anonymous
 OO_MQTT_PASSWORD=change-me
 ```
 
-Restart the station (`systemctl restart open-observatory` on the target — see
-`DEPLOYMENT_AND_OPERATIONS.md`; in development, just restart the process).
-Home Assistant should show a new device named after `OO_STATION_NAME`
-(default "Garden Observatory") within a few seconds, with no further action
-on the HA side — MQTT Discovery is on by default in Home Assistant's MQTT
-integration.
+That file needs a restart to be picked up (`systemctl restart
+open-observatory` — see `DEPLOYMENT_AND_OPERATIONS.md`). The web UI writes the
+same file, preserving your comments, so the two are one configuration rather
+than two that can disagree.
 
-Full list of `OO_MQTT_*` settings: `src/open_observatory/config.py`, the "MQTT
-/ Home Assistant" section. Everything is documented inline there, including
-`OO_MQTT_QOS`, `OO_MQTT_TOPIC_PREFIX`, `OO_MQTT_DISCOVERY_PREFIX`, and the
-reconnect backoff bounds.
+The full `OO_MQTT_*` reference, with tiers and defaults, is the "MQTT / Home
+Assistant" table in
+[`DEPLOYMENT_AND_OPERATIONS.md`](DEPLOYMENT_AND_OPERATIONS.md#the-full-settings-reference);
+the inline documentation is in `src/open_observatory/config.py`.
 
 ## What appears in Home Assistant
 
