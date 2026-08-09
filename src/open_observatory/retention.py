@@ -18,6 +18,17 @@ implements exactly it and nothing more:
     regardless of tier or exemplar status. This is the safety valve -- disk
     space always wins over any retention preference.
 
+* **A human hold is exempt from the three age-based tiers** (ADR-043). A
+  detection whose latest human review (`review.py`) has status `"held"` --
+  an explicit "keep this, it needs my ear" -- is skipped by `_strip_native`,
+  `_strip_non_exemplar` and `_strip_expired`, the same way an exemplar is.
+  Deliberately narrower than an unconditional hold: the watermark reclaim
+  tier does **not** check it, on purpose, because it is this module's one
+  hard safety valve (see the bullet above) and a held detection is still
+  only evidence, not something the station can let disk exhaustion turn
+  into an outage over. An operator who needs a genuinely permanent hold
+  should export the clip. See ADR-043's "known limitation" note.
+
 Deleting a clip never deletes its ``media_asset`` row: the row is marked
 ``reclaimed_at``/``reclaim_reason`` instead, so `/api/v1/media/{id}` can keep
 answering (with 410, already handled) and a history view can keep showing
@@ -48,6 +59,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import review as review_queries
 from .db import models as orm
 
 log = structlog.get_logger(__name__)
@@ -88,6 +100,9 @@ class RetentionReport:
     disk_used_ratio_before: float | None = None
     disk_used_ratio_after: float | None = None
     exemplar_detections: int = 0
+    #: Count of detections exempted from this sweep by an explicit human
+    #: hold (ADR-043) -- see `RetentionSweeper._strip_native` et al.
+    held_detections: int = 0
     already_missing: int = 0
     #: Per-tier counts/bytes: keys are "native", "exemplar_only", "expired", "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
@@ -113,6 +128,7 @@ class RetentionReport:
             "disk_used_ratio_before": self.disk_used_ratio_before,
             "disk_used_ratio_after": self.disk_used_ratio_after,
             "exemplar_detections": self.exemplar_detections,
+            "held_detections": self.held_detections,
             "already_missing": self.already_missing,
             "tier_counts": dict(self.tier_counts),
             "tier_bytes": dict(self.tier_bytes),
@@ -165,6 +181,7 @@ class RetentionSweeper:
         self.last_sweep_complete: bool = True
         self.last_disk_used_ratio: float | None = None
         self.last_exemplar_detections: int = 0
+        self.last_held_detections: int = 0
 
     # ------------------------------------------------------------------
 
@@ -181,10 +198,18 @@ class RetentionSweeper:
         with self._session_factory() as session:
             exemplar_ids = self._exemplar_detection_ids(session)
             report.exemplar_detections = len(exemplar_ids)
+            held_ids = review_queries.held_detection_ids(session)
+            report.held_detections = len(held_ids)
 
             if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_native(
-                    session, report, now=now, deadline=deadline, budget=budget, dry_run=dry_run
+                    session,
+                    report,
+                    now=now,
+                    deadline=deadline,
+                    budget=budget,
+                    dry_run=dry_run,
+                    held_ids=held_ids,
                 )
             if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_non_exemplar(
@@ -195,10 +220,17 @@ class RetentionSweeper:
                     deadline=deadline,
                     budget=budget,
                     dry_run=dry_run,
+                    held_ids=held_ids,
                 )
             if self.exemplar_only_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_expired(
-                    session, report, now=now, deadline=deadline, budget=budget, dry_run=dry_run
+                    session,
+                    report,
+                    now=now,
+                    deadline=deadline,
+                    budget=budget,
+                    dry_run=dry_run,
+                    held_ids=held_ids,
                 )
             if budget > 0 and time.monotonic() < deadline:
                 budget = self._watermark_reclaim(
@@ -222,6 +254,7 @@ class RetentionSweeper:
         self.last_sweep_complete = report.complete
         self.last_disk_used_ratio = report.disk_used_ratio_after
         self.last_exemplar_detections = report.exemplar_detections
+        self.last_held_detections = report.held_detections
         if not dry_run:
             for tier, count in report.tier_counts.items():
                 self.totals[f"{tier}_deleted"] = self.totals.get(f"{tier}_deleted", 0) + count
@@ -246,6 +279,7 @@ class RetentionSweeper:
         deadline: float,
         budget: int,
         dry_run: bool,
+        held_ids: set[uuid.UUID] | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.native_days)
         query = (
@@ -255,9 +289,10 @@ class RetentionSweeper:
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.MediaAsset.kind.in_(NATIVE_KINDS))
             .where(orm.Detection.event_start_utc <= cutoff)
-            .order_by(orm.Detection.event_start_utc.asc())
-            .limit(budget)
         )
+        if held_ids:
+            query = query.where(orm.Detection.id.notin_(held_ids))
+        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
         for asset, detection_id in session.execute(query).all():
             if time.monotonic() >= deadline or budget <= 0:
                 break
@@ -285,12 +320,14 @@ class RetentionSweeper:
         deadline: float,
         budget: int,
         dry_run: bool,
+        held_ids: set[uuid.UUID] | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.audible_only_days)
-        # Over-fetch: exemplar filtering happens in Python because "is this
-        # detection an exemplar" isn't expressible as a join condition
-        # without materialising `exemplar_ids` into the query. The multiplier
-        # is a small constant, not an unbounded walk.
+        held_ids = held_ids or set()
+        # Over-fetch: exemplar (and held) filtering happens in Python because
+        # "is this detection an exemplar" isn't expressible as a join
+        # condition without materialising `exemplar_ids` into the query. The
+        # multiplier is a small constant, not an unbounded walk.
         query = (
             select(orm.MediaAsset, orm.Detection.id)
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
@@ -301,7 +338,7 @@ class RetentionSweeper:
             .limit(budget * 4)
         )
         for asset, detection_id in session.execute(query).all():
-            if detection_id in exemplar_ids:
+            if detection_id in exemplar_ids or detection_id in held_ids:
                 continue
             if time.monotonic() >= deadline or budget <= 0:
                 break
@@ -328,6 +365,7 @@ class RetentionSweeper:
         deadline: float,
         budget: int,
         dry_run: bool,
+        held_ids: set[uuid.UUID] | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.exemplar_only_days)
         query = (
@@ -336,9 +374,10 @@ class RetentionSweeper:
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.Detection.event_start_utc <= cutoff)
-            .order_by(orm.Detection.event_start_utc.asc())
-            .limit(budget)
         )
+        if held_ids:
+            query = query.where(orm.Detection.id.notin_(held_ids))
+        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
         for asset, detection_id in session.execute(query).all():
             if time.monotonic() >= deadline or budget <= 0:
                 break
@@ -347,7 +386,10 @@ class RetentionSweeper:
                 asset,
                 detection_id=detection_id,
                 tier="expired",
-                reason=f"age >= {self.exemplar_only_days}d: final expiry, including exemplars",
+                reason=(
+                    f"age >= {self.exemplar_only_days}d: final expiry, including exemplars "
+                    "but not an explicit human hold"
+                ),
                 dry_run=dry_run,
             )
             budget -= 1
@@ -588,5 +630,6 @@ class RetentionSweeper:
             "last_sweep_complete": self.last_sweep_complete,
             "last_disk_used_ratio": self.last_disk_used_ratio,
             "exemplar_detections": self.last_exemplar_detections,
+            "held_detections": self.last_held_detections,
             "totals": dict(self.totals),
         }

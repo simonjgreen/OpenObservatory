@@ -6,28 +6,25 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { Detection, MediaRef } from '../types'
+import type { Detection, MediaRef, Review, TaxonMatch } from '../types'
 import { formatDetectionTitle } from './detectionTitle'
 import { formatHz } from './Spectrogram'
 import { glyphFor } from './Suggestions'
 
-interface ReviewState {
-  status: 'confirmed' | 'rejected'
-  note: string
-  created_at: string | null
-}
-
-/** Minimal review workflow (Milestone 4, lower priority than the foundation
- *  work): confirm or reject a detection, writing to the `review` table via
- *  `POST /api/v1/detections/{id}/review`. Fetches the latest review on open
- *  so a previously-reviewed detection shows its status rather than looking
- *  untouched. */
+/** Review workflow (ADR-043): confirm, reject, hold, or correct the taxon,
+ *  writing to the `review` table via `POST /api/v1/detections/{id}/review`.
+ *  Fetches the latest review on open so a previously-reviewed detection
+ *  shows its status rather than looking untouched. A correction never edits
+ *  the detection's own `common_name`/`scientific_name` -- the server layers
+ *  it on as a new, attributed row, and this hook just reflects that back. */
 function useReview(detectionId: string | null) {
-  const [review, setReview] = useState<ReviewState | null>(null)
+  const [review, setReview] = useState<Review | null>(null)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setReview(null)
+    setError(null)
     if (!detectionId) return
     let cancelled = false
     fetch(`/api/v1/detections/${detectionId}/review`)
@@ -39,24 +36,64 @@ function useReview(detectionId: string | null) {
     }
   }, [detectionId])
 
-  const submit = (status: 'confirmed' | 'rejected') => {
+  const submit = (status: Review['status'], correctedTaxonId?: string, note?: string) => {
     if (!detectionId) return
     setSaving(true)
+    setError(null)
     fetch(`/api/v1/detections/${detectionId}/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({
+        status,
+        ...(correctedTaxonId ? { corrected_taxon_id: correctedTaxonId } : {}),
+        ...(note ? { note } : {}),
+      }),
     })
-      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+      .then((response) =>
+        response.ok
+          ? response.json()
+          : response
+              .json()
+              .catch(() => null)
+              .then((body) => Promise.reject(body?.detail ?? `HTTP ${response.status}`)),
+      )
       .then((data) => setReview(data))
-      .catch(() => {
-        // Left as-is: the button state itself communicates failure (still
-        // shows "confirm"/"reject" rather than a checked state).
+      .catch((detail: unknown) => {
+        setError(typeof detail === 'string' ? detail : 'could not save review')
       })
       .finally(() => setSaving(false))
   }
 
-  return { review, saving, submit }
+  return { review, saving, error, submit }
+}
+
+/** Debounced taxon search against `GET /api/v1/taxa/search` (ADR-043),
+ *  backing the "correct identification" control below. Species come only
+ *  from what this station has itself already identified -- see that
+ *  endpoint's docstring for why. */
+function useTaxonSearch(query: string) {
+  const [matches, setMatches] = useState<TaxonMatch[]>([])
+
+  useEffect(() => {
+    const needle = query.trim()
+    if (needle.length < 2) {
+      setMatches([])
+      return
+    }
+    let cancelled = false
+    const handle = window.setTimeout(() => {
+      fetch(`/api/v1/taxa/search?q=${encodeURIComponent(needle)}`)
+        .then((response) => (response.ok ? response.json() : { taxa: [] }))
+        .then((data) => !cancelled && setMatches(data.taxa ?? []))
+        .catch(() => !cancelled && setMatches([]))
+    }, 200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
+  }, [query])
+
+  return matches
 }
 
 const MEDIA_LABELS: Record<string, string> = {
@@ -98,6 +135,85 @@ function explainUltrasonic(asset: MediaRef): string {
   return ''
 }
 
+/** "That's not what it says — here's what it actually was" (ADR-043). A
+ *  free-text search against species this station has itself already
+ *  identified (`GET /api/v1/taxa/search`); picking a result submits a
+ *  `corrected` review for that taxon. Deliberately cannot submit a taxon
+ *  that isn't in the returned list -- see that endpoint's docstring for the
+ *  "must have been identified here before" limitation this implies. */
+function TaxonCorrectionControl({
+  saving,
+  onCorrect,
+}: {
+  saving: boolean
+  onCorrect: (taxonId: string, note?: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [note, setNote] = useState('')
+  const matches = useTaxonSearch(query)
+
+  if (!open) {
+    return (
+      <button className="review-btn correct-toggle" onClick={() => setOpen(true)}>
+        ✎ correct identification
+      </button>
+    )
+  }
+
+  return (
+    <div className="taxon-correction">
+      <label className="dim" htmlFor="taxon-correction-search">
+        What was it actually?
+      </label>
+      <input
+        id="taxon-correction-search"
+        type="text"
+        placeholder="common or scientific name…"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        autoFocus
+      />
+      <input
+        type="text"
+        placeholder="note (optional)"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+      />
+      {matches.length > 0 && (
+        <ul className="taxon-matches">
+          {matches.map((taxon) => (
+            <li key={taxon.taxon_id}>
+              <button
+                disabled={saving}
+                onClick={() => {
+                  onCorrect(taxon.taxon_id, note || undefined)
+                  setOpen(false)
+                  setQuery('')
+                  setNote('')
+                }}
+              >
+                {taxon.common_name ?? taxon.scientific_name}
+                {taxon.scientific_name && <span className="sci"> {taxon.scientific_name}</span>}
+                <span className="dim"> · {taxon.detections}×</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {query.trim().length >= 2 && matches.length === 0 && (
+        <p className="dim">
+          No match among species this station has identified before. A correction can only name
+          a taxon already seen here — see the taxon search endpoint's docs.
+        </p>
+      )}
+      <button className="dim" onClick={() => setOpen(false)}>
+        cancel
+      </button>
+    </div>
+  )
+}
+
 interface Props {
   detection: Detection | null
   localTimeZone: string
@@ -105,7 +221,7 @@ interface Props {
 }
 
 export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
-  const { review, saving, submit } = useReview(detection?.id ?? null)
+  const { review, saving, error, submit } = useReview(detection?.id ?? null)
   if (!detection) return null
   const start = new Date(detection.event_start_utc)
   const format = new Intl.DateTimeFormat('en-GB', {
@@ -225,13 +341,30 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           >
             ✕ reject
           </button>
+          <button
+            className={`review-btn hold ${review?.status === 'held' ? 'on' : ''}`}
+            disabled={saving}
+            title="Keep this evidence past the retention sweeper's normal age tiers, no verdict yet"
+            onClick={() => submit('held')}
+          >
+            ★ hold
+          </button>
           {review && (
             <span className="dim review-status">
-              last reviewed: {review.status}
+              last reviewed: {review.status} by {review.actor}
               {review.created_at ? ` at ${new Date(review.created_at).toLocaleString()}` : ''}
             </span>
           )}
         </div>
+        {review?.status === 'corrected' && (
+          <p className="review-correction">
+            Corrected to <strong>{review.corrected_common_name ?? review.corrected_taxon_id}</strong>
+            {review.corrected_scientific_name && <span className="sci"> {review.corrected_scientific_name}</span>}
+            {review.note && <span className="dim"> — “{review.note}”</span>}
+          </p>
+        )}
+        <TaxonCorrectionControl saving={saving} onCorrect={(taxonId, note) => submit('corrected', taxonId, note)} />
+        {error && <p className="review-error">{error}</p>}
       </div>
 
       {detection.media.length > 0 ? (

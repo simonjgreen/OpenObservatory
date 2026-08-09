@@ -277,6 +277,105 @@ class TestTierBoundaries:
             assert session.get(orm.Detection, detection_id) is not None
 
 
+class TestHumanHold:
+    """ADR-043: an explicit human hold exempts a detection's evidence from
+    the three age-based tiers, but not from the watermark safety valve."""
+
+    def test_held_detection_survives_native_boundary(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=8,
+                kinds=("evidence_native",),
+            )
+            session.add(orm.Review(detection_id=detection_id, actor="op", status="held"))
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+
+    def test_held_detection_survives_final_expiry(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
+                kinds=("playback",),
+            )
+            session.add(orm.Review(detection_id=detection_id, actor="op", status="held"))
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["playback"]).reclaimed_at is None
+
+    def test_hold_released_by_a_later_review(self, db, station_and_detector) -> None:
+        """`Review` is append-only and "current" means "latest" -- a `held`
+        followed by a `confirmed` is no longer held, exactly as `review.py`
+        documents."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
+                kinds=("playback",),
+            )
+            session.add(
+                orm.Review(
+                    detection_id=detection_id,
+                    actor="op",
+                    status="held",
+                    created_at=FIXED_NOW,
+                )
+            )
+            session.add(
+                orm.Review(
+                    detection_id=detection_id,
+                    actor="op",
+                    status="confirmed",
+                    created_at=FIXED_NOW + timedelta(seconds=1),
+                )
+            )
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["playback"]).reclaimed_at is not None
+
+    def test_watermark_reclaim_ignores_hold(self, db, station_and_detector, monkeypatch) -> None:
+        """The one hard safety valve in this module: disk space always wins,
+        even over an explicit human hold -- see the module docstring."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                kinds=("evidence_native",),
+            )
+            session.add(orm.Review(detection_id=detection_id, actor="op", status="held"))
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        report = _sweeper(db, watermark_ratio=0.85).sweep()
+        assert report.tier_counts.get("watermark", 0) >= 1
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+
+
 class TestExemplarPreservation:
     def test_first_of_species_survives_30_90_day_cull(self, db, station_and_detector) -> None:
         station_id, detector_id = station_and_detector

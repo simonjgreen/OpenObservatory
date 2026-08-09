@@ -63,6 +63,22 @@ log = structlog.get_logger(__name__)
 
 #: Bus event types this publisher cares about. Anything else (window.*,
 #: capture.levels, ...) would just be dropped unread and waste queue slots.
+#:
+#: Deliberately excludes a human review or taxon correction (ADR-043):
+#: `api/app.py: post_detection_review` writes straight to the database and
+#: raises no bus event at all, so there is nothing here to subscribe to even
+#: if this set included it. This is a decision, not an oversight -- every
+#: Home Assistant entity this publisher creates (`discovery.py`) models "what
+#: the station is hearing right now"; a correction typically lands minutes to
+#: days after the originating detection, about a clip a listener may already
+#: be finished with, and re-publishing it as a fresh MQTT/HA event would
+#: misrepresent a retrospective annotation as a new acoustic occurrence. A
+#: reviewer's correction is still fully visible -- in the review drawer, in
+#: `GET /api/v1/detections`, and in the CSV/JSON export -- just not on this
+#: live bus. If a future need for it emerges (e.g. an HA automation that
+#: reacts to corrections), the right shape is a distinct event type and
+#: topic, not overloading the existing detection topic that already means
+#: "this just happened".
 _SUBSCRIBED_TYPES = frozenset(
     {
         EventType.DETECTION_CREATED,

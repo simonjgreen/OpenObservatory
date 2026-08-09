@@ -10,12 +10,17 @@ from __future__ import annotations
 import asyncio
 import struct
 import time
+import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from open_observatory.api.app import create_app
 from open_observatory.audio.spectrogram import decode_header_size
+from open_observatory.db import models as orm
+from open_observatory.db.session import session_scope
 
 
 @pytest.fixture
@@ -337,6 +342,174 @@ class TestDetections:
         assert streams
         assert streams[0]["sample_rate"] == 192000
         assert "gaps" in client.get("/api/v1/gaps").json()
+
+
+class TestReviewWorkflow:
+    """End-to-end human review (ADR-043), through the real pipeline and
+    database -- confirm/reject/hold, taxon correction, and that the
+    correction is visible everywhere it must be: the review endpoints
+    themselves, the detection detail/list payloads, and the CSV/JSON export.
+
+    Species-rank detections are seeded directly into the database rather
+    than waited for from the pipeline: the `client` fixture runs with
+    `birdnet_enabled=False` (`conftest.py`) because BirdNET's model assets
+    are never bundled (ADR-006) and are not present in CI, so the synthetic
+    scene's `activity-v1`/`ultrasonic-pass-v1` detectors never produce a
+    species-rank, `canonical_taxon_id`-bearing detection on their own --
+    exactly the honesty rule ADR-010/ADR-013 enforce. Seeding a row directly
+    is the same shape `test_retention.py` and `test_review.py` already use.
+    """
+
+    def _seed_species_detection(
+        self,
+        client,
+        *,
+        common_name: str = "European Robin",
+        scientific_name: str = "Erithacus rubecula",
+        taxon_id: str = "sci:erithacus_rubecula",
+    ) -> dict:
+        with session_scope() as session:
+            station_id = session.execute(select(orm.Station.id).limit(1)).scalar_one()
+            detector_id = session.execute(select(orm.Detector.id).limit(1)).scalar_one()
+            detection_id = uuid.uuid4()
+            now = datetime.now(UTC)
+            session.add(
+                orm.Detection(
+                    id=detection_id,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    stream_id=uuid.uuid4(),
+                    window_id=uuid.uuid4(),
+                    event_start_utc=now,
+                    event_end_utc=now,
+                    source_start_frame=0,
+                    source_end_frame=1,
+                    detector_label=common_name,
+                    common_name=common_name,
+                    scientific_name=scientific_name,
+                    canonical_taxon_id=taxon_id,
+                    rank="species",
+                    taxonomic_group="bird",
+                    score=0.9,
+                )
+            )
+        return client.get(
+            f"/api/v1/detections/{detection_id}?include_synthetic=true"
+        ).json()
+
+    def test_confirm_then_reject_supersedes(self, client) -> None:
+        target = self._seed_species_detection(client)
+        confirm = client.post(f"/api/v1/detections/{target['id']}/review", json={"status": "confirmed"})
+        assert confirm.status_code == 200
+        assert confirm.json()["status"] == "confirmed"
+
+        reject = client.post(f"/api/v1/detections/{target['id']}/review", json={"status": "rejected"})
+        assert reject.status_code == 200
+        assert reject.json()["status"] == "rejected"
+
+        latest = client.get(f"/api/v1/detections/{target['id']}/review").json()["review"]
+        assert latest["status"] == "rejected"
+
+    def test_taxa_search_finds_a_station_identified_species(self, client) -> None:
+        target = self._seed_species_detection(client)
+        needle = (target["common_name"] or target["scientific_name"])[:4]
+        results = client.get(f"/api/v1/taxa/search?q={needle}").json()["taxa"]
+        assert any(t["taxon_id"] == target["canonical_taxon_id"] for t in results)
+
+    def test_correcting_a_detection_preserves_the_original_and_shows_the_correction(
+        self, client
+    ) -> None:
+        target = self._seed_species_detection(client)
+        taxon_id = target["canonical_taxon_id"]
+
+        correction = client.post(
+            f"/api/v1/detections/{target['id']}/review",
+            json={"status": "corrected", "corrected_taxon_id": taxon_id, "note": "heard it myself"},
+        )
+        assert correction.status_code == 200
+        body = correction.json()
+        assert body["status"] == "corrected"
+        assert body["corrected_taxon_id"] == taxon_id
+        assert body["corrected_common_name"] == target["common_name"]
+        assert body["actor"] == "local"  # anonymous debug-slice default (ADR-034)
+
+        detail = client.get(f"/api/v1/detections/{target['id']}?include_synthetic=true").json()
+        # The original claim is never edited.
+        assert detail["common_name"] == target["common_name"]
+        assert detail["scientific_name"] == target["scientific_name"]
+        # The correction is visible alongside it.
+        assert detail["review"]["status"] == "corrected"
+        assert detail["review"]["corrected_taxon_id"] == taxon_id
+        assert detail["identification_source"] == "human"
+        assert detail["effective_common_name"] == target["common_name"]
+
+        listed = client.get(
+            "/api/v1/detections?limit=200&include_synthetic=true"
+        ).json()["detections"]
+        row = next(r for r in listed if r["id"] == target["id"])
+        assert row["review"]["status"] == "corrected"
+        assert row["identification_source"] == "human"
+
+        export = client.get(
+            "/api/v1/detections/export?format=json&include_synthetic=true&limit=200"
+        ).json()
+        exported = next(r for r in export["detections"] if r["id"] == target["id"])
+        assert exported["review"]["status"] == "corrected"
+        assert exported["identification_source"] == "human"
+
+        csv_response = client.get(
+            "/api/v1/detections/export?format=csv&include_synthetic=true&limit=200"
+        )
+        assert csv_response.status_code == 200
+        assert "review_status" in csv_response.text
+        assert "corrected" in csv_response.text
+
+    def test_correction_requires_taxon_id(self, client) -> None:
+        target = self._seed_species_detection(client)
+        response = client.post(
+            f"/api/v1/detections/{target['id']}/review", json={"status": "corrected"}
+        )
+        assert response.status_code == 422
+
+    def test_taxon_id_only_valid_with_corrected_status(self, client) -> None:
+        target = self._seed_species_detection(client)
+        response = client.post(
+            f"/api/v1/detections/{target['id']}/review",
+            json={"status": "confirmed", "corrected_taxon_id": target["canonical_taxon_id"]},
+        )
+        assert response.status_code == 422
+
+    def test_correcting_to_an_unknown_taxon_is_rejected(self, client) -> None:
+        target = self._seed_species_detection(client)
+        response = client.post(
+            f"/api/v1/detections/{target['id']}/review",
+            json={"status": "corrected", "corrected_taxon_id": "sci:nonexistent_species"},
+        )
+        assert response.status_code == 400
+
+    def test_held_status_is_accepted_and_visible(self, client) -> None:
+        target = self._seed_species_detection(client)
+        response = client.post(f"/api/v1/detections/{target['id']}/review", json={"status": "held"})
+        assert response.status_code == 200
+        assert response.json()["status"] == "held"
+        assert client.get(f"/api/v1/detections/{target['id']}/review").json()["review"]["status"] == "held"
+
+    def test_unreviewed_detection_has_no_review_but_is_never_none_shaped_wrong(
+        self, client
+    ) -> None:
+        target = self._seed_species_detection(client)
+        detail = client.get(f"/api/v1/detections/{target['id']}?include_synthetic=true").json()
+        assert detail["review"] is None
+        assert detail["identification_source"] == "model"
+        assert detail["effective_common_name"] == detail["common_name"]
+
+    def test_review_of_missing_detection_is_404(self, client) -> None:
+        import uuid as uuid_module
+
+        response = client.post(
+            f"/api/v1/detections/{uuid_module.uuid4()}/review", json={"status": "confirmed"}
+        )
+        assert response.status_code == 404
 
 
 class TestSourceFiltering:

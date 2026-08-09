@@ -885,7 +885,39 @@ code {
 .review-btn { font-size: var(--text-xs); }
 .review-btn.confirm.on { background: rgba(74, 222, 128, 0.16); border-color: var(--ok); color: var(--ok); }
 .review-btn.reject.on { background: rgba(248, 113, 113, 0.16); border-color: var(--danger); color: var(--danger); }
+.review-btn.hold.on { background: rgba(251, 191, 36, 0.16); border-color: var(--warn); color: var(--warn); }
 .review-status { font-size: var(--text-2xs); }
+.review-correction {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+.review-correction strong { color: var(--text); }
+.review-error { color: var(--danger); font-size: var(--text-xs); margin: var(--space-2) 0 0; }
+.review-btn.correct-toggle { margin-top: var(--space-2); }
+.taxon-correction {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.taxon-correction input {
+  font-size: var(--text-xs);
+  padding: 4px var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+.taxon-matches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.taxon-matches button {
+  width: 100%;
+  text-align: left;
+  font-size: var(--text-xs);
+}
 
 /* ==========================================================================
    Mobile: the operator listens to the live ultrasonic stream from a phone as

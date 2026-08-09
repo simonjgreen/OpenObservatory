@@ -216,6 +216,31 @@ export interface MediaRef {
   url: string
 }
 
+/** One human review of a detection (ADR-043). Append-only server-side --
+ *  this is always the *latest* review, never an edit of an earlier one.
+ *  `corrected_*` fields are set only when `status === 'corrected'`. */
+export interface Review {
+  id: string
+  detection_id: string
+  status: 'confirmed' | 'rejected' | 'corrected' | 'held'
+  note: string
+  actor: string
+  corrected_taxon_id: string | null
+  corrected_common_name: string | null
+  corrected_scientific_name: string | null
+  created_at: string
+}
+
+/** One taxon this station has itself already identified, as returned by
+ *  `GET /api/v1/taxa/search` for the review drawer's correction lookup. */
+export interface TaxonMatch {
+  taxon_id: string
+  common_name: string | null
+  scientific_name: string | null
+  taxonomic_group: string
+  detections: number
+}
+
 export interface Detection {
   id: string
   detector: {
@@ -260,6 +285,16 @@ export interface Detection {
    *  `GET /detections` list rows unless `include_native=true` was requested. */
   native_result?: Record<string, unknown>
   media: MediaRef[]
+  /** The current human review, or `null` if this detection has never been
+   *  reviewed. Never edits `common_name`/`scientific_name` above -- those
+   *  stay exactly as the detector wrote them (ADR-043). */
+  review?: Review | null
+  /** `'human'` when the current review is a correction, else `'model'`. */
+  identification_source?: 'human' | 'model'
+  /** The best available name: the correction's, if the detection was
+   *  corrected, else the original `common_name`/`scientific_name`. */
+  effective_common_name?: string | null
+  effective_scientific_name?: string | null
 }
 
 export interface Envelope {

@@ -36,6 +36,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import review as review_queries
 from .db import models as orm
 from .detectors.birdnet import band_for, load_range_model_for_repair
 
@@ -105,6 +106,14 @@ def find_implausible_detections(
     Skips any row already carrying a `plausibility_review`: a repeat run must
     not silently re-flag, or overwrite the first review of, a row an operator
     has already seen.
+
+    Also skips any row with a *human* review of any kind -- confirmed,
+    rejected, corrected or held (`review.reviewed_detection_ids`) -- per the
+    charter's priority-5 precedence rule: a human's ear is the highest-quality
+    information this system ever holds about an event, and a machine
+    refinement must never second-guess or overwrite it (ADR-043). This repair
+    pass exists for the unreviewed backlog; once a human has looked at a
+    detection, this function has nothing useful left to say about it.
     """
     labels, _parsed, range_model = load_range_model_for_repair(model_dir, latitude, longitude)
     label_index = {label: index for index, label in enumerate(labels)}
@@ -121,9 +130,12 @@ def find_implausible_detections(
         .scalars()
         .all()
     )
+    human_reviewed = review_queries.reviewed_detection_ids(session, (row.id for row in rows))
 
     findings: list[PlausibilityFinding] = []
     for row in rows:
+        if row.id in human_reviewed:
+            continue
         native_result = row.native_result or {}
         if native_result.get("plausibility_review"):
             continue
@@ -195,9 +207,17 @@ def apply_plausibility_flag(session: Session, item: PlausibilityFinding) -> None
     it at all. `plausibility.is_withdrawn` is the single definition they share.
     A row is withdrawn the moment this function commits, with no restart and no
     further step, which is exactly why the confirmation above is not a formality.
+
+    Defensive re-check of the same human-review precedence rule
+    `find_implausible_detections` already applies: if a human reviewed this
+    detection between the finding being computed and this call being made
+    (the CLI's confirm step is interactive, so real time passes), do nothing
+    rather than flag over a human's ear -- see ADR-043.
     """
     row = session.get(orm.Detection, item.detection_id)
     if row is None:
+        return
+    if review_queries.latest_review(session, row.id) is not None:
         return
     native_result = dict(row.native_result or {})
     native_result["plausibility_review"] = {
