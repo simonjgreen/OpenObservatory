@@ -64,9 +64,27 @@ struct Settings {
 
   MqttSettings mqtt;
 
-  // AP name raised for provisioning. Matches the stock firmware's, so the
-  // operator recognises it.
-  static constexpr const char* kProvisioningApSsid = "Aura";
+  // Prefix of the AP raised for provisioning. The full SSID appends the last
+  // three bytes of the device's own MAC -- "Observatory-1F86A4" -- for two
+  // reasons the old name failed on.
+  //
+  // It used to be "Aura", the stock DIYmalls firmware's name, chosen so the
+  // operator would recognise it. That was the wrong trade: it names a product
+  // this device no longer runs, tells someone scanning for it nothing about
+  // what it is, and -- the part that actually breaks -- two of these boards in
+  // one house would raise two identically named open access points, with no
+  // way to tell which is which or any guarantee of joining the intended one.
+  //
+  // The MAC suffix is per-device, stable across reflashes and OTA updates, and
+  // already printed in the boot banner, so an operator holding a board can
+  // match it to an SSID without guessing. See `Settings::provisioningApSsid()`.
+  static constexpr const char* kProvisioningApPrefix = "Observatory-";
+
+  // "Observatory-1F86A4". Built from the station MAC's last three bytes, which
+  // is what `WiFi.macAddress()` reports and what the boot banner prints.
+  // Pure and testable: takes the MAC rather than reading the radio, so the
+  // host tests can exercise it without an ESP32.
+  static std::string provisioningApSsid(const std::string& mac);
 };
 
 // Clamps every field into a range the firmware can actually honour. Returns

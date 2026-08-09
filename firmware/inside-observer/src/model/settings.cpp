@@ -1,6 +1,8 @@
 #include "model/settings.h"
 
+#include <cctype>
 #include <cstdio>
+#include <string>
 
 namespace observer {
 namespace {
@@ -64,6 +66,25 @@ std::string stationBaseUrl(const Settings& s) {
   std::snprintf(buf, sizeof(buf), "http://%s:%u", s.stationHost.c_str(),
                 static_cast<unsigned>(s.stationPort));
   return std::string(buf);
+}
+
+std::string Settings::provisioningApSsid(const std::string& mac) {
+  // `WiFi.macAddress()` gives "EC:E3:34:1F:86:A4"; the last three bytes are the
+  // per-device part. Strip separators and take the tail, so the SSID reads
+  // "Observatory-1F86A4" and matches the MAC printed in the boot banner.
+  std::string hex;
+  for (const char c : mac) {
+    if (c != ':' && c != '-') {
+      hex.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+  }
+  // A short or empty MAC means the radio has not started. Fall back to the bare
+  // prefix rather than inventing a suffix: an SSID that looks per-device but is
+  // not would be worse than an obviously generic one.
+  if (hex.size() < 6) {
+    return std::string(kProvisioningApPrefix);
+  }
+  return std::string(kProvisioningApPrefix) + hex.substr(hex.size() - 6);
 }
 
 }  // namespace observer

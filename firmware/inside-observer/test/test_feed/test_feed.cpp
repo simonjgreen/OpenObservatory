@@ -430,6 +430,33 @@ void test_capture_not_running_is_degraded() {
 // Settings
 // ---------------------------------------------------------------------------
 
+// The provisioning AP used to be called "Aura" -- the stock DIYmalls firmware's
+// name. Two of these boards in one house would then raise two identically named
+// open networks, with no way to tell them apart. The SSID is now per-device.
+void test_provisioning_ssid_is_per_device(void) {
+  const std::string a = observer::Settings::provisioningApSsid("EC:E3:34:1F:86:A4");
+  const std::string b = observer::Settings::provisioningApSsid("EC:E3:34:0A:1B:2C");
+  TEST_ASSERT_EQUAL_STRING("Observatory-1F86A4", a.c_str());
+  TEST_ASSERT_EQUAL_STRING("Observatory-0A1B2C", b.c_str());
+  TEST_ASSERT_TRUE(a != b);
+  // 32 bytes is the SSID limit; this must never approach it.
+  TEST_ASSERT_TRUE(a.size() <= 32);
+}
+
+void test_provisioning_ssid_normalises_and_degrades_honestly(void) {
+  // Separator style and case must not change the answer.
+  TEST_ASSERT_EQUAL_STRING(
+      "Observatory-1F86A4",
+      observer::Settings::provisioningApSsid("ece334-1f86a4").c_str());
+  // A MAC the radio has not produced yet gives the bare prefix rather than an
+  // invented suffix: a name that looks per-device but is not would be worse
+  // than an obviously generic one.
+  TEST_ASSERT_EQUAL_STRING(
+      "Observatory-", observer::Settings::provisioningApSsid("").c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "Observatory-", observer::Settings::provisioningApSsid("AB:CD").c_str());
+}
+
 void test_settings_defaults_match_the_operator_decision() {
   Settings s;
   TEST_ASSERT_EQUAL_DOUBLE(0.75, s.scoreThreshold);
@@ -511,6 +538,8 @@ int main(int, char**) {
   RUN_TEST(test_synthetic_source_is_reported_as_degraded_and_named);
   RUN_TEST(test_capture_not_running_is_degraded);
 
+  RUN_TEST(test_provisioning_ssid_is_per_device);
+  RUN_TEST(test_provisioning_ssid_normalises_and_degrades_honestly);
   RUN_TEST(test_settings_defaults_match_the_operator_decision);
   RUN_TEST(test_settings_clamping_repairs_impossible_values);
   RUN_TEST(test_station_base_url);

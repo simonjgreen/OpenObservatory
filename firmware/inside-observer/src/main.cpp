@@ -258,7 +258,7 @@ void enterSettings() {
 void enterPortal() {
   const std::string ip = portal.begin(settings);
   screen = Screen::kPortal;
-  display.showPortal(portal.ssid(), ip.c_str());
+  display.showPortal(portal.ssid().c_str(), ip.c_str());
 }
 
 void enterNumberPad(int16_t target) {
@@ -424,8 +424,23 @@ void serviceProbation() {
   }
   ProbationContext context;
   context.onProbation = onProbation;
+#ifdef OTA_ROLLBACK_DRILL
+  // Rollback drill (not a normal build). Pretends this image can never reach
+  // the station, which is the one failure the bootloader cannot see for itself:
+  // the app boots happily and is simply useless. The probation deadline should
+  // then fire and put the previous slot back with no cable involved.
+  //
+  // Build it deliberately and never publish it twice:
+  //   pio run -e cyd --build-flag "-D OTA_ROLLBACK_DRILL"
+  //
+  // Delete the image from the station as soon as the drill build reboots into
+  // probation, or the rolled-back display will be offered it again and loop.
+  context.stationHelloSeen = false;
+  context.portalCompleted = false;
+#else
   context.stationHelloSeen = push.helloSeenEver();
   context.portalCompleted = portalCompleted;
+#endif
   context.msSinceBoot = millis();
 
   switch (evaluateProbation(context)) {
@@ -619,7 +634,20 @@ void setup() {
   display.setBrightness(settings.brightnessPercent);
 
   if (!connectWifi()) {
-    Serial.println("[wifi] no usable credentials; raising provisioning AP");
+    // Deliberately not "no usable credentials": this branch is reached by any
+    // failure to associate within the timeout, and saying "no credentials" for
+    // what is usually a transient radio problem sent us hunting for wiped NVS
+    // during the 2026-08-09 rollback drill. Report the status and let the
+    // reader decide.
+    Serial.printf("[wifi] could not join in %us (status=%d, %s); raising "
+                  "provisioning AP. Credentials are NOT cleared by this -- "
+                  "they live in the WiFi stack's own NVS and are only replaced "
+                  "when the portal form is submitted.\n",
+                  kWifiConnectTimeoutMs / 1000, WiFi.status(),
+                  WiFi.status() == WL_NO_SSID_AVAIL ? "network not in range"
+                  : WiFi.status() == WL_CONNECT_FAILED ? "rejected, likely a wrong passphrase"
+                  : WiFi.status() == WL_IDLE_STATUS ? "never started associating"
+                                                    : "see wl_status_t");
     enterPortal();
     return;
   }

@@ -1,6 +1,6 @@
 // Captive-portal provisioning, as the stock firmware did it.
 //
-// The device raises an open access point called "Aura", answers every DNS
+// The device raises an open access point called "Observatory-<mac>", answers every DNS
 // query with its own address so phones open the setup page by themselves, and
 // serves one form. The operator types the WiFi credentials there, on their own
 // device, and they go straight into the ESP32 WiFi stack's own NVS namespace.
@@ -29,9 +29,10 @@ class Portal {
   // credentials are used from a clean state.
   bool submitted() const { return submitted_; }
 
-  const char* ssid() const { return Settings::kProvisioningApSsid; }
+  const std::string& ssid() const { return ssid_; }
 
  private:
+  std::string ssid_;
   bool running_ = false;
   bool submitted_ = false;
   Settings* settings_ = nullptr;

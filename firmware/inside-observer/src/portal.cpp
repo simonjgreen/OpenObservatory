@@ -247,9 +247,12 @@ std::string Portal::begin(Settings& settings) {
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(kApIp, kApIp, IPAddress(255, 255, 255, 0));
-  // Open network, matching the stock firmware's behaviour. It exists only long
-  // enough to type a password into and is torn down on reboot.
-  WiFi.softAP(Settings::kProvisioningApSsid);
+  // Open network. It exists only long enough to type a password into and is
+  // torn down on reboot.
+  // Per-device SSID, so two boards in one house do not raise two identically
+  // named open networks (and so the name says what the thing is).
+  ssid_ = Settings::provisioningApSsid(std::string(WiFi.macAddress().c_str()));
+  WiFi.softAP(ssid_.c_str());
   delay(200);
 
   dns.setErrorReplyCode(DNSReplyCode::NoError);
@@ -273,7 +276,7 @@ std::string Portal::begin(Settings& settings) {
 
   running_ = true;
   Serial.printf("[portal] AP \"%s\" up at %s\n",
-                Settings::kProvisioningApSsid,
+                ssid_.c_str(),
                 WiFi.softAPIP().toString().c_str());
   return std::string(WiFi.softAPIP().toString().c_str());
 }
