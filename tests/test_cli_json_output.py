@@ -16,8 +16,10 @@ that captures output would have reported success throughout.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from datetime import UTC
 
 import pytest
 
@@ -54,6 +56,115 @@ def test_json_output_is_machine_readable(args: list[str]) -> None:
     # And the contract that actually matters to a caller.
     payload = json.loads(stdout)
     assert isinstance(payload, dict) and payload
+
+
+def _seed_suspect_stream(dsn: str) -> None:
+    """One closed stream claiming far more wall time than its frames support.
+
+    2 hours claimed, 20 minutes of frames -- the ADR-024 shape, well under the
+    0.9 ratio and over the 60 s minimum.
+    """
+    import uuid
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from open_observatory.db import models as orm
+
+    # No create_all: the schema is bootstrapped by the CLI's own
+    # ensure_schema_at_head (ADR-042), which refuses an unstamped database --
+    # so this seeds into a database that has already been migrated to head.
+    engine = create_engine(dsn, future=True)
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+    rate = 48_000
+    with Session(engine) as session:
+        session.add(orm.AudioStream(
+            id=uuid.uuid4(),
+            source_kind="alsa",
+            start_utc=start,
+            end_utc=start + timedelta(hours=2),
+            start_monotonic_ns=0,
+            end_monotonic_ns=2 * 3600 * 1_000_000_000,
+            sample_rate=rate,
+            sample_format="S16_LE",
+            channels=1,
+            frame_count=20 * 60 * rate,
+            last_frame_at_utc=start + timedelta(minutes=20),
+            end_reason="test-seed",
+        ))
+        session.commit()
+    engine.dispose()
+
+
+def test_advisory_text_after_the_document_goes_to_stderr(tmp_path) -> None:
+    """The bug the first version of this test did not catch.
+
+    `detections reconcile-plausibility --json` emitted a well-formed report and
+    then printed "Dry run only -- nothing was changed" to stdout underneath it,
+    so `json.load` failed with "Extra data" at the line where the advice began.
+    Found on the live station against a 1,485-line report, not in CI, because
+    the two commands originally covered above happen to print nothing after
+    their document.
+
+    Exercised through `history reconcile-streams`, which shares the dry-run
+    notice and needs no model assets, so this runs everywhere rather than only
+    where BirdNET is installed. Any command that emits JSON *and* has something
+    to say to a human belongs in this test.
+    """
+    env = {
+        **os.environ,
+        "OO_DATA_DIR": str(tmp_path),
+        "OO_DATABASE_DSN": f"sqlite+pysqlite:///{tmp_path / 't.db'}",
+        "OO_RUNTIME_ENV_PATH": str(tmp_path / "runtime.env"),
+    }
+    # Let the CLI bootstrap the schema through Alembic before seeding into it.
+    subprocess.run(
+        [sys.executable, "-m", "open_observatory.cli", "history", "reconcile-streams", "--json"],
+        capture_output=True, text=True, timeout=300, env=env, check=True,
+    )
+    # A suspect stream must actually exist, or the command returns before it
+    # reaches the notice and this test passes against the very bug it exists to
+    # catch. It did, on the first draft: an empty database has nothing to report.
+    _seed_suspect_stream(env["OO_DATABASE_DSN"])
+
+    result = subprocess.run(
+        [sys.executable, "-m", "open_observatory.cli",
+         "history", "reconcile-streams", "--json"],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    findings = json.loads(result.stdout)   # the whole document, nothing trailing it
+    assert findings, "seed did not produce a suspect; the notice path was not exercised"
+    assert "Dry run only" not in result.stdout
+    assert "Dry run only" in result.stderr
+    assert "\x1b" not in result.stdout
+
+
+def test_failure_messages_do_not_corrupt_the_document(tmp_path) -> None:
+    """An error path must leave stdout parseable too.
+
+    `reconcile-plausibility` refuses to run without station coordinates, which
+    is correct since ADR-047 made location unset by default. It printed that
+    refusal to stdout, so a caller piping `--json` got neither a document nor a
+    clean error -- the worst of both.
+    """
+    env = {
+        **os.environ,
+        "OO_DATA_DIR": str(tmp_path),
+        "OO_DATABASE_DSN": f"sqlite+pysqlite:///{tmp_path / 't.db'}",
+        "OO_RUNTIME_ENV_PATH": str(tmp_path / "runtime.env"),
+    }
+    env.pop("OO_LATITUDE", None)
+    env.pop("OO_LONGITUDE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "open_observatory.cli",
+         "detections", "reconcile-plausibility", "--json"],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "", f"error text leaked to stdout: {result.stdout[:200]!r}"
+    assert "coordinates" in result.stderr
 
 
 def test_logs_go_to_stderr_not_stdout() -> None:

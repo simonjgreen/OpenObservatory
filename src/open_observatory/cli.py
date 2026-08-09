@@ -39,6 +39,25 @@ app.add_typer(detections_app, name="detections")
 app.add_typer(refine_app, name="refine")
 
 console = Console()
+console_err = Console(stderr=True)
+
+
+def notice(markup: str, *, json_out: bool = False) -> None:
+    """Advisory text for a human, kept off a `--json` document.
+
+    Anything printed to stdout *after* `emit_json` lands inside the same stream
+    a caller is parsing, and turns a valid document into "Extra data" at the
+    line where the advice begins. That is not hypothetical: the dry-run notice
+    on `detections reconcile-plausibility` did exactly this to a 1,485-line
+    report, and the JSON above it was perfectly well-formed.
+
+    So under `--json` the advice goes to stderr, where a human still sees it and
+    a pipe does not.
+    """
+    if json_out:
+        console_err.print(markup)
+    else:
+        console.print(markup)
 
 
 def emit_json(payload: Any) -> None:
@@ -927,16 +946,17 @@ def history_reconcile_streams(
             return
 
         if not apply:
-            console.print(
+            notice(
                 "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
-                "Re-run with --apply to correct these rows."
+                "Re-run with --apply to correct these rows.",
+                json_out=json_out,
             )
             return
 
         if not yes and not typer.confirm(
             f"Apply {len(suspects)} correction(s) to the database now?", default=False
         ):
-            console.print("[yellow]Aborted; nothing was changed.[/yellow]")
+            notice("[yellow]Aborted; nothing was changed.[/yellow]", json_out=json_out)
             raise typer.Exit(1)
 
         for item in suspects:
@@ -999,7 +1019,10 @@ def detections_reconcile_plausibility(
     ensure_schema_at_head()
 
     if settings.latitude is None or settings.longitude is None:
-        console.print(
+        # stderr unconditionally: a failure message on stdout corrupts a --json
+        # caller's document exactly as the dry-run notice did, and an error is
+        # the case where a caller most needs the stream to still parse.
+        console_err.print(
             "[red]No station coordinates configured -- cannot re-evaluate against the "
             "range model.[/red]"
         )
@@ -1018,7 +1041,7 @@ def detections_reconcile_plausibility(
                 limit=limit,
             )
         except DetectorUnavailable as exc:
-            console.print(f"[red]{exc}[/red]")
+            console_err.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
 
         if json_out:
@@ -1048,16 +1071,17 @@ def detections_reconcile_plausibility(
             return
 
         if not apply:
-            console.print(
+            notice(
                 "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
-                "Re-run with --apply to flag these rows."
+                "Re-run with --apply to flag these rows.",
+                json_out=json_out,
             )
             return
 
         if not yes and not typer.confirm(
             f"Flag {len(findings)} detection(s) as implausible now?", default=False
         ):
-            console.print("[yellow]Aborted; nothing was changed.[/yellow]")
+            notice("[yellow]Aborted; nothing was changed.[/yellow]", json_out=json_out)
             raise typer.Exit(1)
 
         for item in findings:
