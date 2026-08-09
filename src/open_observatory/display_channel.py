@@ -26,6 +26,14 @@ per-client queue is bounded and sheds the oldest *detection* first, so a display
 that cannot keep up converges back to now and loses history rather than losing
 the status frame that tells a person the station is broken.
 
+**One frame that is not about the garden.** ADR-050 added a firmware offer
+(:func:`update_frame`), so the display can be updated without a cable. It rides
+this channel rather than getting one of its own because the station is already
+connected to every display it would need to tell, and it is sent at most twice
+in a display's lifetime -- once on connect if the versions disagree, once when
+an operator presses the rollout button. It carries a path, a size and a digest,
+and never a host.
+
 This module is deliberately free of FastAPI, sockets and the database, so all of
 it is exercised by ``tests/test_display_channel.py`` without a server.
 """
@@ -274,6 +282,23 @@ def status_frame(*, now: int, state: str, detail: str, species_today: int) -> di
     return frame
 
 
+def update_frame(*, version: str, sha256: str, size_bytes: int, path: str) -> dict[str, Any]:
+    """A firmware offer (ADR-050). Sent at most twice in a display's lifetime.
+
+    ``path`` only, never a host: this display is already connected to the
+    station that sent the frame, and a frame that could name a *different* host
+    could point somebody's counter-top display at somebody else's binary. The
+    firmware refuses a `p` that does not start with "/", so this is enforced at
+    both ends rather than by convention here.
+
+    ``sha`` is the digest of the whole image, checked on the device against what
+    it actually received and before anything is committed to the boot slot. It
+    is what makes a truncated download a wasted ninety seconds rather than a
+    brick.
+    """
+    return {"t": "u", "fv": version, "sha": sha256, "sz": size_bytes, "p": path}
+
+
 def health_state(health: Mapping[str, Any]) -> tuple[str, str]:
     """``GET /api/v1/health`` reduced to a state letter and one honest line.
 
@@ -377,8 +402,14 @@ class DisplayClient:
     without a transport.
     """
 
-    def __init__(self, socket: Any, *, maxsize: int = 64) -> None:
+    def __init__(
+        self, socket: Any, *, maxsize: int = 64, firmware_version: str | None = None
+    ) -> None:
         self.socket = socket
+        #: What the display said it was running, in the socket's query string
+        #: (ADR-050). ``None`` for a build older than that, which has no update
+        #: path -- it is reported honestly rather than guessed at.
+        self.firmware_version = firmware_version
         self._pending: deque[dict[str, Any]] = deque()
         self._maxsize = maxsize
         self._wake = asyncio.Event()
@@ -434,6 +465,7 @@ class DisplayClient:
             "dropped": self.dropped,
             "bytes_sent": self.bytes_sent,
             "mean_frame_bytes": round(self.bytes_sent / self.sent, 1) if self.sent else None,
+            "firmware_version": self.firmware_version,
         }
 
     def close(self) -> None:

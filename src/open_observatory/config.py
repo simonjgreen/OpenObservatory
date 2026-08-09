@@ -179,6 +179,14 @@ class Settings(BaseSettings):
     #: must never be able to apply back-pressure to anything upstream.
     display_channel_queue_max: int = 64
 
+    # ---- inside-observer firmware updates (ADR-050) -----------------------
+    #: Tell a display about a published firmware image during its connect
+    #: handshake, when the version it reports is older than the published one.
+    #: On, because the display this catches is the one that was unplugged or
+    #: rebooting during a rollout -- and it costs nothing when the versions
+    #: already agree, since no frame is sent.
+    display_ota_offer_on_connect: bool = True
+
     # ---- detectors --------------------------------------------------------
     activity_enabled: bool = True
     #: Calibrated against measured noise; see detectors/activity.py.
@@ -487,9 +495,16 @@ class Settings(BaseSettings):
     #: HTTP gate never sees it; the WebSocket handler consults this same list so
     #: the display's two transports are exempt or not exempt together, rather
     #: than the fallback working and the primary path silently not.
+    #: `/api/v1/firmware/image` is the OTA image of ADR-050. It is on this list
+    #: for the same reason the other two are: an ESP32 with no keyboard cannot
+    #: log in, and an update path that only works while authentication is off is
+    #: a path that stops working on the day it matters. Nothing else under
+    #: `/api/v1/firmware` is exempt -- publishing, withdrawing and triggering a
+    #: rollout are operator actions and stay behind the gate.
     auth_public_read_paths: Annotated[tuple[str, ...], NoDecode] = (
         "/api/v1/detections",
         "/api/v1/display",
+        "/api/v1/firmware/image",
     )
     #: Minimum password length enforced at account creation and password
     #: change. NIST 800-63B's floor; no composition rules on top of it, which
@@ -663,6 +678,17 @@ class Settings(BaseSettings):
     @property
     def transient_dir(self) -> Path:
         return self.data_dir / "transient"
+
+    @property
+    def firmware_dir(self) -> Path:
+        """Where the counter-top display's firmware image lives (ADR-050).
+
+        Derived from ``data_dir`` rather than being a settable field, so it
+        inherits ``data_dir``'s exclusion from the settings UI for free: a field
+        naming a directory the API serves bytes out of is the same hazard
+        ``web_dist`` is excluded for.
+        """
+        return self.data_dir / "firmware"
 
     @property
     def fixtures_dir(self) -> Path:

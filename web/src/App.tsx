@@ -7,6 +7,7 @@ import { Suggestions } from './components/Suggestions'
 import { LevelMeter, ListenControl } from './components/Meters'
 import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './components/Pipeline'
 import { DetectionDrawer } from './components/DetectionDrawer'
+import { FirmwarePanel } from './components/FirmwarePanel'
 import { FirstRun } from './components/FirstRun'
 import { History } from './components/History'
 import { ChangePasswordGate, Login } from './components/Login'
@@ -164,10 +165,17 @@ export default function App() {
       )}
 
       {showSettings && (
-        <SettingsPanel
-          onClose={() => setShowSettings(false)}
-          onSaved={() => firstRun.refresh()}
-        />
+        <>
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            onSaved={() => firstRun.refresh()}
+          />
+          {/* ADR-050. Alongside settings rather than in them: this is not a
+              value the station reads, it is a binary the station serves, and
+              the mistake to prevent is an operator hunting for it in a form
+              that lists every other thing the display can be told. */}
+          <FirmwarePanel />
+        </>
       )}
 
       <OperatorSummary status={live.status} />

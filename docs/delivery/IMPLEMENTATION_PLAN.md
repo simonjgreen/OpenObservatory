@@ -261,7 +261,10 @@ Deliver:
   first item does not pause for a release;
 - **over-the-air update of the counter-top display, triggered from the Pi**, so
   the ESP32 never has to be unplugged and carried to a laptop. The station
-  already knows the display's address and already pushes to it;
+  already knows the display's address and already pushes to it. *(ADR-050:
+  written, and **unflashed** — the two-slot partition table it needs has not yet
+  been installed on the operator's unit, which takes one cable trip. Not done
+  until that flash and its smoke test have happened.)*;
 - **backup and restore of a station's identity and history**, so replacing the
   hardware does not lose the record;
 - a signed, checksummed release process for images and firmware, with model

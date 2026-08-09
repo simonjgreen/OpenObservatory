@@ -1095,3 +1095,11 @@ code {
 .first-run-steps li.current button { font-weight: 700; }
 .first-run-steps li.done button { color: var(--text-dim); }
 .first-run-step { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+
+/* ADR-050: the counter-top display's firmware, published from here so the
+   ESP32 never has to go back on a cable. */
+.firmware-upload { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.firmware-upload label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.firmware-upload input[type='text'] { max-width: 180px; }
+.firmware-displays { margin: 4px 0; padding-left: 18px; font-size: 12px; }
+.firmware-displays .dim { margin-left: 6px; }

@@ -31,10 +31,15 @@ void PushStationSource::begin(const Settings& settings) {
   // The filter goes in the URL, so the station applies it. The ESP32 never
   // receives-and-discards a detection: that is the whole lesson of the polled
   // transport, where forty rows were fetched to render six.
+  // `fw` is how the station learns which build is on the glass, at the one
+  // moment it is guaranteed to be listening (ADR-050). It costs ~10 bytes on a
+  // connection that then lasts for days, and it means a display that was
+  // unplugged during a rollout is caught the moment it comes back, without
+  // anything on this device ever polling for an update.
   std::string path = "/api/v1/display?min_score=" +
                      formatThreshold(settings.scoreThreshold) +
                      "&bats=" + (settings.showBats ? "true" : "false") +
-                     "&rows=6";
+                     "&rows=6&fw=" + INSIDE_OBSERVER_VERSION;
 
   socket_.begin(settings.stationHost.c_str(), settings.stationPort, path.c_str());
   socket_.onEvent([](WStype_t type, uint8_t* payload, size_t length) {
@@ -115,6 +120,7 @@ void PushStationSource::applyFrame(const std::string& raw,
   switch (frame.type) {
     case PushFrameType::kHello:
       helloSeen_ = true;
+      helloEver_ = true;
       if (frame.heartbeatSeconds > 0) {
         heartbeatSeconds_ = static_cast<uint32_t>(frame.heartbeatSeconds);
       }
@@ -139,6 +145,18 @@ void PushStationSource::applyFrame(const std::string& raw,
       if (candidates_.size() > kCandidateMax) {
         candidates_.resize(kCandidateMax);
       }
+      break;
+
+    case PushFrameType::kFirmwareOffer:
+      // Recorded, not acted on. This runs inside the socket's own service
+      // call; installing from here would block the network stack for a minute
+      // and a half and leave the feed's own staleness clock running against
+      // it. main.cpp picks it up on the next pass, when it also knows what is
+      // on the screen and when the glass was last touched.
+      offer_ = frame.offer;
+      Serial.printf("[ota] station offers %s (%u bytes)\n",
+                    offer_.version.c_str(),
+                    static_cast<unsigned>(offer_.sizeBytes));
       break;
 
     case PushFrameType::kHeartbeat:

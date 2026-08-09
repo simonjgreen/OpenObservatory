@@ -762,6 +762,14 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _e("display_channel_queue_max", "display", label="queue depth",
        minimum=1, maximum=10000,
        note="Applies to displays that connect after the change."),
+    _e("display_ota_offer_on_connect", "display",
+       label="offer firmware updates on connect",
+       help="A display that was unplugged or rebooting during a rollout is "
+            "caught the moment it reconnects, without anything on the device "
+            "polling for an update. Costs no bytes when the versions already "
+            "agree. With this off, only the rollout button offers anything.",
+       note="Read when a display connects, so it takes effect on the next "
+            "reconnect rather than immediately."),
     # ---- MQTT ---------------------------------------------------------------
     _e("mqtt_enabled", "mqtt", label="publish to MQTT"),
     _e("mqtt_host", "mqtt", label="broker host"),

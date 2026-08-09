@@ -61,9 +61,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import display_channel as display_state
+from .. import firmware_store, plausibility
 from .. import history as history_queries
 from .. import models as model_registry
-from .. import plausibility
 from .. import review as review_queries
 from ..audio.probe import enumerate_capture_devices, probe_supported_rates, system_report
 from ..auth import AuthError, AuthService, Principal
@@ -585,6 +585,158 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "per_client": [client.stats() for client in display_clients],
         }
         return snapshot
+
+    # -- inside-observer firmware (ADR-050) ---------------------------------
+    #
+    # The station holds one image; the display fetches it over the connection
+    # it already has. The whole point is that the ESP32 never goes back on a
+    # cable, so everything here is written to fail *safe* rather than to
+    # succeed often: a refused upload, a withdrawn offer and a display that
+    # ignores a frame all leave a working display on the shelf.
+
+    firmware = firmware_store.FirmwareStore(settings.firmware_dir)
+    FIRMWARE_IMAGE_PATH = f"{API_PREFIX}/firmware/image"
+
+    def _firmware_payload() -> dict[str, Any]:
+        release = firmware.current()
+        return {
+            "published": release.as_dict() if release is not None else None,
+            "image_path": FIRMWARE_IMAGE_PATH if release is not None else None,
+            "offer_on_connect": settings.display_ota_offer_on_connect,
+            #: So the UI can say "this will not fit" in the same words the
+            #: display would, rather than discovering it at upload time.
+            "app_slot_bytes": firmware_store.APP_SLOT_BYTES,
+            "displays": [
+                {
+                    "firmware_version": client.firmware_version,
+                    # Honest about the third state: a display that predates
+                    # ADR-050 reports no version at all, and "unknown" is not
+                    # the same claim as "out of date".
+                    "up_to_date": (
+                        None
+                        if release is None or not client.firmware_version
+                        else firmware_store.compare_versions(
+                            client.firmware_version, release.version
+                        )
+                        >= 0
+                    ),
+                    "frames_sent": client.sent,
+                }
+                for client in display_clients
+            ],
+        }
+
+    @app.get(f"{API_PREFIX}/firmware")
+    def get_firmware() -> dict[str, Any]:
+        return _firmware_payload()
+
+    @app.post(f"{API_PREFIX}/firmware")
+    async def publish_firmware(
+        request: Request,
+        version: str = Query(..., min_length=1, max_length=15),
+        notes: str = Query("", max_length=500),
+    ) -> dict[str, Any]:
+        """Store one image and start offering it.
+
+        The body is the raw `.bin`, not a multipart form: this endpoint has
+        exactly one file and no other fields, and `application/octet-stream`
+        avoids adding a multipart parser to the dependency set for it.
+
+        The image is validated as an ESP32 application for *this* chip before
+        anything is written (`firmware_store.validate_image`). That check is
+        about the likely mistake rather than about security -- uploading
+        `firmware.elf`, or a whole-flash backup, or an ESP32-S3 build, each
+        produces a file that downloads and verifies perfectly and then does not
+        boot. A display that does not boot is the car journey this feature
+        exists to remove.
+        """
+        payload = await request.body()
+        try:
+            release = await asyncio.to_thread(
+                firmware.publish, payload, version=version, notes=notes
+            )
+        except firmware_store.FirmwareError as exc:
+            raise HTTPException(status_code=422, detail={"errors": {"image": str(exc)}}) from exc
+        log.info(
+            "firmware.published",
+            version=release.version,
+            sha256=release.sha256,
+            size_bytes=release.size_bytes,
+        )
+        return _firmware_payload()
+
+    @app.delete(f"{API_PREFIX}/firmware")
+    async def withdraw_firmware() -> dict[str, Any]:
+        """Stop offering. Never touches a display that already installed it.
+
+        There is no "roll the fleet back" button and there deliberately is not
+        one: rollback is the *display's* decision, taken against evidence only
+        it has (can I reach the station?), and a station that could push a
+        downgrade could also push a downgrade to a build that cannot be
+        upgraded again.
+        """
+        had = await asyncio.to_thread(firmware.withdraw)
+        log.info("firmware.withdrawn", was_published=had)
+        return _firmware_payload()
+
+    @app.get(FIRMWARE_IMAGE_PATH)
+    def get_firmware_image() -> FileResponse:
+        release = firmware.current()
+        if release is None:
+            raise HTTPException(status_code=404, detail="no firmware image is published")
+        # Content-Length must be exact: the display compares it against the
+        # size in the offer and refuses a mismatch rather than writing an
+        # image of unknown length into a boot slot.
+        return FileResponse(
+            firmware.image_path,
+            media_type="application/octet-stream",
+            filename=f"inside-observer-{release.version}.bin",
+        )
+
+    def _offer_firmware_to(client: display_state.DisplayClient) -> bool:
+        """Queue an update frame if this display should have one. Never blocks."""
+        release = firmware.current()
+        if release is None or not firmware_store.should_offer(
+            release, client.firmware_version
+        ):
+            return False
+        client.offer(
+            display_state.update_frame(
+                version=release.version,
+                sha256=release.sha256,
+                size_bytes=release.size_bytes,
+                path=FIRMWARE_IMAGE_PATH,
+            )
+        )
+        return True
+
+    @app.post(f"{API_PREFIX}/firmware/rollout")
+    def rollout_firmware() -> dict[str, Any]:
+        """Tell every connected display that is behind about the published image.
+
+        Push rather than poll, and push *and* the connect check rather than
+        either alone, because they catch different displays: this catches one
+        that has been connected for a week and would otherwise never ask, and
+        the connect check catches one that was unplugged or rebooting while
+        this ran. Neither costs a byte when the versions already agree.
+
+        Offering is not installing. The display refuses anything not strictly
+        newer, refuses a digest it cannot use, and waits until nobody is
+        looking at it and nothing is happening in the garden. This endpoint
+        returns how many were *told*, which is the only thing the station
+        knows.
+        """
+        release = firmware.current()
+        if release is None:
+            raise HTTPException(status_code=409, detail="no firmware image is published")
+        offered = sum(1 for client in display_clients if _offer_firmware_to(client))
+        log.info(
+            "firmware.rollout",
+            version=release.version,
+            connected=len(display_clients),
+            offered=offered,
+        )
+        return {"offered": offered, "connected": len(display_clients), **_firmware_payload()}
 
     # -- site settings (ADR: site parameters are runtime state) -------------
     #
@@ -1955,6 +2107,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         min_score: float = Query(0.75, ge=0.0, le=1.0),
         bats: bool = Query(True),
         rows: int = Query(0, ge=0, le=12),
+        #: The firmware version on the glass (ADR-050). Absent from builds
+        #: before that, which have no update path; reported as unknown rather
+        #: than assumed to be old.
+        fw: str = Query("", max_length=15),
     ) -> None:
         """The inside observer's feed: detections only, a few dozen bytes each.
 
@@ -1991,7 +2147,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows=rows or settings.display_channel_snapshot_rows,
         )
         heartbeat_s = max(1, int(settings.display_channel_heartbeat_s))
-        client = display_state.DisplayClient(socket, maxsize=settings.display_channel_queue_max)
+        client = display_state.DisplayClient(
+            socket,
+            maxsize=settings.display_channel_queue_max,
+            firmware_version=fw or None,
+        )
         display_clients.add(client)
         # Only detections. Subscribing to the whole bus would queue capture.levels
         # at ~1 Hz and every window event for a client that renders none of them.
@@ -2023,7 +2183,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 species_today=tracker.count,
                 min_score=filt.min_score,
                 bats=filt.show_bats,
+                firmware_version=client.firmware_version,
             )
+            # The version check on connect (ADR-050). Queued after the hello so
+            # the screen is populated before anything asks it to go blank, and
+            # only when the display named a version older than the published
+            # one -- there is no frame at all in the ordinary case.
+            if settings.display_ota_offer_on_connect and _offer_firmware_to(client):
+                log.info(
+                    "firmware.offered_on_connect",
+                    display_version=client.firmware_version,
+                )
             pump = asyncio.create_task(
                 _pump_display(client, subscription, filt, tracker, heartbeat_s),
                 name="display-pump",

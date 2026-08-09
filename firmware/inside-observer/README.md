@@ -43,7 +43,7 @@ must not be confusable with a screen that is broken:
 | | |
 |---|---|
 | SoC | ESP32-D0WD-V3 rev 3, 2 cores @ 240 MHz, **no PSRAM** |
-| Flash | 4 MB — app0 3 MB @ 0x10000, SPIFFS 896 KB @ 0x310000, NVS 20 KB @ 0x9000 |
+| Flash | 4 MB — **two OTA app slots of 1,984 KB** @ 0x10000 and 0x200000, NVS 20 KB @ 0x9000, coredump 64 KB @ 0x3F0000 (ADR-050) |
 | Panel | 240x320 **ILI9341** over SPI, used in portrait |
 | Touch | **XPT2046 resistive**, on a *separate* SPI bus from the display |
 | USB serial | CH340, `/dev/ttyUSB0` |
@@ -119,7 +119,7 @@ stands. See the comment at the top of `src/touch.cpp`.
 ```
 firmware/inside-observer/
   platformio.ini            every dependency pinned to an exact version
-  partitions/               a byte-for-byte copy of the stock partition table
+  partitions/               two OTA app slots; NVS still at the stock offset
   src/
     model/                  PURE logic - no Arduino, no WiFi, no TFT_eSPI
       detection_feed.*      threshold filtering, ordering, collapsing
@@ -129,9 +129,11 @@ firmware/inside-observer/
       relative_time.*       "4s ago" / "1m ago" / "99d+ ago", and its boundaries
       station_clock.*       the monotonic base those are counted from
       push_frame.*          the /api/v1/display wire format, parsed
+      ota_policy.*          when an update may install, and when to roll back
     board_pins.h            the table above, in code, with its sources
     station_source.*        the transport seam, and the HTTP fallback
     push_station_source.*   the WebSocket push transport (ADR-038, the default)
+    ota.*                   fetch, hash, write, commit; the two esp_ota_* calls
     display.*               all rendering
     touch.*                 XPT2046 on the second SPI bus
     portal.*                captive-portal provisioning
@@ -139,6 +141,7 @@ firmware/inside-observer/
     main.cpp                boot, self-tests, screen state machine
   test/test_feed/           host unit tests: filtering, ordering, health
   test/test_push/           host unit tests: relative times, clock, wire format
+  test/test_ota/            host unit tests: versions, digests, rollback rules
 ```
 
 Everything under `src/model/` is deliberately free of hardware dependencies so
@@ -158,13 +161,19 @@ pio test -e native        # host unit tests, no hardware needed
 Current figures on this build:
 
 ```
-RAM:   [=         ]  14.9% (used 48820 bytes from 327680 bytes)
-Flash: [===       ]  30.6% (used 962437 bytes from 3145728 bytes)
+RAM:   [==        ]  15.6% (used 51028 bytes from 327680 bytes)
+Flash: [======    ]  55.5% (used 1127649 bytes from 2031616 bytes)
 ```
 
-Measured free heap on the device, steady state: ~220 kB.
+Measured free heap on the device, steady state: ~220 kB. The flash figure is
+against one 1,984 KB OTA slot, not the old single 3 MB partition; the jump from
+962,437 bytes is the OTA client itself — `HTTPClient`, `Update` and mbedtls'
+SHA-256 (ADR-050).
 
 ## Flash
+
+**Read this section before connecting the cable.** Since ADR-050 there are two
+kinds of flash, and only one of them installs the partition table.
 
 The operator is not in the `dialout` group on the build host, so either add
 them (`sudo usermod -aG dialout $USER`, then log out and in) or loosen the
@@ -172,8 +181,75 @@ device node for the session:
 
 ```bash
 sudo chmod 666 /dev/ttyUSB0
+```
+
+### The one flash that installs the new partition table
+
+**This single command does all of it**, and it is the only one needed:
+
+```bash
+cd firmware/inside-observer
 pio run -e cyd -t upload
 ```
+
+One `esptool` invocation writes four things, and the partition table is one of
+them. Verbatim, so it can be checked against what scrolls past:
+
+```
+esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 \
+    --before default_reset --after hard_reset \
+    write_flash -z --flash_mode dio --flash_freq 80m --flash_size 4MB \
+    0x1000  .pio/build/cyd/bootloader.bin \
+    0x8000  .pio/build/cyd/partitions.bin \
+    0xe000  <framework>/tools/partitions/boot_app0.bin \
+    0x10000 .pio/build/cyd/firmware.bin
+```
+
+`0x8000` is the partition table. `0xe000` is `boot_app0.bin`, which resets
+`otadata` so the board boots from `ota_0` — that one matters now in a way it did
+not before, because with two slots `otadata` finally has something to arbitrate
+and must not be left holding a stale opinion.
+
+**Things that would waste the one trip:**
+
+* **Never add `--erase-all` or `erase_flash`.** It erases NVS at `0x9000`, which
+  holds the WiFi credentials the operator provisioned under the stock DIYmalls
+  firmware. Nobody has ever seen those credentials and there is no copy. Erasing
+  them means the display comes up on its own `Aura` access point and has to be
+  reprovisioned by hand — recoverable, but only because the portal exists, and
+  it is entirely avoidable.
+* **Do not flash `firmware.bin` alone at `0x10000`.** That writes an application
+  that expects two app slots into a board still running the one-slot table, and
+  the update path silently will not work — the symptom is a display that takes
+  offers and never installs anything.
+* **Take a fresh whole-image backup first** (see "Restoring the original weather
+  firmware"), because after this the flash layout on the board is no longer the
+  one the old backup describes. The old backup still restores fine; a new one
+  just records where you actually were.
+
+Verify it landed, before unplugging:
+
+```bash
+sudo python scripts/serial_capture.py /dev/ttyUSB0 40
+```
+
+The two lines that prove the table took:
+
+```
+flash      : 4194304 bytes, sketch 1127649 of 2031616
+app slot   : app0
+```
+
+`2031616` is one OTA slot (`0x1F0000`). If that number is `3145728` you are
+still on the old single-slot table and the upload did not include `0x8000` —
+which is what happens if you flashed only the application.
+
+### Every flash after this one
+
+Over the air, from the station's settings page (ADR-050). The cable is no longer
+part of the loop. `pio run -e cyd -t upload` still works and is still the fastest
+way to iterate at a desk, but it is no longer the only way to change what is on
+the counter top.
 
 A normal upload writes only the bootloader (0x1000), the partition table
 (0x8000), `boot_app0` (0xe000) and the application (0x10000). **NVS at 0x9000
@@ -200,10 +276,11 @@ ways the display gets onto WiFi, in this order:
 1. **Inherited from the stock firmware.** The original DIYmalls weather
    firmware provisioned WiFi through its own "Aura" captive portal, and the
    ESP32 WiFi stack stored the SSID and passphrase in its own NVS namespace
-   (`nvs.net80211`) at 0x9000. Because this firmware keeps the stock partition
-   table and a normal upload does not erase NVS, `WiFi.begin()` with no
-   arguments reconnects using those credentials. This firmware never reads,
-   copies, logs or serialises them.
+   (`nvs.net80211`) at 0x9000. Because this firmware keeps NVS at exactly that
+   offset and size — ADR-050 changed the app partitions around it and
+   deliberately did not touch it — and because a normal upload does not erase
+   NVS, `WiFi.begin()` with no arguments reconnects using those credentials.
+   This firmware never reads, copies, logs or serialises them.
 
 2. **The provisioning portal.** If there are no usable credentials, or the
    operator taps *WiFi + MQTT → set up* in settings, the display raises an
@@ -251,8 +328,12 @@ in NVS so no stored configuration needs migrating.
 **Directly from the Pi, over a WebSocket the station pushes down** (ADR-038):
 
 ```
-ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6
+ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6&fw=0.2.0
 ```
+
+`fw` is the running firmware version, so the station can offer an update to a
+display that is behind at the one moment it is guaranteed to be listening
+(ADR-050). It is the only thing this device ever tells the station about itself.
 
 The filter is in the URL, so the station applies it and the device never receives
 a detection it would throw away. Measured on the wire against the live station:
@@ -263,6 +344,7 @@ a detection it would throw away. Measured on the wire against the live station:
 | a named detection | 49 |
 | a bat pass | 40 |
 | the 10 s heartbeat | 43 |
+| a firmware offer (ADR-050) | ~130, at most twice in a display's lifetime |
 
 **11.4 B/s in a 90-second sample.** The polled transport this replaced cost the
 station ~315 ms of query time and ~127 kB every 20 s (~6,350 B/s) to render the
@@ -305,6 +387,67 @@ The station's MQTT publisher exists (ADR-025), and this display deliberately doe
 not use it: the broker runs on the Home Assistant box, and the station and the
 display are the same system in the same house. The `MqttSettings` struct stays in
 NVS, unused.
+
+## Updating over the air
+
+ADR-050. Once the two-slot partition table is on the board, the station holds the
+firmware and the display fetches it over the WebSocket it already has. **The
+cable is out of the loop.**
+
+From the browser: *settings* → **Display firmware**. Upload
+`.pio/build/cyd/firmware.bin`, give it the version from `platformio.ini`, and
+press *publish*. Displays are offered it as they connect; *roll out now* tells
+the ones already connected.
+
+From a terminal, if you prefer:
+
+```bash
+curl -s -X POST --data-binary @.pio/build/cyd/firmware.bin \
+  -H 'content-type: application/octet-stream' \
+  'http://<station-host>:8080/api/v1/firmware?version=0.2.1&notes=what%20changed'
+curl -s -X POST http://<station-host>:8080/api/v1/firmware/rollout
+```
+
+**Bump `INSIDE_OBSERVER_VERSION` in `platformio.ini` in the same commit as any
+change meant to reach a display.** The display refuses an image whose version is
+not strictly newer than what it is running, so an unbumped build is a rollout
+that quietly does nothing.
+
+Versions are dotted numbers only — `0.2.1`, not `0.2.1-rc1`. Both the station and
+the firmware refuse a version they cannot order rather than guessing where a
+suffix sorts.
+
+### What the display does with an offer
+
+It does not install it immediately, and that is deliberate:
+
+* **Never over a person.** Deferred while the settings, keypad or portal screens
+  are open, while the glass has been touched in the last two minutes, and while
+  the newest row on the feed is under a minute old. An ambient display's one
+  time-critical moment is a detection appearing.
+* **The checksum is checked before anything becomes bootable.** SHA-256 over
+  every byte received, compared before `Update.end()`. A truncated download costs
+  ninety seconds and nothing else.
+* **A bad build puts the good one back by itself.** A new image boots once in
+  `ESP_OTA_IMG_PENDING_VERIFY`; if it crashes and reboots, the bootloader
+  restores the previous slot with no help from the application. If it runs but
+  cannot reach the station within ten minutes, the firmware rolls itself back.
+  Completing the provisioning portal also counts as a pass — that path is the
+  recovery route that needs no cable, and a build that served it is not bricked.
+* **Power loss mid-write loses nothing.** Writes go to the *inactive* slot;
+  `otadata` is not touched until the commit. The board reboots into the image it
+  was already running.
+
+The screen says `UPDATING` with a progress bar and `do not unplug` while this is
+happening — its own screen, not a banner over the feed, because the feed is stale
+from the moment the download starts.
+
+### What this does not protect against
+
+The image travels over plain HTTP on the LAN and the digest is supplied by
+whoever supplies the image, so this defends against corruption, not against
+someone who can already impersonate the station on your network. Image signing is
+the fix and is deliberately not here yet; see ADR-050.
 
 ## If the display looks wrong
 
@@ -372,8 +515,11 @@ esptool --port /dev/ttyUSB0 --baud 460800 \
     write_flash 0x0 firmware-backup.bin
 ```
 
-That restores everything including NVS, so the stock firmware finds its own
-WiFi credentials and settings exactly as it left them. To take a fresh backup
+That restores everything including NVS **and the stock partition table at
+0x8000**, so ADR-050's two-slot layout is overwritten along with everything else
+and the stock firmware finds its own WiFi credentials and settings exactly as it
+left them. The new partition table changes nothing about this procedure. To take
+a fresh backup
 of whatever is on the board right now, before overwriting it:
 
 ```bash
@@ -387,8 +533,9 @@ Three commands, in this order, all of which must be run against the real board
 and the real station — nothing here can be believed from a host build.
 
 ```bash
-# 1. The pure logic, on a laptop. 53 cases: filtering, ordering, health parsing,
-#    relative-time boundaries, the millis() wrap, and the wire format.
+# 1. The pure logic, on a laptop. 89 cases: filtering, ordering, health parsing,
+#    relative-time boundaries, the millis() wrap, the wire format, and ADR-050's
+#    version ordering, digest rule, deferral gate and rollback deadline.
 pio test -e native
 
 # 2. What the push channel actually costs on the wire, against the live station.
@@ -403,6 +550,8 @@ sudo python scripts/serial_capture.py /dev/ttyUSB0 130
 From step 3, the lines that constitute a pass:
 
 ```
+flash      : 4194304 bytes, sketch 1127649 of 2031616
+app slot   : app0
 [selftest] panel readback PASSED
 [push] connected to /api/v1/display?min_score=0.7500&bats=true&rows=6
 [push] hello: 6 rows, 30 species today, hb 10s
@@ -431,8 +580,16 @@ same number the device reports, and the two should agree.
 
 This firmware lives entirely on the display. Nothing about it touches the
 station, which it only ever reads from. Rolling back is either a re-flash of a
-previous `firmware.bin` or the whole-image restore above; in both cases the
-station is unaffected and no observation is at risk.
+previous `firmware.bin` — now over the air, or over a cable — or the whole-image
+restore above; in both cases the station is unaffected and no observation is at
+risk.
+
+**The partition table is the one asymmetric part** (ADR-050). Reverting the
+*application* is cheap in both directions. Reverting the *table* needs a cable,
+and there is no reason to: the old one-slot layout is a strict subset of what
+the two-slot layout can do, and the whole-image stock restore works against
+either. The station side of ADR-050 reverts independently — `git revert` removes
+the endpoints and the display simply never receives an offer.
 
 The station half of ADR-038 rolls back independently and just as cheaply:
 `/api/v1/display` is an additive endpoint that costs nothing with no client

@@ -1,20 +1,65 @@
 # Partition table for the inside observer (ESP32-2432S028R, 4 MB flash).
 #
-# This is a byte-for-byte copy of the layout the stock DIYmalls weather
-# firmware shipped with, read back from the full-flash backup image at
-# offset 0x8000. Keeping it identical matters for two reasons:
+# THIS IS NO LONGER THE STOCK LAYOUT. It was, byte for byte, up to ADR-050;
+# the single change is that the stock table's one 3 MB app slot and its unused
+# 896 KB SPIFFS partition have become two equal OTA app slots. Everything the
+# original comment said was load-bearing is still true, and is why the rest of
+# the table is untouched:
 #
-#  1. NVS stays at 0x9000 with the same size, so the WiFi credentials the
-#     operator already provisioned under the stock firmware survive a flash
-#     of this application (esptool only writes 0x1000, 0x8000, 0xe000 and
-#     0x10000 on a normal upload). We never see those credentials and never
-#     store them ourselves.
-#  2. Restoring the original firmware from the backup image is a plain
-#     whole-image write with no layout surprises.
+#  1. NVS stays at 0x9000 with the same 0x5000 size, at the same offset, in
+#     the same order. The WiFi credentials the operator provisioned under the
+#     stock DIYmalls firmware live in the ESP32 WiFi stack's own
+#     `nvs.net80211` namespace inside that partition. We have never seen them
+#     and must not destroy them. `esptool write_flash` only writes the
+#     offsets it is given, so an upload that writes 0x1000/0x8000/0xe000/
+#     0x10000 leaves NVS alone -- but only while NVS occupies exactly these
+#     bytes. Moving or resizing it would invalidate every entry in it.
+#     Do not touch this line.
+#
+#  2. Restoring the original firmware from the full-flash backup is still a
+#     plain whole-image write with no layout surprises. `write_flash 0x0
+#     firmware-backup.bin` writes all 4 MB, including the stock partition
+#     table at 0x8000, so it overwrites this table along with everything
+#     else. The restore does not need to know this table exists.
+#
+# Why the change (ADR-050): the stock table has no `ota_1`, so ESP32 OTA
+# cannot work at all -- `esp_ota_get_next_update_partition` has nowhere to
+# write and `otadata` has nothing to arbitrate. Every firmware change was
+# therefore a physical trip and a USB cable, forever. Installing this table
+# needs exactly that physical access once, and buys it back permanently.
+#
+# The arithmetic, so a successor does not have to redo it:
+#
+#   0x000000  bootloader           (written by upload, not described here)
+#   0x008000  this table            0x1000
+#   0x009000  nvs                   0x5000   unchanged, and must stay so
+#   0x00e000  otadata               0x2000   unchanged; now has two slots to
+#                                            arbitrate rather than one
+#   0x010000  app0 / ota_0        0x1F0000   1,984 KB
+#   0x200000  app1 / ota_1        0x1F0000   1,984 KB
+#   0x3F0000  coredump             0x10000   unchanged offset and size
+#             ------------------------------
+#                                 0x400000   4 MB exactly, nothing spare
+#
+# App partitions must start on a 64 KB boundary; 0x10000 and 0x200000 both do.
+# Coredump keeps its stock offset so a panic dump pulled from a board still
+# comes from the address the old notes name.
+#
+# Headroom, measured not guessed. The build that motivated this change was
+# 962,437 bytes (47.4% of a slot); adding the OTA client itself -- HTTPClient,
+# Update and mbedtls' SHA-256 -- took it to 1,127,649 bytes, 55.5%, which is
+# 883 KB of room left. That growth is the argument for the size rather than
+# against it: the feature that makes a slot necessary is also the feature that
+# fills a sixth of it, and a slot the firmware outgrows in six months turns a
+# software update back into a car journey.
+# Two 1.5 MB slots would also have fitted (75% occupancy); 1,984 KB was taken instead
+# because the 896 KB SPIFFS partition it comes from is unused -- nothing in
+# src/ opens a filesystem -- and unused flash on a device you cannot reach is
+# worth nothing, whereas headroom on it is worth a journey.
 #
 # Name,     Type, SubType, Offset,   Size,     Flags
 nvs,        data, nvs,     0x9000,   0x5000,
 otadata,    data, ota,     0xe000,   0x2000,
-app0,       app,  ota_0,   0x10000,  0x300000,
-spiffs,     data, spiffs,  0x310000, 0xe0000,
-coredump,   data, coredump,0x3f0000, 0x10000,
+app0,       app,  ota_0,   0x10000,  0x1F0000,
+app1,       app,  ota_1,   0x200000, 0x1F0000,
+coredump,   data, coredump,0x3F0000, 0x10000,
