@@ -95,10 +95,12 @@ two disagree by more than 10%. Do not read `end_utc - start_utc` anywhere as
 
 - id
 - plugin ID/version
-- model ID/version/hash
+- model_id / model_version / model_sha256
 - taxonomy version
-- licence metadata JSON
-- active configuration JSON
+- licence_name, licence_url — two string columns, **not** a JSON blob
+- claim — the detector's own statement of what it does and does not assert
+- calibrated — surfaced in every detection payload
+- configuration JSON (the active configuration; the only JSON column here)
 - installed_at
 
 ### analysis_window — Planned, not implemented
@@ -163,6 +165,9 @@ Columns as implemented:
 - peak_frequency_hz nullable
 - native_result JSON
 - created_at
+- refined_at (indexed) / refinement_version / refinement_outcome — added by
+  revision `0006_refinement` (ADR-045); described in full in the refinement
+  section below
 
 **`native_result` since 2026-08-09 (ADR-037 option C)**: `normaliser.py`
 drops a small, fixed set of keys before persisting a *new* `native_result`,
@@ -255,21 +260,36 @@ append-only, setting `supersedes_review_id` to the prior row for that detection 
 and `GET /api/v1/detections/{id}/review` returns the latest. The debug UI's
 detection drawer has confirm/reject controls wired to it.
 
-One column is still unused: `corrected_taxon_id` is always written `None`.
-Correcting a misidentified taxon implies a re-labelling or re-training pipeline
-downstream and is deliberately deferred to a future ADR rather than half-built.
+**The correction columns are now written (ADR-043, 2026-08-09).** This section
+previously said `corrected_taxon_id` "is always written `None`" and that
+correction was deferred to a future ADR. That is no longer true: revision
+`0005_review_correction_names` added the denormalised name columns, and
+`POST /api/v1/detections/{id}/review` writes all three when `status` is
+`corrected`.
 
 - id
 - detection_id
 - actor
-- status (`confirmed`, `rejected`, `uncertain`)
-- corrected taxon ID nullable
+- status — one of `confirmed`, `rejected`, `corrected`, `held`. (An earlier
+  version of this list said `uncertain`; **no code path has ever written that
+  value**.)
+- corrected_taxon_id nullable
+- corrected_common_name nullable — denormalised, revision `0005`
+- corrected_scientific_name nullable — denormalised, revision `0005`
 - note
 - created_at
 - supersedes_review_id nullable
 
 Reviews are append-only. Current status is derived from the latest valid
-review.
+review. **A correction never edits the detection**: the detection's own
+`common_name` / `scientific_name` / `canonical_taxon_id` are untouched, so the
+original claim stays visible and attributable, and the API derives
+`effective_common_name` / `identification_source` at read time. A `held` review
+also exempts the detection's evidence from retention's age tiers — though not
+from the disk watermark.
+
+On the live station on 2026-08-09 this table held **65 rows**, so the review
+workflow is in real use, not merely built.
 
 ### refinement — Implemented (ADR-045), written by the refinement runner
 
@@ -324,6 +344,21 @@ subquery against a second table.
 NULL means no refiner has ever examined the event. **Retention does not yet
 consult these columns** — see ADR-045's "What this does not do" for the exact
 predicate that would close the gap, and why applying it is the operator's call.
+
+On the live station on 2026-08-09 every row was still NULL: the runner has not
+been run against it.
+
+### BirdNET near-miss ledger — deliberately not persisted (not an omission)
+
+ADR-052 records what BirdNET proposed and refused, with per-band score
+histograms, and serves it at `GET /api/v1/detectors/near-misses`. **There is no
+table for it and there must not be one.** It is a bounded in-memory ring
+(`detectors/near_miss.py`, `birdnet_near_miss_ring`, default 200) that touches no
+session and issues no commit, and it is empty after a restart by design: the
+station rejects thousands of candidates an hour and persisting them would move
+the detection table's growth problem (ADR-037) into a table nobody browses,
+against a charter cross-cutting constraint on SD-card write amplification. If
+you find yourself adding a migration for it, read ADR-052 first.
 
 ### telemetry_series / telemetry_sample — Planned, not implemented
 
@@ -510,13 +545,20 @@ Planned only (would apply if the corresponding table is built):
 | `0005_review_correction_names` | `review.corrected_common_name` / `corrected_scientific_name`, so a human correction carries the name it asserts (ADR-043) |
 | `0006_refinement` | the `refinement` table plus `detection.refined_at` / `refinement_version` / `refinement_outcome` and `ix_detection_refined_at` (ADR-045) |
 
-The live station reported `0004_drop_dead_detection_indexes (head)` — confirmed
-2026-08-09 against a read-only backup of its actual database (65,515
-`detection` rows, 28,183 `media_asset` rows), and `alembic upgrade head` was
-also confirmed idempotent against that same copy (a second run does nothing,
-`alembic check` reports no drift, row counts unchanged). It has not yet been
-upgraded past that point: `0005` and `0006` were written afterwards and reach
-it on the next deploy, which now runs `alembic upgrade head` (ADR-042).
+**The live station is at `0006_refinement`, which is `head`** — read directly
+from its `alembic_version` table, read-only, on 2026-08-09 at 21:46Z. ADR-042's
+deploy step has therefore now carried a real station across three revisions
+(`0004` → `0005` → `0006`) unattended, which is the thing that was untested when
+that ADR was written.
+
+Two earlier snapshots of this same paragraph are kept because they show the
+mechanism working rather than being asserted: at `0004` the station held 65,515
+`detection` and 28,183 `media_asset` rows, and `alembic upgrade head` was
+confirmed idempotent against a read-only copy (a second run does nothing,
+`alembic check` reports no drift, row counts unchanged). At `0006` it held
+**74,969 `detection`, 35,285 `media_asset`, 65 `review` and 0 `refinement`
+rows.** These are snapshots of one reading each, not standing facts — the
+detection count grows continuously.
 
 `alembic/` (`env.py`, `script.py.mako`, `versions/`) and `alembic.ini` at the
 repository root are a real migration environment, wired to

@@ -1,5 +1,16 @@
 # Capture gaps and overruns: what was measured, what was fixed, what is still open
 
+> **How to read this file.** It is a chronological engineering record, appended to
+> across five rounds, and **later sections supersede earlier ones**. Several
+> paragraphs are preserved with wording that was true when written and is not now
+> ("not yet deployed", "still unproven on target"); each carries a pointer
+> forward. If you want the current state, read the **last** section first, then
+> come back for the reasoning.
+>
+> Nothing here is a soak. The longest window recorded in this document is 4.03
+> hours; the longest *clean* one is 22.2 minutes. **The 72-hour soak has never
+> run.**
+
 > **2026-08-08, evening.** Gaps returned after seven branches were merged into
 > `main` and deployed at 17:13Z. They were caused by the retention sweep moving to
 > a 10 s cadence, and they were **not** losing any audio. Both statements are
@@ -410,7 +421,10 @@ sufficient; the test is whether the work is CPU-bound in Python.
 
 ## Finding 2: `capture.gap lost_audio=True` was lying — no audio was lost
 
-> **FIXED 2026-08-09, ADR-039 — not yet deployed.** The estimator now confirms a
+> **FIXED 2026-08-09, ADR-039. Since deployed and confirmed on target** — see
+> "Confirmed on the target" and the 2026-08-09 late section at the end of this
+> document; the "not yet deployed" wording below is preserved as written.
+> The estimator now confirms a
 > deficit step against the following blocks before crediting it, and reserves
 > `reason=overrun` for a step ALSA actually reported. Measured off-target against
 > a fake device with a real ring: against a trace that loses **nothing**, the old
@@ -521,9 +535,11 @@ curl -s localhost:8080/api/v1/station | python3 -c \
 
 # Closing finding 2: the estimator now measures loss instead of lateness
 
-2026-08-09. ADR-039. **Written but not deployed** — the station was owned by
-another agent this session, so everything below is either an off-target
-measurement or a read-only reading of the *unfixed* station.
+2026-08-09. ADR-039. **Written but not deployed** *at the time this section was
+written* — the station was owned by another agent that session, so everything in
+this section is either an off-target measurement or a read-only reading of the
+*unfixed* station. It has since been deployed and confirmed twice; see the two
+sections that follow.
 
 ## What changed
 
@@ -643,6 +659,17 @@ setting that restores a known-wrong measurement is not worth its own failure mod
   is contaminated**, on top of the earlier contamination noted above. Only
   `expected_frames - frames` was trustworthy across the whole history of this file.
 
+  > **Corrected by ADR-046, later the same day, and this is the trap the file
+  > itself fell into.** `expected_frames - frames` is not a loss figure either. It
+  > is loss *plus* crystal drift (~0.18 s per hour at this device's −50 ppm, 4.4 s
+  > per day, with nothing lost) *plus* a block-sampling phase artefact worth about
+  > **±50 ms on any single reading**. Every deficit quoted in this document —
+  > 0.055 s, 0.066 s, 0.104 s, 0.114 s — is one draw from that distribution and
+  > none should be read as a point measurement. **After ADR-039,
+  > `estimated_missing_seconds` is the figure to judge lost audio by**; it is a
+  > decomposition of the deficit rather than a rival number. Do not tell anyone to
+  > prefer the raw deficit.
+
 ## Confirmed on the target, 2026-08-09 (ADR-039's pass criteria)
 
 ADR-039 shipped stating "this change has **not** been deployed to the Pi and no
@@ -670,7 +697,8 @@ recorded, which is what the ring was widened for.
 The one thing still not verified is the case ADR-039's off-target tests cover but
 the station has not produced: a stall the 500 ms ring genuinely fails to absorb.
 No overrun occurred here, so the "estimate what a real loss cost" path remains
-proven only against `RingedDevice`.
+proven only against `RingedDevice`. **(Superseded: it fired on the target later
+the same day — see the final section.)**
 
 
 ## Follow-up, 2026-08-09: the deficit has a bias of its own
@@ -963,3 +991,66 @@ and it is a few lines. It is left for whoever can deploy and soak it, because it
 changes a measured quantity in the capture path and a deploy would have voided
 two agents' measurements running concurrently. The UI states the uncertainty
 rather than hiding it in the meantime.
+
+---
+
+# 2026-08-09, late: the unabsorbed-stall path finally fired on the target
+
+Every round above ended with the same caveat — *"the 'estimate what a real loss
+cost' path remains proven only against `RingedDevice`"*, because no ALSA overrun
+had occurred on this station since ADR-039 shipped. **One has now.** Twelve, in
+fact, and they agree with the estimator.
+
+Read from `/api/v1/health` on the live station, **read-only, 2026-08-09 21:46:05Z**,
+against a stream started 17:44:01Z — a **4.03 h restart-free run**, the longest
+recorded anywhere in this document:
+
+| | |
+|---|---|
+| `frames` | 5,574,144,000 |
+| `expected_frames` | 5,577,078,828 |
+| raw deficit | 2,934,828 frames = **7.643 s** |
+| `rate_offset_ppm` | **−51.49** |
+| crystal drift over 14,524 s at that rate | **0.748 s** |
+| deficit **minus** drift | **6.895 s** |
+| `estimated_missing_seconds` | **6.815 s** |
+| `overruns` | **12** |
+| `gaps_with_loss` / `gaps_without_loss` | **12 / 0** |
+| `continuity_ratio` | 0.999474 |
+
+**The estimator and the drift-corrected deficit agree to 0.08 s over four hours.**
+Set that against the behaviour this whole document was written to chase: the
+pre-ADR-039 estimator over-reported by **8–13×** *while nothing at all was being
+lost*. It now reports roughly 6.9 s lost when roughly 6.9 s was lost, and every
+one of those twelve gaps is backed by an EPIPE ALSA actually raised. ADR-039's
+`RingedDevice` result has a real-hardware counterpart.
+
+**Four cautions, because one snapshot is not a study:**
+
+- This is **one reading**, not a sampled run. A single raw deficit carries about
+  ±50 ms of pure phase artefact (see "the raw deficit is mostly a sampling
+  artefact" above); at 7.6 s that is negligible, which is the only reason the
+  arithmetic above is worth doing at all.
+- **Nothing here says *why* twelve stalls exceeded a 500 ms ring** when none had
+  before. It was a bat-active August evening on a station that had been deployed
+  to repeatedly that day. Load, not a new defect, is the obvious hypothesis and it
+  is untested.
+- `estimated_missing_seconds` is now believable enough that **`continuity_ratio`
+  of 0.999474 is a real figure**, below the 0.9990–0.9997 known-good band's upper
+  half. Watch it.
+- **`late_read_max_frames` reached 155,243 of the 192,000-frame ring — 81%.**
+  Against 57,952 (30%) two rounds ago and 114,362 (60%) one round ago, that is the
+  third consecutive reading in the wrong direction, and this time the ring did
+  overflow twelve times. `OO_CAPTURE_BUFFER_MS` is the lever, and ADR-030's next
+  structural step — a free-running reader thread feeding an internal queue —
+  deserves re-reading before the 72-hour soak rather than after it.
+
+## What is still open after this round
+
+- **The 72-hour soak has still never run.** Nothing in this document is a soak.
+  The longest window recorded anywhere in it is the 4.03 h above, and the longest
+  *clean* one is 22.2 minutes.
+- **The one-hour drift run at full duration is still outstanding.**
+- **Why the ring overflowed twelve times**, above. Unattributed.
+- Hypothesis 4 was never isolated; the missing gap row of 2026-08-08 10:55:24Z is
+  still inference only.

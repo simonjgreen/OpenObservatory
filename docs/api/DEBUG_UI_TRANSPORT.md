@@ -27,7 +27,8 @@ Every JSON frame has a `type`:
 |---|---|---|
 | `hello` | Immediately on connect | `server_utc`, the full station snapshot, spectrogram channel descriptors, the last 40 detections and last 60 events |
 | `status` | Every ~2 s | The full station snapshot |
-| `event` | As they occur | One event envelope, exactly as specified in `API_AND_INTEGRATIONS.md` |
+| `event` | As they occur | `{"type": "event", "event": <envelope>}` — the envelope is **nested under `event`**, not spread into the frame. The envelope itself is exactly as specified in `API_AND_INTEGRATIONS.md` |
+| `error` | Auth required and absent | `{"type": "error", "detail": "authentication required"}`, sent immediately before the 4401 close so a client can distinguish a refusal from a dropped link |
 
 `server_utc` lets the client measure its own clock skew against the station, so
 spectrogram column times and detection times can be reconciled without assuming
@@ -445,8 +446,12 @@ display socket. The pump and the receive loop only ever queue and receive.
 |---|---|---|
 | `min_score` | `0.75` | Named detections below this are **not sent**. Never appears in any frame. |
 | `bats` | `true` | Whether bat passes are sent at all. They are never score-filtered. |
-| `rows` | server config (6) | Rows in the connect snapshot. 1–12. |
+| `rows` | server config (6) | Rows in the connect snapshot. **0–12**, where `0` is the accepted sentinel meaning "use the station's `display_channel_snapshot_rows`" — it is not an error. |
 | `fw` | absent | The firmware version running on the display, e.g. `0.2.0` (ADR-050). The only thing this client ever tells the station about itself. Absent from builds before ADR-050; reported as unknown, never assumed to be old. |
+
+**Authentication.** With `auth_enabled` on, this socket closes with **4401**
+unless `/api/v1/display` is in `auth_public_read_paths` — where it is by default,
+because the display cannot carry a credential (ADR-034, ADR-050).
 
 Filtering is server-side so the device never receives-and-discards, which is the
 whole point of the change. The filter lives in the URL, so changing it means
@@ -488,7 +493,7 @@ Row keys, shared by `f` entries and by the body of a `d` frame:
 | `at` | Event start, whole Unix epoch seconds, UTC. |
 | `b` | `1` when this is a bat pass. Absent otherwise. |
 | `k` | Peak frequency in kHz, one decimal. Bat passes only. |
-| `r` | Detections collapsed into this row. Absent when 1. |
+| `r` | Detections collapsed into this row. Absent when 1. **Snapshot only** — `collapse_runs` is applied to the `h` frame's `f` entries and never to a live `d` frame, which always describes exactly one detection. |
 
 ### What is not on this wire
 

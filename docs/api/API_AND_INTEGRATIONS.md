@@ -8,7 +8,10 @@ being unimplemented — the operating brief requires unimplemented but specified
 components to remain recorded, not silently dropped.
 
 Source of truth for what is implemented: `src/open_observatory/api/app.py`.
-The implemented list below was regenerated from that file on **2026-08-09**.
+The implemented list below was re-checked route by route against that file on
+**2026-08-09, after the ADR-043/045/049/050/052 work merged to `main`** — an
+earlier "regenerated on 2026-08-09" claim was made against a branch that predated
+those merges and was missing seven routes.
 
 ## REST base
 
@@ -31,12 +34,14 @@ The implemented list below was regenerated from that file on **2026-08-09**.
 | `GET /streams` | |
 | `GET /gaps` | |
 | `GET /detectors` | includes schedule state and deferred-queue lag |
+| `GET /detectors/near-misses` | what BirdNET proposed and refused, in a bounded in-memory ring with per-band score histograms (ADR-052). `limit` 0–500 (default 50), `species_limit` 0–500 (default 40). **Persists nothing** — it is a live ring, empty after a restart |
 | `GET /models` | installed model assets and their licences |
 | `GET /detections` | credential-free by default even with auth on, for the ESP32 display (ADR-034) |
 | `GET /detections/export` | CSV/JSON; registered *before* `/detections/{id}` so the path parameter does not swallow it |
 | `GET /detections/{id}` | |
-| `POST /detections/{id}/review` | append-only; body `{status: confirmed\|rejected, note?}` (ADR-029) |
+| `POST /detections/{id}/review` | append-only; body `{status: confirmed\|rejected\|corrected\|held, note?, corrected_taxon_id?}` (ADR-029, closed by ADR-043). `corrected_taxon_id` is required iff `status == "corrected"` and 400s on an unknown id; `held` also exempts the detection's evidence from retention's age tiers |
 | `GET /detections/{id}/review` | latest review, or `null` |
+| `GET /taxa/search` | resolves a taxon the station has itself identified before, for the correction picker (ADR-043). `q` required, 1–120 chars; `limit` 1–100 (default 20); returns `{taxa, source: "station_history"}` |
 | `GET /taxa/activity` | |
 | `GET /history` | |
 | `GET /history/windows` | `last-hour`, `last-night`, `dawn-chorus`, `today`, `yesterday`, `last-24h` |
@@ -46,8 +51,20 @@ The implemented list below was regenerated from that file on **2026-08-09**.
 | `GET /debug/events` | |
 | `WS /live` | |
 | `WS /live/audio` | |
+| `WS /display` | the counter-top display's push channel — detections only, ~49 B a detection (ADR-038), plus ADR-050's OTA offer frame. Wire format in [`DEBUG_UI_TRANSPORT.md`](DEBUG_UI_TRANSPORT.md) |
 | `GET /live/audio.wav` | the debug UI's default listen path (ADR-019) |
 | `POST /live/tune` | retunes the shared ultrasonic oscillator in place (ADR-022) |
+
+Counter-top display firmware over the air (ADR-050). All five verified on
+hardware on 2026-08-09, including a deliberate rollback drill:
+
+| Endpoint | Notes |
+|---|---|
+| `GET /firmware` | what is published and who is behind: `published`, `image_path`, `offer_on_connect`, `app_slot_bytes`, and `displays[]` with `firmware_version` / `up_to_date` / `frames_sent` |
+| `POST /firmware` | raw `.bin` body; `version` and `notes` query params. Validates 0xE9 magic, chip id and `esp_app_desc_t`, and 422s with `{"errors": {"image": …}}` |
+| `DELETE /firmware` | removes the published image; nothing else reads `data/firmware/` |
+| `GET /firmware/image` | the bytes themselves; 404 when nothing is published. Public-read by default, since the display carries no credential |
+| `POST /firmware/rollout` | offers the image to connected displays; 409 when nothing is published. **`offered` is how many displays were *told*, not how many installed** — only the display can say that, via `GET /station`'s `display_channel.per_client[].firmware_version` |
 
 Authentication (ADR-034; the whole gate is inert while `auth_enabled` is `false`,
 which is the default):
@@ -91,9 +108,12 @@ response headers in place of the WebSocket's JSON hello frame.
 - `POST /detectors/{id}/disable`
 - ~~`POST /detections/{id}/reviews`~~ — **implemented, at the singular path
   `POST /api/v1/detections/{id}/review`** (ADR-029). Append-only; every call
-  inserts, setting `supersedes_review_id` to the prior row. `corrected_taxon_id`
-  is always written `None` — correcting a misidentified taxon implies a
-  re-labelling pipeline and is deliberately left for a future ADR.
+  inserts, setting `supersedes_review_id` to the prior row. ~~`corrected_taxon_id`
+  is always written `None`.~~ **Closed by ADR-043, 2026-08-09:** a correction is
+  resolved through `GET /api/v1/taxa/search` and denormalised onto the review row
+  as `corrected_taxon_id` / `corrected_common_name` / `corrected_scientific_name`.
+  The detection's own claim columns are never touched, so the original stays
+  visible and attributable.
 - `GET /detections/{id}/media` — superseded, not merely unimplemented. Media
   metadata is embedded directly in the detection payload returned by
   `GET /detections/{id}` (and by `GET /detections`), under a `media` array
@@ -200,6 +220,40 @@ withdrawn detection not at all. Both are claim surfaces with no room for a
 caveat — a Home Assistant entity state is a bare name, and ADR-023 forbids the
 display from showing a score — so marking is not an option there and silence is
 the honest answer.
+
+### Human review on the detection payload — implemented, ADR-043
+
+A correction outranks the machine, and the payload says so rather than quietly
+substituting a name. Every detection returned by `GET /detections` and
+`GET /detections/{id}` carries:
+
+| Field | Meaning |
+|---|---|
+| `review` | the latest review row in full, or null — `status`, `note`, `reviewed_by`, `reviewed_at`, `supersedes_review_id`, and the correction triple |
+| `identification_source` | `"human"` when a correction is in force, `"model"` otherwise |
+| `effective_common_name` | the corrected name if corrected, else the model's |
+| `effective_scientific_name` | likewise |
+
+The detection's own `common_name` / `scientific_name` / `canonical_taxon_id` are
+**never** overwritten, which is what keeps the original attributable. The CSV
+export carries `identification_source`, `effective_common_name`,
+`effective_scientific_name`, `review_status`, `reviewed_by` and `reviewed_at`
+alongside `withdrawn`.
+
+**Two stated limits.** A correction can only name a taxon the station has itself
+identified before (that is what `GET /taxa/search` searches), and
+`GET /api/v1/history` still aggregates on the *original* taxonomy — corrections
+are not yet folded into its `GROUP BY`.
+
+### Refinement has no HTTP surface — deliberate, ADR-045
+
+The refinement runner writes `refinement` rows and stamps `detection.refined_at`
+/ `refinement_version` / `refinement_outcome`, and **none of it is exposed
+through the API at all** — not on the detection payload, not as an endpoint.
+That is the point: a BatDetect2 proposal is not a station claim, and nothing it
+writes may reach the API, MQTT, the web UI or the display. `oo refine status` is
+the only way to read one. Wiring a proposal to the review workflow is open work,
+not an oversight.
 
 ## Event stream
 
@@ -319,6 +373,9 @@ and are mode 0600.
   carried since ADR-047.
 - `default` is the value shipped in `config.py` — the operator's documented way
   back to a known state, including ADR-041's measured spectrogram floors.
+- An individual field also carries `"pending_restart": true` when it is one of
+  the fields named in the top-level `pending_restart` list, so a UI need not
+  cross-reference.
 - `pending_restart` names every field whose **saved** value differs from what
   the running components are actually using, live-tier fields included: a live
   setting whose target object does not exist (no ultrasonic encoder at 48 kHz)
@@ -395,9 +452,13 @@ cookie or `Authorization: Bearer <token>` on every `/api/v1/*` path except:
 - `GET /api/v1/health` — hardcoded public, because `deploy/deploy.sh` polls it
   after every restart with no credential;
 - `GET /metrics` — never matches the `/api/v1/*` prefix at all;
-- anything in `auth_public_read_paths` (GET only; default exactly
-  `/api/v1/detections`, for the ESP32 counter-top display, which cannot carry a
-  credential and cannot be reflashed as part of an ordinary station upgrade).
+- anything in `auth_public_read_paths` — **three paths by default**, all for the
+  ESP32 counter-top display, which cannot carry a credential: `/api/v1/detections`
+  (the HTTP fallback), `/api/v1/display` (the push channel — a WebSocket, checked
+  before the 4401 close, not a GET) and `/api/v1/firmware/image` (so a display can
+  fetch its own update). ADR-050 removed the "cannot be reflashed" half of the
+  original reasoning: it can now be updated over the air, but still without a
+  credential.
 
 `WS /api/v1/live` closes with code **4401** when a credential is required and
 absent. **There is no TLS anywhere in this codebase**, so a session cookie or

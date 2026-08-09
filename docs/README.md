@@ -1,23 +1,19 @@
 # Open Observatory documentation
 
-## Start here
+This page is the map: what the system is, how to run it, and which document
+answers which question. The full index is under **"I want to…"** below; these
+four are the ones to read before touching anything.
 
-| I want to... | Read |
+| Read first | Why |
 |---|---|
-| Know what this system is *for*, and what wins in a conflict | **[CHARTER.md](CHARTER.md)** |
-| Set up a development environment without losing an hour | **[development/SETUP.md](development/SETUP.md)** |
-| Know what "tested" has to mean here | **[development/TEST_PLAN.md](development/TEST_PLAN.md)** |
-| Understand why something is the way it is | [architecture/ADRS.md](architecture/ADRS.md) |
-| Know what is actually done | [delivery/MILESTONE_STATUS.md](delivery/MILESTONE_STATUS.md) |
-| Operate or deploy the station | [operations/DEPLOYMENT_AND_OPERATIONS.md](operations/DEPLOYMENT_AND_OPERATIONS.md) |
-| Pick up where the last session left off | [delivery/HANDOVER.md](delivery/HANDOVER.md) |
+| **[CHARTER.md](CHARTER.md)** | What the system is *for*, and which item wins when two cannot both be satisfied. It settles real arguments; it is not decoration. |
+| **[development/SETUP.md](development/SETUP.md)** | Gets a dev environment working. It lists traps that will otherwise cost you an hour. |
+| **[delivery/MILESTONE_STATUS.md](delivery/MILESTONE_STATUS.md)** | The authority on what is done. Nothing else in this repository overrides it on delivery state. |
+| **[delivery/HANDOVER.md](delivery/HANDOVER.md)** | Picks up where the last session left off: traps, next steps, and the bugs that were only found by measuring. |
 
-
-Start here. This page is the map: what the system is, how to run it, and which
-document answers which question.
-
-Verified against the code on **2026-08-09**. Where a document has not been
-re-verified since it was written, it says so in its own header.
+Verified against the code and the live station on **2026-08-09**, after that
+day's 87 commits (ADR-041 through ADR-053) merged to `main`. Where a document has
+not been re-verified since it was written, it says so in its own header.
 
 ---
 
@@ -72,7 +68,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
                             │              │      │
                         REST API ◀─────────┘      └──▶ MQTT publisher ──▶ Home Assistant
                          │     │
-              React UI ◀─┘     └──▶ ESP32 counter-top display (HTTP polling)
+              React UI ◀─┘     └──▶ ESP32 counter-top display (WebSocket push)
 ```
 
 ### Consumers of the API, as of today
@@ -80,7 +76,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Surface | Where | Transport |
 |---|---|---|
 | Debug/operator web UI | `web/` | WebSocket + REST + chunked-WAV HTTP |
-| ESP32 counter-top display ("inside observer") | `firmware/inside-observer/` | REST polling every 20 s |
+| ESP32 counter-top display ("inside observer") | `firmware/inside-observer/` | **WebSocket push** on `/api/v1/display` — ~49 B a detection (ADR-038). REST polling every 20 s is retained in the firmware as an exercised fallback, not as the primary path. Firmware updates over the air from the station (ADR-050) |
 | Home Assistant | `src/open_observatory/mqtt/` | MQTT + HA Discovery (off by default) |
 | Prometheus | `GET /metrics` | scrape |
 
@@ -91,6 +87,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | …do this | Read this |
 |---|---|
 | **Get a dev environment working** | [`development/SETUP.md`](development/SETUP.md) — read this first, it lists traps that will otherwise cost you an hour |
+| Know what "tested" has to mean here | [`development/TEST_PLAN.md`](development/TEST_PLAN.md) |
 | Understand *why* the product exists | [`product/PRD.md`](product/PRD.md) |
 | Understand the intended architecture | [`architecture/TECHNICAL_SPEC.md`](architecture/TECHNICAL_SPEC.md) (seed spec — see the ADRs for where reality diverged) |
 | Understand a decision, or why the code does something odd | [`architecture/ADRS.md`](architecture/ADRS.md) — every deviation is here, numbered, and referenced from source comments |
@@ -108,7 +105,10 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Work on a detector | [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md) |
 | Know why BatDetect2 is not a live detector | [`detectors/BATDETECT2_EVALUATION.md`](detectors/BATDETECT2_EVALUATION.md) |
 | Chase the open capture-gap problem | [`delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md) |
-| Work on the ESP32 counter-top display | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md) |
+| Work on the ESP32 counter-top display, or update it over the air | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md), then ADR-050 |
+| Change a setting, or find out which settings are web-editable | the settings page itself, [`../config/example.env`](../config/example.env), then ADR-048 for the tiers and the named exclusions |
+| Find out why BirdNET rejected something | `GET /api/v1/detectors/near-misses` and ADR-052 — a counter is not a diagnostic |
+| Understand how a record gets refined, and why it may only propose | ADR-045, then [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md), "The refinement runner" |
 
 ---
 
@@ -168,7 +168,13 @@ disagree, prefer the authority named here:
 Breaking one of these is a correctness bug, not a style disagreement.
 
 - **A non-taxonomic detector cannot emit a species name.** `normaliser.py` raises
-  `ClaimViolation`. `activity-v1` and `ultrasonic-pass-v1` are non-taxonomic.
+  `ClaimViolation`. Be exact about the mechanism, because it is easy to over-claim:
+  `NON_TAXONOMIC_PLUGINS` contains **only `activity-v1`**. `ultrasonic-pass-v1` is
+  non-taxonomic by design and by test, but is protected by ADR-049's generic
+  per-detection binomial check rather than by that allow-list.
+- **BirdNET's eleven sound categories are not taxa** (ADR-049). Engine, Human vocal
+  and Dog get no species rank, no fabricated taxon id, and no plausibility floor —
+  a range model has no distribution for a car.
 - **`ultrasonic-pass-v1` detects bat *passes*, never species.** No document, UI,
   MQTT payload or display may imply otherwise.
 - **A BirdNET score is not a calibrated probability.** Never render it as a
@@ -184,4 +190,12 @@ Breaking one of these is a correctness bug, not a style disagreement.
 - **A synthetic or replayed source is announced loudly**, including in
   `/api/v1/health`, and its detections are excluded from browsing views by
   default (ADR-020).
+- **Refinement proposes; it never edits a claim.** The refinement runner may write
+  `refinement` rows and stamp bookkeeping columns, and the writer raises if a
+  detection's species, score or `native_result` moves (ADR-045). Nothing it writes
+  reaches the API, MQTT, the UI or the display.
+- **A record is marked; a claim is suppressed.** A withdrawn detection stays in
+  `GET /api/v1/detections` flagged `withdrawn`, and disappears from the surfaces
+  that assert something — species aggregates, MQTT, the display (ADR-044).
+- **Human speech is not kept.** `clip_human_audio` defaults off (ADR-049).
 - **The system is not complete** until the 72-hour soak passes.
