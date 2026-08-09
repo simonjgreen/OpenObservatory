@@ -199,7 +199,10 @@ class TestFindImplausibleDetections:
 
         with session_scope() as session:
             findings = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
         assert findings == []
 
@@ -255,7 +258,10 @@ class TestApplyPlausibilityFlag:
         step, so a human review landing in that window must still win."""
         with session_scope() as session:
             [finding] = repair.find_implausible_detections(
-                session, model_dir=Path("/nonexistent"), latitude=51.4769, longitude=-0.0005
+                session,
+                model_dir=Path("/nonexistent"),
+                latitude=REFERENCE_LATITUDE,
+                longitude=REFERENCE_LONGITUDE,
             )
             session.add(
                 orm.Review(detection_id=finding.detection_id, actor="op", status="confirmed")
