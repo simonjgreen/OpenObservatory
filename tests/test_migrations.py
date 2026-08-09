@@ -206,8 +206,14 @@ def test_0004_drops_and_restores_the_four_dead_detection_indexes(
     -- confirmed dead by re-verification against the live database -- and
     keeps ``ix_detection_detector_id``, which a real query
     (``plausibility_repair.reconcile_plausibility``) was found to use.
-    Upgrading to head must remove exactly the first four; downgrading one
-    step must restore all four.
+    Upgrading to head must remove exactly the first four; downgrading *to the
+    revision before 0004* must restore all four.
+
+    Named explicitly rather than as ``-1``: ``-1`` meant "undo 0004" only while
+    0004 was head, and silently became "undo 0005" when the refinement revision
+    landed (ADR-045). A relative step in a test is a claim about what head is,
+    which is exactly the kind of quietly-wrong assertion this project keeps
+    finding after the fact.
     """
     db_path = tmp_path / "drop_indexes.sqlite"
     cfg = _alembic_config(monkeypatch, db_path)
@@ -225,8 +231,8 @@ def test_0004_drops_and_restores_the_four_dead_detection_indexes(
     assert "ix_detection_stream_id" in at_head
 
     # Explicit revision, not "-1": head has moved past 0004 since this test
-    # was written (ADR-043, revision 0005), and "-1" is relative to whatever
-    # head currently is, not to this revision specifically.
+    # was written (ADR-043 added 0005, ADR-045 added 0006), and "-1" is
+    # relative to whatever head currently is, not to this revision.
     command.downgrade(cfg, "0003_auth_tables")
     engine.dispose()
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)

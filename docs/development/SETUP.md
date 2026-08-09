@@ -109,10 +109,10 @@ Measured on 2026-08-09 on this branch:
 
 | Gate | Result |
 |---|---|
-| `pytest -q` | **419 passed, 9 skipped** in ~96 s |
+| `pytest -q` | **649 passed, 9 skipped** in ~179 s, measured on merged `main` after the 2026-08-09 fan-out (the per-branch figures agents reported were each measured before the others merged, so none of them match this) |
 | `npm test` (web) | **140 passed** |
 | `ruff check .` | clean |
-| `mypy src` | **29 errors in 12 files** — all pre-existing, see trap 5 |
+| `mypy src` | **22 errors in 11 files** — all pre-existing, see trap 5 |
 
 Of the 9 skips: 6 are the BatDetect2 and BirdNET fixture tests, which skip
 cleanly when the (deliberately unbundled) model assets are absent — that is
@@ -161,9 +161,11 @@ These are the ones that waste time. None of them is a bug in your setup.
    on purpose — it is what forced the FastAPI lifespan migration. A dependency
    deprecation will therefore fail the suite rather than warn.
 
-5. **`mypy src` has never been clean.** It reports 29 errors in 12 files as of
-   2026-08-09, all pre-existing. Judge your change by whether it *adds* errors,
-   not by whether the run is green. No document may imply mypy is clean.
+5. **`mypy src` has never been clean.** It reports **22 errors in 11 files** as
+   of 2026-08-09, all pre-existing. (An earlier figure of "29 in 12" is stale;
+   this one was re-measured by stashing a change and re-running, which is the
+   only way to know a baseline honestly.) Judge your change by whether it *adds*
+   errors, not by whether the run is green. No document may imply mypy is clean.
 
 6. **`npm test` fails with `vitest: not found` on a fresh checkout.** Run
    `npm ci` in `web/` first.
@@ -208,6 +210,9 @@ src/open_observatory/     the station
                           spectrogram, heterodyne, ultrasound rendering
   detectors/              activity-v1, birdnet-v2.4, ultrasonic-pass-v1,
                           the deferred-worker mechanism
+  refinement/             charter item 5 (ADR-045): the refinement runner, which
+                          runs in its OWN process on a systemd timer, not here.
+                          Nothing under `station.py` imports it.
   db/                     SQLAlchemy models and session/bootstrap
   mqtt/                   publisher + Home Assistant Discovery (off by default)
   hardware/               AudioMoth USB HID
@@ -219,8 +224,9 @@ src/open_observatory/     the station
   cli.py / config.py      the `oo` CLI and every OO_* setting
 web/                      React + TypeScript + Vite debug/operator UI
 firmware/inside-observer/ ESP32 wall display (PlatformIO)
-alembic/                  migration environment, three revisions
-deploy/                   deploy.sh, the systemd unit, udev rules
+alembic/                  migration environment, five revisions
+deploy/                   deploy.sh, the two systemd units (station + the
+                          separate refinement runner and its timer), udev rules
 schemas/                  the published event envelope
 tests/                    pytest suites, including fixture audio
 scripts/                  offline benchmarks and the BatDetect2 cascade tool

@@ -1,0 +1,69 @@
+[Unit]
+Description=Open Observatory refinement runner (charter item 5, ADR-045)
+Documentation=file:///home/observer/open-observatory/docs/architecture/ADRS.md
+# Deliberately NOT Requires=open-observatory.service. Refinement reads the
+# database and clip files; it does not talk to the station process, and it must
+# still run (and still report honestly) on a night when capture was down --
+# that is exactly the night the charter's retention safeguard cares about.
+After=open-observatory.service
+
+[Service]
+Type=oneshot
+User=observer
+Group=observer
+WorkingDirectory=/home/observer/open-observatory
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/observer/open-observatory/config/runtime.env
+ExecStart=/home/observer/open-observatory/.venv/bin/oo refine run
+
+# --- the fence -------------------------------------------------------------
+# Charter item 1: capture always wins. ADR-033 measured what happens when
+# expensive work merely *shares a process* with capture -- a 0.30 s retention
+# sweep on its own thread starved the event loop 55-150 ms and produced ~1.9
+# false capture gaps a minute, because an executor partitions queueing and
+# nothing partitions the GIL. BatDetect2 is 2.1 s of inference per pass. So the
+# fence is a process boundary first, and then:
+#
+#   AllowedCPUs=2-3  the Pi 5 is quad-core; cores 0-1 stay clear for capture and
+#                    the station's event loop. Verified on the target
+#                    (systemd 255, cgroup v2): the unit's cgroup reports
+#                    cpuset.cpus.effective=2-3 and the process reports
+#                    Cpus_allowed_list: 2-3. Note that first activation enables
+#                    the `cpuset` controller in the root cgroup subtree, which
+#                    was not previously enabled on this station -- see ADR-045.
+#   Nice=19          lowest ordinary priority, against the station's Nice=-5.
+#   MemoryMax=1G     verified as memory.max=1073741824. A torch process that
+#                    leaks is OOM-killed inside its own cgroup instead of
+#                    pushing the station out of RAM. Type=oneshot means the kill
+#                    is visible as a failed unit, not a silent restart loop.
+#   CPUWeight/IOWeight  lowest, so even within its own cores it yields, and its
+#                    clip reads never contend with evidence writing.
+AllowedCPUs=2-3
+Nice=19
+MemoryMax=1G
+CPUWeight=1
+IOWeight=1
+IOSchedulingClass=idle
+
+# A run that has not finished by the end of the quiet window is stopped. The
+# runner has its own wall-clock budget (refinement_max_seconds, default 5400s)
+# and stops cleanly at it; this is the backstop for a run wedged in inference.
+TimeoutStartSec=7500
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=open-observatory-refine
+
+# Same privilege reduction as the station, minus everything to do with audio:
+# this process has no business near /dev/snd. It needs the data directory
+# (database and clips) writable and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/observer/open-observatory/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true

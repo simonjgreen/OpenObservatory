@@ -1,0 +1,26 @@
+[Unit]
+Description=Nightly Open Observatory refinement pass, in the measured quiet window
+Documentation=file:///home/observer/open-observatory/docs/architecture/ADRS.md
+
+[Timer]
+# 01:00 UTC, nightly. UTC explicitly, not local time: the station logs UTC and
+# `journalctl --since` takes local time, which has produced an exactly-opposite
+# conclusion on this project once already (SETUP.md trap 9). A BST timer would
+# also silently move the run an hour into the bat-active evening twice a year.
+OnCalendar=*-*-* 01:00:00 UTC
+# A station that was off at 01:00 still gets its pass. Without this, an event
+# could age past 90 days having never met the refiner -- the exact failure the
+# charter's retention safeguard names.
+Persistent=true
+# The runner refuses to start outside 01:00-03:00 UTC anyway
+# (refinement_window_*_hour_utc), so a Persistent catch-up fired at, say, 14:00
+# after a long outage skips and records why rather than putting BatDetect2 on the
+# CPU in daylight. Nothing is lost by that: candidates are taken
+# oldest-unrefined-first, so the next 01:00 run drains the backlog from the end
+# closest to losing its evidence. The belt-and-braces is deliberate -- a unit
+# file is one `systemctl start` away from being bypassed.
+RandomizedDelaySec=300
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

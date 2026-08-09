@@ -190,6 +190,30 @@ class Detection(Base):
     native_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # -- refinement bookkeeping (charter item 5, ADR-045) -------------------
+    #: Denormalised from the newest ``refinement`` row, deliberately. The
+    #: charter's retention decision is "delete on 'refinement has run', not on
+    #: age alone ... each event should carry the fact that refinement ran, at
+    #: what version, with what outcome, and deletion should require it" --
+    #: which means the retention sweeper, which runs *in the capture process*
+    #: on a paced budget (ADR-033), must be able to answer "has this been
+    #: refined?" from an indexed column rather than a correlated subquery
+    #: against a second table. NULL means no refiner has ever examined this
+    #: event, which is exactly the state the charter's safeguard protects.
+    refined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    #: ``EvidenceIdentity.version_label`` of the most recent refinement -- "at
+    #: what version". Free text on purpose: it has to survive a refiner being
+    #: renamed or a model being swapped without a schema change.
+    refinement_version: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: ``RefinementOutcome`` of the most recent refinement -- "with what
+    #: outcome". ``unavailable`` and ``failed`` are recorded here too, and are
+    #: deliberately *not* the same thing as ``no_change``: a clip the refiner
+    #: never managed to read has not been examined, and a retention rule that
+    #: treated it as examined would destroy the evidence silently.
+    refinement_outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
     media: Mapped[list[DetectionMedia]] = relationship(
         back_populates="detection", cascade="all, delete-orphan"
     )
@@ -325,6 +349,90 @@ class ApiToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Refinement(Base):
+    """One examination of an already-stored detection by new information.
+
+    Append-only, like :class:`Review`. Charter item 5 in table form:
+
+    * **Only from new information** -- ``evidence_fingerprint`` is the SHA-256
+      of the refiner, model, weights and configuration that produced this row
+      (``refinement.contracts.EvidenceIdentity``). ``ix_refinement_evidence``
+      is unique per detection, so the same instrument, at the same version,
+      under the same settings, physically cannot bank a second, more
+      optimistic answer about the same event.
+    * **Preserve the original claim** -- the ``original_*`` columns snapshot
+      the detection's claim verbatim at the moment of refinement, so the prior
+      verdict stays visible and attributable even if a later refinement (or a
+      human review) does change the detection row.
+    * **Distinguishable, with what changed it and when** -- ``basis``,
+      ``outcome``, ``reason``, ``refiner_*``, ``model_*`` and ``created_at``.
+
+    ``evidence`` holds the refiner's own output verbatim, the way
+    ``detection.native_result`` holds a detector's -- including, for the
+    BatDetect2 cascade, the measurements a human needs to check the proposal
+    against physics rather than against another score.
+
+    Nothing here is a station claim. A row with ``outcome='proposed'`` is a
+    question put to a person, not an identification; only a ``review`` row can
+    settle it.
+    """
+
+    __tablename__ = "refinement"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    detection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("detection.id"), index=True)
+
+    #: The identity of the new information. See ``EvidenceIdentity``.
+    refiner_id: Mapped[str] = mapped_column(String(80), index=True)
+    refiner_version: Mapped[str] = mapped_column(String(32))
+    model_id: Mapped[str] = mapped_column(String(120))
+    model_version: Mapped[str] = mapped_column(String(64))
+    model_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64))
+
+    #: ``RefinementBasis`` -- new_model / corrected_prior / human_ear.
+    basis: Mapped[str] = mapped_column(String(24))
+    #: ``RefinementOutcome``.
+    outcome: Mapped[str] = mapped_column(String(24), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+    #: The original claim, snapshotted. Never derived from the detection row at
+    #: read time -- that row may itself have been refined since.
+    original_common_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    original_scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    original_taxonomic_group: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    original_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    proposed_common_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    proposed_scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    proposed_rank: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    proposed_taxonomic_group: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    #: The refiner's own number. Not a probability; never presented as one.
+    proposed_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    #: Whether this refinement was permitted to change the detection row. False
+    #: for every refiner shipped today -- see ADR-045 on why the BatDetect2
+    #: cascade may only propose.
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Set when a human accepts or rejects a proposal, via a ``review`` row.
+    #: NULL means nobody has looked yet.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_review_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("review.id"), nullable=True
+    )
+
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    __table_args__ = (
+        # Rule 1, in the schema rather than only in the writer: one verdict per
+        # (event, instrument+config). A refiner whose model, weights or settings
+        # changed gets a new fingerprint and may speak again; one that changed
+        # nothing cannot.
+        Index("ix_refinement_evidence", "detection_id", "evidence_fingerprint", unique=True),
+    )
 
 
 class Review(Base):

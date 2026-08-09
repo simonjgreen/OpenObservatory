@@ -108,6 +108,56 @@ and AudioMoth `hidraw` access. Relevant settings and why they are there:
 | `PrivateTmp=true`, `ProtectKernelTunables=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true` | | further privilege reduction per technical spec §13 |
 | `StandardOutput=journal`, `StandardError=journal` | | logs go to the journal, not files, so log rotation is `journald`'s problem, not this project's |
 
+### The refinement unit and its timer (ADR-045)
+
+`deploy/open-observatory-refine.service` + `.timer` are a **second, separate**
+service. They run `oo refine run` at **01:00 UTC** nightly — the measured quiet
+window — and are installed and armed by `deploy.sh` alongside the station.
+`enable --now` on a `.timer` arms the schedule without starting a pass, so
+deploying never puts the classifier on the CPU.
+
+It is a separate process on purpose, and the fence is the point. ADR-033
+measured a 0.30 s retention sweep, on its own thread *inside* the station,
+starving the capture event loop 55–150 ms and producing ~1.9 false
+`capture.gap` records a minute. A BatDetect2 pass is 2.1 s of inference.
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `AllowedCPUs=2-3` | cores 2 and 3 only | the Pi 5 is quad-core; **cores 0-1 stay clear for capture**. Verified on the target (systemd 255): the unit's cgroup reports `cpuset.cpus.effective=2-3` and the process reports `Cpus_allowed_list: 2-3` |
+| `Nice=19` | lowest ordinary priority | against the station's `Nice=-5` |
+| `MemoryMax=1G` | hard cap | verified as `memory.max=1073741824`. `Type=oneshot`, so an OOM kill is a visibly failed unit, not a silent restart loop |
+| `CPUWeight=1`, `IOWeight=1`, `IOSchedulingClass=idle` | lowest | yields even within its own cores; clip reads never contend with evidence writing |
+| `PrivateDevices=true` | | this process has no business near `/dev/snd` |
+| `TimeoutStartSec=7500` | backstop | the runner has its own budget (`refinement_max_seconds`, 5400 s) and stops cleanly; this catches a run wedged in inference |
+
+**Two things worth knowing before you touch it.**
+
+- **The first activation enables the `cpuset` controller in the root cgroup
+  subtree**, which was not previously enabled on this station (it was
+  `cpu memory pids`). That constrains nothing by itself — `open-observatory.service`
+  still reports an empty `AllowedCPUs` and runs on all four cores — but it is a
+  permanent, previously-absent thing in the cgroup tree.
+- **`user.slice` does not have the `cpuset` controller**, so `systemd-run`
+  *without* `sudo` would silently fence nothing. The refiner must be a system
+  unit.
+
+```bash
+ssh station.example sudo systemctl list-timers open-observatory-refine
+ssh station.example sudo systemctl status open-observatory-refine
+ssh station.example sudo journalctl -u open-observatory-refine -n 100 --no-pager
+ssh station.example sudo systemctl start open-observatory-refine   # runs one pass now
+
+# Disable it entirely. No deploy needed; the station does not import the
+# refinement package at all, so this is a complete rollback of ADR-045's
+# runtime behaviour.
+ssh station.example sudo systemctl disable --now open-observatory-refine.timer
+```
+
+The runner also refuses to start outside `01:00–03:00 UTC` on its own
+(`OO_REFINEMENT_WINDOW_START_HOUR_UTC` / `..._END_HOUR_UTC`), independently of
+the timer, so a manual `systemctl start` in daylight skips with a reason rather
+than classifying. `oo refine run --force` is the deliberate override.
+
 ### Operating commands
 
 ```bash
@@ -153,6 +203,8 @@ version of this list omitted the three repair/maintenance commands.
 | `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
 | `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the wall display |
 | `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
+| `oo refine run` | one refinement pass over stored evidence clips (ADR-045). Normally started by `open-observatory-refine.timer`, not by hand. Refuses outside 01:00–03:00 UTC unless `--force`. `--dry-run`, `--limit`, `--json`. **Writes only append-only `refinement` rows plus three bookkeeping columns; never edits a detection's species, score or `native_result`** |
+| `oo refine status` | what the refiner has done, what is waiting for a human ear, and — the number the charter's retention safeguard needs — how many bat detections have **never been examined**. `--limit`, `--json` |
 | `oo system-report` | host facts worth recording with a diagnostic. `--json` |
 | `oo serve` | run the station. `--host`, `--port`, `--source auto\|alsa\|replay\|synthetic`, `--reload` |
 | `oo config` | print effective configuration, with the resolved database DSN |
