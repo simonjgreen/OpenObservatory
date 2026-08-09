@@ -25,7 +25,7 @@ from pathlib import Path
 from open_observatory.detectors.birdnet import birdnet_week, load_range_model_for_repair
 
 # The Royal Observatory, Greenwich: the repository's neutral reference
-# location (ADR-045). The audit checks UK phenology, so any UK location
+# location (ADR-046). The audit checks UK phenology, so any UK location
 # serves; no real deployment's coordinates are committed.
 LAT, LON = 51.4769, -0.0005
 

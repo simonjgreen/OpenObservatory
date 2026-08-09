@@ -53,7 +53,7 @@ It is idempotent — safe to run repeatedly — and takes flags:
 | `./deploy/deploy.sh` | full deploy |
 | `./deploy/deploy.sh --no-web` | skip the `npm` build (use the UI assets already on the target) |
 | `./deploy/deploy.sh --no-deps` | skip `pip install`, just resync source and restart |
-| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-045) |
+| `HOST=user@host ./deploy/deploy.sh` | required: the station to deploy to (there is deliberately no default -- ADR-046) |
 
 `REMOTE_DIR` (default `open-observatory`, relative to the SSH login home) is
 also overridable as an environment variable, though this is rarely needed.
@@ -143,15 +143,15 @@ starving the capture event loop 55–150 ms and producing ~1.9 false
   unit.
 
 ```bash
-ssh station.example sudo systemctl list-timers open-observatory-refine
-ssh station.example sudo systemctl status open-observatory-refine
-ssh station.example sudo journalctl -u open-observatory-refine -n 100 --no-pager
-ssh station.example sudo systemctl start open-observatory-refine   # runs one pass now
+ssh <station-host> sudo systemctl list-timers open-observatory-refine
+ssh <station-host> sudo systemctl status open-observatory-refine
+ssh <station-host> sudo journalctl -u open-observatory-refine -n 100 --no-pager
+ssh <station-host> sudo systemctl start open-observatory-refine   # runs one pass now
 
 # Disable it entirely. No deploy needed; the station does not import the
 # refinement package at all, so this is a complete rollback of ADR-045's
 # runtime behaviour.
-ssh station.example sudo systemctl disable --now open-observatory-refine.timer
+ssh <station-host> sudo systemctl disable --now open-observatory-refine.timer
 ```
 
 The runner also refuses to start outside `01:00–03:00 UTC` on its own

@@ -9,11 +9,11 @@
 #   HOST=user@host ./deploy/deploy.sh --no-web   skip the UI build
 #   HOST=user@host ./deploy/deploy.sh --no-deps  skip pip install
 #
-# HOST is required, deliberately (ADR-045): the repository ships no station
+# HOST is required, deliberately (ADR-046): the repository ships no station
 # address, so a deploy always says where it is going.
 set -euo pipefail
 
-HOST="${HOST:?Set HOST=user@station-address (this repository ships no default station; see ADR-045)}"
+HOST="${HOST:?Set HOST=user@station-address (this repository ships no default station; see ADR-046)}"
 REMOTE_DIR="${REMOTE_DIR:-open-observatory}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

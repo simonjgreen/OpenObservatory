@@ -3875,7 +3875,7 @@ curl -s localhost:8080/api/v1/health | python3 -c \
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
 
-## ADR-045: Site parameters are runtime state, managed through the web UI; the repository ships no site
+## ADR-046: Site parameters are runtime state, managed through the web UI; the repository ships no site
 
 **Decision:** Anything true of exactly one installation — coordinates, place
 names, LAN addresses, hostnames, account names, filesystem homes — is **site
@@ -3943,7 +3943,7 @@ rather than naming where it stands. If a new component needs a site
 parameter, add it to the `site_settings.py` whitelist (choosing its tier
 deliberately) rather than inventing a parallel mechanism.
 
-### Rollback and smoke test (ADR-045)
+### Rollback and smoke test (ADR-046)
 
 No schema change, no new dependency. The settings endpoints and panel are
 additive; revert the commits to remove them. Site values already present in a
