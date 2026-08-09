@@ -21,6 +21,63 @@ documentation. If you are about to write code,
 [`docs/development/SETUP.md`](docs/development/SETUP.md) first — it lists the
 setup traps that will otherwise cost you an hour.
 
+## What it looks like
+
+All three are a real station running on real hardware, not mockups. The station
+name is the only thing edited.
+
+### Live
+
+![The live view: an ultrasonic spectrogram above an audible one, ranked species
+suggestions below, and the storage budget below that](docs/screenshots/live.png)
+
+Two spectrograms, stacked so their frequency axes form one continuous run from
+100 Hz to 150 kHz. Each panel states the parameters it is actually drawing with
+— `15 kHz–150 kHz`, `128 bins`, `24 ms/col`, `FFT 4096` — because a spectrogram
+with undeclared settings is a picture, not a measurement.
+
+Below them, candidates carry the score **as a number**, the detector that said
+it, and the time. Note what the footer says: *levels are dBFS relative to
+digital full scale, not calibrated SPL; scores are model outputs, not
+probabilities, unless a detector declares calibration.* Those two sentences are
+load-bearing — see [Honesty rules](#honesty-rules-this-codebase-enforces-in-code-not-just-in-prose).
+
+### History
+
+![The history view: a capture-coverage bar above a 24-hour timeline split into
+bat and bird detections, with a species table beneath](docs/screenshots/history.png)
+
+**Capture coverage sits above the timeline, not beside it.** `99.8% captured ·
+23h 56m from the microphone · 545 gaps · 22 streams` is the first thing you
+read, because an empty hour means something completely different depending on
+whether nothing called or nothing was recording. Distinguishing a quiet night
+from a dead microphone is a first-class requirement here, not a diagnostic
+nicety.
+
+The purple/green split is bats against birds, and it shows the thing you would
+hope to see: bats confined to the dark hours, birds bracketing them with a dawn
+peak. The caption under the chart — *counts of detections, not of animals* —
+exists because one woodpigeon calling repeatedly produces 2,467 of them.
+`Engine` appears in the species table as a non-taxonomic class, which is the
+system declining to call a passing car a bird.
+
+### The indoor display
+
+![A small 3D-printed portrait display on a desk, showing LIVE IN THE GARDEN and
+a list of recent species with times](docs/screenshots/indoor-monitor.jpg)
+
+An ESP32 with a 2.8" touchscreen, on the same WiFi as the station, showing what
+is in the garden right now. **This is the everyday face of the system**: the
+normal state of a working observatory is nobody at a browser, so the wall
+display is a first-class surface and the web UI is the one you open when you
+want to dig in.
+
+It deliberately shows no scores and only identifications above a confidence
+threshold, because a number on a shelf invites a reading it cannot support. It
+must also look *unreachable* when it cannot reach the station, never merely
+quiet — a stale list that looks fresh is the one failure this surface must not
+have.
+
 ## What it does today
 
 - **Captures once, at the highest rate the device offers.** One process owns the
