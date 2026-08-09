@@ -99,6 +99,25 @@ class Settings(BaseSettings):
     spectrogram_max_hz: float = 15000.0
     spectrogram_floor_db: float = -95.0
     spectrogram_ceiling_db: float = -15.0
+    #: The ultrasonic channel's own floor/ceiling (was sharing the pair above).
+    #: The AudioMoth's gain is documented as too hot (HANDOVER.md sec6.3 item 4,
+    #: unresolved -- needs a physical switch change) so its noise floor sits far
+    #: higher than the audible channel's, and reusing -95/-15 mapped that noise
+    #: to the top of the ramp: the whole 15-45 kHz band rendered saturated
+    #: orange, hiding real passes in exactly the band bats occupy. Measured on
+    #: the live station, 2026-08-09 (30 s, live viewer connected,
+    #: `scripts/measure_ultrasonic_contrast.py`, dB before the uint8 mapping):
+    #:   15-45 kHz (bat band):   p1 -72.1  p50 -66.7  p95 -60.8  p99 -58.3
+    #:   >=50 kHz (quiet band):  p1 -82.1  p50 -76.1  p95 -69.9  p99 -59.2
+    #: Floor sits ~3 dB below the lowest observed p1 (-82.1) so genuine quiet
+    #: renders near-black. Ceiling is set to the measured bat-band p50 (-66.7)
+    #: plus 36 dB -- the SNR at which `ultrasonic-pass-v1`'s own scoring
+    #: already saturates to 1.0 (see `detectors/ultrasonic.py`) -- rounded to
+    #: -30, so a call the detector calls "as strong as it gets" reads as
+    #: visually near-white and the p50-p99 noise band stays in the lower half
+    #: of the ramp instead of the saturated orange/yellow top.
+    ultrasonic_spectrogram_floor_db: float = -85.0
+    ultrasonic_spectrogram_ceiling_db: float = -30.0
     #: Columns retained server-side so a newly-connected browser sees history.
     spectrogram_history_columns: int = 2400
     #: Seconds of history pushed to a client on connect. Matches the UI's default
