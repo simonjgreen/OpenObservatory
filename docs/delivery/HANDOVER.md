@@ -445,29 +445,38 @@ useful addition and is not currently planned.
 Minor items that are real but not worth a numbered slot. Recorded so they are
 not rediscovered.
 
-- **The web UI has no favicon.** No `web/public/`, no `<link rel="icon">` in
-  `web/index.html`. Every page load therefore requests `/favicon.ico` and gets
-  the SPA fallback or a 404 — small, but it is a request against the station on
-  every load, which the charter's network-efficiency constraint does care about,
-  and an unbranded tab is a poor showing for a surface the operator pins. Wants
-  an icon plus the apple-touch/manifest entries, so the display's own web
-  surfaces and any phone shortcut look deliberate.
+- **The web UI favicon — done, 2026-08-09.** Previously there was no
+  `web/public/` and no `<link rel="icon">` in `web/index.html`, so every page
+  load requested `/favicon.ico` and got the SPA fallback or a 404.
 
-  **Operator's choice: the Material Design Icons `bird` glyph.** Two things to
-  get right when implementing it. First the licence: Pictogrammers' Material
-  Design Icons are Apache-2.0, so redistribution is fine, but `CLAUDE.md`
-  requires third-party assets to carry a separately documented licence — commit
-  the attribution alongside the file, as `tests/fixtures/audio/ATTRIBUTION.md`
-  does for the Xeno-canto recording. Second, do not hand-copy or reconstruct the
-  path data from memory: fetch the real glyph from the upstream package and
-  record its version and checksum, in the manner of `models/manifest.tsv`. An
-  invented approximation of a known icon is exactly the class of plausible
-  fabrication this project has been careful to avoid elsewhere.
+  Shipped the operator's choice, the Material Design Icons `bird` glyph,
+  fetched genuinely rather than reconstructed: `@mdi/svg` **7.4.47** was
+  downloaded from the npm registry (tarball SHA-256
+  `de92e5dc9ce46c392ab5c53aa7190b19f82b40cb48872a083f788c7e13e91fef`), and the
+  `d` path of `svg/bird.svg` (SHA-256
+  `70e0790bd69196c357bf47fe353941eb5e3614a46058a8622f3f4661048deec1`) was
+  copied verbatim into `web/public/favicon.svg` — see
+  `web/public/ATTRIBUTION.md` for the full provenance record, in the manner
+  of `models/manifest.tsv`, plus the Apache-2.0 licence text and what
+  presentational changes (background tile, colour, scale/centring) were made
+  and why. The glyph's own bounding box already ran edge-to-edge in its
+  24x24 canvas, so at 16px it needed a background treatment to read at all:
+  it now sits on a rounded dark tile (`--bg`, `#08090d`) at 80% scale,
+  recoloured to the app's own `--bird` accent (`#5ce08a`) — confirmed
+  legible (a recognisable bird silhouette, eye visible at 32px) by rendering
+  and inspecting the actual 16px and 32px output, not by assumption.
 
-  Ship it as an SVG favicon with an ICO or PNG fallback, plus
-  `apple-touch-icon` and a small web manifest, all served from the station
-  itself — nothing may be fetched from a CDN at runtime, since core surfaces
-  must not require internet access.
+  Shipped: `favicon.svg`, a multi-resolution `favicon.ico` (16/32/48px),
+  `apple-touch-icon.png` (180px), `icon-192.png`/`icon-512.png`, and
+  `site.webmanifest`, all in `web/public/` (copied verbatim into
+  `web/dist/` by Vite's existing public-dir build step, so nothing changed
+  there) and linked from `web/index.html`. All served from the station's own
+  `StaticFiles` mount in `src/open_observatory/api/app.py` — nothing is
+  fetched from a CDN at runtime. Verified with real HTTP requests through
+  the actual FastAPI app (`TestClient`, both against a synthetic `dist/`
+  fixture and against a real `vite build` output) that every path returns
+  200 with the right content-type, not just that the files exist on disk;
+  see `tests/test_web_icons.py`.
 
 ### 6.4 Then the plan's own next milestones
 
