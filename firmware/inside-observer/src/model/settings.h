@@ -30,7 +30,13 @@ struct MqttSettings {
 
 struct Settings {
   // --- Station transport --------------------------------------------------
-  std::string stationHost = "station.example";
+  // Empty until the operator provisions one (portal or on-glass config).
+  // Deliberately no shipped default: a baked-in address is true of exactly
+  // one installation, and a display polling somebody else's station -- or a
+  // stranger's LAN, once this firmware is public -- is worse than a display
+  // that says plainly it has not been told where its station is. main.cpp
+  // raises the provisioning portal when this is empty.
+  std::string stationHost;
   uint16_t stationPort = 8080;
   uint16_t pollSeconds = 20;
 
@@ -67,7 +73,8 @@ struct Settings {
 // repairing a bad value and saying nothing is how a config bug hides.
 bool clampSettings(Settings& s);
 
-// Base URL, e.g. "http://station.example:8080". No trailing slash.
+// Base URL, e.g. "http://192.0.2.10:8080". No trailing slash. Empty when no
+// station host has been provisioned -- callers must not fetch from it.
 std::string stationBaseUrl(const Settings& s);
 
 }  // namespace observer

@@ -423,6 +423,15 @@ void setup() {
     return;
   }
 
+  // No station address is a first-run state, not an error: there is no
+  // shipped default host (a baked-in address would be one installation's),
+  // so an unprovisioned unit explains itself instead of polling nowhere.
+  if (settings.stationHost.empty()) {
+    Serial.println("[config] no station host configured; raising provisioning AP");
+    enterPortal();
+    return;
+  }
+
   push.begin(settings);
   snapshot.health.state = StationState::kConnecting;
   snapshot.transport = push.transportName();
