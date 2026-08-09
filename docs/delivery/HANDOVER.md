@@ -440,6 +440,19 @@ useful addition and is not currently planned.
     `create_all()` and the ALTER TABLE patcher in `db/session.py` are deliberately
     kept. Wire migrations into startup or `deploy.sh`, *then* retire the patcher.
 
+### 6.3a Small, known, and unfixed
+
+Minor items that are real but not worth a numbered slot. Recorded so they are
+not rediscovered.
+
+- **The web UI has no favicon.** No `web/public/`, no `<link rel="icon">` in
+  `web/index.html`. Every page load therefore requests `/favicon.ico` and gets
+  the SPA fallback or a 404 — small, but it is a request against the station on
+  every load, which the charter's network-efficiency constraint does care about,
+  and an unbranded tab is a poor showing for a surface the operator pins. Wants
+  an icon plus the apple-touch/manifest entries, so the display's own web
+  surfaces and any phone shortcut look deliberate.
+
 ### 6.4 Then the plan's own next milestones
 
 Milestone 5 (ultrasonic and bat support) is complete. **Milestones 4 and 6 were
