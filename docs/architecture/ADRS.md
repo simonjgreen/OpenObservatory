@@ -2863,9 +2863,20 @@ acceptable, so three things are true instead:
   about what it heard and when.
 - The station says which channels are gated and how much they hold, so the UI can
   distinguish "deliberately empty" from "broken" without inferring it.
-- The canvas carries the sentence *"filling · history is recorded only while the
-  live view is open"* until it has the selected window of data. A brief honest
-  label costs nothing, and it is the whole difference between the two states.
+- The canvas carries the sentence *"filling · this view starts when you open it.
+  Detections are recorded continuously."* until it has the selected window of
+  data. A brief honest label costs nothing, and it is the whole difference
+  between the two states.
+
+  **Corrected 2026-08-09.** The label first read *"history is recorded only
+  while the live view is open"*, and the operator immediately read it as the
+  station having stopped recording. It had not: detections, evidence clips and
+  capture coverage are written continuously and are the durable record; what is
+  gated is only this picture, drawn from a memory-only ring that was never
+  persisted whether or not a browser was open. Conflating "the spectrogram
+  image" with "the history" is precisely the sincere, believable, wrong
+  statement the charter's honesty constraint exists to catch, and it survived
+  review, a test and an ADR before a human read it in situ.
 
 A second viewer joining a watched station still gets the full backfill: nothing
 about snapshot-on-connect is removed, it simply has nothing to send when nothing

@@ -524,8 +524,18 @@ export function Spectrogram({
       {filling && (
         <div className="spectrogram-filling" role="status">
           filling
+          {/* Say what is actually true. An earlier wording -- "history is
+              recorded only while the live view is open" -- read as though the
+              station stopped recording when the browser closed. It does not:
+              detections, evidence clips and capture coverage are written
+              continuously and are the durable record (see docs/CHARTER.md,
+              items 3 and 4). What is gated is only this picture, which is
+              drawn from a memory-only ring and was never persisted at all,
+              open browser or not. Conflating the two would be exactly the
+              kind of sincere, believable, wrong statement the charter's
+              honesty constraint exists to prevent. */}
           {spec.viewer_gated
-            ? ' · history is recorded only while the live view is open'
+            ? ' · this view starts when you open it. Detections are recorded continuously.'
             : ' · waiting for the first columns'}
         </div>
       )}

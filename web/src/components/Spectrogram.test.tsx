@@ -120,7 +120,14 @@ describe('Spectrogram', () => {
       })
       const notice = container.querySelector('.spectrogram-filling')
       expect(notice?.textContent).toContain('filling')
-      expect(notice?.textContent).toContain('only while the live view is open')
+      expect(notice?.textContent).toContain('this view starts when you open it')
+      // The label must not imply the station stops recording when the browser
+      // is closed. It does not: detections and evidence are written
+      // continuously; only this picture is gated. An earlier wording said
+      // "history is recorded only while the live view is open", which the
+      // operator read -- correctly -- as the station going deaf.
+      expect(notice?.textContent).toContain('Detections are recorded continuously')
+      expect(notice?.textContent).not.toContain('history is recorded only')
     })
 
     it('does not blame gating on a station that is not gated', () => {
@@ -129,7 +136,7 @@ describe('Spectrogram', () => {
       })
       const notice = container.querySelector('.spectrogram-filling')
       expect(notice?.textContent).toContain('filling')
-      expect(notice?.textContent).not.toContain('live view is open')
+      expect(notice?.textContent).not.toContain('this view starts when you open it')
     })
   })
 
