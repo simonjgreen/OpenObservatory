@@ -126,7 +126,7 @@ Note the test deliberately uses a denser analysis stride (0.25 s) than productio
 entirely between two windows, which would make the assertion flaky rather than
 wrong.
 
-## Milestone 4 — Product dashboard and review — **largely delivered 2026-08-08; review workflow minimal**
+## Milestone 4 — Product dashboard and review — **delivered; review workflow closed 2026-08-09 (ADR-043)**
 
 Reassessed 2026-08-05. ADR-016 supersedes the part of ADR-011 that treated the debug
 UI as a surface to be replaced: this milestone **promotes** it instead. The plan's own
@@ -143,7 +143,7 @@ single surface with two depths.
 | Health/system page | done (ADR-028) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
 | Operator/diagnostic disclosure | done (ADR-028) — one depth toggle via `?view=operate\|diagnose`, not a second route |
 | `App.tsx` state extraction | done — decomposed into `web/src/hooks/*` and `web/src/state/*`; `useLiveAudio.test.tsx` guards the ADR-022 retune fix from regressing |
-| Review workflow | **minimal** — append-only `POST`/`GET /api/v1/detections/{id}/review` plus confirm/reject in the drawer. The `review` table is finally written to; a fuller workflow is still open |
+| Review workflow | done (ADR-043) — confirm, reject, **correct** and hold. A correction is a new `Review` row, never an edit: the detection's own claim columns are untouched, so the original stays visible and attributable. Human review outranks machine refinement in code (`plausibility_repair` skips any human-reviewed detection at both find and apply time), and a held review exempts evidence from the age tiers though **not** from the disk watermark. Two stated limits: a correction can only name a taxon the station has itself identified before, and `/api/v1/history` still aggregates on the original taxonomy |
 | Retention job and UI | done — tiered age-out backend (ADR-026) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions |
 | CSV/JSON export | done — `GET /api/v1/detections/export`, registered before `/detections/{id}` so it is not swallowed by the path parameter |
 | Authentication foundation | done (ADR-034) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 counter-top display keeps working |
