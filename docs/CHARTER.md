@@ -173,19 +173,30 @@ has already settled, with the evidence that settled them.
 
 ---
 
-## Open question
+## Decided: retention does not preserve the merely uncertain
 
-**Retention currently deletes what refinement most needs.**
+An earlier draft of this charter argued that retention should keep
+low-confidence evidence indefinitely, because item 5 needs it. **The operator
+rejected that, and was right.**
 
-The tiers keep first-of-species and best-per-species clips longest and age
-everything else out — optimised for a reference library. Item 5 wants the
-opposite: the events most likely to need refining are the **low-confidence and
-unresolved** ones, and those are exactly what the current policy discards first.
+Refinement runs daily. Every event therefore meets the refiner within about a
+day. If something is still unrefined at 90 days, the refiner has already
+examined it and could not improve it — and it will not spontaneously improve.
+In the operator's words: *"If we haven't refined by 90 days I see no reason to
+think we'd ever refine. Unrefined data is close to worthless to us after a
+refinement pass has happened."*
 
-The live case: the 33–36 kHz cluster at this station is unresolved, needs a
-human listening to the audible renderings, and its evidence ages out at 90 days.
+So the tiers stand as they are. Passive uncertainty does not earn storage.
 
-A fourth retention rule — **keep the uncertain until it is resolved or
-explicitly abandoned** — would close this. It is a behaviour change with a
-deletion risk attached and is deliberately left as an operator decision rather
-than assumed here.
+Two safeguards keep that rule honest rather than weakening it:
+
+- **Delete on "refinement has run", not on age alone.** The risk is not old
+  data, it is data the refiner never actually saw — a failed timer, missing
+  model assets, a station that was down. A pure age rule destroys that evidence
+  silently, having never examined it once. Each event should carry the fact that
+  refinement ran, at what version, with what outcome, and deletion should
+  require it.
+- **An explicit human hold exempts an item.** The `review` table exists and
+  nothing writes to it yet. Someone marking something as needing their ear is a
+  positive act, and is not the same thing as passive uncertainty.
+
