@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     #: view; the full retained history is ~770 kB across both channels and sending
     #: all of it in one burst delayed the audio consumer on the same event loop.
     spectrogram_backfill_s: float = 30.0
+    #: Live viewers required before the spectrogram encoders run at all
+    #: (ADR-040). The station's steady state is no browser connected -- the wall
+    #: display is the first-class surface -- and the two encoders measured
+    #: 0.0554 of a core on the target against a whole-hot-path 0.1067, so more
+    #: than half the per-block work was being done for nobody. Set to 0 for the
+    #: pre-ADR-040 behaviour of always encoding, which is what a station whose
+    #: operator really does keep a browser open all day should do.
+    spectrogram_encode_min_viewers: int = 1
+    #: Keep the audible encoder running even with nobody watching, so a browser
+    #: opening gets instant history on the channel most viewers look at first.
+    #: Off by default: on the target it is not the cheap one it was assumed to
+    #: be (0.0261 of a core against the ultrasonic channel's 0.0293), so it buys
+    #: back half the history for 47% of the saving.
+    spectrogram_keep_audible_warm: bool = False
 
     # ---- inside-observer push channel (ADR-038) ---------------------------
     #: Seconds between heartbeat frames on `/api/v1/display`. Also what the

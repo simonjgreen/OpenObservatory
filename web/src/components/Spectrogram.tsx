@@ -148,6 +148,16 @@ export function Spectrogram({
   const lastBatchRef = useRef<{ at: number; columns: number } | null>(null)
   const [ready, setReady] = useState(false)
   const [hover, setHover] = useState<{ hz: number; secondsAgo: number } | null>(null)
+  /** Whether the canvas has yet accumulated the selected window of history.
+   *
+   *  The server only encodes spectrograms while someone is watching (ADR-040),
+   *  so opening the page normally *does* start from blank and fill over ~30 s.
+   *  That is the same picture a broken pipeline paints, which is exactly the
+   *  confusion the old always-on snapshot was avoiding, so say which one this
+   *  is. Polled rather than set from the column sink: batches arrive ~10 times
+   *  a second and a re-render each would cost more than the whole draw loop.
+   */
+  const [filling, setFilling] = useState(true)
   const band: Band = { minHz: spec.min_hz, maxHz: spec.max_hz, bins: spec.bins }
 
   // Read by the overlay's animation loop rather than closed over by it. Detections
@@ -241,6 +251,14 @@ export function Spectrogram({
     }
     return register(spec.channel, sink)
   }, [register, spec.channel, spec.bins, spec.hop_s, paletteTable])
+
+  useEffect(() => {
+    const windowColumns = Math.max(1, Math.round(windowSeconds / spec.hop_s))
+    const check = () => setFilling(totalColumnsRef.current < windowColumns)
+    check()
+    const timer = window.setInterval(check, 500)
+    return () => window.clearInterval(timer)
+  }, [windowSeconds, spec.hop_s, ready])
 
   // Draw loop.
   useEffect(() => {
@@ -503,6 +521,14 @@ export function Spectrogram({
         <span className="badge dim">FFT {spec.fft_size}</span>
         <span className="badge dim">{orientation}</span>
       </div>
+      {filling && (
+        <div className="spectrogram-filling" role="status">
+          filling
+          {spec.viewer_gated
+            ? ' · history is recorded only while the live view is open'
+            : ' · waiting for the first columns'}
+        </div>
+      )}
       {hover && (
         <div className="spectrogram-readout">
           {formatHz(hover.hz)} · {hover.secondsAgo < 1 ? 'now' : `${hover.secondsAgo.toFixed(1)} s ago`}

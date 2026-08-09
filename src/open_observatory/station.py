@@ -175,6 +175,12 @@ class Station:
         self.native_levels: LevelAggregator | None = None
         self.audible_levels: LevelAggregator | None = None
         self.spectrograms: dict[int, SpectrogramEncoder] = {}
+        #: How many browsers are watching the live view, supplied by the API
+        #: layer (ADR-040). Defaults to nobody -- see `set_spectrogram_consumer_count`.
+        self._spectrogram_consumers: Callable[[], int] = lambda: 0
+        #: Whether the last block encoded, so the gate closing can be seen as an
+        #: edge and the now-unservable history discarded exactly once.
+        self._spectrograms_encoding = False
         self.router: WindowRouter | None = None
         self.leases = TransientAssetStore()
         self.normaliser = Normaliser()
@@ -817,20 +823,41 @@ class Station:
         if self.audible_levels is not None:
             self.audible_levels.push(derived.pcm)
 
+        # 3a. Spectrograms, on the same terms as the heterodyne below: encode
+        # only when someone is actually looking. Two encoders measured 0.0554 of
+        # a core on the target against a whole-hot-path 0.1067 -- more than half
+        # the per-block work, and in this station's steady state (the wall
+        # display is the first-class surface, no browser open) all of it was
+        # being spent on pictures nothing would ever read. See ADR-040.
+        #
+        # Unlike the heterodyne, resuming is *not* free: the encoder carries a
+        # part-filled buffer and a history ring, both of which are stale after an
+        # idle period, so the gate opening resets them. That is what makes a
+        # viewer's first canvas honestly blank rather than quietly wrong; see
+        # `SpectrogramEncoder.reset`.
+        watching = self._spectrogram_consumers() >= self.settings.spectrogram_encode_min_viewers
+        if self._spectrograms_encoding and not watching:
+            # Discard at the moment the gate closes rather than when it reopens,
+            # so the invariant is simply "whatever history an encoder holds is
+            # contiguous and recent". A client connecting during an idle period
+            # then finds nothing to back-fill and is told so, instead of finding
+            # something that would have to be checked for staleness first.
+            self._discard_idle_spectrogram_history()
         audible = self.spectrograms.get(SPECTROGRAM_AUDIBLE)
-        if audible is not None:
+        if audible is not None and (watching or self.settings.spectrogram_keep_audible_warm):
             if discontinuous:
                 audible.reset()
             columns = audible.push(derived.pcm, derived.first_frame, derived_utc_ns)
             if columns is not None:
                 self._spectrogram_sink(columns)
         ultrasonic = self.spectrograms.get(SPECTROGRAM_ULTRASONIC)
-        if ultrasonic is not None:
+        if ultrasonic is not None and watching:
             if discontinuous:
                 ultrasonic.reset()
             columns = ultrasonic.push(block.pcm, block.first_frame, native_utc_ns)
             if columns is not None:
                 self._spectrogram_sink(columns)
+        self._spectrograms_encoding = watching
 
         self.live_audio.publish(derived.pcm)
 
@@ -871,6 +898,46 @@ class Station:
 
     def set_spectrogram_sink(self, sink: Any) -> None:
         self._spectrogram_sink = sink  # type: ignore[method-assign]
+
+    def set_spectrogram_consumer_count(self, provider: Callable[[], int]) -> None:
+        """Tell the station how many live viewers there are (ADR-040).
+
+        The sink cannot answer this: the API layer installs it once at startup
+        and it stays installed whether or not a browser is connected, so its
+        presence says nothing about whether anyone is watching. The default
+        provider reports nobody, which means a Station that no API layer has
+        wired a hub into does not spend CPU drawing pictures no code will read.
+        """
+        self._spectrogram_consumers = provider
+
+    def _discard_idle_spectrogram_history(self) -> None:
+        for key, encoder in self.spectrograms.items():
+            if key == SPECTROGRAM_AUDIBLE and self.settings.spectrogram_keep_audible_warm:
+                # Still running, so its history is still contiguous and current.
+                continue
+            encoder.reset(clear_history=True)
+
+    def describe_spectrograms(self, *, include_frequencies: bool = True) -> list[dict[str, Any]]:
+        """Channel descriptors, plus what the client needs to explain a blank one.
+
+        `LiveHub` is right that an empty canvas looks like a broken pipeline, and
+        gating (ADR-040) makes empty canvases a normal thing to open the page
+        into. The fix is not to go back to encoding for nobody; it is to say
+        which channels only record while watched and how much they currently
+        hold, so the UI can label a deliberate blank as filling rather than let
+        it read as failure.
+        """
+        gated = self.settings.spectrogram_encode_min_viewers > 0
+        descriptors = []
+        for key, encoder in self.spectrograms.items():
+            payload = encoder.describe(include_frequencies=include_frequencies)
+            channel_gated = gated and not (
+                key == SPECTROGRAM_AUDIBLE and self.settings.spectrogram_keep_audible_warm
+            )
+            payload["viewer_gated"] = channel_gated
+            payload["history_seconds"] = round(len(encoder.history) * encoder.hop_s, 3)
+            descriptors.append(payload)
+        return descriptors
 
     def _dispatch_window(self, window: AudioWindow, consumers: list[str]) -> None:
         for worker in self.workers:
@@ -1603,10 +1670,7 @@ class Station:
         )
         spectrograms = _timed(
             "spectrograms",
-            lambda: [
-                encoder.describe(include_frequencies=False)
-                for encoder in self.spectrograms.values()
-            ],
+            lambda: self.describe_spectrograms(include_frequencies=False),
         )
         segmenters = _timed("segmenters", lambda: self.router.snapshot() if self.router else [])
         leases = _timed("leases", self.leases.snapshot)

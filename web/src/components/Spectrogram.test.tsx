@@ -107,6 +107,32 @@ describe('Spectrogram', () => {
     expect(register).toHaveBeenCalledTimes(1)
   })
 
+  /** ADR-040. The server stops encoding when nobody is watching, so a browser
+   *  now routinely opens onto a genuinely empty canvas and fills over ~30 s.
+   *  `LiveHub`'s docstring names the hazard exactly: an empty canvas "looks
+   *  exactly like a broken pipeline". These assert the blank is labelled, and
+   *  that the label is honest about which kind of blank it is.
+   */
+  describe('a deliberately empty canvas says so', () => {
+    it('labels a gated channel as filling, and says why it is empty', () => {
+      const { container } = renderSpectrogram({
+        spec: { ...SPEC, viewer_gated: true, history_seconds: 0 },
+      })
+      const notice = container.querySelector('.spectrogram-filling')
+      expect(notice?.textContent).toContain('filling')
+      expect(notice?.textContent).toContain('only while the live view is open')
+    })
+
+    it('does not blame gating on a station that is not gated', () => {
+      const { container } = renderSpectrogram({
+        spec: { ...SPEC, viewer_gated: false, history_seconds: 0 },
+      })
+      const notice = container.querySelector('.spectrogram-filling')
+      expect(notice?.textContent).toContain('filling')
+      expect(notice?.textContent).not.toContain('live view is open')
+    })
+  })
+
   it('mounts and updates cleanly across both orientations without throwing', () => {
     expect(() => {
       const { rerender, unmount } = renderSpectrogram({ orientation: 'scroll' })

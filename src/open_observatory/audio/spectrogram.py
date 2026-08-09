@@ -263,7 +263,20 @@ class SpectrogramEncoder:
             data=np.stack(columns),
         )
 
-    def reset(self) -> None:
+    def reset(self, *, clear_history: bool = False) -> None:
+        """Drop the part-filled buffer and re-anchor on the next block.
+
+        ``clear_history`` additionally throws away the retained columns. A
+        discontinuity does not want that -- the audio either side of a 100 ms gap
+        is still the same evening and the picture should stay -- but resuming
+        after a period of *not encoding at all* does (ADR-040): the retained
+        columns are then arbitrarily old, and `history_frame` dates its columns
+        by counting back from the newest at one hop each, so serving them would
+        present an hour-old picture as the last thirty seconds.
+        """
         self._buffer = np.zeros(0, dtype=np.float32)
         self._utc_ns_at_frame_zero = None
         self._buffer_first_frame = 0
+        if clear_history:
+            self.history.clear()
+            self.history_first_utc_s = None

@@ -249,6 +249,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     exporter = PrometheusExporter(station)
     auth_service = AuthService(settings)
     station.set_spectrogram_sink(lambda columns: hub.broadcast_binary(columns.to_binary()))
+    # ADR-040: the hub's socket count is the station's only way to know whether
+    # the spectrograms are being drawn for anyone. Deliberately the *live* hub
+    # and not the display clients -- the wall display has no canvas and would
+    # never make encoding worth doing.
+    station.set_spectrogram_consumer_count(lambda: hub.count)
     # Milestone 6 (ADR-025): subscribes to station.bus, the same seam every other
     # consumer uses. Off by default (mqtt_enabled=False) and never awaited from the
     # capture path -- see mqtt/publisher.py's module docstring for the full set of
@@ -1344,9 +1349,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "type": "hello",
                     "server_utc": time.time(),
                     "station": station.status_snapshot(),
-                    "spectrograms": [
-                        encoder.describe() for encoder in station.spectrograms.values()
-                    ],
+                    "spectrograms": station.describe_spectrograms(),
                     "recent_detections": [
                         record.to_dict() for record in station.recent_detections[-40:]
                     ],
