@@ -224,8 +224,9 @@ and must not be left holding a stale opinion.
 **Things that would waste the one trip:**
 
 * **Never add `--erase-all` or `erase_flash`.** It erases NVS at `0x9000`, which
-  holds the WiFi credentials the operator provisioned under the stock DIYmalls
-  firmware. Nobody has ever seen those credentials and there is no copy. Erasing
+  holds the WiFi credentials the operator provisioned under *Aura*, the
+  weather-display firmware this board previously ran. Nobody has ever seen those
+  credentials and there is no copy. Erasing
   them means the display comes up on its own `Aura` access point and has to be
   reprovisioned by hand — recoverable, but only because the portal exists, and
   it is entirely avoidable.
@@ -233,7 +234,7 @@ and must not be left holding a stale opinion.
   that expects two app slots into a board still running the one-slot table, and
   the update path silently will not work — the symptom is a display that takes
   offers and never installs anything.
-* **Take a fresh whole-image backup first** (see "Restoring the original weather
+* **Take a fresh whole-image backup first** (see "Restoring the original
   firmware"), because after this the flash layout on the board is no longer the
   one the old backup describes. The old backup still restores fine; a new one
   just records where you actually were.
@@ -302,7 +303,7 @@ while True:
 **No credential is ever hardcoded, committed, or asked for.** There are two
 ways the display gets onto WiFi, in this order:
 
-1. **Inherited from the stock firmware.** The original DIYmalls weather
+1. **Inherited from the previous firmware.** The *Aura* weather
    firmware provisioned WiFi through its own "Aura" captive portal, and the
    ESP32 WiFi stack stored the SSID and passphrase in its own NVS namespace
    (`nvs.net80211`) at 0x9000. Because this firmware keeps NVS at exactly that
@@ -528,9 +529,10 @@ sent. It **cannot** prove the colours look right to a human — inversion and
 channel order change how the controller drives the glass, not what is in GRAM.
 That check needs eyes.
 
-## Restoring the original weather firmware
+## Restoring the original firmware
 
-A complete 4 MB flash image of the stock DIYmalls firmware was taken before any
+A complete 4 MB flash image of the firmware this board arrived with -- *Aura*, a
+weather-forecast display project -- was taken before any
 of this was written:
 
 ```

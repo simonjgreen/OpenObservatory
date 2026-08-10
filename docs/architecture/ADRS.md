@@ -709,7 +709,8 @@ any kind reaches the glass**, and bat passes are never given a species name.
 
 ### Why this device
 
-The board was already in the house running DIYmalls' stock weather firmware, and the
+The board was already in the house running *Aura*, a weather-forecast display
+project it was originally built for, and the
 operator asked for it to be repurposed. It is adequate and it is present, which beats
 a better board that is not: 240x320 ILI9341 in portrait is enough for six large rows,
 a title and a footer; a resistive touch panel is enough for a settings page with
@@ -4561,7 +4562,7 @@ to roll it out. The display fetches the image over the WebSocket connection it
 already has (ADR-038), verifies a SHA-256 before anything becomes bootable, and
 puts the previous build back by itself if the new one cannot reach the station.
 **NVS stays exactly where it is**, so the WiFi credentials inherited from the
-stock DIYmalls firmware — which nobody has ever seen and nobody can retype —
+the board's previous *Aura* firmware — which nobody has ever seen and nobody can retype —
 survive.
 
 ### Why this is a change worth making on a working display
@@ -4809,7 +4810,8 @@ that reads as though it worked first time teaches nothing:
    told the operator to run at the one moment that matters — did not exist. It
    does now.
 3. **Two smaller findings from the drill itself.** The provisioning AP was named
-   `Aura`, the stock DIYmalls name: two boards in one house would raise two
+   `Aura` -- the name of the weather-display project this board previously ran,
+   not the manufacturer's: two boards in one house would raise two
    identically named open networks. It is now
    `Observatory-<last three MAC bytes>`. And the WiFi failure path printed "no
    usable credentials" for *any* association failure including a plain timeout —
@@ -4844,7 +4846,7 @@ quietly fixed:
    `scripts/serial_capture.py`, which the firmware README told the operator to
    run at the one moment that matters, did not exist. It does now.
 3. **Two findings from the drill itself.** The provisioning AP was named `Aura`
-   (the stock DIYmalls name, chosen for recognisability), which gives two boards
+   (the previous *Aura* firmware's name, chosen for recognisability), which gives two boards
    in one house two identically named open networks; it is now
    `Observatory-<last three MAC bytes>`. And the WiFi failure path printed
    "no usable credentials" for *any* association failure including a plain

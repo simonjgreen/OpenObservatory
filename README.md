@@ -393,15 +393,78 @@ because that is the failure mode this project is built to resist.
 - Model assets are never bundled; their licences differ from this code's and are
   displayed before download and in the UI.
 
-## Hardware notes
+## Hardware
 
-- The AudioMoth's three-position switch matters: **`DEFAULT` streams audio**,
-  `USB/OFF` is configuration only and produces no ALSA card at all.
-- Card numbers are not stable. The AudioMoth moved from card 2 to card 0 across a
-  reboot during commissioning. Nothing here addresses a device by index.
-- Use a PSU that can actually supply the Pi 5's rated current; an underpowered one
-  limits USB current and an intermittently-enumerating microphone is a plausible
-  symptom.
+This is the reference station — the one every measured figure in these documents
+came from. Nothing here is required by the software: the station discovers what
+it is attached to and records what it actually negotiated (`oo audio probe`).
+It is listed because "what did you build it out of" is the first question
+anybody asks, and because a figure means more when you know what produced it.
+
+| | What | Notes |
+|---|---|---|
+| Computer | Raspberry Pi 5 Model B Rev 1.1, 8 GB | Ubuntu 24.04 LTS, `aarch64` |
+| Case | [Flirc Raspberry Pi 5 case](https://thepihut.com/products/flirc-raspberry-pi-5-case) | Passive; the aluminium body is the heatsink. No fan. Idles around 39 °C with capture and three detectors running |
+| Power | 5 V 3 A USB charger | An iPad charger, chosen as a known-good supply. **See the note below — this is under the Pi 5's rated 5 A** |
+| System storage | SanDisk 256 GB microSD | OS, application and the SQLite database |
+| Evidence storage | SanDisk Extreme Portable SSD, 500 GB (`0781:558c`) | USB, UAS. Mounted over `data/clips`; carries clips only, deliberately not the database (ADR-021) |
+| Microphone | [AudioMoth USB Microphone](https://www.openacousticdevices.info/product-page/audiomoth-usb-microphone) (`16d0:06f3`) | A dedicated variant of the AudioMoth 1.2.0 design rather than a recorder running different firmware. Negotiates 384 kHz mono `S16_LE` here |
+| Microphone case | [Official AudioMoth USB Microphone case](https://www.openacousticdevices.info/product-page/audiomoth-usb-microphone-case) | |
+| Microphone cable | Anker 2 m micro-USB | Long enough to reach the eaves from indoors |
+| Display | ESP32-2432S028R ("Cheap Yellow Display") | 2.8" 240×320 ILI9341, XPT2046 resistive touch. See [`firmware/inside-observer/`](firmware/inside-observer/) |
+| Display case | [Printed case](https://makerworld.com/models/1382304) | From the *Aura* project's own build, which this board was assembled for |
+| Network | WiFi | The Pi's Ethernet port is unused |
+
+**Almost all of this was already lying around**, which is worth saying plainly.
+The Pi and its case were spares from an abandoned project; the SSD came out of a
+retired k3s cluster of Pi 4s; the display had been built as a weather
+forecaster; the power supply is an iPad charger, picked because it was known to
+be good. The microphone is the only part bought for the job.
+
+That is not incidental. A passive acoustic station does not need purpose-built
+hardware, and the interesting constraints here — a 600 mA USB budget, a database
+on an SD card, a display with somebody else's WiFi credentials in NVS — are all
+consequences of building it out of what was to hand rather than out of a parts
+list.
+
+The display's history in particular shapes the firmware. The board was assembled as
+[**Aura**](https://surrey-homeware.github.io/aura-installer/) — an open-source
+smart weather-forecast display for this exact board, not a project of ours — and
+went spare when a TRMNL replaced it. The case, the assembly and the WiFi
+credentials sitting in NVS all predate this repository.
+
+That inheritance explains three decisions that would otherwise look arbitrary:
+the partition table preserves the original NVS region byte for byte, because it
+holds credentials nobody here has ever seen and cannot retype; a complete 4 MB
+image was taken before anything was written, so the board can be returned to
+Aura; and the provisioning access point was called `Aura` until it was renamed
+to something per-device (ADR-050).
+
+**Siting.** The Pi lives indoors in a summer house at the end of the garden. The
+microphone hangs on a hook under the eaves, on the 2 m cable run out through the
+window jamb. That arrangement is why the station hears the garden and not the
+room, and why the microphone's exact position has a larger effect on the data
+than any setting in this repository — moving it a few feet changed the noise
+floor materially.
+
+### Notes worth knowing before you copy it
+
+- **The AudioMoth's three-position switch matters.** `DEFAULT` streams audio;
+  `USB/OFF` is configuration only and produces no ALSA card at all. Setting it to
+  `USB/OFF` is exactly what caused a 29-hour outage during commissioning.
+- **Card numbers are not stable.** The AudioMoth moved from card 2 to card 0
+  across a reboot. Nothing in this codebase addresses a device by index.
+- **The Pi 5 wants 5 V 5 A, and this station runs on 3 A.** The consequence is
+  visible in firmware: `usb_max_current_enable=0`, which caps *total* USB current
+  at 600 mA — shared, here, between an SSD and a microphone. It has not caused a
+  fault: `vcgencmd get_throttled` reads `0x0`, meaning no undervoltage has ever
+  been recorded on this station. It is listed because an underpowered supply is a
+  genuinely plausible cause of an intermittently-enumerating microphone, and
+  because anyone reproducing this should make the choice knowingly rather than
+  inherit it. A 27 W supply removes the constraint.
+- **A microSD is not a good home for a database that writes continuously.** This
+  one is, for now; the charter treats storage endurance as a standing constraint
+  and the evidence clips were moved to the SSD for exactly this reason.
 
 ## Licence
 

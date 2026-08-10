@@ -68,8 +68,8 @@ struct Settings {
   // three bytes of the device's own MAC -- "Observatory-1F86A4" -- for two
   // reasons the old name failed on.
   //
-  // It used to be "Aura", the stock DIYmalls firmware's name, chosen so the
-  // operator would recognise it. That was the wrong trade: it names a product
+  // It used to be "Aura" -- the name of the weather-display project this board
+  // was originally built for, kept so the operator would recognise it. That was the wrong trade: it names a product
   // this device no longer runs, tells someone scanning for it nothing about
   // what it is, and -- the part that actually breaks -- two of these boards in
   // one house would raise two identically named open access points, with no

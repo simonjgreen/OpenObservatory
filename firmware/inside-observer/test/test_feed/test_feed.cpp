@@ -430,8 +430,8 @@ void test_capture_not_running_is_degraded() {
 // Settings
 // ---------------------------------------------------------------------------
 
-// The provisioning AP used to be called "Aura" -- the stock DIYmalls firmware's
-// name. Two of these boards in one house would then raise two identically named
+// The provisioning AP used to be called "Aura" -- the name of the weather-display
+// project this board previously ran. Two of these boards in one house would then raise two identically named
 // open networks, with no way to tell them apart. The SSID is now per-device.
 void test_provisioning_ssid_is_per_device(void) {
   const std::string a = observer::Settings::provisioningApSsid("EC:E3:34:1F:86:A4");

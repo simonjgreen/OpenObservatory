@@ -8,7 +8,7 @@
 #
 #  1. NVS stays at 0x9000 with the same 0x5000 size, at the same offset, in
 #     the same order. The WiFi credentials the operator provisioned under the
-#     stock DIYmalls firmware live in the ESP32 WiFi stack's own
+#     board's previous firmware (*Aura*) live in the ESP32 WiFi stack's own
 #     `nvs.net80211` namespace inside that partition. We have never seen them
 #     and must not destroy them. `esptool write_flash` only writes the
 #     offsets it is given, so an upload that writes 0x1000/0x8000/0xe000/
