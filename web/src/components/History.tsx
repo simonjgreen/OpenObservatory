@@ -168,7 +168,11 @@ export function History({
   return (
     <section className="history">
       <div className="history-controls">
-        <div className="segmented">
+        {/* Six named windows never fit one phone-width row, and dropping any of
+            them would put a question ("what came through at dawn?") out of
+            reach from the garden. `segmented-wrap` lets this one group break
+            into rows instead — see ADR-054. */}
+        <div className="segmented segmented-wrap">
           {WINDOWS.map((entry) => (
             <button
               key={entry.name}

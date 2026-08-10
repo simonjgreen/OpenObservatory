@@ -614,14 +614,45 @@ export function Spectrogram({
   }
 
   return (
-    <div
-      className="spectrogram"
-      style={{ height }}
-      onMouseMove={onMove}
-      onMouseLeave={() => setHover(null)}
-    >
-      <canvas ref={visibleRef} className="spectrogram-canvas" />
-      <canvas ref={overlayRef} className="spectrogram-overlay" />
+    /* The badge strip is a sibling of the plot, not a child of it (ADR-054).
+       On a wide screen CSS floats it back over the plot's top-right corner and
+       nothing changes; below the narrow breakpoint it becomes an ordinary
+       wrapping row underneath, where it can neither be clipped by the plot's
+       width nor be drawn over by an overlay label. No badge is dropped: these
+       are the numbers that say what the picture actually is. */
+    <div className="spectrogram-figure">
+      <div
+        className="spectrogram"
+        style={{ height }}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHover(null)}
+      >
+        <canvas ref={visibleRef} className="spectrogram-canvas" />
+        <canvas ref={overlayRef} className="spectrogram-overlay" />
+        {filling && (
+          <div className="spectrogram-filling" role="status">
+            filling
+            {/* Say what is actually true. An earlier wording -- "history is
+                recorded only while the live view is open" -- read as though the
+                station stopped recording when the browser closed. It does not:
+                detections, evidence clips and capture coverage are written
+                continuously and are the durable record (see docs/CHARTER.md,
+                items 3 and 4). What is gated is only this picture, which is
+                drawn from a memory-only ring and was never persisted at all,
+                open browser or not. Conflating the two would be exactly the
+                kind of sincere, believable, wrong statement the charter's
+                honesty constraint exists to prevent. */}
+            {spec.viewer_gated
+              ? ' · this view starts when you open it. Detections are recorded continuously.'
+              : ' · waiting for the first columns'}
+          </div>
+        )}
+        {hover && (
+          <div className="spectrogram-readout">
+            {formatHz(hover.hz)} · {hover.secondsAgo < 1 ? 'now' : `${hover.secondsAgo.toFixed(1)} s ago`}
+          </div>
+        )}
+      </div>
       <div className="spectrogram-badges">
         <span className="badge">{spec.name}</span>
         <span className="badge dim">
@@ -640,29 +671,6 @@ export function Spectrogram({
           </span>
         )}
       </div>
-      {filling && (
-        <div className="spectrogram-filling" role="status">
-          filling
-          {/* Say what is actually true. An earlier wording -- "history is
-              recorded only while the live view is open" -- read as though the
-              station stopped recording when the browser closed. It does not:
-              detections, evidence clips and capture coverage are written
-              continuously and are the durable record (see docs/CHARTER.md,
-              items 3 and 4). What is gated is only this picture, which is
-              drawn from a memory-only ring and was never persisted at all,
-              open browser or not. Conflating the two would be exactly the
-              kind of sincere, believable, wrong statement the charter's
-              honesty constraint exists to prevent. */}
-          {spec.viewer_gated
-            ? ' · this view starts when you open it. Detections are recorded continuously.'
-            : ' · waiting for the first columns'}
-        </div>
-      )}
-      {hover && (
-        <div className="spectrogram-readout">
-          {formatHz(hover.hz)} · {hover.secondsAgo < 1 ? 'now' : `${hover.secondsAgo.toFixed(1)} s ago`}
-        </div>
-      )}
     </div>
   )
 }
