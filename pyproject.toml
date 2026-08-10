@@ -22,7 +22,7 @@ dependencies = [
   # 2026-08-08 with click 8.4.2 -- on this laptop AND on the live station, so
   # the operator CLI documented in HANDOVER.md was already broken there.
   "click==8.1.8",
-  "rich==13.9.4",
+  "rich==15.0.0",
   "structlog==24.4.0",
   "prometheus-client==0.21.1",
   "psutil==6.1.1",
