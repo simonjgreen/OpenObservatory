@@ -23,7 +23,7 @@ dependencies = [
   # the operator CLI documented in HANDOVER.md was already broken there.
   "click==8.1.8",
   "rich==15.0.0",
-  "structlog==24.4.0",
+  "structlog==26.1.0",
   "prometheus-client==0.21.1",
   "psutil==6.1.1",
   # Async MQTT client for the Milestone 6 publisher (config.py: mqtt_enabled,
