@@ -152,6 +152,70 @@ conclusion once); React Testing Library was silently not cleaning up between
 tests, so component tests could pass or fail on another test's DOM; and the
 same `detector_id` does not imply the same operational config over time.
 
+## 1c. The 2026-08-09/10 session — what changed, and the traps it cost
+
+Another long multi-agent session, ending with the station deployed and a
+72-hour soak scheduled for Tuesday 11th to Thursday 13th August. ADRs 041-059
+all come from it. The transferable parts, not the changelog:
+
+### Six defects that were invisible until something forced them into the open
+
+| Defect | How it surfaced | Why it had survived |
+|---|---|---|
+| **Every settings write failed in production** | Trying to change a detector threshold on the station: HTTP 500, `EROFS` | `ProtectHome=read-only` in the unit; tests pass locally, where no sandbox applies |
+| **The refinement runner had never run** | Reading the journal after noticing `last_run: None` | numba could not write its JIT cache under the same sandbox. `oo refine status` reported `last_run: None`, which is indistinguishable from "never fired" |
+| **8,067 media rows claimed files that were gone** | Trying to fetch a clip for the operator to listen to | `ClipManager.enforce_retention()` unlinked oldest-first without touching the database. Nothing compared the two |
+| **`disk_usage()` walked 40,888 files on the event loop every 30 s** | Investigating why ring headroom was trending the wrong way | Cost is linear in file count. It was invisible at 9,764 files (104 ms) and fatal at 47,000 (500 ms, the whole ring) |
+| **`last-night` resolved into the future** | The operator looked at his phone at 12:28 and saw "0.0% captured" | The threshold was noon. Writing the property test then found `dawn-chorus` had a ternary whose branches were identical |
+| **GO LIVE unreachable on a phone** | The operator tried to use it | `overflow-x: hidden` converted a layout bug into a page reporting `scrollWidth` 390 of 390 while the button could not be scrolled to |
+
+The pattern in all six: **a mechanism nobody had ever watched actually run.**
+Three were the systemd sandbox blocking a write path nobody had declared. The
+station's own reporting hid two of them.
+
+### Traps that cost time, and will again
+
+- **A `--json` flag is not machine-readable until something parses it.** Every
+  one in this CLI emitted ANSI escapes, because rich colourises even onto a
+  pipe. Fixed, then reintroduced twice by agents on branches cut before the fix
+  — hence `test_cli_json_output.py`, which asserts *no line in `cli.py` calls
+  `console.print_json`* rather than enumerating commands.
+- **`pkill -f "<pattern>"` matches the shell running it.** Killed two of my own
+  commands mid-flight. Kill by listening port instead.
+- **A headless browser measures a page that is not being drawn.** A canvas check
+  reported 300x150 and zero pixels painted; the cause was `document.hidden` and
+  `requestAnimationFrame` firing zero times. Screenshots force a paint; JS
+  measurement does not.
+- **Verifying a control while it is closed proves nothing about it open.** 30
+  layout states were checked across six widths and called clean; the pause menu
+  opened off the left of the screen because every capture had it shut.
+- **Reading the wrong field name looks exactly like a bug.** Twice I nearly
+  reported defects that did not exist: `ratio` instead of `fraction_captured`,
+  and a `since` window that predated the thing it was meant to measure.
+- **Running the refiner outside its unit defeats its CPU fence.** `oo refine run`
+  over SSH is not `systemd-run` with `AllowedCPUs=2-3`; it competed with capture
+  and dirtied the very measurement it was checking.
+
+### What the soak will and will not settle
+
+Deployed and left alone from 2026-08-10 evening. Two things are deliberately
+running unresolved, because 72 hours of data beats the five samples we have:
+
+1. **The retention sweep and capture.** After ADR-059 removed the 30 s beat, the
+   remaining `capture.late_read` events fall ~304 s apart, which is
+   `retention_interval_s`. Five overruns correlated with it, every interval a
+   multiple. Not established. The experiment costs no code:
+   `OO_RETENTION_ENABLED=false`, restart, see if the beat stops.
+2. **Retention's first ever deletion**, due around 12 August — inside the soak.
+   The oldest clip is 5 August and the native tier is 7 days, so nothing has ever
+   aged out. If it works the archive settles near 231 GB of 458; if it does not,
+   there are about 9 days of headroom, so the soak completes either way.
+
+**`birdnet_threshold_in_range` is 0.35, not the shipped 0.55.** It was lowered as
+a tuning experiment on 2026-08-09 and deliberately left. It roughly doubles
+detections, and therefore clips: daily growth went from ~15 GB to ~33 GB. Judge
+any soak figure about volume against that, not against the defaults.
+
 ## 2. How to operate it
 
 ```bash
@@ -310,10 +374,31 @@ unless noted.
 
 ### 6.1 Close the Milestone 1–3 gates properly
 
-1. **Run the 72-hour soak.** This is the single biggest outstanding item and the
-   acceptance criteria require it before the word "complete" may be used. Watch
-   `oo_capture_continuity_ratio`, `oo_ring_extraction_misses_total`,
-   `oo_detector_windows_dropped_total`, RSS, and the clip budget.
+1. **Run the 72-hour soak.** The single biggest outstanding item, and the
+   acceptance criteria require it before the word "complete" may be used.
+   **Scheduled for Tuesday 11 to Thursday 13 August 2026**, from a station
+   deployed and frozen on the evening of the 10th.
+
+   Watch `oo_capture_continuity_ratio`, `oo_ring_extraction_misses_total`,
+   `oo_detector_windows_dropped_total`, RSS and the clip budget — and these four,
+   which are specific to this run:
+
+   - **`late_read_max_frames` against the 192,000-frame ring.** ADR-059 removed
+     the 30 s beat that had taken it to 81%. What remains beats at ~304 s, which
+     is `retention_interval_s`. If that climbs, retention is the cause and
+     `OO_RETENTION_ENABLED=false` is the experiment.
+   - **The first retention deletion**, due around 12 August, mid-soak. Nothing has
+     ever aged out of the 7-day native tier. Steady state should be ~231 GB of
+     458; if no deletion happens, there are ~9 days of headroom, so the soak
+     finishes either way but the mechanism is unproven.
+   - **The refinement timer at 01:00 UTC.** It has never completed a real pass.
+     A forced dry run classified 1,200 candidates and 1,796 s of audio after
+     ADR-057 unblocked it, but nothing has been written.
+   - **`detections_suppressed` on the pause endpoint**, if the operator pauses
+     during the run. A paused stretch is recorded and reported beside capture,
+     never subtracted from it (ADR-055).
+
+   **Do not deploy during the soak.** `deploy.sh` restarts capture and voids it.
 2. ~~**Commit a fixture test that proves a known species from a known recording.**~~
    **Done 2026-08-08** — `tests/test_birdnet_fixture.py`, a committed CC BY-SA
    European Robin recording, passing on the target Pi 5. Struck rather than
@@ -614,6 +699,30 @@ useful addition and is not currently planned.
     the thing that was untested when that ADR was written. An earlier reading at
     `0004` (65,515 detections, 28,183 media assets) also confirmed
     `alembic upgrade head` a true idempotent no-op against a read-only copy.
+
+### 6.3b Closed on 2026-08-10, recorded so they are not rediscovered
+
+- **Settings could not be written on the station.** `ProtectHome=read-only` with
+  only `data/` whitelisted, so every `PUT /api/v1/settings` returned 500 with
+  `EROFS`. `config/` is now in `ReadWritePaths`, and `tests/test_systemd_unit.py`
+  asserts every directory the code writes to is whitelisted.
+- **The refinement runner had never run.** numba, via librosa, JIT-compiles on
+  first use and caches beside the library's own source, which the same sandbox
+  makes unwritable. `NUMBA_CACHE_DIR` now points into `data/`. Verified under a
+  replica of the real sandbox.
+- **8,067 media rows claimed files that were gone** (ADR-057). Reconciled on the
+  live station: rows kept, `reclaim_reason = "missing"` rather than a tier name,
+  original claim preserved. This is what unblocked the refiner, which is
+  oldest-first and had never reached the 4,759 bat detections that still have
+  audio.
+- **`data/clips.sdcard-backup` deleted**, 21 GB freed on the SD card. Verified
+  first that no live row pointed into it and that no live row had an absent file.
+- **`disk_usage()` walked the archive on the event loop** (ADR-059).
+- **Two named windows resolved into the future** — `last-night` and
+  `dawn-chorus`. A property test now asserts none can, at every hour of the day.
+- **Mobile layout** (ADR-054), the **pause menu opening off-screen**, and
+  **overlapping detection labels** (ADR-058).
+- **All eight original Dependabot PRs resolved**; five new ones are open.
 
 ### 6.3a Small, known, and unfixed
 
