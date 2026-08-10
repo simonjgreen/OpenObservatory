@@ -73,6 +73,29 @@ def emit_json(payload: Any) -> None:
     sys.stdout.flush()
 
 
+class _StderrLoggerFactory:
+    """A structlog logger factory that looks up `sys.stderr` on every write.
+
+    See the comment in `configure_logging` for why binding the stream once is a
+    trap. This keeps `cache_logger_on_first_use=True` -- the station logs often
+    enough for that to be worth having -- while making the cached logger
+    indifferent to the stream being swapped underneath it.
+    """
+
+    def __call__(self, *args: Any) -> Any:
+        return structlog.PrintLogger(file=_LiveStderr())  # type: ignore[arg-type]
+
+
+class _LiveStderr:
+    """Forwards to whatever `sys.stderr` is at the moment of the call."""
+
+    def write(self, message: str) -> int:
+        return sys.stderr.write(message)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+
 def configure_logging(settings: Settings) -> None:
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stderr, level=level)
@@ -91,7 +114,21 @@ def configure_logging(settings: Settings) -> None:
     structlog.configure(
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        # Resolve `sys.stderr` at write time, not at configure time.
+        #
+        # `PrintLoggerFactory(file=sys.stderr)` binds the stream object once, and
+        # `cache_logger_on_first_use` then keeps that bound logger forever. If
+        # anything replaces or closes stderr afterwards, every later log call
+        # raises `ValueError: I/O operation on closed file` -- and because the
+        # logger is cached, the failure outlives whatever did the replacing.
+        #
+        # Found upgrading typer 0.15 -> 0.27, whose `CliRunner` closes the stream
+        # it substitutes: 127 tests failed, none of them alone, all of them after
+        # some earlier test had used the runner. A real `oo` process has a stderr
+        # that never closes, so this was only ever a test-harness fault -- but a
+        # logger that can be permanently poisoned by a stream swap is worth not
+        # having, and it blocked seventeen unrelated dependency upgrades.
+        logger_factory=_StderrLoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
