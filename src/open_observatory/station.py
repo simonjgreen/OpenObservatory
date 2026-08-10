@@ -1810,6 +1810,21 @@ class Station:
                     )
                 except Exception:
                     log.exception("housekeeping.heartbeat_failed")
+            # Re-measure the clip archive, in chunks, off the snapshot path.
+            #
+            # ADR-059. This used to happen *inside* `clips.disk_usage()`, on
+            # this loop, whenever a 30 s cache had expired -- and by 2026-08-10
+            # the station's 40,888-file archive made that a 0.45 s stall. It was
+            # the sole cause of all 262 `capture.late_read` events in a clean
+            # 2.02 h window, at 30 s intervals, eating 74% of the 500 ms ring.
+            # The cadence below is deliberately the same 30 s the cache TTL gave,
+            # so this change moves the stall and does not also move the
+            # frequency: the next person measuring has one variable, not two.
+            if ticks % 3 == 0:
+                try:
+                    await self.clips.refresh_disk_usage()
+                except Exception:
+                    log.exception("housekeeping.clip_usage_failed")
             # Retention runs in the evidence executor's dedicated thread, never
             # the default pool (ADR-021, ADR-026), and every call is bounded by
             # batch size and a wall-clock budget so a backlog drains gradually.

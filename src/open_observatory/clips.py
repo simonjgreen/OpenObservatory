@@ -12,12 +12,15 @@ never leave a half-written WAV that looks like valid evidence.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
+import os
 import shutil
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,6 +39,47 @@ PLAYBACK_RATE = 48000
 #: Beyond this rate, browsers will not reliably decode a WAV, so a playback
 #: derivative is always written as well.
 BROWSER_SAFE_MAX_RATE = 96000
+
+#: Files per chunk of the clip-tree walk before it yields to the event loop.
+#: 512 files is ~2.4 ms at the 4.6 us/file measured on the station's SSD, which
+#: is well inside one 10 ms ALSA period and two orders below the 500 ms ring.
+USAGE_SCAN_CHUNK = 512
+
+
+def _iter_clip_sizes(root: Path) -> Iterator[int]:
+    """Yield the byte size of every ``.wav`` under `root`.
+
+    `os.scandir` rather than `Path.rglob` + `Path.stat`, because this is a hot
+    enough path to be worth the ugliness. Measured on the live station's
+    40,888-file archive, 2026-08-10, best of three:
+
+    | `rglob` + `path.stat()` (the old code) | 435 ms | 10.6 us/file |
+    | `os.scandir` + `entry.stat()`          | 189 ms |  4.6 us/file |
+    | `os.scandir`, names only, no size      |  48 ms |  1.2 us/file |
+
+    `rglob` constructs a `Path` per entry and then stats it by re-resolving the
+    name; `scandir` keeps the directory handle and hands back a `DirEntry` that
+    stats against it. Sizes are still needed, so the third row is not available
+    to us — it is quoted to show where the remaining cost is.
+
+    Unreadable entries are skipped rather than raised: a partially written clip
+    or a directory being reclaimed underneath the walk is normal, and a usage
+    figure is not worth failing a status snapshot for.
+    """
+    stack = [str(root)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.name.endswith(".wav"):
+                            yield entry.stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +186,11 @@ class ClipManager:
         self.stats = ClipStats()
         self._recent_writes: deque[float] = deque(maxlen=max(1, max_per_minute * 4))
         self._guard_reason: str | None = None
-        #: (sampled_at_monotonic, file_count, total_bytes)
-        self._usage_cache: tuple[float, int, int] | None = None
+        #: (sampled_at_monotonic, file_count, total_bytes). Seeded here, at
+        #: startup, because that is the one moment when a synchronous walk of
+        #: the whole archive costs nothing: the microphone is not open yet.
+        #: Thereafter only `refresh_disk_usage` writes it, in chunks. ADR-059.
+        self._usage_cache: tuple[float, int, int] | None = self._measure_usage()
 
     # ------------------------------------------------------------------
 
@@ -545,35 +592,63 @@ class ClipManager:
 
     # ------------------------------------------------------------------
 
-    def disk_usage(self, *, max_age_s: float = 30.0) -> dict[str, object]:
-        """Clip and filesystem usage, cached.
+    def _measure_usage(self) -> tuple[float, int, int]:
+        """One synchronous pass over the clip tree. Startup only — see ADR-059."""
+        total = 0
+        count = 0
+        for size in _iter_clip_sizes(self.clip_dir):
+            total += size
+            count += 1
+        return (time.monotonic(), count, total)
 
-        Walking the clip tree costs ~8 ms at 700 files and grows with the archive.
-        This is read by every status snapshot — which fires per live viewer every two
-        seconds, on every API request and on every metrics scrape — all on the event
-        loop, so an uncached walk is a recurring stall on the same loop that feeds the
-        spectrogram. The free-space figure is cheap and always fresh; only the tree
-        walk is cached.
+    async def refresh_disk_usage(self, *, chunk: int = USAGE_SCAN_CHUNK) -> None:
+        """Re-measure the clip tree without holding the event loop.
+
+        ADR-059. The tree walk used to run *inside* :meth:`disk_usage`, on the
+        event loop, whenever a 30 s cache had expired. Measured on the live
+        station 2026-08-10 with 40,888 files it cost **0.435-0.472 s**, and it
+        produced every one of the 262 ``capture.late_read`` events in a clean
+        2.02 h window — stalls of 254-370 ms against a 500 ms ALSA ring.
+
+        Two things are wrong with the old shape and only one of them is speed.
+        The cost is *linear in the size of the archive*, which grows by roughly
+        14,000 files a day here, so the stall was on course to exceed the ring
+        outright. And ADR-033 already settled that moving Python work to a
+        thread does not help: it holds the GIL, and the loop still has to issue
+        and consume every capture read. So this yields instead — a chunk of
+        `chunk` files, then back to the loop — which bounds the stall at a few
+        milliseconds whatever the archive grows to.
+        """
+        total = 0
+        count = 0
+        for size in _iter_clip_sizes(self.clip_dir):
+            total += size
+            count += 1
+            if count % chunk == 0:
+                await asyncio.sleep(0)
+        self._usage_cache = (time.monotonic(), count, total)
+
+    def disk_usage(self) -> dict[str, object]:
+        """Clip and filesystem usage. Never walks the tree; never blocks.
+
+        The free-space figures come from one `statvfs` and are always fresh.
+        The clip count and byte total are whatever :meth:`refresh_disk_usage`
+        last measured, with `clip_usage_age_s` saying how old that is so the
+        number is not passed off as instantaneous.
         """
         usage = shutil.disk_usage(self.clip_dir)
-        now = time.monotonic()
         cached = self._usage_cache
-        if cached is None or now - cached[0] > max_age_s:
-            total = 0
-            count = 0
-            for path in self.clip_dir.rglob("*.wav"):
-                try:
-                    total += path.stat().st_size
-                    count += 1
-                except OSError:
-                    continue
-            cached = (now, count, total)
+        if cached is None:
+            # Only reachable if a caller cleared the cache; the constructor
+            # seeds it, before the microphone is open and with nothing to stall.
+            cached = self._measure_usage()
             self._usage_cache = cached
-        _, count, total = cached
+        sampled_at, count, total = cached
         return {
             "clip_dir": str(self.clip_dir),
             "clip_count": count,
             "clip_bytes": total,
+            "clip_usage_age_s": round(time.monotonic() - sampled_at, 1),
             "disk_total_bytes": usage.total,
             "disk_free_bytes": usage.free,
             "disk_used_ratio": round(1.0 - usage.free / usage.total, 4),

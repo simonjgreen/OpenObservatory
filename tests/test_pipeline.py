@@ -640,6 +640,78 @@ class TestClipPolicy:
         remaining = sorted(p.name for p in day.glob("*.wav"))
         assert remaining == ["clip3.wav", "clip4.wav"]
 
+    def test_disk_usage_never_walks_the_tree(self, tmp_path) -> None:
+        """The regression this guards is ADR-059's whole subject.
+
+        Walking the clip archive from `disk_usage` put a 0.45 s stall on the
+        event loop every 30 s on the live station, because `disk_usage` is
+        reached from `status_snapshot` -- which runs on the loop for every
+        housekeeping tick, live viewer and API caller. `disk_usage` must
+        therefore report, never measure.
+        """
+        manager = self._manager(tmp_path)
+        day = manager.clip_dir / "2026-08-04"
+        day.mkdir(parents=True)
+        for index in range(4):
+            (day / f"clip{index}.wav").write_bytes(b"\x00" * 1024)
+
+        # Constructed before those files existed, so a reporting-only call
+        # cannot have seen them however many times it is made.
+        for _ in range(3):
+            assert manager.disk_usage()["clip_count"] == 0
+
+        asyncio.run(manager.refresh_disk_usage())
+        usage = manager.disk_usage()
+        assert usage["clip_count"] == 4
+        assert usage["clip_bytes"] == 4096
+        assert isinstance(usage["clip_usage_age_s"], float)
+
+    def test_refresh_disk_usage_yields_between_chunks(self, tmp_path) -> None:
+        """Chunking is the fix; a thread would not have been (ADR-033).
+
+        The walk is CPU-bound Python, so an executor would still hold the GIL
+        and the loop would still be late issuing its capture read. What makes
+        it safe is giving the loop a turn part-way through.
+        """
+        manager = self._manager(tmp_path)
+        day = manager.clip_dir / "2026-08-04"
+        day.mkdir(parents=True)
+        for index in range(40):
+            (day / f"clip{index}.wav").write_bytes(b"\x00")
+
+        async def run() -> int:
+            turns = 0
+
+            async def ticker() -> None:
+                nonlocal turns
+                while True:
+                    turns += 1
+                    await asyncio.sleep(0)
+
+            task = asyncio.create_task(ticker())
+            await manager.refresh_disk_usage(chunk=8)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            return turns
+
+        # 40 files at 8 per chunk is 5 yields; anything above 1 proves the walk
+        # is interruptible, and the exact number is an implementation detail.
+        assert asyncio.run(run()) >= 4
+        assert manager.disk_usage()["clip_count"] == 40
+
+    def test_usage_walk_recurses_and_ignores_non_clips(self, tmp_path) -> None:
+        manager = self._manager(tmp_path)
+        nested = manager.clip_dir / "2026-08-04" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "kept.wav").write_bytes(b"\x00" * 10)
+        (nested / "ignored.partial").write_bytes(b"\x00" * 999)
+        (nested / "ignored.txt").write_bytes(b"\x00" * 999)
+        asyncio.run(manager.refresh_disk_usage())
+        usage = manager.disk_usage()
+        assert usage["clip_count"] == 1
+        assert usage["clip_bytes"] == 10
+
     def test_labels_from_models_are_made_filesystem_safe(self) -> None:
         assert _slug("../../etc/passwd") == "etc-passwd"
         assert _slug("Erithacus rubecula_European Robin") == "erithacus-rubecula-european-robin"
