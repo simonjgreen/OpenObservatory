@@ -101,4 +101,8 @@ updates:
 #     still a deliberate act. Check it when you touch the firmware.
 #   * BirdNET and BatDetect2 model assets -- fetched by `oo models fetch`
 #     against a checksummed manifest (ADR-006), never installed from a package
-#     index, and licensed separately from the code.
+#     index, and licensed separately from the code. Watching these for upstream
+#     releases is on the backlog as a Milestone 9 item: the manifest already
+#     records a URL, version and SHA-256 for each asset, so a scheduled job could
+#     compare and open an issue. An issue rather than a pull request, because a
+#     model change alters what the station reports rather than how it runs.

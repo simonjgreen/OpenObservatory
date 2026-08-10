@@ -358,7 +358,14 @@ pause for a release. Charter item 1 does not have a maintenance window.
 A home for enhancements that are wanted and not urgent, so they stop being ideas
 and start being decisions. Nothing here blocks an exit gate.
 
-Two entries.
+Three entries.
+
+**Watching the model assets for updates**, raised 2026-08-10. Dependabot covers
+pip, npm, Docker and Actions; it cannot see the BirdNET and BatDetect2 models,
+which come from `oo models fetch` against a checksummed manifest rather than a
+package index. A scheduled comparison against upstream could open an issue on
+drift. An issue rather than a pull request, because a model change alters what
+the station reports and needs the fixture test re-run on target first.
 
 **Environmental sensors: lux and rain**, raised 2026-08-10. Both would make the
 acoustic record easier to interpret — measured light rather than an almanac

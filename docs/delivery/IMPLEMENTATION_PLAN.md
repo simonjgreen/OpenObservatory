@@ -337,6 +337,23 @@ rather than an idea that evaporates.
   self-contained, which is the trade to think about — the charter's local-first
   constraint means the station must still work when Home Assistant is not there.
 
+- **Watch the model assets for updates.** Dependabot covers pip, npm, Docker and
+  GitHub Actions, but not the detector models. BirdNET and BatDetect2 are fetched
+  by `oo models fetch` against the checksummed `models/manifest.tsv` (ADR-006)
+  rather than from a package index, so no Dependabot ecosystem understands them,
+  and a new BirdNET release would go unnoticed indefinitely.
+
+  The manifest already records a URL, a version and a SHA-256 for every asset,
+  which is most of what a checker needs. A scheduled job could fetch the upstream
+  release metadata, compare it against the manifest, and open an issue when they
+  diverge. Deliberately an issue and not a pull request: a model change alters
+  what the station reports rather than how it runs, so it needs the fixture test
+  re-run on the target and a decision about the existing detections, which is not
+  something to merge automatically.
+
+  The same job could check that the recorded checksums still match what upstream
+  serves, which would catch an asset being replaced in place.
+
 Exit gate: none. Items graduate out of this section into a numbered milestone
 when someone decides to do them.
 
