@@ -1,30 +1,35 @@
 # Open Observatory
 
-A passive acoustic observatory for a garden. A Raspberry Pi 5 and an AudioMoth
-USB microphone listen continuously, and the record they keep is honest about its
-own uncertainty.
+A passive acoustic observatory for a garden, built on a Raspberry Pi 5 and an
+AudioMoth USB microphone. It listens continuously and keeps a record of what it
+heard, along with how confident it is about each identification.
 
-Capture runs at 384 kHz, so bats are inside the band. A 48 kHz audible stream is
-derived from the same frames, three detectors run over immutable time-addressed
-windows, and every detection that earns one is stored with a checksummed evidence
-clip cut from the native ring buffer. It is local-first: capture, detection,
-review and query never need the internet.
+The idea came from lying in a hammock using the Merlin Bird ID app to work out
+what was singing, and wanting that running all the time rather than only when
+someone was holding a phone.
 
-A station is configured from its own web UI, watched from a browser or from an
-ESP32 counter-top display it can update over the air, and read through a
-REST/WebSocket API, an optional MQTT feed into Home Assistant, and Prometheus.
+Capture runs at 384 kHz so that bats are inside the band, and a 48 kHz audible
+stream is derived from the same frames. Three detectors run over immutable
+time-addressed windows, and detections that warrant it are stored with a
+checksummed evidence clip cut from the native ring buffer. Everything runs
+locally: capture, detection, review and query never need the internet.
 
-It runs unattended, as a systemd service. The reference station has been
-recording since it was commissioned on 4 August 2026: 74,969 detections, 93
-named bird species and 61 GB of evidence clips as of 2026-08-09. It has not yet
-run the continuous 72-hour soak the acceptance criteria require, so nothing here
-is called complete or verified —
-[`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) is the
-ledger of what is delivered and what is outstanding.
+A station is configured through its own web UI, and can be watched from a
+browser or from an ESP32 counter-top display that the station updates over the
+air. It also exposes a REST/WebSocket API, an optional MQTT feed into Home
+Assistant, and Prometheus metrics.
+
+It runs unattended as a systemd service. The reference station has been
+recording since it was commissioned on 4 August 2026, and holds 74,969
+detections, 93 named bird species and 61 GB of evidence clips as of 2026-08-09.
+It has not yet run the continuous 72-hour soak that the acceptance criteria
+require, so nothing here is described as complete or verified;
+[`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) records
+what is delivered and what is outstanding.
 
 **New here?** [`docs/README.md`](docs/README.md) is the map of all the
 documentation. If you are about to write code,
-[`docs/development/SETUP.md`](docs/development/SETUP.md) first — it lists the
+[`docs/development/SETUP.md`](docs/development/SETUP.md) first: it lists the
 setup traps that will otherwise cost you an hour.
 
 ## What it looks like
@@ -39,14 +44,15 @@ suggestions below, and the storage budget below that](docs/screenshots/live.png)
 
 Two spectrograms, stacked so their frequency axes form one continuous run from
 100 Hz to 150 kHz. Each panel states the parameters it is actually drawing with
-— `15 kHz–150 kHz`, `128 bins`, `24 ms/col`, `FFT 4096` — because a spectrogram
+(`15 kHz–150 kHz`, `128 bins`, `24 ms/col`, `FFT 4096`), because a spectrogram
 with undeclared settings is a picture, not a measurement.
 
 Below them, candidates carry the score **as a number**, the detector that said
 it, and the time. Note what the footer says: *levels are dBFS relative to
 digital full scale, not calibrated SPL; scores are model outputs, not
-probabilities, unless a detector declares calibration.* Those two sentences are
-load-bearing — see [Honesty rules](#honesty-rules-this-codebase-enforces-in-code-not-just-in-prose).
+probabilities, unless a detector declares calibration.* See
+[Honesty rules](#honesty-rules-this-codebase-enforces-in-code-not-just-in-prose)
+for why those two sentences are there.
 
 ### History
 
@@ -62,7 +68,7 @@ nicety.
 
 The purple/green split is bats against birds, and it shows the thing you would
 hope to see: bats confined to the dark hours, birds bracketing them with a dawn
-peak. The caption under the chart — *counts of detections, not of animals* —
+peak. The caption under the chart (*counts of detections, not of animals*)
 exists because one woodpigeon calling repeatedly produces 2,467 of them.
 `Engine` appears in the species table as a non-taxonomic class, which is the
 system declining to call a passing car a bird.
@@ -73,23 +79,21 @@ system declining to call a passing car a bird.
 THE GARDEN and a list of recent species with times](docs/screenshots/indoor-monitor.jpg)
 
 An ESP32 with a 2.8" touchscreen, on the same WiFi as the station, showing what
-is in the garden right now. **This is the everyday face of the system**: the
-normal state of a working observatory is nobody at a browser, so the counter-top
-display is a first-class surface and the web UI is the one you open when you
-want to dig in.
+is in the garden right now. Since the normal state of a working observatory is
+nobody at a browser, this is treated as a first-class surface rather than an
+accessory, and the web UI is the one you open when you want to dig into
+something.
 
-It deliberately shows no scores and only identifications above a confidence
-threshold, because a number sitting in a room invites a reading it cannot
-support. It
-must also look *unreachable* when it cannot reach the station, never merely
-quiet — a stale list that looks fresh is the one failure this surface must not
-have.
+It shows no scores, and only identifications above a confidence threshold, since
+a number sitting in a room invites a reading it cannot support. It also has to
+look unreachable when it cannot reach the station rather than merely quiet,
+because a stale list that looks fresh is the worst thing this surface can do.
 
 ## What it does
 
 - **Captures once, at the highest rate the device offers.** One process owns the
-  microphone; detectors never open it. On the reference station that is 384 kHz
-  mono, giving a 192 kHz Nyquist — enough for every UK bat.
+  microphone, and detectors never open it. On the reference station that is
+  384 kHz mono, giving a 192 kHz Nyquist: enough for every UK bat.
 - **Derives an audible 48 kHz stream** with libsoxr, verified to have zero group
   delay so audible detections keep native-stream timing.
 - **Cuts immutable, time-addressed windows** to each detector's own specification,
@@ -99,20 +103,20 @@ have.
   - `activity-v1` — band-limited onset detection. No model, no downloads, no
     taxonomic claim. Works out of the box.
   - `birdnet-v2.4` — BirdNET GLOBAL 6K V2.4, ~40× realtime on a Pi 5. Model assets
-    are *not* bundled; `oo models fetch` installs them with checksums and licences shown.
+    are *not* bundled. `oo models fetch` installs them with checksums and licences shown.
   - `ultrasonic-pass-v1` — bat *pass* detection on the native stream. Pulse trains
     and peak frequency, explicitly not a species identification.
 - **Writes evidence clips** at the authoritative rate with a browser-playable
   derivative, inside a rate limit, size budget and disk reserve.
 - **Makes ultrasound audible.** A 48 kHz bat call is inaudible and undecodable by a
   browser, so ultrasonic detections also get time-expanded (slowed, so frequencies
-  divide — preserves everything) and heterodyned (mixed down like a handheld
-  detector — preserves real time) renderings, each labelled with what it changed.
+  divide, preserving everything) and heterodyned (mixed down like a handheld
+  detector, preserving real time) renderings, each labelled with what it changed.
 - **Does not call a car a bird, and does not keep recordings of people.**
-  BirdNET's eleven non-bird sound categories — `Engine`, `Human vocal`, `Dog`, …
-  — are stored as acoustic events with no rank and no scientific name, and a
+  BirdNET's eleven non-bird sound categories (`Engine`, `Human vocal`, `Dog`, …)
+  are stored as acoustic events with no rank and no scientific name, and a
   human-voice detection gets a row and no audio at all (ADR-049).
-  `clip_human_audio` turns the second half off; it defaults to false and makes
+  `clip_human_audio` turns the second half off. It defaults to false and makes
   you acknowledge a warning first.
 - **Serves a real-time debug UI** with a scrolling spectrogram (audible and
   ultrasonic), live species/event list, low-latency listen button, and the pipeline's
@@ -121,7 +125,7 @@ have.
   live, restart-pinned, and the twenty deliberately not editable from a browser,
   each listed with the hazard that excludes it (ADR-047/048). A first run offers a
   guided flow. The UI writes `config/runtime.env` on the device, atomically,
-  preserving your comments; a hand edit and a UI edit are one configuration.
+  preserving your comments, so a hand edit and a UI edit are one configuration.
 - **Refines the record overnight, and only ever proposes** (ADR-045). A second,
   CPU-fenced process on cores 2–3 runs a BatDetect2 cascade over stored bat clips
   at 01:00 UTC. It writes append-only `refinement` rows and can never rewrite a
@@ -132,7 +136,7 @@ have.
   for a rejected candidate.
 - **Publishes to Home Assistant** over MQTT with Discovery, off by default
   (ADR-025), and **pushes to a counter-top ESP32 display** over a WebSocket that
-  costs about 11 B/s — and can update that display's firmware over the air, with
+  costs about 11 B/s, and can update that display's firmware over the air, with
   a checksum before install and a rollback the display owns (ADR-050).
 
 ## Quick start
@@ -156,12 +160,12 @@ From a workstation, build the UI, sync, migrate and restart in one step:
 HOST=<user>@<station-host> ./deploy/deploy.sh
 ```
 
-`HOST` is required — this repository ships no station address (ADR-047). The
+`HOST` is required: this repository ships no station address (ADR-047). The
 script runs `alembic upgrade head` against the still-running old version before
 it restarts anything, so a failing migration leaves the working service up.
 
 Then open `http://<station-host>:8080` and press `settings`. Everything an
-operator tunes lives there; a terminal is not part of the loop.
+operator tunes lives there, and a terminal is not part of the loop.
 
 **No microphone?** That is a supported mode, not a failure — the audio pipeline
 spec makes replay mandatory:
@@ -176,10 +180,10 @@ real microphone, because a synthetic stream looks entirely normal in a spectrogr
 
 ## The debug UI
 
-Design inspiration is the Merlin Bird ID app — spectrogram on top, ranked
-candidates below it, the current one highlighted — with the extra screen space
-spent on what a diagnostic surface needs and a product dashboard would hide
-(ADR-011).
+Design inspiration is the Merlin Bird ID app that started all this. Spectrogram
+on top, ranked candidates below it, the current one highlighted. The extra
+screen space goes on what a diagnostic surface needs and a product dashboard
+would hide (ADR-011).
 
 - **Two live spectrograms**, in either of two views. Audible 80 Hz–15 kHz, and
   ultrasonic 15–150 kHz when the native rate supports it. Log-frequency, adjustable
@@ -202,14 +206,14 @@ spent on what a diagnostic surface needs and a product dashboard would hide
 - **Event stream.** Every `capture.*`, `window.*`, `detection.*`, `clip.*` and
   `health.*` event, filterable and pausable.
 - **HISTORY mode.** The live channel only knows the session it is connected for, so
-  there is a second mode that reads what was persisted: named windows (last night,
-  dawn chorus, yesterday, …) resolved in the station's own timezone, a timeline of
-  detections per bucket split by group, what was identified and when it called, and
-  clips playable from any of it. Click a bucket or a species to focus the list on it.
+  there is a second mode that reads what was persisted. Named windows - last
+  night, dawn chorus, yesterday - resolved in the station's own timezone. A
+  timeline of detections per bucket split by group, what was identified and when
+  it called, and clips playable from any of it. Click a bucket or a species to focus the list on it.
 
   **Capture coverage is shown above the timeline**, because an empty window means
   something completely different depending on whether nothing called or nothing was
-  recording. Aggregation happens in SQL — a night holds around 170,000 activity
+  recording. Aggregation happens in SQL: a night holds around 170,000 activity
   detections, and the browser is sent a few hundred numbers rather than all of them.
 
 ## Commands
@@ -232,14 +236,14 @@ spent on what a diagnostic surface needs and a product dashboard would hide
 | `oo serve` | Run the station |
 | `oo config` | Print effective configuration |
 
-The four repair commands — three `reconcile-*` and `purge-human-audio` — are
+The four repair commands (three `reconcile-*` and `purge-human-audio`) are
 dry-run by default and need both `--apply` and a confirmation. None has been run
 with `--apply` against the live station.
 
 ## Architecture
 
 Only the capture service opens the ALSA device. It publishes immutable
-time-addressed windows; audible detectors get the derived 48 kHz stream, ultrasonic
+time-addressed windows. Audible detectors get the derived 48 kHz stream, ultrasonic
 detectors get the native high-rate stream. Evidence is always cut from the native
 ring buffer.
 
@@ -260,16 +264,16 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 ```
 
 Beyond the debug UI, the same API feeds an **ESP32 counter-top display** in the
-house (`firmware/inside-observer/` — a pushed WebSocket at ~11 B/s with an HTTP
-poller as fallback, never a score on the wire, and its own firmware updates over
-the air; ADR-023/038/050) and an optional **MQTT publisher** with Home Assistant
-Discovery (`src/open_observatory/mqtt/`, off by default — ADR-025). An
+house. That is `firmware/inside-observer/` - a pushed WebSocket at ~11 B/s with
+an HTTP poller as fallback, never a score on the wire, and its own firmware
+updated over the air (ADR-023/038/050). There is also an optional **MQTT publisher** with Home Assistant
+Discovery (`src/open_observatory/mqtt/`, off by default, ADR-025). An
 **authentication foundation** exists and is also off by default (ADR-034).
 
 Two things run outside `oo serve`, on purpose. The **refinement runner**
 (`src/open_observatory/refinement/`, ADR-045) is its own systemd service on a
 timer, fenced to cores 2–3, so a 2-second inference pass can never starve the
-capture loop; the station process does not import it. The **web build** happens
+capture loop, and the station process does not import it. The **web build** happens
 on the workstation, because the Pi has no Node toolchain and does not need one.
 
 ### Where to read next
@@ -298,15 +302,15 @@ naming where the built system diverges from it.
 
 Measured on this branch on 2026-08-09: **826 Python tests pass, 11 skip** (8 are
 the fixture tests for the deliberately-unbundled BirdNET and BatDetect2 model
-assets, which skip rather than fail by design; 3 are
+assets, which skip rather than fail by design. Three are
 `tests/test_api.py::TestLiveChannels` cases that starlette 0.41.3's synchronous
-`TestClient` cannot represent — see
+`TestClient` cannot represent. See
 [`docs/development/SETUP.md`](docs/development/SETUP.md) trap 3), and **235
 frontend tests pass**. `ruff check .` is clean.
 `mypy src` reports 22 pre-existing errors and has never been clean.
 
 The Python tests run without a microphone, against the mandated replay/synthetic
-sources; `tests/test_api.py` drives the real FastAPI app over the real pipeline end
+sources. `tests/test_api.py` drives the real FastAPI app over the real pipeline end
 to end. See [`docs/development/SETUP.md`](docs/development/SETUP.md) for the full
 list of setup traps.
 
@@ -323,11 +327,11 @@ That division is deliberate and worth stating plainly, because it changes how
 you should read the repository.
 
 **Human** — the concept and why it exists; the product design and what the
-thing is *for*; the system architecture and how the pieces divide; the
+thing is *for*, the system architecture and how the pieces divide, the
 priorities and what wins when they conflict (see
-[`docs/CHARTER.md`](docs/CHARTER.md)); what "tested" has to mean
-([`docs/development/TEST_PLAN.md`](docs/development/TEST_PLAN.md)); the hardware
-choices; and continual review, direction and correction throughout. Every
+[`docs/CHARTER.md`](docs/CHARTER.md)), what "tested" has to mean
+([`docs/development/TEST_PLAN.md`](docs/development/TEST_PLAN.md)), the hardware
+choices, and continual review, direction and correction throughout. Every
 significant decision was made, or accepted, by a person who understood the
 system as a whole.
 
@@ -344,22 +348,22 @@ of Architecture Decision Records, the measured figures attached to almost every
 claim, and the explicit lists of what is *not* verified are not stylistic
 choices. They exist because AI-written code is confidently plausible by default,
 and plausibility is not correctness. The discipline throughout has been to
-require evidence — a measurement, a test against ground truth, a reading from
-the real device — before a claim is allowed to stand. `HANDOVER.md` documents
+require evidence (a measurement, a test against ground truth, a reading from
+the real device) before a claim is allowed to stand. `HANDOVER.md` documents
 several occasions where that discipline was the only thing that caught a bug
 which had already passed review and its own tests.
 
 The second is that a reader deserves to know. Code written this way needs a
-different kind of scepticism than code written by hand: it fails less often at
-syntax and more often at assumptions — a test that asserts an invented value
-rather than the one the system really emits, a metric that measures something
-adjacent to what its name claims. Those failures are quiet and they look like
+different kind of scepticism than code written by hand. It fails less often at
+syntax and more often at assumptions. A test asserts an invented value rather
+than the one the system really emits. A metric measures something adjacent to
+what its name claims. Those failures are quiet and they look like
 success.
 
 ### What this means if you contribute
 
 The bar is evidence, not authorship. It does not matter whether a change was
-written by a person or a model; it matters whether the claims attached to it
+written by a person or a model. It matters whether the claims attached to it
 were verified, and whether the things that could not be verified are stated as
 such. [`docs/development/TEST_PLAN.md`](docs/development/TEST_PLAN.md) sets out
 what that requires, and it opens with the bugs that passed their tests first,
@@ -375,7 +379,7 @@ because that is the failure mode this project is built to resist.
   scientific name and `taxonomic_group: acoustic_event`, because a classifier
   saying `Engine` is not the classifier identifying a bird (ADR-049).
 - A detection of a human voice is written down and its audio is not, by default.
-  The microphone records neighbours and passers-by who never consented; that is a
+  The microphone records neighbours and passers-by who never consented, and that is a
   charter constraint, not a setting with a sensible other value (ADR-049).
 - Levels are labelled dBFS relative to digital full scale, never as calibrated SPL,
   because no calibration procedure exists yet.
@@ -388,14 +392,14 @@ because that is the failure mode this project is built to resist.
   in `/api/v1/health`.
 - Detection thresholds are calibrated against measured noise, not guessed. The
   activity detector's threshold sits above where stationary noise actually reaches
-  on its own statistic; an earlier guessed value sat below it and fired on every
+  on its own statistic. An earlier guessed value sat below it and fired on every
   window.
 - Model assets are never bundled; their licences differ from this code's and are
   displayed before download and in the UI.
 
 ## Hardware
 
-This is the reference station — the one every measured figure in these documents
+This is the reference station: the one every measured figure in these documents
 came from. Nothing here is required by the software: the station discovers what
 it is attached to and records what it actually negotiated (`oo audio probe`).
 It is listed because "what did you build it out of" is the first question
@@ -415,36 +419,34 @@ anybody asks, and because a figure means more when you know what produced it.
 | Display case | [Printed case](https://makerworld.com/models/1382304) | From the *Aura* project's own build, which this board was assembled for |
 | Network | WiFi | The Pi's Ethernet port is unused |
 
-**Almost all of this was already lying around**, which is worth saying plainly.
-The Pi and its case were spares from an abandoned project; the SSD came out of a
-retired k3s cluster of Pi 4s; the display had been built as a weather
-forecaster; the power supply is an iPad charger, picked because it was known to
-be good. The microphone is the only part bought for the job.
+Almost all of this was already lying around. The Pi and its case were spares
+from an abandoned project, the SSD came out of a retired k3s cluster of Pi 4s,
+the display had been built as a weather forecaster, and the power supply is an
+iPad charger picked because it was known to be good. The microphone is the only
+part bought for the job.
 
-That is not incidental. A passive acoustic station does not need purpose-built
-hardware, and the interesting constraints here — a 600 mA USB budget, a database
-on an SD card, a display with somebody else's WiFi credentials in NVS — are all
-consequences of building it out of what was to hand rather than out of a parts
-list.
+That is worth knowing because several of the constraints described below follow
+from it rather than from any design decision: a 600 mA USB budget, a database on
+an SD card, and a display holding WiFi credentials from its previous life.
 
 The display's history in particular shapes the firmware. The board was assembled as
-[**Aura**](https://surrey-homeware.github.io/aura-installer/) — an open-source
-smart weather-forecast display for this exact board, not a project of ours — and
-went spare when a TRMNL replaced it. The case, the assembly and the WiFi
+[**Aura**](https://surrey-homeware.github.io/aura-installer/), an open-source
+smart weather-forecast display for this exact board and not a project of ours,
+then went spare when a TRMNL replaced it. The case, the assembly and the WiFi
 credentials sitting in NVS all predate this repository.
 
 That inheritance explains three decisions that would otherwise look arbitrary:
 the partition table preserves the original NVS region byte for byte, because it
-holds credentials nobody here has ever seen and cannot retype; a complete 4 MB
+holds credentials nobody here has ever seen and cannot retype. A complete 4 MB
 image was taken before anything was written, so the board can be returned to
-Aura; and the provisioning access point was called `Aura` until it was renamed
+Aura. And the provisioning access point was called `Aura` until it was renamed
 to something per-device (ADR-050).
 
 **Siting.** The Pi lives indoors in a summer house at the end of the garden. The
 microphone hangs on a hook under the eaves, on the 2 m cable run out through the
 window jamb. That arrangement is why the station hears the garden and not the
 room, and why the microphone's exact position has a larger effect on the data
-than any setting in this repository — moving it a few feet changed the noise
+than any setting in this repository. Moving it a few feet changed the noise
 floor materially.
 
 ### Notes worth knowing before you copy it
@@ -456,18 +458,18 @@ floor materially.
   across a reboot. Nothing in this codebase addresses a device by index.
 - **The Pi 5 wants 5 V 5 A, and this station runs on 3 A.** The consequence is
   visible in firmware: `usb_max_current_enable=0`, which caps *total* USB current
-  at 600 mA — shared, here, between an SSD and a microphone. It has not caused a
+  at 600 mA, shared here between an SSD and a microphone. It has not caused a
   fault: `vcgencmd get_throttled` reads `0x0`, meaning no undervoltage has ever
   been recorded on this station. It is listed because an underpowered supply is a
   genuinely plausible cause of an intermittently-enumerating microphone, and
   because anyone reproducing this should make the choice knowingly rather than
   inherit it. A 27 W supply removes the constraint.
 - **A microSD is not a good home for a database that writes continuously.** This
-  one is, for now; the charter treats storage endurance as a standing constraint
+  one is, for now. The charter treats storage endurance as a standing constraint
   and the evidence clips were moved to the SSD for exactly this reason.
 
 ## Licence
 
-Apache-2.0 for this code. Third-party model assets carry their own terms — BirdNET's
+Apache-2.0 for this code. Third-party model assets carry their own terms: BirdNET's
 released models are CC BY-NC-SA 4.0, which prohibits commercial use. See
 `/api/v1/models` on a running station for what is installed and under what terms.
