@@ -21,7 +21,12 @@ from typer.testing import CliRunner
 
 from open_observatory.cli import app
 
-runner = CliRunner()
+# mix_stderr=False: stdout carries the JSON document and nothing else, which
+# is the contract emit_json exists to keep. Mixing the streams hid a real
+# defect -- `oo refine status --json` printed through rich and nobody saw,
+# because the logger used to hold the pre-redirect stderr and its output
+# never reached the captured stdout at all.
+runner = CliRunner(mix_stderr=False)
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

@@ -36,7 +36,12 @@ from open_observatory.config import Settings, set_settings
 from open_observatory.db import models as orm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-runner = CliRunner()
+# mix_stderr=False: stdout carries the JSON document and nothing else, which
+# is the contract emit_json exists to keep. Mixing the streams hid a real
+# defect -- `oo refine status --json` printed through rich and nobody saw,
+# because the logger used to hold the pre-redirect stderr and its output
+# never reached the captured stdout at all.
+runner = CliRunner(mix_stderr=False)
 
 
 @pytest.fixture()

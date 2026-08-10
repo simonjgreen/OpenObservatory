@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC
+from pathlib import Path
 
 import pytest
 
@@ -195,3 +196,34 @@ def test_logs_go_to_stderr_not_stdout() -> None:
     json.loads(result.stdout)
     assert "replay.opened" in result.stderr
     assert "replay.opened" not in result.stdout
+
+
+def test_no_command_uses_console_print_json() -> None:
+    """The structural version of everything above.
+
+    The tests in this file name specific commands, which means they only cover
+    the ones somebody remembered. That failed twice. `oo refine status --json`
+    shipped with `console.print_json` because ADR-045 was written on a branch cut
+    before `emit_json` existed, and nothing noticed until rich 15 changed the
+    output enough to break parsing months later. `oo detections
+    reconcile-taxonomy --json` had the same hole.
+
+    So assert the property rather than the instances: no command may call
+    `console.print_json`. `emit_json` is the only way JSON reaches stdout.
+    """
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "open_observatory" / "cli.py"
+    ).read_text()
+
+    offenders = [
+        line.strip()
+        for line in source.splitlines()
+        # The call, not the word: this module's own docstring names it.
+        if "console.print_json(" in line
+    ]
+    assert not offenders, (
+        "console.print_json colourises and appends, so its output is not "
+        "machine-readable. Use emit_json instead. Offending lines:\n  "
+        + "\n  ".join(offenders)
+    )

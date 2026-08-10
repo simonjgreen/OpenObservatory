@@ -18,7 +18,12 @@ from open_observatory.config import set_settings
 from open_observatory.db import models as orm
 from open_observatory.db.session import ensure_schema_at_head, init_engine, session_scope
 
-runner = CliRunner()
+# mix_stderr=False: stdout carries the JSON document and nothing else, which
+# is the contract emit_json exists to keep. Mixing the streams hid a real
+# defect -- `oo refine status --json` printed through rich and nobody saw,
+# because the logger used to hold the pre-redirect stderr and its output
+# never reached the captured stdout at all.
+runner = CliRunner(mix_stderr=False)
 
 BASE = datetime(2026, 8, 7, 3, 38, 54, tzinfo=UTC)
 

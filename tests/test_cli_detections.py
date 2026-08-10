@@ -20,7 +20,12 @@ from open_observatory.config import set_settings
 from open_observatory.db import models as orm
 from open_observatory.db.session import ensure_schema_at_head, init_engine, session_scope
 
-runner = CliRunner()
+# mix_stderr=False: stdout carries the JSON document and nothing else, which
+# is the contract emit_json exists to keep. Mixing the streams hid a real
+# defect -- `oo refine status --json` printed through rich and nobody saw,
+# because the logger used to hold the pre-redirect stderr and its output
+# never reached the captured stdout at all.
+runner = CliRunner(mix_stderr=False)
 
 BASE = datetime(2026, 8, 4, 21, 0, tzinfo=UTC)
 LABELS = [
@@ -173,7 +178,10 @@ def test_no_coordinates_refuses_rather_than_guessing(settings) -> None:
     result = runner.invoke(app, ["detections", "reconcile-plausibility"])
 
     assert result.exit_code != 0
-    assert "coordinates" in result.output
+    # stderr, not stdout: a refusal must not land in a --json caller's document,
+    # so the failure paths print to stderr (see `console_err` in cli.py).
+    assert "coordinates" in result.stderr
+    assert result.stdout == ""
 
 
 def test_no_implausible_detections_reports_clean(settings) -> None:

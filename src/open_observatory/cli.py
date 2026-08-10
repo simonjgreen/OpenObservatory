@@ -1493,7 +1493,7 @@ def refine_run(
             write_health_event(session, report)
 
     if json_out:
-        console.print_json(json.dumps({**report.to_dict(), "proposals": report.proposals}))
+        emit_json({**report.to_dict(), "proposals": report.proposals})
         return
 
     if report.skipped_reason:
@@ -1617,7 +1617,7 @@ def refine_status(
         }
 
     if json_out:
-        console.print_json(json.dumps(payload, default=str))
+        emit_json(payload)
         return
 
     console.print(f"last refinement run: {last_run_at or '[red]never[/red]'}")
