@@ -5,6 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
+    // `node` is here for `responsive.test.tsx`, which reads `styles.css` off
+    // disk to assert on its source (vitest stubs CSS imports, `?raw`
+    // included). `vite/client` keeps the ambient module declarations that the
+    // `/// <reference>` in `vite-env.d.ts` provides -- naming `types` at all
+    // turns off automatic `@types/*` inclusion, so both must be listed.
+    "types": ["node", "vite/client"],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

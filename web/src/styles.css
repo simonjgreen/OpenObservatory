@@ -134,9 +134,10 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   flex-wrap: wrap;
 }
 
-.brand { display: flex; align-items: center; gap: 11px; }
-.brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
-.brand p { margin: 1px 0 0; font-size: 11px; }
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.brand > div { min-width: 0; }
+.brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.brand p { margin: 1px 0 0; font-size: 11px; overflow-wrap: anywhere; }
 
 .pulse {
   width: 10px; height: 10px; border-radius: 50%;
@@ -155,6 +156,7 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 
 .synthetic-warning {
   display: flex; flex-direction: column;
+  min-width: 0;
   padding: 5px 12px;
   border: 1px solid var(--danger);
   border-radius: var(--radius);
@@ -177,18 +179,41 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 .stat.tone-warn .stat-value { color: var(--warn); }
 .stat.tone-dim { border-left-color: var(--line-strong); }
 
-.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+/* This cluster holds the mode switch, settings, diagnostics, the whole listen
+ * control (channel switch + GO LIVE + volume + telemetry), sign-out and the
+ * clock. It is the widest thing in the header and the first to run out of
+ * room, so it wraps at every width rather than only below a breakpoint —
+ * ADR-054. Without `flex-wrap` here the outer `.topbar`'s own wrapping is
+ * useless: the overflow happens *inside* this box, and GO LIVE ended up off
+ * the right edge of a phone with no way to reach it. */
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 16px;
+  row-gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
 .clock { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
 .clock-time { font-size: 17px; font-weight: 600; }
 .clock .dim { font-size: 10px; }
 
 /* ---------- GO LIVE ---------- */
 
-.listen { display: flex; align-items: center; gap: 12px; }
+.listen {
+  display: flex; align-items: center;
+  column-gap: 12px; row-gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0; max-width: 100%;
+}
 
 .go-live {
   display: flex; align-items: center; gap: 8px;
   font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
+  white-space: nowrap;
   padding: 8px 16px;
   border-radius: 999px;
   background: #1b2130;
@@ -233,13 +258,24 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 .hero-controls label.checkbox { cursor: pointer; }
 .hero-controls input[type="range"] { width: 84px; }
 
-.segmented { display: flex; }
-.segmented button { border-radius: 0; border-right-width: 0; }
+/* A joined control: it must not wrap internally or the end caps stop reading
+ * as one thing, so it stays `nowrap` and its *container* wraps around it
+ * instead (ADR-054). Buttons may shrink their padding but never their label. */
+.segmented { display: flex; flex-wrap: nowrap; max-width: 100%; }
+.segmented button { border-radius: 0; border-right-width: 0; white-space: nowrap; }
 .segmented button:first-child { border-radius: 6px 0 0 6px; }
 .segmented button:last-child { border-radius: 0 6px 6px 0; border-right-width: 1px; }
 
-.meters { display: flex; gap: 18px; }
-.meter { min-width: 168px; }
+/* Opt-in variant for a group with too many options to keep on one line at a
+ * phone width (the history window picker). It becomes a wrapping chip group
+ * rather than dropping options: every option stays reachable. */
+.segmented-wrap { flex-wrap: wrap; gap: var(--space-1); }
+.segmented-wrap button,
+.segmented-wrap button:first-child,
+.segmented-wrap button:last-child { border-radius: 6px; border-right-width: 1px; }
+
+.meters { display: flex; gap: 18px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.meter { min-width: 168px; flex: 1 1 168px; }
 .meter-label {
   display: flex; align-items: center; gap: 6px;
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
@@ -325,6 +361,16 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   margin: 6px 0 0;
 }
 
+/* Plot plus its badge strip. The wrapper is the positioning context so the
+   strip can be lifted back over the plot on a wide screen (see
+   `.spectrogram-badges`) without living inside the element whose
+   `getBoundingClientRect` the hover geometry reads. */
+.spectrogram-figure {
+  position: relative;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
 .spectrogram {
   position: relative;
   width: 100%;
@@ -332,7 +378,6 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
   overflow: hidden;
   background: #05060a;
   border: 1px solid var(--line);
-  margin-bottom: 8px;
   cursor: crosshair;
 }
 .spectrogram.placeholder {
@@ -346,12 +391,17 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 }
 .spectrogram-overlay { pointer-events: none; }
 
+/* Wide screens: floated back over the plot's top-right corner, exactly where
+   it has always been. `left` is set as well as `right` so the strip can never
+   grow past the plot's own left edge — it wraps instead. */
 .spectrogram-badges {
-  position: absolute; top: 6px; right: 8px;
+  position: absolute; top: 6px; right: 8px; left: 8px;
   display: flex; gap: 5px; pointer-events: none;
+  flex-wrap: wrap; justify-content: flex-end;
 }
 .spectrogram-badges .badge {
   font-size: 9.5px; padding: 1px 6px; border-radius: 3px;
+  white-space: nowrap;
   background: rgba(8, 10, 16, 0.74);
   border: 1px solid rgba(255, 255, 255, 0.09);
   color: var(--text);
@@ -369,6 +419,7 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 
 .spectrogram-readout {
   position: absolute; bottom: 6px; right: 8px;
+  max-width: calc(100% - 16px);
   font-family: var(--mono); font-size: 11px;
   padding: 2px 7px; border-radius: 3px;
   background: rgba(8, 10, 16, 0.82);
@@ -380,6 +431,7 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
    tucked in a corner, because the thing it is explaining is the whole panel. */
 .spectrogram-filling {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100% - 24px);
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
   padding: 4px 10px; border-radius: 3px;
   color: rgba(230, 236, 255, 0.72);
@@ -595,7 +647,10 @@ input[type="range"] { accent-color: var(--accent); height: 14px; }
 
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0;
-  width: min(470px, 96vw);
+  /* `%` not `vw`: a viewport unit includes the classic scrollbar gutter, so
+     `100vw` on a page with a vertical scrollbar is wider than the space the
+     drawer actually has and pushes the document sideways. */
+  width: min(470px, 100%);
   background: #0b0d13;
   border-left: 1px solid var(--line-strong);
   box-shadow: -18px 0 40px rgba(0, 0, 0, 0.55);
@@ -709,13 +764,13 @@ code {
 
 /* Waterfall panels sit side by side: each is tall and narrow-ish, and putting the
    two bands next to each other lets you compare them across the same instant. */
-.hero-waterfall .spectrogram { display: inline-block; vertical-align: top; }
+.hero-waterfall .spectrogram-figure { display: inline-block; vertical-align: top; }
 @media (min-width: 1100px) {
   .hero-waterfall {
     display: flex; flex-direction: column;
   }
   .hero-waterfall .spectrogram-row { display: flex; gap: 8px; }
-  .hero-waterfall .spectrogram { flex: 1; min-width: 0; }
+  .hero-waterfall .spectrogram-figure { flex: 1; min-width: 0; }
 }
 
 /* Event stream controls, matching the suggestion list's row. */
@@ -928,35 +983,69 @@ code {
 }
 
 /* ==========================================================================
-   Mobile: the operator listens to the live ultrasonic stream from a phone as
-   well as a laptop (see ADR-027/the operator's own words). Nothing here
-   scrolls the page body horizontally, and every tappable control keeps a
-   real touch target.
+   Responsive (ADR-054)
+   --------------------------------------------------------------------------
+   The operator reads this page standing in the garden, on a phone. The rule
+   that keeps that working is *intrinsic first, breakpoints last*: any row that
+   can hold more than it has room for wraps and carries `min-width: 0` at every
+   width, so it degrades continuously instead of falling off the right edge
+   between two breakpoints. Breakpoints are reserved for genuine changes of
+   arrangement — a column count, an overlay becoming ordinary flow.
+
+   The ladder, and it is the whole ladder:
+
+     640px   narrow  — phone. One column; the spectrogram badge strip leaves
+                       the plot; touch targets grow.
+     950px   medium  — the three panel columns collapse to one.
+     1100px  wide    — waterfall spectrograms sit side by side.
+     1500px  xwide   — three panel columns instead of two.
+
+   There is deliberately no `overflow-x: hidden` on `html`/`body`. It was here,
+   and all it did was make an unreachable GO LIVE button *invisible* rather
+   than merely off-screen — the page reported a clean `scrollWidth` while the
+   control the operator wanted could not be scrolled to. Overflow is a bug to
+   fix at its source, not to hide; `web/src/responsive.test.tsx` asserts the
+   wrapping that replaces it.
    ========================================================================== */
 
 @media (max-width: 640px) {
   body { font-size: 14px; }
-  html, body { overflow-x: hidden; }
 
   .topbar { gap: var(--space-3); padding: var(--space-2) var(--space-3); }
-  .topbar-right { margin-left: 0; width: 100%; justify-content: space-between; }
+  /* Full width and left-aligned: with the cluster wrapping, `space-between`
+   * strands single items at opposite ends of a row. */
+  .topbar-right { margin-left: 0; width: 100%; justify-content: flex-start; }
+  .clock { align-items: flex-start; margin-left: auto; }
   .stat-row { gap: var(--space-1); }
   .stat { min-width: 0; flex: 1 1 30%; padding: 2px var(--space-2); }
+  .synthetic-warning { flex: 1 1 100%; }
 
   .operator-summary { grid-template-columns: 1fr; padding: var(--space-3); }
   .columns-operate { max-width: none; }
 
+  .hero { padding: var(--space-2) var(--space-3) var(--space-1); }
   .hero-controls { gap: var(--space-2); }
   .hero-controls label { font-size: var(--text-2xs); }
   .hero-controls input[type="range"] { width: 64px; }
+  /* `.grow` exists to push the level meters to the far right of a wide
+   * control row. On one column it would only insert a blank line. */
+  .hero-controls .grow { display: none; }
+
+  /* The badge strip stops being an overlay and becomes an ordinary wrapping
+   * row under the plot: nothing is dropped, nothing is clipped by the plot's
+   * width, and a detection label drawn on the overlay canvas can no longer
+   * land on top of it. */
+  .spectrogram-badges {
+    position: static;
+    justify-content: flex-start;
+    margin-top: var(--space-1);
+    row-gap: var(--space-1);
+  }
 
   .columns { grid-template-columns: 1fr; padding: var(--space-2) var(--space-3); }
   .column.right, .column.middle { grid-column: span 1; }
 
-  .listen { flex-wrap: wrap; gap: var(--space-2); row-gap: var(--space-2); }
   .volume input, .tune input { width: 72px; }
-
-  .drawer { width: 100vw; }
 
   /* Every button/select/input a thumb might hit gets a real target, not
    * just the dense 4px/9px desktop padding above. */
@@ -970,7 +1059,17 @@ code {
 
   .suggestion { grid-template-columns: 40px 1fr 60px; }
   .timeline-row { grid-template-columns: 56px 16px 1fr 28px; }
+  .event { grid-template-columns: 54px 1fr; }
+  .event .summary { grid-column: 1 / -1; }
+  .kv { grid-template-columns: 1fr; }
+  .footer { gap: var(--space-2); }
 }
+
+/* Wide tables and key/value grids are content, not layout: they get their own
+   horizontal scroll rather than widening the document. */
+.history-species, .near-miss { overflow-x: auto; }
+.kv { min-width: 0; }
+.panel, .column, .columns, .hero, .app, main { min-width: 0; }
 
 /* ---- authentication (ADR-034) ------------------------------------------
  * Login and forced-password-change gate. Reuses the app's own colour
@@ -1084,13 +1183,19 @@ code {
   color: inherit; text-align: left;
 }
 .settings-category-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px; }
-.settings-control { display: flex; align-items: center; gap: 8px; }
+.settings-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .settings-field-bool .settings-control { order: -1; }
 .settings-unit { color: var(--text-dim); font-weight: 400; }
 .settings-field-name { font-weight: 600; }
 .settings-help { margin: 0; font-size: 11px; color: var(--text-dim); max-width: 62ch; }
 .settings-note-field { font-style: italic; }
-.settings-reset { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
+/* Was `nowrap`: a long default ("default: Garden Observatory") then ran off
+   the right edge of a phone. It wraps and breaks instead — the default value
+   is a thing an operator reads, so it may not be clipped. */
+.settings-reset {
+  font-size: 10.5px; color: var(--text-dim);
+  text-align: left; max-width: 100%; overflow-wrap: anywhere;
+}
 .settings-reset:disabled { opacity: 0.45; cursor: default; }
 .settings-danger {
   font-size: 11px; color: #d4a017; align-items: flex-start;
