@@ -1331,6 +1331,132 @@ def clips_purge_human_audio(
         )
 
 
+@clips_app.command("reconcile-missing")
+def clips_reconcile_missing(
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Mark the rows reclaimed. Without this flag nothing is changed.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt when applying"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+    limit: int = typer.Option(
+        200000, help="Maximum live media_asset rows to examine, oldest first"
+    ),
+) -> None:
+    """Reconcile `media_asset` rows that claim a clip the disk does not have (ADR-057).
+
+    A row with `reclaimed_at` unset is the database asserting that evidence
+    exists. Measured on the live station 2026-08-10: 8,067 of 48,941 such rows
+    (16.5%, 20.59 GB) named files that were not there, every one created before
+    2026-08-05T18:44:35Z. `ClipManager.enforce_retention` -- the pre-ADR-026
+    filesystem sweep -- had unlinked them oldest-first to stay inside a 20 GB
+    budget and never touched the database; its own logs account for the whole
+    loss (8,166 files, 20.84 GB, between 2026-08-05 and 2026-08-08). None of
+    those clips survive anywhere, including `data/clips.sdcard-backup`, whose
+    oldest file postdates the boundary by nine minutes.
+
+    The consequences are not cosmetic: the storage panel over-reports clips and
+    bytes, retention believes it can reclaim space that does not exist, the API
+    offers a play button that 404s or 410s, and the refinement runner (ADR-045)
+    picks candidates oldest-first from exactly this population and reports every
+    one `unavailable`.
+
+    **What --apply changes.** For each row: `reclaimed_at` is set,
+    `reclaim_reason` is set to `missing`, and what the row used to claim is
+    preserved verbatim under `detail.missing_reconciliation`. `missing` is not
+    one of the retention tiers on purpose -- a clip aged out by policy and a
+    clip that vanished are different facts, and only one of them is something
+    the system chose. No file is deleted (there is nothing to delete), no
+    `media_asset` row is deleted, and no `detection` row is touched: "this
+    happened, and we no longer have the audio" stays in the record.
+
+    Dry-run by default. Running it twice is a no-op.
+    """
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
+    from .media_repair import apply_missing_reconciliation, find_missing_assets
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+
+    with session_scope() as session:
+        report = find_missing_assets(session, limit=limit)
+        findings = report.findings
+
+        if json_out:
+            emit_json(report.to_dict())
+        elif not findings:
+            console.print(
+                f"[green]All {report.scanned} live media_asset row(s) name a file "
+                "that is on disk.[/green]"
+            )
+        else:
+            payload = report.to_dict()
+            table = Table(
+                title=(
+                    f"{report.missing} of {report.scanned} live row(s) claim a missing "
+                    f"file ({report.missing_bytes / 1024**3:.2f} GB)"
+                )
+            )
+            table.add_column("created_at")
+            table.add_column("kind")
+            table.add_column("common_name")
+            table.add_column("MB", justify="right")
+            table.add_column("held", justify="center")
+            for item in findings[:200]:
+                table.add_row(
+                    item.created_at.isoformat(),
+                    item.kind,
+                    item.common_name or "",
+                    f"{item.byte_length / 1024**2:.1f}",
+                    "yes" if item.held_for_review else "",
+                )
+            console.print(table)
+            if len(findings) > 200:
+                console.print(f"  [dim]... and {len(findings) - 200} more[/dim]")
+            console.print(f"  by kind: {payload['by_kind']}")
+            console.print(f"  by created day: {payload['by_created_day']}")
+            held = int(payload["held_for_review"])  # type: ignore[call-overload]
+            if held:
+                console.print(
+                    f"  [yellow]{held} of these are held for human review — the hold "
+                    "cannot be satisfied, the audio is gone[/yellow]"
+                )
+
+        if not findings:
+            return
+
+        if not apply:
+            notice(
+                "\n[yellow]Dry run only -- nothing was changed.[/yellow] "
+                "Re-run with --apply to mark these rows reclaimed with reason "
+                "'missing'. No file is deleted either way.",
+                json_out=json_out,
+            )
+            return
+
+        if not yes and not typer.confirm(
+            f"Mark {len(findings)} row(s) as missing evidence now?", default=False
+        ):
+            notice("[yellow]Aborted; nothing was changed.[/yellow]", json_out=json_out)
+            raise typer.Exit(1)
+
+        for item in findings:
+            apply_missing_reconciliation(session, item)
+        console.print(
+            f"[green]Reconciled {len(findings)} row(s), "
+            f"{report.missing_bytes / 1024**3:.2f} GB of phantom evidence.[/green] "
+            "Rows are kept, not deleted; the original claim is preserved under "
+            "detail.missing_reconciliation and the reason is 'missing', not a "
+            "retention tier. Storage figures and the retention budget are correct "
+            "from the next read; no restart is needed."
+        )
+
+
 @clips_app.command("retention")
 def clips_retention(
     dry_run: bool = typer.Option(

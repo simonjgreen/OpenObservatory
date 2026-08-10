@@ -1,13 +1,11 @@
 /** Storage & retention, operator-facing.
  *
- *  The retention BACKEND (tiered age-out, dry-run mode, `oo clips retention
- *  --dry-run`) is being built by another agent this session and does not
- *  exist yet — this component is UI against an assumed shape, deliberately
- *  read-only and defensive so it degrades to "not available yet" rather than
- *  breaking the page when the endpoint 404s.
- *
- *  Assumed contract (state this loudly; confirm/adjust once the backend
- *  lands):
+ *  Built against an assumed shape before the backend existed (ADR-029), and
+ *  since reconciled with the real `GET /api/v1/retention/status`. Still
+ *  deliberately read-only and defensive: it degrades to "not available yet"
+ *  rather than breaking the page when the endpoint 404s, and every field
+ *  added since is read optionally so an older station renders "not reported"
+ *  instead of a confident zero.
  *
  *    GET /api/v1/retention/status ->
  *      {
@@ -16,11 +14,19 @@
  *          { "name": "audible only",      "age_days_max": 30, "clips": ..., "bytes": ... },
  *          { "name": "first/best per species", "age_days_max": 90, "clips": ..., "bytes": ... }
  *        ],
- *        "eligible_for_deletion": { "clips": N, "bytes": N },
+ *        "eligible_for_deletion": { "clips": N, "bytes": N, "bytes_verified_present": N },
+ *        "missing_files": { "clips": N, "bytes": N, "exact": bool, ... },
  *        "disk_reclaim_threshold": 0.85,
  *        "last_run_utc": "...",
  *        "dry_run": true | false
  *      }
+ *
+ *  **`clips` counts rows, not files (ADR-057).** 8,067 of this station's
+ *  rows once claimed clips that had been deleted from under them, so this
+ *  panel over-reported by 20.59 GB and said so nowhere. `missing_files` is
+ *  what the station's rolling audit knows about that, and it is rendered
+ *  whenever it is non-zero — the tier numbers are the ones being corrected,
+ *  so hiding the correction where they are shown would defeat it.
  *
  *  This matches the operator decision already recorded for this session
  *  (0–7d native+audible, 7–30d audible-only, 30–90d first/best-per-species,
@@ -44,7 +50,18 @@ interface RetentionTier {
 
 interface RetentionStatus {
   tiers: RetentionTier[]
-  eligible_for_deletion: { clips: number; bytes: number }
+  eligible_for_deletion: { clips: number; bytes: number; bytes_verified_present?: number }
+  /** ADR-057. Optional: a station on an older build does not send it, and
+   *  absent must render as "not reported", never as zero. */
+  missing_files?: {
+    clips: number
+    bytes: number
+    /** False while the rolling audit is still on its first pass, when the
+     *  figures are a floor rather than a count of the whole table. */
+    exact: boolean
+    passes_completed: number
+    last_pass_scanned: number
+  }
   disk_reclaim_threshold: number
   last_run_utc: string | null
   dry_run: boolean
@@ -81,6 +98,11 @@ export function RetentionPanel() {
     }
   }, [])
 
+  // ADR-057. `undefined` (an older station that does not report it) and
+  // `{clips: 0}` (a station that checked and found nothing) are different
+  // answers and must not collapse into one, so this is not defaulted.
+  const missing = status?.missing_files
+
   return (
     <section className="panel">
       <header className="panel-head">
@@ -109,10 +131,39 @@ export function RetentionPanel() {
               <dt title="Clips old enough to be removed at the next run">eligible now</dt>
               <dd className="mono">
                 {status.eligible_for_deletion.clips.toLocaleString()} clips ·{' '}
-                {bytes(status.eligible_for_deletion.bytes)}
+                {/* ADR-057: what deleting them would actually free, when the
+                    station has audited it. `bytes` is only what the rows
+                    claim, and 20.59 GB of that claim was once false. */}
+                {bytes(
+                  status.eligible_for_deletion.bytes_verified_present ??
+                    status.eligible_for_deletion.bytes,
+                )}
               </dd>
             </div>
+            {missing !== undefined && missing.clips > 0 && (
+              <div>
+                <dt title="Rows recorded as holding evidence whose file is not on disk">
+                  missing from disk
+                </dt>
+                <dd className="mono warn-text">
+                  {missing.clips.toLocaleString()} clips · {bytes(missing.bytes)}
+                  {missing.exact ? '' : ' (so far)'}
+                </dd>
+              </div>
+            )}
           </dl>
+          {missing !== undefined && missing.clips > 0 && (
+            <p className="dim panel-caption">
+              {missing.exact
+                ? `${missing.clips.toLocaleString()} of ${missing.last_pass_scanned.toLocaleString()} stored evidence rows`
+                : `${missing.clips.toLocaleString()} evidence rows so far (the audit is still on its first pass)`}{' '}
+              record a clip that is not on disk, so the tier figures above count{' '}
+              {bytes(missing.bytes)} that are not there and those detections cannot be
+              played back. The detections themselves are unaffected. Run{' '}
+              <code>oo clips reconcile-missing</code> to list them, and{' '}
+              <code>--apply</code> to correct the record; no clip is deleted either way.
+            </p>
+          )}
           <p className="dim panel-caption">
             {status.dry_run
               ? 'Dry-run mode: nothing is actually being deleted.'

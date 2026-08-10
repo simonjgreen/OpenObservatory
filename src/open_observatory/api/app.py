@@ -1025,6 +1025,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "the counter-top display are UTC, not local. Set your IANA zone in the "
                 "web UI settings page."
             )
+        # ADR-057. A note, not a `problems` entry: the station is capturing,
+        # detecting and serving correctly -- what is wrong is its *account* of
+        # what evidence it holds, and degrading the health signal (and with it
+        # `binary_sensor.<station>_station_healthy` in Home Assistant) for a
+        # bookkeeping error would train an operator to ignore it. It is still
+        # said out loud, because "8,067 clips" meaning "8,067 rows, 16.5% of
+        # which have no file" is exactly the honesty failure the charter names:
+        # a number shown to a human must mean what its label says.
+        missing_audit = retention.get("missing_audit") or {}
+        known_missing = int(retention.get("known_missing") or 0)
+        if known_missing:
+            exact = bool(missing_audit.get("passes_completed"))
+            scope = (
+                f"{known_missing} of {missing_audit.get('last_pass_scanned')} evidence rows"
+                if exact
+                else f"{known_missing} evidence rows (audit still on its first pass)"
+            )
+            notes.append(
+                f"{scope} claim a clip file that is not on disk: storage figures "
+                "over-report by that much and the play button on those detections "
+                "returns 410. Run `oo clips reconcile-missing` to see them and "
+                "`--apply` to mark them reclaimed. No clip is deleted either way."
+            )
         pending = station.site_pending_restart()
         if pending:
             notes.append(
@@ -1062,6 +1085,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "watermark_ratio": settings.retention_watermark_ratio,
                 "retention_sweep_keeping_up": retention["last_sweep_complete"],
                 "retention_last_sweep_at": retention["last_sweep_at"],
+                # ADR-057. Reported next to the disk figures because that is
+                # what it corrects: rows counted as stored evidence that are
+                # not on the disk this ratio measures.
+                "rows_claiming_missing_files": known_missing,
+                "missing_file_audit": missing_audit,
             },
             "mqtt": mqtt_publisher.snapshot(),
             "auth": auth_info,
@@ -1087,6 +1115,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Rows with `reclaimed_at` set are excluded: the clip is gone, the
         detection row deliberately survives it, and counting it here would
         report bytes that are no longer on disk.
+
+        **`reclaimed_at IS NULL` is a claim, not a measurement (ADR-057).**
+        On the live station 8,067 rows (16.5%, 20.59 GB) passed that filter
+        while naming files that had been unlinked without their rows being
+        marked, so every figure below was over-reported by that much and
+        `eligible_for_deletion` promised space no deletion could recover. The
+        fix is to reconcile those rows (`oo clips reconcile-missing`), and
+        this endpoint's job is to stop the over-report being invisible in the
+        meantime: `missing_files` carries what the rolling audit knows, and
+        `eligible_for_deletion.bytes_verified_present` is the reclaimable
+        figure with the known-missing bytes taken out. Both are labelled by
+        how they were arrived at, because a sampled bound and a census are
+        different claims.
         """
         sweeper = station.retention
         now = datetime.now(UTC)
@@ -1130,6 +1171,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "eligible_for_deletion": {
                 "clips": int(overdue_clips),
                 "bytes": int(overdue_bytes),
+                # ADR-057: what deleting all of that would actually free.
+                # `bytes` counts what the rows claim; this takes out the bytes
+                # the audit has confirmed are not on disk. Clamped at zero
+                # because the known-missing figure spans every age band, not
+                # just the overdue one, so it can exceed this bucket -- and a
+                # negative "space you will get back" would be a worse lie than
+                # the one being corrected.
+                "bytes_verified_present": max(
+                    0, int(overdue_bytes) - sweeper.known_missing_bytes
+                ),
+            },
+            # ADR-057. Present unconditionally, including as all-zeroes, so a
+            # consumer can tell "checked, nothing missing" from "this station
+            # does not report it".
+            "missing_files": {
+                **sweeper.audit_snapshot(),
+                "clips": sweeper.known_missing,
+                "bytes": sweeper.known_missing_bytes,
+                # False until a pass has completed: before that the figures
+                # are a partial sample and a floor, not a count of the table.
+                "exact": bool(sweeper.audit_passes),
             },
             "disk_reclaim_threshold": sweeper.watermark_ratio,
             "last_run_utc": sweeper.last_sweep_at.isoformat() if sweeper.last_sweep_at else None,

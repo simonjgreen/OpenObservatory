@@ -1839,6 +1839,31 @@ class Station:
                             "housekeeping.retention_not_keeping_up",
                             **result.to_dict(),
                         )
+            # ADR-057: on the same pacing and the same dedicated thread as the
+            # sweep, stat one bounded slice of live media rows and count the
+            # ones whose file is gone. A row asserting evidence that does not
+            # exist went unnoticed on this station for five days because
+            # nothing ever checked.
+            #
+            # Deliberately a rolling sample -- default 200 rows, ~1 ms of
+            # `stat` measured on target, a full pass over ~50k live rows in
+            # about 20 h -- and not a census: 48,989 stats cost 0.27 s, the
+            # same order as the sweep ADR-033 had to pace after it cost ~1.9
+            # capture gaps a minute, and capture always wins. It never marks
+            # or deletes anything; reconciling is `oo clips reconcile-missing`.
+            #
+            # Not gated on `retention_enabled`, unlike the sweep: whether the
+            # station is aging clips out has no bearing on whether its storage
+            # numbers are true, and switching retention off must not switch
+            # off the check that would notice them going wrong.
+            if ticks % interval_ticks == 0:
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        self._evidence_executor, self.retention.audit_missing_files
+                    )
+                except Exception:
+                    log.exception("housekeeping.missing_audit_failed")
 
     # -- introspection --------------------------------------------------
 

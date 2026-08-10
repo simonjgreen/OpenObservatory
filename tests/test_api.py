@@ -1071,6 +1071,86 @@ class TestRetentionStatus:
         assert after["clips"] == before["clips"]
         assert after["bytes"] == before["bytes"]
 
+    def test_reports_rows_whose_file_is_missing_and_corrects_the_reclaimable_bytes(
+        self, client, settings
+    ) -> None:
+        """ADR-057. `reclaimed_at IS NULL` is a claim, not a measurement: 8,067
+        live rows on the station (20.59 GB) named files that were gone, and
+        every figure here counted them. The panel must be able to say so, and
+        `eligible_for_deletion` must not promise space no deletion can free."""
+        import uuid as _uuid
+        from datetime import UTC, datetime, timedelta
+
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        old = datetime.now(UTC) - timedelta(days=400)
+        with session_scope() as session:
+            session.add(
+                orm.MediaAsset(
+                    id=_uuid.uuid4(),
+                    kind="evidence_native",
+                    storage_uri=str(settings.clip_dir / "gone" / "vanished.wav"),
+                    mime_type="audio/wav",
+                    byte_length=1_000_000,
+                    sha256="0" * 64,
+                    created_at=old,
+                )
+            )
+
+        payload = client.get("/api/v1/retention/status").json()
+        # Before any audit has run the station must not claim zero: "not yet
+        # checked" and "checked, none missing" are different answers.
+        assert payload["missing_files"]["exact"] is False
+        assert payload["missing_files"]["clips"] == 0
+
+        client.app.state.station.retention.audit_missing_files()
+        payload = client.get("/api/v1/retention/status").json()
+
+        assert payload["missing_files"]["exact"] is True
+        assert payload["missing_files"]["clips"] == 1
+        assert payload["missing_files"]["bytes"] == 1_000_000
+        eligible = payload["eligible_for_deletion"]
+        # The row is 400 days old, so it is counted as reclaimable -- but
+        # reclaiming it would free nothing, and that is the number the disk
+        # budget needs.
+        assert eligible["bytes"] >= 1_000_000
+        assert eligible["bytes_verified_present"] == eligible["bytes"] - 1_000_000
+
+    def test_health_says_so_as_a_note_without_degrading_the_station(
+        self, client, settings
+    ) -> None:
+        """The station is capturing correctly; what is wrong is its account of
+        what it holds. Degrading for that would flip
+        `binary_sensor.<station>_station_healthy` in Home Assistant and teach
+        an operator to ignore it -- but staying silent is the honesty failure
+        the charter names, so it is a note."""
+        import uuid as _uuid
+        from datetime import UTC, datetime
+
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        with session_scope() as session:
+            session.add(
+                orm.MediaAsset(
+                    id=_uuid.uuid4(),
+                    kind="evidence_native",
+                    storage_uri=str(settings.clip_dir / "gone" / "vanished.wav"),
+                    mime_type="audio/wav",
+                    byte_length=1_000_000,
+                    sha256="0" * 64,
+                    created_at=datetime.now(UTC),
+                )
+            )
+        client.app.state.station.retention.audit_missing_files()
+
+        payload = client.get("/api/v1/health").json()
+        assert payload["storage"]["rows_claiming_missing_files"] == 1
+        assert any("not on disk" in note for note in payload["notes"])
+        assert not any("not on disk" in problem for problem in payload["problems"])
+        assert all("missing" not in problem for problem in payload["problems"])
+
 
 class TestOperatorPause:
     """The privacy pause over real HTTP, against the real pipeline (ADR-055).
