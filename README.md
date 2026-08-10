@@ -335,24 +335,15 @@ and reviewed.
 
 ### Why this is stated rather than hidden
 
-Two reasons, both practical.
-
-The first is that it explains the shape of the repository. The unusual density
-of Architecture Decision Records, the measured figures attached to almost every
-claim, and the explicit lists of what is *not* verified are not stylistic
-choices. They exist because AI-written code is confidently plausible by default,
-and plausibility is not correctness. The discipline throughout has been to
-require evidence (a measurement, a test against ground truth, a reading from
-the real device) before a claim is allowed to stand. `HANDOVER.md` documents
-several occasions where that discipline was the only thing that caught a bug
-which had already passed review and its own tests.
-
-The second is that a reader deserves to know. Code written this way needs a
-different kind of scepticism than code written by hand. It fails less often at
-syntax and more often at assumptions. A test asserts an invented value rather
-than the one the system really emits. A metric measures something adjacent to
-what its name claims. Those failures are quiet and they look like
-success.
+It explains the shape of the repository. The density of Architecture Decision
+Records, the measured figures attached to most claims, and the explicit lists of
+what is not verified exist because AI-written code is confidently plausible by
+default, and plausibility is not correctness. It also needs a different kind of
+review: it fails less often at syntax and more often at assumptions, such as a
+test asserting an invented value rather than the one the system really emits, or
+a metric measuring something adjacent to what its name claims. Those failures
+are quiet and look like success. `HANDOVER.md` records several that were caught
+only by checking a claim against the thing it described.
 
 ### What this means if you contribute
 
@@ -445,25 +436,10 @@ floor materially.
 
 ### Wanted later
 
-Two sensors would make the record more useful, and neither is decided yet.
-
-A **lux sensor** would say whether a detection happened in daylight, twilight or
-darkness as measured rather than as calculated. The station already computes
-civil dusk and dawn from its coordinates to gate the bat detector, but that is
-an almanac answer, and an overcast dusk is not the same as a clear one.
-
-A **rain sensor** would explain a category of otherwise puzzling data. Rain
-raises the broadband noise floor, suppresses bird activity and produces
-transients that a pass detector can mistake for something else, so knowing it
-was raining turns a confusing hour into an explained one.
-
-How to attach either is the open question. Three plausible routes, none chosen:
-the Pi's own GPIO, which is closest to the audio but adds wiring to the enclosure
-that currently has none; the ESP32 counter-top display, which is already on the
-WiFi and already talks to the station, but is indoors and so cannot see the
-weather; or ingesting from Home Assistant, which Milestone 6 already scopes as
-environmental telemetry and which would make this mostly a matter of subscribing
-to sensors that already exist. See Milestone 9 in
+A lux sensor and a rain sensor, to say whether a detection happened in real
+darkness rather than calculated darkness, and to explain the hours where rain
+lifts the noise floor and quietens the birds. How to attach them is undecided —
+see Milestone 9 in
 [`docs/delivery/IMPLEMENTATION_PLAN.md`](docs/delivery/IMPLEMENTATION_PLAN.md).
 
 ### Notes worth knowing before you copy it
