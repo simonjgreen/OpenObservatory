@@ -19,13 +19,10 @@ browser or from an ESP32 counter-top display that the station updates over the
 air. It also exposes a REST/WebSocket API, an optional MQTT feed into Home
 Assistant, and Prometheus metrics.
 
-It runs unattended as a systemd service. The reference station has been
-recording since it was commissioned on 4 August 2026, and holds 74,969
-detections, 93 named bird species and 61 GB of evidence clips as of 2026-08-09.
-It has not yet run the continuous 72-hour soak that the acceptance criteria
-require, so nothing here is described as complete or verified;
+It runs unattended as a systemd service.
 [`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) records
-what is delivered and what is outstanding.
+what is delivered, what is outstanding, and which acceptance criteria have not
+yet been met.
 
 **New here?** [`docs/README.md`](docs/README.md) is the map of all the
 documentation. If you are about to write code,
@@ -300,19 +297,16 @@ naming where the built system diverges from it.
 ( cd web && npm ci && npm test )
 ```
 
-Measured on this branch on 2026-08-09: **826 Python tests pass, 11 skip** (8 are
-the fixture tests for the deliberately-unbundled BirdNET and BatDetect2 model
-assets, which skip rather than fail by design. Three are
-`tests/test_api.py::TestLiveChannels` cases that starlette 0.41.3's synchronous
-`TestClient` cannot represent. See
-[`docs/development/SETUP.md`](docs/development/SETUP.md) trap 3), and **235
-frontend tests pass**. `ruff check .` is clean.
-`mypy src` reports 22 pre-existing errors and has never been clean.
+Some tests skip rather than fail by design: the fixture tests for the
+deliberately-unbundled BirdNET and BatDetect2 model assets, and a few
+`tests/test_api.py::TestLiveChannels` cases that starlette's synchronous
+`TestClient` cannot represent. `mypy src` is not clean and never has been.
 
-The Python tests run without a microphone, against the mandated replay/synthetic
-sources. `tests/test_api.py` drives the real FastAPI app over the real pipeline end
-to end. See [`docs/development/SETUP.md`](docs/development/SETUP.md) for the full
-list of setup traps.
+The Python tests run without a microphone, against the mandated replay and
+synthetic sources. `tests/test_api.py` drives the real FastAPI app over the real
+pipeline end to end. See
+[`docs/development/SETUP.md`](docs/development/SETUP.md) for the setup traps and
+the current expected counts.
 
 The frontend tests cover the display geometry, which is where a bug is most
 dangerous: a view that puts a sound at the wrong frequency or time produces
