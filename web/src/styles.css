@@ -1311,8 +1311,15 @@ code {
 .pause-remaining { font-size: 10.5px; opacity: 0.85; }
 
 .pause-menu {
-  position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+  /* Anchored to the control's *leading* edge, not its trailing one. With
+     `right: 0` the menu grew leftwards, and since this control is deliberately
+     first in the header it grew straight off the left of a phone screen --
+     reported from an actual iPhone, because a headless screenshot of a closed
+     menu cannot show it. `max-width` then keeps it inside the viewport
+     wherever the control ends up. */
+  position: absolute; top: calc(100% + 4px); left: 0; right: auto; z-index: 40;
   min-width: 168px;
+  max-width: calc(100vw - 24px);
   display: flex; flex-direction: column;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);

@@ -157,3 +157,18 @@ describe('the history window picker keeps all six windows reachable', () => {
     expect(ruleBody('.segmented-wrap')).toMatch(/flex-wrap:\s*wrap/)
   })
 })
+
+describe('the pause menu opens into the screen, not off it', () => {
+  it('anchors to the leading edge and cannot exceed the viewport', () => {
+    // Reported from a real iPhone. The menu used `right: 0`, which grows the
+    // panel leftwards -- and the pause control is deliberately first in the
+    // header, so on a phone it grew straight off the left of the screen. The
+    // headless captures missed it entirely because they only ever caught the
+    // menu closed, which is the lesson worth keeping more than the rule.
+    const body = ruleBody('.pause-menu')
+    expect(body).toMatch(/left:\s*0/)
+    expect(body).not.toMatch(/right:\s*0/)
+    expect(body).toMatch(/max-width:\s*calc\(100vw/)
+  })
+})
+
