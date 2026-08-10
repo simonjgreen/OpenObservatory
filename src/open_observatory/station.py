@@ -66,6 +66,7 @@ from .detectors.ultrasonic import UltrasonicDetector
 from .events import EventBus, EventType
 from .live import LiveAudioBroadcaster
 from .normaliser import CanonicalDetection, ClaimViolation, Normaliser
+from .pause import PauseController
 from .retention import RetentionSweeper
 from .schedule import NightSchedule
 from .segmenter import TransientAssetStore, WindowRouter
@@ -254,6 +255,21 @@ class Station:
             batch_budget_s=settings.retention_batch_budget_s,
         )
 
+        #: The operator's privacy pause (ADR-055). Owned here because every
+        #: gate that consults it is here: the live-audio publish in
+        #: `_handle_block`, and the detection path in `_on_detections`. It is
+        #: constructed before capture starts and its deadline is re-adopted from
+        #: the database in `start()`, so a station that reboots mid-pause comes
+        #: back paused rather than recording.
+        self.pause = PauseController(
+            session_factory=session_scope,
+            # Read through lambdas rather than copied: the timezone is a live
+            # setting, and reading a stale copy would resolve "until midnight"
+            # against the zone the process started in.
+            timezone_provider=lambda: self.settings.timezone,
+            station_id_provider=lambda: self.station_id,
+        )
+
         #: What the running pipeline is actually using, recorded as each part
         #: of it is built (`_record_applied`) and updated as live settings are
         #: pushed into it (`apply_tuning`). The settings object can change under
@@ -322,6 +338,12 @@ class Station:
         self._record_applied(tuning.PINNED_AT_PROCESS_START)
         self.station_id = await asyncio.to_thread(self._ensure_station_row)
         await asyncio.to_thread(self._close_orphaned_streams)
+        # Before capture, deliberately: if this process is coming back up in
+        # the middle of a pause, the gates must already be closed by the time
+        # the first block arrives. Restoring afterwards would leave a window --
+        # short, but a window during which a paused station records.
+        await asyncio.to_thread(self.pause.restore)
+        await asyncio.to_thread(self.pause.close_stale_rows)
         self._running = True
         self._persist_task = asyncio.create_task(self._persist_loop(), name="persist")
         self._evidence_task = asyncio.create_task(self._evidence_loop(), name="evidence")
@@ -915,7 +937,20 @@ class Station:
                 self._spectrogram_sink(columns)
         self._spectrograms_encoding = watching
 
-        self.live_audio.publish(derived.pcm)
+        # 3c. Live listening, gated by the operator pause (ADR-055).
+        #
+        # One float comparison against a cached deadline -- no lock, no
+        # database, nothing that can block -- because this is the capture hot
+        # path and capture always wins. It is checked here as well as at the
+        # two endpoints because refusing a *connection* only stops the people
+        # who connect after the pause starts, and the guarantee has to be that
+        # no audio leaves this process while paused, not that no new listener
+        # arrives. `publish` is a no-op with no listeners anyway, so on a
+        # station nobody is listening to this costs the comparison and nothing
+        # else.
+        paused = self.pause.active
+        if not paused:
+            self.live_audio.publish(derived.pcm)
 
         # 3b. Live ultrasonic monitor: only heterodyne when someone is actually
         # listening. Capture always wins, and continuously heterodyning
@@ -924,7 +959,11 @@ class Station:
         # phase and filter state across calls itself, so skipping calls while
         # idle and resuming later is safe — it simply continues from wherever
         # it left off, exactly like `live_audio` skipping idle publishes.
-        if self.heterodyne is not None and self.live_audio_ultrasonic.listener_count:
+        if (
+            not paused
+            and self.heterodyne is not None
+            and self.live_audio_ultrasonic.listener_count
+        ):
             ultrasonic_pcm = self.heterodyne.process(block.pcm)
             self.live_audio_ultrasonic.publish(ultrasonic_pcm)
 
@@ -1082,6 +1121,23 @@ class Station:
     async def _on_detections(
         self, worker: DetectorWorker, window: AudioWindow, detections: list[NativeDetection]
     ) -> None:
+        # ADR-055. The single gate that makes "paused" mean "persists nothing".
+        #
+        # Placed at the mouth of the detection path rather than at each of its
+        # ends, because everything downstream of here is a way for a claim
+        # about the garden to escape the process: the detection row, the
+        # evidence clip, the event bus -- and through the bus, MQTT and the
+        # counter-top display. Gating once, before normalisation, means a new
+        # consumer added to the bus later is paused by construction rather than
+        # by whoever adds it remembering to check.
+        #
+        # Detectors keep running. Their windows, queues and lag counters stay
+        # honest, so a pause does not leave the diagnostics looking like a
+        # stalled pipeline, and the detector state a person reads after
+        # resuming is continuous with the state before.
+        if self.pause.active:
+            self.pause.note_suppressed(len(detections))
+            return
         native_rate = self.stream.fmt.sample_rate if self.stream else window.sample_rate
         for detection in detections:
             try:
@@ -1689,6 +1745,15 @@ class Station:
             ticks += 1
             t0 = time.monotonic()
             self.leases.sweep()
+            # ADR-055. This does not *end* a pause -- a pause ends at its
+            # deadline, in `PauseController.active`, with nothing needing to
+            # run. All this does is close the durable row promptly so the
+            # history view stops showing a finished pause as still running. It
+            # is a single-row UPDATE and only when one has just expired.
+            try:
+                await asyncio.to_thread(self.pause.sync)
+            except Exception:
+                log.exception("housekeeping.pause_sync_failed")
             t_leases = time.monotonic()
             snapshot = self.status_snapshot()
             t_snapshot = time.monotonic()
@@ -1881,6 +1946,10 @@ class Station:
                 and self.settings.longitude is not None,
                 "site_pending_restart": self.site_pending_restart(),
             },
+            # ADR-055. Top-level rather than inside `capture`, because it is not
+            # a fact about capture: capture is running normally throughout a
+            # pause. It is a fact about what the station is allowed to keep.
+            "pause": self.pause.snapshot(),
             "capture": {
                 "state": self.capture_state,
                 "detail": self.capture_detail,

@@ -1248,3 +1248,120 @@ code {
   margin: 6px 0 0; padding-left: 0; list-style: none; font-size: 11px;
   max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+   ADR-055: the operator privacy pause.
+
+   Deliberately self-contained -- one block, one class prefix, and no edit to
+   `.topbar`, `.topbar-right` or any pre-existing rule -- because a mobile
+   layout change is in flight against the header on another branch and this
+   must not fight it. The control inherits the header's flex behaviour rather
+   than asserting any of its own.
+
+   Amber, not red. Paused is a state an operator deliberately chose, not a
+   fault; red would teach people to read their own decisions as breakage, and
+   would compete with the genuinely red NOT LIVE AUDIO banner beside it.
+   --------------------------------------------------------------------------- */
+.pause-control { position: relative; display: inline-flex; align-items: stretch; }
+.pause-control .pause-main,
+.pause-control .pause-caret {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 4px 9px;
+}
+.pause-control .pause-main {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap;
+}
+.pause-control .pause-caret {
+  border-left: none;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 4px 6px;
+}
+.pause-control .pause-main:hover:not(:disabled),
+.pause-control .pause-caret:hover { color: var(--text); border-color: var(--warn); }
+.pause-control .pause-main:disabled { opacity: 0.55; cursor: default; }
+
+/* On. Unmistakably a different object from the off state, not the same button
+   with a different word in it -- a control an operator can misread from two
+   metres away is the whole failure this exists to prevent. */
+.pause-control.paused .pause-main {
+  border-radius: var(--radius-sm);
+  border-color: var(--warn);
+  background: rgba(251, 191, 36, 0.16);
+  color: var(--warn);
+  font-weight: 650;
+}
+.pause-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warn);
+  animation: pause-pulse 2s ease-in-out infinite;
+}
+@keyframes pause-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* The pulse is emphasis and never the only thing carrying the state, so it can
+   simply go for anyone who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .pause-dot { animation: none; }
+}
+.pause-remaining { font-size: 10.5px; opacity: 0.85; }
+
+.pause-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+  min-width: 168px;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+}
+.pause-menu button {
+  background: none; border: none; text-align: left; cursor: pointer;
+  color: var(--text-dim); font-size: 11.5px; padding: 5px 8px;
+  border-radius: var(--radius-sm);
+}
+.pause-menu button:hover { background: var(--bg-raised); color: var(--text); }
+.pause-menu button.on { color: var(--warn); }
+.pause-menu-note {
+  margin: 4px 6px 2px; font-size: 10px; line-height: 1.35;
+  border-top: 1px solid var(--line); padding-top: 5px;
+}
+.pause-error { font-size: 10.5px; margin-left: 6px; align-self: center; }
+
+.pause-banner {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  border: 1px solid var(--warn);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: rgba(251, 191, 36, 0.1);
+  padding: 9px 14px;
+  font-size: 12px;
+  color: #f5d78a;
+}
+.pause-banner strong { color: var(--warn); font-size: 12px; letter-spacing: 0.09em; }
+.pause-banner .linklike {
+  background: none; border: none; padding: 0;
+  color: inherit; text-decoration: underline; cursor: pointer; font-size: inherit;
+}
+
+/* Pause windows drawn over the coverage bar in the history view. Hatched
+   rather than solid: the audio underneath really was captured, and a solid
+   block would read as "no recording here", which is the one thing this must
+   not be confused with. */
+.coverage-numbers .pause-coverage { color: var(--warn); }
+.coverage-bar .paused {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(251, 191, 36, 0.42) 0 4px,
+    rgba(251, 191, 36, 0.12) 4px 8px
+  );
+  border-left: 1px solid var(--warn);
+  border-right: 1px solid var(--warn);
+  pointer-events: auto;
+}

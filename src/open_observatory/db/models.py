@@ -265,6 +265,45 @@ class DetectionMedia(Base):
     asset: Mapped[MediaAsset] = relationship(lazy="joined")
 
 
+class CapturePause(Base):
+    """One deliberate operator pause (ADR-055).
+
+    The row exists so a pause is a *recorded* absence rather than an
+    unexplained hole. Charter item 2 makes "a quiet night versus a dead
+    microphone" a first-class distinction; an operator pause is a third thing,
+    and coverage that could not tell it from either of the others would invite
+    exactly the wrong conclusion about a silent afternoon.
+
+    ``ends_utc`` is the deadline the pause was set to and never changes.
+    ``ended_utc`` is when it actually stopped, which is earlier if the operator
+    resumed and equal if it simply ran out -- and NULL while it is running, so
+    a restart can find and re-adopt it. A pause is never deleted or rewritten:
+    like every other record here, it is evidence about what the station did.
+    """
+
+    __tablename__ = "capture_pause"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    station_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("station.id"), nullable=True
+    )
+    started_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    #: When the pause was *set* to end. Fixed at the moment it started.
+    ends_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    #: When it actually ended. NULL while running.
+    ended_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: "expired", "resumed", "superseded" or "unknown" (a process that died
+    #: mid-pause, closed by the next start-up).
+    end_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    #: The preset key the operator chose, e.g. "1h" or "until-midnight", with
+    #: the label it was shown as. Stored rather than derived: the catalogue may
+    #: change, and what an operator was told they were choosing should not.
+    preset: Mapped[str] = mapped_column(String(40), default="")
+    label: Mapped[str] = mapped_column(String(80), default="")
+    actor: Mapped[str] = mapped_column(String(80), default="operator")
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class HealthEvent(Base):
     __tablename__ = "health_event"
 

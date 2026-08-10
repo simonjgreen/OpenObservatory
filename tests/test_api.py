@@ -1070,3 +1070,269 @@ class TestRetentionStatus:
         after = client.get("/api/v1/retention/status").json()["tiers"][0]
         assert after["clips"] == before["clips"]
         assert after["bytes"] == before["bytes"]
+
+
+class TestOperatorPause:
+    """The privacy pause over real HTTP, against the real pipeline (ADR-055).
+
+    The unit-level properties are in `tests/test_pause.py`. What is only
+    provable here is the part an operator would actually be betrayed by: that a
+    paused station refuses to let anyone listen to the garden, that it writes
+    nothing while paused, and that capture keeps running throughout.
+    """
+
+    def test_the_control_reports_its_menu_and_its_state_in_one_request(self, client) -> None:
+        """One request, so the button cannot offer a duration whose state it
+        read from somewhere else."""
+        payload = client.get("/api/v1/pause").json()
+
+        assert payload["active"] is False
+        assert payload["ends_utc"] is None
+        assert [preset["key"] for preset in payload["presets"]] == [
+            "15m",
+            "1h",
+            "3h",
+            "6h",
+            "until-midnight",
+        ]
+        assert payload["default_preset"] == "1h"
+        # "until midnight" is the only one the browser could not compute for
+        # itself, and it is reported as such rather than as a number.
+        assert payload["presets"][-1]["seconds"] is None
+
+    def test_pausing_and_resuming_round_trips(self, client) -> None:
+        paused = client.post("/api/v1/pause", json={"preset": "1h"}).json()
+        assert paused["active"] is True
+        assert paused["preset"] == "1h"
+        assert 3500 < paused["remaining_s"] <= 3600
+        assert "PAUSED" in paused["banner"]
+
+        assert client.get("/api/v1/pause").json()["active"] is True
+
+        resumed = client.delete("/api/v1/pause").json()
+        assert resumed["active"] is False
+        assert resumed["ends_utc"] is None
+        assert client.get("/api/v1/pause").json()["active"] is False
+
+    def test_resuming_when_not_paused_is_not_an_error(self, client) -> None:
+        """One click to resume, by requirement, and therefore no confirmation
+        step and no state in which the button can fail."""
+        assert client.delete("/api/v1/pause").status_code == 200
+
+    def test_an_unknown_duration_is_refused_and_changes_nothing(self, client) -> None:
+        response = client.post("/api/v1/pause", json={"preset": "forever"})
+        assert response.status_code == 422
+        assert "unknown pause duration" in response.json()["detail"]
+        assert client.get("/api/v1/pause").json()["active"] is False
+
+    def test_live_listening_is_refused_while_paused(self, client) -> None:
+        """The one that makes "paused" true rather than merely displayed.
+
+        A pause anyone with the URL can listen straight through is not a pause:
+        the garden is exactly as audible as it was and the operator has been
+        told otherwise. The WAV channel is what the shipped UI actually uses,
+        so it is the one that has to say no.
+
+        Only the refusal is exercised here, never the success case. A
+        *successful* `GET /live/audio.wav` returns a genuinely infinite
+        generator, and Starlette's synchronous `TestClient` blocks until the
+        ASGI app returns -- see SETUP.md trap 3, which is why three tests in
+        `TestLiveChannels` are marked skip. That the endpoint streams when the
+        station is recording is covered there; what is new and testable here is
+        that it refuses when the station is paused, which returns immediately
+        because the `HTTPException` is raised before any response body exists.
+        """
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            refused = client.get("/api/v1/live/audio.wav")
+            assert refused.status_code == 503
+            assert "PAUSED" in refused.json()["detail"]
+            # The ultrasonic channel too -- a bat monitor is still a microphone
+            # in a garden.
+            assert client.get("/api/v1/live/audio.wav?channel=ultrasonic").status_code == 503
+        finally:
+            client.delete("/api/v1/pause")
+
+        # And resuming genuinely reopens the gate. Asserted on the station's
+        # own state rather than by re-requesting the stream, for the reason
+        # above.
+        assert client.app.state.station.pause.active is False
+
+    def test_the_listen_socket_refuses_before_attaching_a_listener(self, client) -> None:
+        """Refused with a reason rather than accepted and served silence: an
+        open socket that plays nothing is indistinguishable from a broken
+        station, which is the confusion this whole feature exists to avoid."""
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            with client.websocket_connect("/api/v1/live/audio") as socket:
+                hello = socket.receive_json()
+            assert hello["available"] is False
+            assert hello["paused"] is True
+            assert "PAUSED" in hello["reason"]
+            # No listener was attached, so the broadcaster is untouched.
+            assert client.get("/api/v1/station").json()["live_audio"]["listeners"] == 0
+        finally:
+            client.delete("/api/v1/pause")
+
+    def test_nothing_is_persisted_while_paused_and_capture_never_stops(self, client) -> None:
+        """Capture keeps running -- frames keep arriving, the device is never
+        closed -- and yet no detection row appears. That pair is the whole
+        design: the microphone cannot fail to come back, because it never went
+        away."""
+        import time as _time
+
+        from sqlalchemy import func as _func
+
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        def _count() -> int:
+            with session_scope() as session:
+                return int(
+                    session.execute(select(_func.count(orm.Detection.id))).scalar_one()
+                )
+
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            frames_before = client.get("/api/v1/station").json()["capture"]["frames"]
+            _time.sleep(0.5)
+            before = _count()
+            _time.sleep(3.0)
+            after = _count()
+            snapshot = client.get("/api/v1/station").json()
+
+            assert after == before, "a paused station wrote detection rows"
+            assert snapshot["capture"]["frames"] > frames_before, (
+                "capture stopped during a pause, which it must never do -- closing "
+                "the device risks it not coming back (HANDOVER section 3a)"
+            )
+            assert snapshot["pause"]["active"] is True
+        finally:
+            client.delete("/api/v1/pause")
+
+    def test_health_says_so_as_a_note_and_never_as_a_fault(self, client) -> None:
+        """`problems` would flip `binary_sensor.<station>_station_healthy` and
+        make every alerting rule in the house treat a birthday party as an
+        outage. Saying nothing would be the quiet omission the honesty
+        constraint forbids. So: a note."""
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            payload = client.get("/api/v1/health").json()
+            assert payload["pause"]["active"] is True
+            assert any("paused by the operator" in note for note in payload["notes"])
+            assert not any("paused" in problem.lower() for problem in payload["problems"])
+        finally:
+            client.delete("/api/v1/pause")
+
+    def test_the_counter_top_display_is_told(self, client) -> None:
+        """ADR-038's channel. The display is the everyday surface, and somebody
+        glancing at it must not read a paused garden as a silent one."""
+        from open_observatory.display_channel import health_state
+
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            state, detail = health_state(client.get("/api/v1/health").json())
+            assert state == "D"
+            assert "PAUSED" in detail
+        finally:
+            client.delete("/api/v1/pause")
+
+    def test_metrics_distinguish_a_paused_station_from_a_dead_one(self, client) -> None:
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            body = client.get("/metrics").text
+            assert "oo_paused 1.0" in body
+            # Capture is still reported as running: an alert that cannot tell
+            # these apart is charter item 2's failure in Prometheus form.
+            assert "oo_capture_state 1.0" in body
+        finally:
+            client.delete("/api/v1/pause")
+
+    def test_history_coverage_shows_the_pause_as_deliberate(self, client) -> None:
+        client.post("/api/v1/pause", json={"preset": "1h"})
+        try:
+            coverage = client.get("/api/v1/history?window=today").json()["coverage"]
+            assert len(coverage["pauses"]) == 1
+            assert coverage["pauses"][0]["running"] is True
+            # Reported as its own figure alongside capture, never folded into
+            # it. (That it is not *subtracted* is proved against a seeded
+            # window in `tests/test_pause.py`; a station a few seconds old has
+            # no meaningful capture total to compare against yet.)
+            assert "seconds_paused" in coverage
+            assert coverage["seconds_paused"] >= 0
+            assert "seconds_captured" in coverage
+        finally:
+            client.delete("/api/v1/pause")
+
+
+class TestPauseSurvivesARestart:
+    """A reboot mid-party must come back paused, not recording.
+
+    Built as a genuine second process lifetime rather than by poking the
+    controller: a whole new `create_app` against the same database, with the
+    first one shut down. That is what the Pi does, and it is the only way to
+    prove a deadline was persisted rather than held in memory.
+    """
+
+    def test_a_second_app_against_the_same_database_comes_back_paused(self, settings) -> None:
+        from open_observatory.config import set_settings
+
+        configured = settings.model_copy(
+            update={"source": "synthetic", "timezone": "Europe/London"}
+        )
+        set_settings(configured)
+
+        with TestClient(create_app(configured)) as first:
+            paused = first.post("/api/v1/pause", json={"preset": "6h"}).json()
+            assert paused["active"] is True
+            deadline = paused["ends_utc"]
+
+        # ... the station restarts ...
+        set_settings(configured)
+        with TestClient(create_app(configured)) as second:
+            restored = second.get("/api/v1/pause").json()
+            assert restored["active"] is True, "a restart resumed recording mid-pause"
+            assert restored["ends_utc"] == deadline, "the deadline moved across the restart"
+            # And the gates are genuinely closed in the new process, not merely
+            # reported: this is what makes a restored pause a pause rather than
+            # a status field.
+            assert second.get("/api/v1/live/audio.wav").status_code == 503
+            second.delete("/api/v1/pause")
+
+    def test_a_pause_that_expired_while_the_station_was_down_does_not_come_back(
+        self, settings
+    ) -> None:
+        """The other half, and the one an operator would be angrier about: a
+        pause set at 3pm must not still be suppressing detections when the
+        station is restarted the following week."""
+        from datetime import timedelta
+
+        from open_observatory.config import set_settings
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        configured = settings.model_copy(update={"source": "synthetic"})
+        set_settings(configured)
+
+        with TestClient(create_app(configured)) as first:
+            first.get("/api/v1/pause")
+            past = datetime.now(UTC) - timedelta(hours=3)
+            with session_scope() as session:
+                session.add(
+                    orm.CapturePause(
+                        id=uuid.uuid4(),
+                        started_utc=past,
+                        ends_utc=past + timedelta(hours=1),
+                        preset="1h",
+                        label="1 hour",
+                    )
+                )
+
+        set_settings(configured)
+        with TestClient(create_app(configured)) as second:
+            assert second.get("/api/v1/pause").json()["active"] is False
+            # The gate is genuinely open, checked on the station rather than by
+            # requesting the stream -- see `test_live_listening_is_refused_
+            # while_paused` for why a successful WAV request cannot be made
+            # from the synchronous `TestClient`.
+            assert second.app.state.station.pause.active is False

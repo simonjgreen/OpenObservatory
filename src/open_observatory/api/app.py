@@ -73,6 +73,7 @@ from ..db.session import ensure_schema_at_head, get_session, init_engine, sessio
 from ..display import detection_flags, display_title
 from ..events import EventType
 from ..mqtt import MqttPublisher
+from ..pause import PauseError, available_presets
 from ..site_settings import (
     EDITABLE_BY_NAME,
     RuntimeEnvStore,
@@ -131,6 +132,19 @@ class ReviewIn(BaseModel):
         if self.status != "corrected" and self.corrected_taxon_id:
             raise ValueError("corrected_taxon_id is only valid when status is 'corrected'")
         return self
+
+
+class PauseIn(BaseModel):
+    """Body for `POST /api/v1/pause` (ADR-055).
+
+    A preset key, never a raw number of seconds. "until-midnight" cannot be
+    expressed as a duration -- it depends on the station's configured zone and
+    on the time of day it is pressed -- so the station resolves all of them and
+    the browser resolves none, which also means one place decides what "an
+    hour" means rather than two that can disagree.
+    """
+
+    preset: str = Field(min_length=1, max_length=40)
 
 
 class LoginIn(BaseModel):
@@ -829,6 +843,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result["saved"] = sorted(changed)
         return result
 
+    # -- operator pause (ADR-055) ----------------------------------------
+
+    def _pause_payload() -> dict[str, Any]:
+        """The whole state of the pause control, for every client that draws it.
+
+        Includes the menu as well as the state, so the split button is built
+        from one request rather than from a settings fetch plus a state fetch
+        that can disagree about what it is offering.
+        """
+        payload = station.pause.snapshot()
+        payload["presets"] = [
+            preset.to_dict() for preset in available_presets(settings.pause_presets)
+        ]
+        payload["default_preset"] = settings.pause_default_preset
+        payload["timezone"] = settings.timezone
+        payload["banner"] = station.pause.banner(settings.timezone)
+        return payload
+
+    @app.get(f"{API_PREFIX}/pause")
+    def get_pause() -> dict[str, Any]:
+        return _pause_payload()
+
+    @app.post(f"{API_PREFIX}/pause")
+    async def post_pause(body: PauseIn, request: Request) -> dict[str, Any]:
+        """Stop recording for a chosen duration.
+
+        Deliberately an endpoint of its own rather than a field on
+        `PUT /api/v1/settings`. A setting describes how the station behaves
+        indefinitely; this is an action with a deadline, it is taken repeatedly,
+        it is not persisted to `runtime.env`, and it must be reachable in one
+        request from a control on the main page. Wiring it through the settings
+        writer would also mean a privacy action waiting on a file write.
+
+        Pressing it while already paused replaces the deadline -- see
+        `PauseController.start`.
+
+        Any *known* preset is accepted, not only the ones `pause_presets`
+        currently lists. The setting decides what the menu offers; refusing a
+        key that a browser tab loaded ten minutes ago would turn a settings edit
+        into a failed privacy action at the moment it is least welcome.
+        """
+        principal = getattr(request.state, "principal", None)
+        actor = getattr(principal, "username", None) or "operator"
+        try:
+            # The database write inside is one INSERT; the in-memory deadline is
+            # set first, so the gates close whether or not it succeeds.
+            state = await asyncio.to_thread(station.pause.start, body.preset, actor=actor)
+        except PauseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Tell the live UI at once rather than at the next 2 s status frame: the
+        # operator has just pressed a privacy control and every open browser
+        # should show it on, immediately.
+        station.bus.emit(
+            EventType.HEALTH_EVENT,
+            {
+                "service": "station",
+                "severity": "info",
+                "event_type": "pause.started",
+                "detail": state,
+            },
+            station_id=station.station_id,
+        )
+        log.warning("pause.requested", preset=body.preset, actor=actor)
+        return _pause_payload()
+
+    @app.delete(f"{API_PREFIX}/pause")
+    async def delete_pause(request: Request) -> dict[str, Any]:
+        """Resume now. Idempotent: resuming a station that is not paused is fine.
+
+        One click, by requirement. There is no confirmation step: the failure
+        mode of resuming a second too early is a detection nobody wanted, and
+        the failure mode of a fiddly resume is an operator who leaves the pause
+        running all night.
+        """
+        principal = getattr(request.state, "principal", None)
+        actor = getattr(principal, "username", None) or "operator"
+        state = await asyncio.to_thread(station.pause.resume, actor=actor)
+        station.bus.emit(
+            EventType.HEALTH_EVENT,
+            {
+                "service": "station",
+                "severity": "info",
+                "event_type": "pause.ended",
+                "detail": state,
+            },
+            station_id=station.station_id,
+        )
+        return _pause_payload()
+
+    def _refuse_if_paused(channel: str) -> str:
+        """The message a live listener is given while the station is paused.
+
+        Empty when it may listen. Live listening is refused because a pause
+        anyone with the URL can listen straight through is not a pause -- the
+        garden is exactly as audible to a browser as it was before, and the
+        operator has been told otherwise.
+        """
+        if not station.pause.active:
+            return ""
+        banner = station.pause.banner(settings.timezone)
+        log.info("live_audio.refused_paused", channel=channel)
+        return banner or "live listening is unavailable while the station is paused"
+
     def _health_payload() -> dict[str, Any]:
         """Shared by GET /health and the MQTT publisher's periodic health sensor,
         so `binary_sensor.<station>_station_healthy` in Home Assistant means
@@ -913,6 +1030,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notes.append(
                 f"settings saved but not yet in force (restart required): {', '.join(pending)}"
             )
+        # ADR-055. A note, never a `problems` entry: an operator pause is a
+        # deliberate act, not a fault, and putting it in `problems` would flip
+        # `binary_sensor.<station>_station_healthy` in Home Assistant and make
+        # every alerting rule in the house treat a birthday party as an
+        # outage. It is still said loudly -- a station reporting `status: ok`
+        # while recording nothing would be exactly the kind of quiet omission
+        # the honesty constraint forbids.
+        pause_state = station.pause.snapshot()
+        pause_state["banner"] = station.pause.banner(settings.timezone)
+        if pause_state["active"]:
+            notes.append(
+                "paused by the operator until "
+                f"{pause_state['ends_utc']}: detections, evidence clips, "
+                "publishing and live listening are suppressed. Capture itself is "
+                "still running, so the device stays open (ADR-055)."
+            )
 
         status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
         return {
@@ -921,6 +1054,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "notes": notes,
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "capture": capture,
+            #: Read by `display_channel.health_state`, which is what puts the
+            #: pause banner on the counter-top display.
+            "pause": pause_state,
             "storage": {
                 "disk_used_ratio": storage["disk_used_ratio"],
                 "watermark_ratio": settings.retention_watermark_ratio,
@@ -1850,6 +1986,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await socket.send_json({"type": "error", "detail": "authentication required"})
             await socket.close(code=4401)
             return
+        # ADR-055, before a listener is attached. Refused rather than served
+        # silence: a socket that connects and then plays nothing is
+        # indistinguishable from a broken station, and the operator needs to be
+        # able to tell those apart. The `available: false` shape is the one
+        # this channel already uses for "there is nothing here to stream",
+        # so the existing client renders the reason without a change.
+        refusal = _refuse_if_paused(channel)
+        if refusal:
+            await socket.send_json(
+                {
+                    "type": "audio-hello",
+                    "channel": channel,
+                    "available": False,
+                    "paused": True,
+                    "reason": refusal,
+                    "sample_rate": station.live_audio.sample_rate,
+                    "chunk_frames": station.live_audio.chunk_frames,
+                    "chunk_ms": station.live_audio.chunk_ms,
+                    "encoding": "pcm_s16le_mono",
+                }
+            )
+            return
+
         ultrasonic = channel == "ultrasonic"
         broadcaster = station.live_audio_ultrasonic if ultrasonic else station.live_audio
         listener = broadcaster.add_listener(label=f"browser:{channel}")
@@ -1892,7 +2051,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             while True:
-                payload = await listener.queue.get()
+                try:
+                    payload = await asyncio.wait_for(listener.queue.get(), timeout=1.0)
+                except TimeoutError:
+                    # A pause that begins while somebody is already listening
+                    # has to end their stream too, or "paused" means "paused
+                    # for people who were not quick enough". The station stops
+                    # publishing at the same instant (`_handle_block`), so this
+                    # loop simply stops receiving; the timeout is what turns
+                    # that silence into a decision instead of a hang.
+                    if station.pause.active:
+                        return
+                    continue
                 if payload is None:
                     return
                 await socket.send_bytes(payload)
@@ -1953,6 +2123,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         difference is the transport: continuous 16-bit PCM behind a WAV header,
         so a plain ``<audio>`` element can decode it without Web Audio.
         """
+        # ADR-055. 503 with the pause's own wording: `audio.ts` reads `detail`
+        # off a non-OK probe and shows it on the listen control, so the operator
+        # is told why rather than left with a silent player. Refused before any
+        # listener is attached, so a paused station cannot be made to run the
+        # heterodyne for a listener it is not going to serve.
+        refusal = _refuse_if_paused(channel)
+        if refusal:
+            raise HTTPException(status_code=503, detail=refusal)
+
         ultrasonic = channel == "ultrasonic"
         broadcaster = station.live_audio_ultrasonic if ultrasonic else station.live_audio
 
@@ -1988,6 +2167,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # for the ultrasonic channel that listener is the only
                     # thing keeping the heterodyne running.
                     if await request.is_disconnected():
+                        return
+                    # A pause that starts mid-stream ends this response too.
+                    # The station has already stopped publishing, so without
+                    # this the listener would sit on an open, silent connection
+                    # -- which is exactly what a broken station looks like.
+                    if station.pause.active:
                         return
                     try:
                         payload = await asyncio.wait_for(listener.queue.get(), timeout=1.0)
