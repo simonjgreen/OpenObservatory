@@ -154,9 +154,31 @@ class TestNamedRanges:
         assert window.start == datetime(2026, 8, 4, 19, 0, tzinfo=UTC)
         assert window.seconds == 12 * 3600
 
-    def test_last_night_after_noon_is_tonight(self) -> None:
+    def test_last_night_after_dusk_is_tonight(self) -> None:
         window = history.resolve_named_range("last-night", LONDON, now=self._at(21))
         assert window.start == datetime(2026, 8, 5, 19, 0, tzinfo=UTC)
+
+    def test_no_named_window_ever_resolves_into_the_future(self) -> None:
+        """The property, rather than a list of hours somebody thought of.
+
+        `last-night` used to flip at noon, so from midday until eight in the
+        evening it returned the night that had not happened yet -- a window
+        entirely in the future, reporting 0.0% captured and 0s from the
+        microphone. Honest about having no data, and about the wrong twelve
+        hours. Found on a phone, in the garden, on 2026-08-10.
+        """
+        names = ["last-hour", "dawn-chorus", "last-night", "today", "yesterday", "24h"]
+        for hour in range(24):
+            now = self._at(hour, 30)
+            for name in names:
+                try:
+                    window = history.resolve_named_range(name, LONDON, now=now)
+                except Exception:
+                    continue  # not every name has to exist; this test is about those that do
+                assert window.start <= now, (
+                    f"{name} at {hour:02d}:30 starts in the future: "
+                    f"{window.start} > {now}"
+                )
 
     def test_local_timezone_is_respected_not_utc(self) -> None:
         """A window computed in UTC would drift an hour with summer time."""

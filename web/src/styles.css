@@ -1009,13 +1009,32 @@ code {
    ========================================================================== */
 
 @media (max-width: 640px) {
+  /* Six named windows on one phone row leaves "24 hours" orphaned on a line of
+     its own. A grid gives three and three instead of five and one. */
+  .segmented.segmented-wrap {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-2);
+  }
+  .segmented.segmented-wrap button {
+    width: 100%;
+    text-align: center;
+    padding-inline: var(--space-1);
+  }
+
   body { font-size: 14px; }
 
   .topbar { gap: var(--space-3); padding: var(--space-2) var(--space-3); }
   /* Full width and left-aligned: with the cluster wrapping, `space-between`
    * strands single items at opposite ends of a row. */
   .topbar-right { margin-left: 0; width: 100%; justify-content: flex-start; }
-  .clock { align-items: flex-start; margin-left: auto; }
+  /* The phone's own status bar already shows the time, permanently, two
+     centimetres above this. ADR-054 says not to hide information to make things
+     fit, and this is the one honest exception: the information is not lost, it
+     is duplicated. The timezone label goes with it -- a station in a different
+     zone is a real case, but it is legible in HISTORY and SETTINGS, which is
+     where a time actually gets interpreted. */
+  .clock { display: none; }
   .stat-row { gap: var(--space-1); }
   .stat { min-width: 0; flex: 1 1 30%; padding: 2px var(--space-2); }
   .synthetic-warning { flex: 1 1 100%; }

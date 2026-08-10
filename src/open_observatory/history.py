@@ -163,12 +163,23 @@ def resolve_named_range(
         return window(start, start + timedelta(days=1), "yesterday")
     if name == "last-night":
         # Dusk-to-dawn, wide enough to hold a British summer night at either end.
-        # Before 12:00 local, "last night" means the one that just ended.
-        anchor = moment if moment.hour >= 12 else moment - timedelta(days=1)
+        #
+        # The night flips at its own start, 20:00, not at midday. An earlier
+        # version flipped at 12:00, so from noon until eight in the evening
+        # "last night" resolved to the night that had not happened yet: at 12:28
+        # on 2026-08-10 it returned 2026-08-10T19:00Z to 2026-08-11T07:00Z, a
+        # window entirely in the future, and reported 0.0% captured. Honest
+        # about having no data, and about the wrong twelve hours.
+        anchor = moment if moment.hour >= 20 else moment - timedelta(days=1)
         start = local(anchor, 20)
         return window(start, start + timedelta(hours=12), "last night")
     if name == "dawn-chorus":
-        anchor = moment if moment.hour >= 10 else moment
+        # Flips at the window's own start, 03:00, for the same reason
+        # `last-night` flips at 20:00. The previous line read
+        # `moment if moment.hour >= 10 else moment` -- both branches identical,
+        # a dead ternary that always chose today, so between midnight and 03:00
+        # this returned a dawn chorus that had not happened yet.
+        anchor = moment if moment.hour >= 3 else moment - timedelta(days=1)
         start = local(anchor, 3)
         return window(start, start + timedelta(hours=7), "dawn chorus")
     return window(moment - timedelta(hours=1), moment, "last hour")
