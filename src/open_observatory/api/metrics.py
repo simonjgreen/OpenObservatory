@@ -370,6 +370,39 @@ class PrometheusExporter:
             "Detections currently exempt from the 30-90 day cull as first- or best-of-species",
             retention["exemplar_detections"],
         )
+        # ADR-057. Not a retention tier and deliberately not filed under one:
+        # these rows lost their evidence without any policy deciding to give
+        # it up, and an alert on them is an alert on the storage numbers being
+        # untrue rather than on retention doing its job. Alert on
+        # `oo_media_missing_files > 0`; read
+        # `oo_media_missing_audit_passes_total` first, because a zero before
+        # the first pass completes means "not yet checked", not "all present".
+        missing_audit = retention.get("missing_audit") or {}
+        self._set(
+            "oo_media_missing_files",
+            "Live media_asset rows whose clip file is not on disk (ADR-057)",
+            retention.get("known_missing"),
+        )
+        self._set(
+            "oo_media_missing_bytes",
+            "Bytes claimed by live media_asset rows whose clip file is not on disk",
+            retention.get("known_missing_bytes"),
+        )
+        self._set(
+            "oo_media_missing_audit_passes_total",
+            "Completed passes of the rolling missing-file audit over every live row",
+            missing_audit.get("passes_completed"),
+        )
+        self._set(
+            "oo_media_missing_audit_rows_scanned",
+            "Live rows examined by the last completed missing-file audit pass",
+            missing_audit.get("last_pass_scanned"),
+        )
+        self._set(
+            "oo_media_missing_audit_duration_seconds",
+            "Wall-clock duration of the last missing-file audit slice",
+            missing_audit.get("last_audit_duration_s"),
+        )
         for tier in ("native", "exemplar_only", "expired", "watermark"):
             self._set(
                 "oo_retention_files_deleted_total",

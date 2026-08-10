@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from . import review as review_queries
@@ -182,6 +182,32 @@ class RetentionSweeper:
         self.last_disk_used_ratio: float | None = None
         self.last_exemplar_detections: int = 0
         self.last_held_detections: int = 0
+
+        # -- rolling missing-file audit (ADR-057) ---------------------------
+        #: Cursor into ``(media_asset.created_at, id)``, advanced by
+        #: `audit_missing` and wrapped to the beginning when it runs off the
+        #: end. A cursor rather than an OFFSET because OFFSET is O(offset) and
+        #: this table is tens of thousands of rows and growing; the ``id`` half
+        #: is there because ``created_at`` is not unique -- three or four
+        #: assets are written per detection within microseconds of each other
+        #: -- and a bare ``>`` would silently skip every row that shares a
+        #: timestamp with the last one read, which is exactly the class of
+        #: quiet omission this whole audit exists to catch.
+        self.audit_cursor: tuple[datetime, uuid.UUID] | None = None
+        #: Running tally for the pass currently in progress.
+        self.audit_scanned: int = 0
+        self.audit_missing: int = 0
+        self.audit_missing_bytes: int = 0
+        #: The last *completed* pass over every live row. These are the only
+        #: two numbers that answer "how many rows claim a file that is gone"
+        #: exactly rather than as a partial sample, which is why they are
+        #: reported separately instead of being folded into a running total.
+        self.last_pass_scanned: int = 0
+        self.last_pass_missing: int = 0
+        self.last_pass_missing_bytes: int = 0
+        self.audit_passes: int = 0
+        self.last_audit_at: datetime | None = None
+        self.last_audit_duration_s: float = 0.0
 
     # ------------------------------------------------------------------
 
@@ -589,6 +615,130 @@ class RetentionSweeper:
             return None
         return round(1.0 - usage.free / usage.total, 4)
 
+    # -- rolling missing-file audit (ADR-057) -----------------------------
+
+    def audit_missing_files(self, *, batch: int | None = None) -> dict[str, Any]:
+        """Stat a small, bounded slice of live rows; report how many files are gone.
+
+        **The problem this exists for.** A ``media_asset`` row with
+        ``reclaimed_at IS NULL`` is the database asserting that evidence
+        exists. On the live station 8,067 such rows (16.5%, 20.59 GB) named
+        files that had been unlinked by `clips.ClipManager.enforce_retention`
+        without any row being marked, and nobody found out for five days --
+        there was no way to find out short of an operator running a command
+        (ADR-057). This makes the answer arrive on its own.
+
+        **Why a rolling sample and not a census.** Statting every live row is
+        cheap in isolation -- 48,989 rows measured at 0.27 s on the target --
+        but 0.27 s is the same order as the ORM sweep ADR-033 had to pace to
+        300 s after it starved the event loop and cost ~1.9 capture gaps per
+        minute. Capture always wins, so this walks a fixed ``batch`` (default:
+        the sweeper's own ``batch_size``, 200) per call, cursored on the
+        indexed ``created_at`` column, wrapping to the start when it runs off
+        the end. 200 stats is ~1 ms of the same measurement, on a call that
+        already happens every 300 s; a full pass over ~50k live rows completes
+        in about 20 hours.
+
+        The exact answer is therefore `last_pass_missing` out of
+        `last_pass_scanned`, refreshed once per pass, with `audit_missing` /
+        `audit_scanned` as the partial tally in between. Reporting both is
+        deliberate: a sample of 3% finding zero is not the same claim as a
+        completed pass finding zero, and the honesty constraint is that a
+        number means what its label says.
+
+        Never deletes anything and never marks a row -- reconciliation is
+        `media_repair.apply_missing_reconciliation`, run by an operator with
+        ``oo clips reconcile-missing --apply``. This only counts.
+        """
+        size = batch or self.batch_size
+        started = time.monotonic()
+        with self._session_factory() as session:
+            query = select(
+                orm.MediaAsset.created_at,
+                orm.MediaAsset.id,
+                orm.MediaAsset.storage_uri,
+                orm.MediaAsset.byte_length,
+            ).where(orm.MediaAsset.reclaimed_at.is_(None))
+            if self.audit_cursor is not None:
+                query = query.where(
+                    tuple_(orm.MediaAsset.created_at, orm.MediaAsset.id) > self.audit_cursor
+                )
+            rows = session.execute(
+                query.order_by(
+                    orm.MediaAsset.created_at.asc(), orm.MediaAsset.id.asc()
+                ).limit(size)
+            ).all()
+
+        for created_at, asset_id, storage_uri, byte_length in rows:
+            self.audit_cursor = (created_at, asset_id)
+            self.audit_scanned += 1
+            if not Path(storage_uri).exists():
+                self.audit_missing += 1
+                self.audit_missing_bytes += int(byte_length or 0)
+
+        if len(rows) < size:
+            # Ran off the end: this pass has seen every live row, so its
+            # totals are exact. Start the next one from the beginning.
+            self.audit_passes += 1
+            self.last_pass_scanned = self.audit_scanned
+            self.last_pass_missing = self.audit_missing
+            self.last_pass_missing_bytes = self.audit_missing_bytes
+            self.audit_cursor = None
+            self.audit_scanned = 0
+            self.audit_missing = 0
+            self.audit_missing_bytes = 0
+
+        self.last_audit_at = self._clock()
+        self.last_audit_duration_s = round(time.monotonic() - started, 4)
+        if self.audit_missing or self.last_pass_missing:
+            log.warning(
+                "retention.audit_missing_files",
+                pass_missing=self.last_pass_missing,
+                pass_scanned=self.last_pass_scanned,
+                partial_missing=self.audit_missing,
+                partial_scanned=self.audit_scanned,
+                passes=self.audit_passes,
+            )
+        return self.audit_snapshot()
+
+    def audit_snapshot(self) -> dict[str, Any]:
+        """The missing-file audit's state, for `/health`, `/metrics` and the CLI."""
+        return {
+            "passes_completed": self.audit_passes,
+            "last_pass_scanned": self.last_pass_scanned,
+            "last_pass_missing": self.last_pass_missing,
+            "last_pass_missing_bytes": self.last_pass_missing_bytes,
+            "in_progress_scanned": self.audit_scanned,
+            "in_progress_missing": self.audit_missing,
+            "in_progress_missing_bytes": self.audit_missing_bytes,
+            "last_audit_at": self.last_audit_at.isoformat() if self.last_audit_at else None,
+            "last_audit_duration_s": self.last_audit_duration_s,
+        }
+
+    @property
+    def known_missing(self) -> int:
+        """Rows currently known to claim evidence that is not on disk.
+
+        The last completed pass's exact figure once there has been one, and
+        the running tally of the first (incomplete) pass before that. Never a
+        figure extrapolated from a partial sample onto the whole table: an
+        estimate presented as a count is the failure mode the charter's
+        honesty constraint names directly.
+        """
+        return self.last_pass_missing if self.audit_passes else self.audit_missing
+
+    @property
+    def known_missing_bytes(self) -> int:
+        """Bytes those rows claim, on the same basis as `known_missing`.
+
+        This is what the storage panel and the retention budget were counting
+        as reclaimable and could never have recovered, because there is
+        nothing there to unlink.
+        """
+        return (
+            self.last_pass_missing_bytes if self.audit_passes else self.audit_missing_bytes
+        )
+
     # -- diagnostics ------------------------------------------------------
 
     def find_orphans(self, *, limit: int = 500) -> Iterator[Path]:
@@ -632,4 +782,10 @@ class RetentionSweeper:
             "exemplar_detections": self.last_exemplar_detections,
             "held_detections": self.last_held_detections,
             "totals": dict(self.totals),
+            # ADR-057. Named "missing_audit", not folded into `totals`: these
+            # count rows whose file vanished *without* a retention decision,
+            # which is a different fact from anything this sweeper deleted.
+            "missing_audit": self.audit_snapshot(),
+            "known_missing": self.known_missing,
+            "known_missing_bytes": self.known_missing_bytes,
         }

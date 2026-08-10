@@ -244,6 +244,14 @@ class MediaAsset(Base):
     #: history view or an operator distinguishes "gone" from "never existed",
     #: and ``reclaim_reason`` (the tier name, e.g. ``"native"``, ``"watermark"``)
     #: is how a wrongly-reclaimed clip can be explained after the fact.
+    #:
+    #: Two reasons are deliberately not tier names. ``"privacy_human_audio"``
+    #: (ADR-049) is an operator deleting human speech. ``"missing"`` (ADR-057)
+    #: is the file having gone without any policy deciding to give it up --
+    #: 8,067 rows on the live station, unlinked by the pre-ADR-026 filesystem
+    #: sweep, which never marked them. Keeping that distinct from a tier is
+    #: the point: a clip aged out on purpose and a clip that vanished are
+    #: different facts about this system, and only one of them was a decision.
     reclaimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
