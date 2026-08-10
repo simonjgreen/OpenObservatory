@@ -41,7 +41,7 @@ dependencies = [
 # ALSA capture on the target device.
 alsa = ["pyalsaaudio==0.11.0"]
 # Preferred high-quality polyphase resampler. Falls back to scipy when absent.
-resample = ["soxr==0.5.0.post1", "scipy==1.15.0"]
+resample = ["soxr==1.1.0", "scipy==1.15.0"]
 # TFLite inference for the BirdNET adapter. `tflite-runtime` has no cp312
 # aarch64 wheel; ai-edge-litert is its maintained successor and does.
 birdnet = ["ai-edge-litert==2.1.6"]
