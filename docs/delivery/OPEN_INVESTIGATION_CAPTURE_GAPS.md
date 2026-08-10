@@ -1051,6 +1051,263 @@ one of those twelve gaps is backed by an EPIPE ALSA actually raised. ADR-039's
   The longest window recorded anywhere in it is the 4.03 h above, and the longest
   *clean* one is 22.2 minutes.
 - **The one-hour drift run at full duration is still outstanding.**
-- **Why the ring overflowed twelve times**, above. Unattributed.
+- ~~**Why the ring overflowed twelve times**, above. Unattributed.~~
+  **Attributed 2026-08-10 — see the final section.** The headroom was being eaten
+  by a filesystem walk on the event loop, and the overruns themselves land on the
+  retention sweep's beat.
+- Hypothesis 4 was never isolated; the missing gap row of 2026-08-08 10:55:24Z is
+  still inference only.
+
+---
+
+# 2026-08-10: the headroom is being eaten by a filesystem walk, and it is dated
+
+The previous section ended with `late_read_max_frames` at **155,243 of 192,000
+(81%)** — the third consecutive reading in the wrong direction — twelve real ALSA
+overruns, and the sentence *"Why the ring overflowed twelve times. Unattributed."*
+
+**It is now attributed.** The 30 s beat that ADR-033 noticed and could not name
+("the lag events fell to ~1.6/min on an unrelated 30 s beat"), and that the round
+before this one guessed at ("`clips.disk_usage()` caches its clip-tree walk for
+exactly 30 s and is the obvious candidate, but that is inference — it measured
+0.0 ms on the sample taken, which is what a cache hit looks like"), is
+`ClipManager.disk_usage()` walking the clip archive **on the event loop**. The
+guess was right. What nobody had was the size of it, or that it grows.
+
+**The short answer: this is a real risk to the soak, not a benign counter, and it
+has a date on it.** It is also not the thing that has actually lost audio. Those
+are two different findings and they are separated below.
+
+## The window, and its timezone
+
+| | |
+|---|---|
+| Window (UTC) | **2026-08-10 11:37:53 → 13:40:00**, 2.02 h |
+| Window (BST, what `journalctl --since` takes) | 2026-08-10 12:37:53 → 14:40:00 |
+| Stream | `9766b45e-d2a6-4d84-8a17-4881d06f5fb9`, `NRestarts=0`, restart-free throughout |
+| Third-party activity | a deploy ended 12:38:48 BST, 10 s before the window opens; after that only `sysstat-collect` every 10 min until it closes |
+| This investigation's own activity | **none until 13:40:06Z**, after the window closed |
+
+The window ends because somebody else restarted the service at 13:42:46Z. That is
+the operator's station and the operator was using it; the window was already
+complete.
+
+## What the station said
+
+Read from `/api/v1/health` at 13:40:14Z, and confirmed by the `capture.closed`
+line at 13:42:46Z, which reports the same totals:
+
+| | |
+|---|---|
+| `frames` | 2,817,830,400 |
+| `expected_frames` | 2,819,054,620 |
+| raw deficit | 1,224,220 frames = **3.188 s** |
+| `rate_offset_ppm` | **−53.28** |
+| crystal drift over 7,341 s at that rate | **0.391 s** |
+| deficit **minus** drift | **2.797 s** |
+| `estimated_missing_seconds` | **2.698** |
+| `overruns` / `gaps_with_loss` / `gaps_without_loss` | **5 / 10 / 0** |
+| `late_reads` | **262** (2.14/min) |
+| `late_read_max_frames` | **142,137** of 192,000 (**74%**, 370 ms) |
+| `loop_lag_max_s` / `loop_lag_events` | **0.4625** / 275 |
+| `continuity_ratio` | 0.999566 |
+
+ADR-039's estimator agrees with the drift-corrected deficit to **0.099 s over two
+hours**, a second hardware corroboration on top of the 0.08 s one in the previous
+section. The estimator is not in question here and was not re-derived.
+
+Note `gaps_with_loss` 10 against `overruns` 5: each overrun is followed ~0.8 s
+later by a second `capture.gap` with `reason=frame_deficit` — ALSA reports the
+overflow, then the estimator confirms a further step the ring never gave back.
+The pairs cost **0.113–0.139 s** and **0.400–0.430 s** respectively, so the true
+price of one of these events is about **0.54 s**, not 0.13 s.
+
+## Finding 1: every late read is a filesystem walk, and it is 74% of the ring
+
+**262 of 262.** They arrive on a **30.4 s** beat — 223 of the 261 inter-arrival
+intervals within 2.5 s of 30 s — with stalls of **254–370 ms** (median 300).
+
+No inference is required, because `snapshot_phase_s` (ADR-033) names the phase in
+the same millisecond. Three consecutive log lines, UTC:
+
+```
+13:38:07.428665Z housekeeping.tick  blocking_total_s=0.4532 leases_s=0.0002
+                                    snapshot_s=0.4529 snapshot_phases={'storage': 0.4512}
+13:38:07.433749Z loop.lag           lag_s=0.4275
+13:38:07.782400Z capture.late_read  stall_ms=361.6 stall_frames=138862
+                                    note='absorbed by the ring; no audio lost'
+```
+
+`storage` is `ClipManager.disk_usage()`. It is called from
+`Station.status_snapshot()`, which runs **on the event loop** — for every
+housekeeping tick, every live viewer, every API caller and every metrics scrape —
+and it walked the whole clip tree with `Path.rglob("*.wav")` + `path.stat()`
+whenever its 30 s cache had expired. Every `housekeeping.tick` in the window that
+reports a `storage` phase reports **0.4462–0.4727 s**.
+
+Reproduced by hand on the station, same tree, same interpreter, best of three:
+
+| walk | files | time | per file |
+|---|---|---|---|
+| `Path.rglob` + `path.stat()` (the shipped code) | 40,888 | **435 ms** | 10.6 µs |
+| `os.scandir` + `entry.stat()` | 40,888 | 189 ms | 4.6 µs |
+| `os.scandir`, names only, no sizes | 40,888 | 48 ms | 1.2 µs |
+| `find . -name '*.wav' \| wc -l` | 40,888 | 77 ms | — |
+
+`find` at 77 ms against Python's 435 ms is the useful comparison: **this is not
+the USB SSD and it is not the filesystem, it is interpreter overhead** — which
+means it holds the GIL, which is why it lands on capture.
+
+### Why it is climbing, which is the question that was actually asked
+
+The cost is linear in the number of files, and **nothing has been deleted yet**:
+the oldest clip is 2026-08-05, the native tier is 7 days, and
+`/api/v1/retention/status` reports `eligible_for_deletion: 0 clips`. Counting the
+files whose mtime precedes each of this document's previous headroom readings:
+
+| Reading (UTC) | files then | predicted walk at 10.6 µs/file | `late_read_max_frames` recorded |
+|---|---|---|---|
+| 2026-08-08 15:00 | 9,764 | 104 ms | 57,952 (30%) |
+| 2026-08-09 11:14 | 20,468 | 218 ms | 114,362 (60%) |
+| 2026-08-09 21:46 | 27,174 | 289 ms | 155,243 (81%) |
+| 2026-08-10 13:40 | 40,888 | 435 ms | 142,137 (74%) |
+
+That fourth column is the trend that prompted this investigation, and the third
+column is why. The correspondence is close for the first two rows and loose for
+the last two — `late_read_max_frames` is a *maximum over a whole run*, so it also
+carries whatever else was happening, and the 155,243 reading comes from a run
+that took twelve overruns, after each of which the ring restarts. The claim here
+is the mechanism and its growth rate, not a fit.
+
+**The dated part.** Clips accrue at roughly **14,000 files/day** (per-day file
+counts on the SSD: 08-05 3,002; 08-06 4,988; 08-07 324 — the 29.6 h outage day;
+08-08 6,462; 08-09 14,116; 08-10 11,996 by 14:40 BST).
+
+- The walk reaches **500 ms — the whole ring — at about 47,000 files**, which at
+  the current rate is **roughly half a day away**.
+- At the end of a 72-hour soak started now: ~83,000 files, **~0.9 s**, nearly
+  twice the ring, every 30 seconds.
+- At the steady state the retention tiers imply — 7 days of native clips plus 30
+  days of playback derivatives — ~250,000 files and **~2.7 s**, every 30 seconds.
+
+A 72-hour soak begun today would therefore not be measuring the capture path. It
+would be measuring this.
+
+## Finding 2: the audio actually lost is on the retention beat, and it is not the walk
+
+All 2.698 s came from five events, at **11:52:57.0, 12:08:01.9, 12:33:12.9,
+13:13:39.7 and 13:38:59.0 UTC**. The intervals are 904.9, 1511.0, 2426.8 and
+1519.3 s — **every one a multiple of ~302 s** (3, 5, 8, 5), and 302 s is
+`retention_interval_s` 300 rounded to the ~10.07 s housekeeping tick. The last of
+them begins **0.5 s after** `retention_last_sweep_at = 13:38:57.936Z`, and
+`RetentionSweeper.sweep()` stamps that field with a clock read taken at its
+*start*, so the sweep was running through the stall.
+
+These do not look like the 30 s beat. A storage walk produces one `loop.lag` of
+0.35–0.44 and a late read that is absorbed. Each overrun is preceded by **two**
+lag reports about 0.45 s apart — a small one, then a large one:
+
+```
+13:38:58.585776Z loop.lag  lag_s=0.1009
+13:38:59.043281Z loop.lag  lag_s=0.3472
+13:38:59.746711Z capture.loss_confirmed  alsa_overrun=True  frames=50987  seconds=0.1328
+13:39:00.546697Z capture.loss_confirmed  alsa_overrun=False frames=164984 seconds=0.4296
+```
+
+— a contiguous block of roughly **0.55 s**, which is what it takes to exceed a
+500 ms ring. None of the five coincides with a storage walk; the nearest walk to
+the 13:38:59 event ran 21 s earlier.
+
+This is ADR-033's mechanism exactly, un-fixed and grown: the sweep is SQLAlchemy
+ORM work in Python holding the GIL, in the evidence thread, and the loop still has
+to issue and consume each capture read. ADR-033 measured it at ~0.30 s costing
+55–150 ms of lag. It is now large enough to empty the ring. The likely reason it
+has grown is in the sweep's own prologue — `_exemplar_detection_ids(session)` and
+`held_detection_ids(session)` run unconditionally, before any budget or deadline
+check, over a `detection` table now at **107,808 rows**.
+
+**This is correlation with n=5, not causation.** It has not been isolated and it
+is not fixed here. The single-variable experiment that would settle it is the one
+ADR-033 already used, and it costs no code: set `OO_RETENTION_ENABLED=false` in
+`config/runtime.env`, restart, and see whether the ~302 s overruns stop.
+
+## Ruled out, by measurement
+
+- **Evidence clip I/O to the USB SSD.** 396 `clip.written` lines in the window and
+  not one is near a loss. The nearest clip write to any of the five events is
+  **6 min 17 s** away (11:46:40 vs 11:52:57); the rest are 1.5–8 min away. The
+  stalls are also the wrong shape for I/O — `find` walks the same filesystem in
+  77 ms while Python takes 435 ms.
+- **The USB power budget.** `vcgencmd get_throttled` = `0x0` throughout, so no
+  undervoltage has ever been recorded; and both beats are periodic in *software*
+  time (30.4 s and 302 s) rather than correlated with device traffic. Both are
+  fully explained by named, timed, in-process work.
+- **Thermal or frequency scaling.** ARM clock pegged at 1,600,013,696 Hz; 60.4 °C,
+  warm against the 39 °C in the brief but nowhere near the ~80 °C throttle point,
+  and `get_throttled` says so.
+- **The refinement runner (ADR-045).** `open-observatory-refine.timer` last ran at
+  **02:01 BST** and next runs at 02:03. It is not running in any window here.
+- **The near-miss ledger (ADR-052), withdrawn-detection filtering, the pause gate
+  and the spectrogram encoder.** None appears in either beat, and both beats are
+  accounted for to the millisecond by work that names itself.
+
+## What was changed, and what was not
+
+**ADR-059** fixes finding 1 only. `disk_usage()` now reports instead of measuring;
+the walk becomes `refresh_disk_usage()`, an `async` method that yields to the loop
+every 512 files and is driven from housekeeping on the **same 30 s cadence**, so
+exactly one thing moved. It also switches to `os.scandir` (2.3× cheaper).
+Chunking rather than a thread is deliberate, and is ADR-033's own lesson: an
+executor partitions queueing, not scheduling, and nothing partitions the GIL.
+
+**It is not deployed and not verified on target**, under the standing instruction
+not to deploy or restart while the operator was using the station. Every figure in
+this section is a read-only measurement of the *unfixed* station. ADR-059 carries
+the verification block to run afterwards.
+
+Finding 2 is left alone on purpose. It is ADR-033's code, it has n=5, and the
+operator asked to start the soak knowing rather than with a speculative change in
+place.
+
+## Traps this round produced
+
+- **A polling probe that opens a fresh SSH connection per sample is itself the
+  load.** A 13-minute run sampling `/api/v1/health` every 2 s over one-shot
+  `ssh … curl` — a public-key handshake every 2 s on a 4-core Pi — took the
+  station from 5 overruns in 2 h to **6 in 13 minutes**, with per-event loss
+  rising from 0.13 s to **1.00–1.07 s** and `loop_lag_max_s` to **1.0989**. That
+  window (13:45:35 → 13:58:33Z) is contaminated by this measurement *and* by two
+  third-party restarts, and **nothing is attributed from it**. It is recorded
+  because it demonstrates cleanly that the mechanism gets much worse under load,
+  and because the previous round's method — sampling from the laptop over a
+  *persistent* connection — is the one to copy. Reading the journal after the fact
+  costs the station nothing.
+- **`retention.last_sweep_at` is `null` on a fresh process and stays null until
+  the first sweep, ~300 s in.** Reading it just after a restart and concluding
+  retention is not running is available and wrong. Cross-check `NRestarts` and
+  `ExecMainStartTimestamp` before believing any counter on this station today — it
+  was restarted at 11:37:51Z, 13:42:46Z and 13:55:59Z.
+- **`ClipManager.enforce_retention()` and `sweep_retention` are unreachable in the
+  station.** Nothing calls them; `RetentionSweeper` (ADR-026) superseded them and
+  only `tests/test_pipeline.py` exercises them. They look like a live second
+  retention path and are not.
+- **`late_read_max_frames` is a maximum over a run, not a level.** It resets on
+  every stream open, and an overrun restarts the ring, so a run *with* overruns
+  can read lower than a clean run on a worse station. Compare the beat and the
+  stall distribution, not the maximum.
+- The timezone trap holds and was obeyed: every window above states UTC or BST
+  explicitly.
+
+## What is still open after this round
+
+- **Finding 2 is unfixed and unisolated.** The `OO_RETENTION_ENABLED=false`
+  experiment above is cheap and has not been run.
+- **ADR-059 is unverified on target.** No post-fix reading exists.
+- **The 72-hour soak has still never run**, and on this evidence should not start
+  before finding 1 is deployed and confirmed: within about half a day the walk
+  exceeds the whole ring.
+- **`OO_CAPTURE_BUFFER_MS` was not touched.** Widening the ring was the lever the
+  previous round nominated, and it would buy time — but the walk grows without
+  bound and the ring does not, so it treats the symptom for a few days at most.
 - Hypothesis 4 was never isolated; the missing gap row of 2026-08-08 10:55:24Z is
   still inference only.

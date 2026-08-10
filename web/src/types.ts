@@ -231,6 +231,9 @@ export interface StationStatus {
     clip_dir: string
     clip_count: number
     clip_bytes: number
+    /** Age of `clip_count`/`clip_bytes`. They are re-measured off the hot path
+     *  (ADR-059), so they lag the free-space figures beside them. */
+    clip_usage_age_s?: number
     disk_total_bytes: number
     disk_free_bytes: number
     disk_used_ratio: number
