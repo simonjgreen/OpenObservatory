@@ -19,6 +19,9 @@ from pathlib import Path
 import pytest
 
 UNIT = Path(__file__).resolve().parents[1] / "deploy" / "open-observatory.service"
+REFINE_UNIT = (
+    Path(__file__).resolve().parents[1] / "deploy" / "open-observatory-refine.service"
+)
 
 
 def _read_write_paths() -> set[str]:
@@ -69,4 +72,37 @@ def test_settings_still_persist_to_the_config_directory() -> None:
     assert "config" in match.group(0), (
         f"runtime.env no longer lives under config/: {match.group(0)!r}. "
         "Update deploy/open-observatory.service's ReadWritePaths to match."
+    )
+
+
+def test_refine_unit_gives_numba_a_writable_cache() -> None:
+    """The same sandbox trap, one unit over.
+
+    librosa pulls in numba, which JIT-compiles on first use and caches the
+    result beside the library's own source. Under `ProtectHome=read-only` that
+    raises `RuntimeError: cannot cache function ... no locator available` and
+    kills the pass before it classifies anything.
+
+    It really happened: the timer fired at 02:01 BST on 2026-08-10, ran eleven
+    seconds and exited 1. `oo refine status` still said `last_run: None`, so
+    nothing surfaced the failure except the journal.
+    """
+    text = REFINE_UNIT.read_text()
+    assert "ProtectHome=read-only" in text, "the sandbox is the reason this matters"
+    assert "NUMBA_CACHE_DIR" in text, (
+        "numba has nowhere writable to cache, so the refinement pass dies on "
+        "first compile under ProtectHome=read-only"
+    )
+    cache_line = next(
+        line for line in text.splitlines() if line.startswith("Environment=NUMBA_CACHE_DIR=")
+    )
+    target = cache_line.split("=", 2)[2]
+    writable = {
+        line.split("=", 1)[1]
+        for line in text.splitlines()
+        if line.startswith("ReadWritePaths=")
+    }
+    assert any(target.startswith(path) for path in writable), (
+        f"NUMBA_CACHE_DIR is {target!r}, which is not under any ReadWritePaths "
+        f"entry ({sorted(writable)}) -- it would fail exactly as before"
     )

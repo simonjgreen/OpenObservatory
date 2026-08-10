@@ -15,6 +15,18 @@ User=@DEPLOY_USER@
 Group=@DEPLOY_USER@
 WorkingDirectory=@DEPLOY_ROOT@
 Environment=PYTHONUNBUFFERED=1
+# numba, pulled in by librosa, JIT-compiles on first use and tries to cache the
+# result next to the library's own source. Under ProtectHome=read-only that
+# fails with `RuntimeError: cannot cache function '__o_fold': no locator
+# available`, and the whole pass dies before it classifies anything.
+#
+# This is not hypothetical: the timer fired at 02:01 BST on 2026-08-10, ran for
+# eleven seconds, and exited 1 with that error. 10,508 bat detections were still
+# unexamined afterwards, and `oo refine status` reported `last_run: None` --
+# so the failure was invisible unless somebody read the journal.
+#
+# data/ is already the one writable path in this unit.
+Environment=NUMBA_CACHE_DIR=@DEPLOY_ROOT@/data/numba-cache
 EnvironmentFile=-@DEPLOY_ROOT@/config/runtime.env
 ExecStart=@DEPLOY_ROOT@/.venv/bin/oo refine run
 
