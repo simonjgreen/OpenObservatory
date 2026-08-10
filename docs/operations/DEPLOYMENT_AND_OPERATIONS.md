@@ -25,7 +25,9 @@ server. There is no message broker; the event bus is in-process (ADR-009).
     runtime.env                      operator-owned, NOT in the repo, NOT synced by rsync --delete
   data/                               ReadWritePaths for the systemd unit
     clips/                           evidence clips — a mounted USB SSD since 2026-08-08, see below
-    clips.sdcard-backup/             pre-migration clips left on the SD card, retained pending deletion
+    (clips.sdcard-backup/ was deleted 2026-08-10, freeing 21 GB on the SD card;
+     ADR-057 proved it held no clip that any live row still referenced)
+    #  former location of the pre-migration clips left on the SD card, retained pending deletion
   web/dist/                          built UI assets, served by the API process
 ```
 

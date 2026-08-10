@@ -6008,7 +6008,11 @@ its label says.
   the next thing that unlinks a clip behind the database's back.
   `ClipManager.admits()`'s write-time `min_free_bytes` reserve is a different
   concern and is untouched.
-- It does not delete `data/clips.sdcard-backup` (~21 GB). ADR-026 already made
+- It does not delete `data/clips.sdcard-backup` (~21 GB). **The operator
+  removed that directory by hand on 2026-08-10**, after this ADR established
+  that no live row pointed into it and that it held none of the 8,067 missing
+  clips; that freed 21 GB on the SD card, where the database lives and write
+  endurance is a standing constraint. ADR-026 already made
   that an explicit operator-triggered cleanup, and it is now *also* the only
   independent copy of 9,186 live clips.
 - It does not add a filesystem check to `/api/v1/retention/status`. That

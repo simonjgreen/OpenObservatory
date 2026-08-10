@@ -47,7 +47,9 @@ serving ALSA reads through the same shared thread pool.
 
 The disk previously held an unrelated Ubuntu amd64 installer and was wiped before
 use. 21 GB of existing clips were migrated across; the old directory is retained at
-`data/clips.sdcard-backup` pending deletion, not yet removed. A clip recorded the day
+`data/clips.sdcard-backup` was **deleted 2026-08-10**, freeing 21 GB on the SD
+card. Before removal, ADR-057 confirmed no live `media_asset` row pointed into
+it and that none of the 8,067 missing clips were recoverable from it. A clip recorded the day
 before the migration was verified afterwards to still download as a valid 384 kHz WAV
 through `GET /api/v1/media/{id}` — `media_asset.storage_uri` holds absolute paths, so
 mounting the new device at the existing path made the migration a no-op for the
