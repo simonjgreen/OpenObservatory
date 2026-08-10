@@ -34,7 +34,7 @@ dependencies = [
   # winner of the 2015 Password Hashing Competition and OWASP's current
   # recommendation; cost parameters are pinned separately in config.py so a
   # future library upgrade cannot silently change station security posture.
-  "argon2-cffi==23.1.0",
+  "argon2-cffi==25.1.0",
 ]
 
 [project.optional-dependencies]
