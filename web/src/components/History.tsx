@@ -86,6 +86,15 @@ const WINDOWS: Array<{ name: string; label: string }> = [
   { name: 'today', label: 'today' },
   { name: 'yesterday', label: 'yesterday' },
   { name: 'last-24h', label: '24 hours' },
+  // ADR-056. The first window longer than a day, and deliberately the *only*
+  // one for now. The station's history endpoint aggregates the detection table
+  // directly, at a measured ~16 µs per detection row on the Pi, so a window
+  // costs what it contains: seven days is ~126,000 rows and about two seconds,
+  // which is a spinner. Thirty days is ~9 s and ninety is ~26 s, which are not,
+  // and no index fixes it — the roll-up in ADR-056 does. `last-30d` and the
+  // calendar ranges resolve correctly server-side today; they are not offered
+  // here until there is something behind them that can answer quickly.
+  { name: 'last-7d', label: '7 days' },
 ]
 
 const GROUP_COLOUR: Record<string, string> = {

@@ -47,7 +47,7 @@ those merges and was missing seven routes.
 | `GET /taxa/search` | resolves a taxon the station has itself identified before, for the correction picker (ADR-043). `q` required, 1–120 chars; `limit` 1–100 (default 20); returns `{taxa, source: "station_history"}` |
 | `GET /taxa/activity` | |
 | `GET /history` | |
-| `GET /history/windows` | `last-hour`, `last-night`, `dawn-chorus`, `today`, `yesterday`, `last-24h` |
+| `GET /history/windows` | `last-hour`, `last-night`, `dawn-chorus`, `today`, `yesterday`, `last-24h`, `last-7d`. This is what the dashboard puts on screen, **not** the whole grammar `window` accepts — see below. |
 | `GET /media/{asset_id}` | `410 Gone` when the file has been reclaimed by retention |
 | `GET /debug/pipeline` | |
 | `GET /debug/levels` | |
@@ -142,7 +142,7 @@ artefacts.
 | `limit` | int, 1–500, default 100 | |
 | `since` | datetime | |
 | `until` | datetime | |
-| `window` | string | Named window (e.g. `last-night`), resolved in the station's timezone. Ignored when `since` is given explicitly. See `GET /history/windows` for the available names. |
+| `window` | string | A window name, resolved in the station's timezone. Ignored when `since` is given explicitly. `GET /history/windows` lists what the dashboard offers; the full grammar is in "Window names" below. An unrecognised name falls back to `last-hour`, and the response's `range.label` always says which window you actually got. |
 | `group` | string | Filter to one `taxonomic_group`. |
 | `plugin_id` | string | Filter to detections from one detector plugin. |
 | `identified_only` | bool, default `false` | Restrict to taxonomic groups considered identified. |
@@ -163,6 +163,39 @@ sections only — `coverage` is unaffected, see below).
 `GET /history` takes `window` (default `last-night`), `since`, `until`,
 `bucket_seconds` (10–86400), `min_score` (0.0–1.0), `include_unidentified`
 (default `true`) and `include_synthetic` (default `false`).
+
+### Window names — ADR-056
+
+`window` is one opaque string on `GET /history`, `GET /detections` and
+`GET /detections/export` alike, so anything here works on all three. Every form
+is resolved in the station's configured timezone and returned in UTC, and
+**no window ever ends in the future** — an unfinished calendar period is
+truncated at *now*, so `this-month` on the tenth is ten days long rather than
+thirty-one (otherwise `coverage` would divide by a month that has not happened
+and report a working station as one-third captured).
+
+| Form | Examples | Meaning |
+|---|---|---|
+| Named | `last-hour`, `last-24h`, `today`, `yesterday`, `last-night`, `dawn-chorus` | unchanged; `last-night` is 20:00–08:00 local, `dawn-chorus` 03:00–10:00 local |
+| Rolling relative | `last-7d`, `last-30d`, `last-36h` | ends *now*, not at midnight. 1–168 hours or 1–3660 days |
+| Calendar period | `this-week`, `last-week`, `this-month`, `last-month`, `this-year`, `last-year` | local calendar; ISO weeks start Monday |
+| Calendar literal | `2026-08-05`, `2026-W32`, `2026-07`, `2026` | a day, an ISO week, a month, a year |
+
+So "every bat pass in July, as a spreadsheet" is:
+
+```bash
+curl -sG 'http://<station-host>:8080/api/v1/detections/export' \
+  --data-urlencode 'window=2026-07' --data-urlencode 'group=bat' \
+  --data-urlencode 'format=csv' --data-urlencode 'limit=20000' -o bats-july.csv
+```
+
+**A caution about the long ones.** `GET /history` aggregates the detection
+table directly, at a measured ~16 µs per detection row on the Pi 5, so a window
+costs roughly what it contains: about 2 s for seven days, 10 s for thirty and
+30 s for ninety at this station's mid-2026 detection rate. `GET /detections`
+and the export are bounded by their `limit` and do not have this problem.
+ADR-056 measures all of it and proposes the roll-up that fixes it; until then,
+prefer the export for wide ranges.
 
 ### `include_synthetic` and `excluded_synthetic_count` — implemented, ADR-020
 
