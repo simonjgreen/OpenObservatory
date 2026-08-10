@@ -28,6 +28,12 @@ import {
   type Orientation,
 } from './geometry'
 import {
+  LABEL_TEXT_PAD,
+  layoutDetectionLabels,
+  type LabelInput,
+  type PlacedLabel,
+} from './overlayLabels'
+import {
   CENTRE_LINE_MAX_UNCERTAINTY_S,
   formatPlayheadLabel,
   playheadBand,
@@ -145,6 +151,10 @@ interface Props {
  *  a sound. */
 const PLAYHEAD_COLOUR = '255, 176, 32'
 
+/** One font for every detection label, so a measured width stays valid between
+ *  frames and can be cached (ADR-058). */
+const LABEL_FONT = '600 11px ui-sans-serif, system-ui, sans-serif'
+
 export function Spectrogram({
   spec,
   register,
@@ -192,6 +202,18 @@ export function Spectrogram({
   // resampled four times a second and must not restart the overlay's loop.
   const playheadRef = useRef<PlayheadEstimate | null>(playhead)
   playheadRef.current = playhead
+
+  // Detection-label placement buffers, reused every frame (ADR-058). The overlay
+  // runs at the display's refresh rate, so allocating a fresh working set per
+  // frame is exactly the sort of cost charter item 8 may not impose on the rest
+  // of the station.
+  const labelInputsRef = useRef<LabelInput[]>([])
+  const placedLabelsRef = useRef<PlacedLabel[]>([])
+  // A string's width in a fixed font does not change between frames, but
+  // `measureText` is called again for it on every one of them. Cleared wholesale
+  // rather than evicted when it grows past a plausible number of distinct
+  // labels: this table only ever holds label text.
+  const labelWidthsRef = useRef<Map<string, number>>(new Map())
   const listening = playhead !== null
   /** The words under the badge row. Polled rather than derived during render,
    *  because the number moves with the clock and not with React. */
@@ -464,6 +486,14 @@ export function Spectrogram({
           ? null
           : newestUtcRef.current + elapsedColumns() * spec.hop_s
       if (showDetections && newest !== null) {
+        // Boxes are drawn as they are met; labels are only *collected* here and
+        // placed once the whole set is known (ADR-058). Drawing each label at
+        // its own box's edge is what produced "Eurasia Eurasian Jackdaw 95%" on
+        // the operator's phone — two overlapping detections, two labels, and
+        // nothing arbitrating between them.
+        const labelInputs = labelInputsRef.current
+        let labelCount = 0
+
         for (const detection of detectionsRef.current) {
           if (!belongsOnChannel(detection, spec)) continue
           const startAgo = newest - Date.parse(detection.event_start_utc) / 1000
@@ -515,15 +545,53 @@ export function Spectrogram({
           context.lineWidth = 1.5
           context.strokeRect(rect.x, rect.y, rect.width, rect.height)
 
-          const text = `${formatDetectionTitleText(detection)} ${(detection.score * 100).toFixed(0)}%`
-          context.font = '600 11px ui-sans-serif, system-ui, sans-serif'
-          const metrics = context.measureText(text)
-          const labelX = Math.max(2, Math.min(rect.x, cssWidth - metrics.width - 10))
-          const labelY = Math.max(11, rect.y - 9)
+          // The rendered title is also the merge key: two detections share a
+          // counted label only if the words would have been identical anyway, so
+          // a withdrawn claim can never be counted into a standing one, and a
+          // 45 kHz bat pass can never be counted into a 55 kHz one.
+          const title = formatDetectionTitleText(detection)
+          if (labelInputs.length <= labelCount) {
+            labelInputs.push({
+              key: '', title: '', score: 0, colour: '',
+              rect: { x: 0, y: 0, width: 0, height: 0 },
+            })
+          }
+          const input = labelInputs[labelCount]
+          input.key = title
+          input.title = title
+          input.score = detection.score
+          input.colour = colour
+          input.rect.x = rect.x
+          input.rect.y = rect.y
+          input.rect.width = rect.width
+          input.rect.height = rect.height
+          labelCount++
+        }
+
+        // Placement, once, over the whole set: runs of one species collapse to a
+        // count, the rest take lanes across the frequency axis, and anything
+        // that still cannot be drawn without overlapping something else or being
+        // cut short is left out. Its box is still there.
+        context.font = LABEL_FONT
+        const widths = labelWidthsRef.current
+        if (widths.size > 512) widths.clear()
+        const measure = (text: string) => {
+          const cached = widths.get(text)
+          if (cached !== undefined) return cached
+          const width = context.measureText(text).width
+          widths.set(text, width)
+          return width
+        }
+        const placedLabels = placedLabelsRef.current
+        const placed = layoutDetectionLabels(
+          labelInputs, labelCount, viewport, orientation, measure, placedLabels,
+        )
+        for (let index = 0; index < placed; index++) {
+          const label = placedLabels[index]
           context.fillStyle = dark ? 'rgba(6,8,14,0.82)' : 'rgba(255,255,255,0.88)'
-          context.fillRect(labelX, labelY - 8, metrics.width + 8, 16)
-          context.fillStyle = colour
-          context.fillText(text, labelX + 4, labelY)
+          context.fillRect(label.x, label.y, label.width, label.height)
+          context.fillStyle = label.colour
+          context.fillText(label.text, label.x + LABEL_TEXT_PAD, label.y + label.height / 2)
         }
       }
 
