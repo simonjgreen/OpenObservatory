@@ -1886,8 +1886,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{API_PREFIX}/history/windows")
     def get_history_windows() -> dict[str, Any]:
-        """The named windows the UI offers, resolved now for this station."""
-        names = ("last-hour", "last-night", "dawn-chorus", "today", "yesterday", "last-24h")
+        """The named windows the UI offers, resolved now for this station.
+
+        Deliberately not the whole grammar `history.resolve_range` understands
+        (ADR-056 added relative and calendar ranges: `last-30d`, `2026-07`,
+        `2026-W32`, …). This list is what the dashboard puts on screen, and a
+        window is only offered once the station can answer it quickly enough to
+        be worth tapping.
+        """
+        names = (
+            "last-hour", "last-night", "dawn-chorus", "today", "yesterday", "last-24h", "last-7d",
+        )
         return {
             "timezone": settings.timezone,
             "windows": [

@@ -656,6 +656,31 @@ class TestSourceFiltering:
         )
         assert total > 0
 
+    def test_a_calendar_window_reaches_every_endpoint_that_takes_one(self) -> None:
+        """ADR-056's range grammar is a string, so nothing downstream changed.
+
+        `window` is threaded through `/history`, `/detections` and
+        `/detections/export` as an opaque name, which is why "every bat pass in
+        July" is a URL rather than a feature: the grammar had to grow, and the
+        three endpoints did not.
+        """
+        import datetime as dt
+
+        from open_observatory import history as history_queries
+
+        now = dt.datetime(2026, 8, 10, 13, 30, tzinfo=dt.UTC)
+        for name in ("2026-07", "2026-W32", "2026-08-05", "last-30d", "last-month"):
+            window = history_queries.resolve_named_range(name, "Europe/London", now=now)
+            assert window.label != "last hour", f"{name} silently fell back"
+            assert window.end <= now
+
+    def test_the_offered_window_list_matches_the_grammar(self, client) -> None:
+        payload = client.get("/api/v1/history/windows").json()
+        names = [entry["name"] for entry in payload["windows"]]
+        assert "last-7d" in names
+        for entry in payload["windows"]:
+            assert entry["seconds"] > 0, entry["name"]
+
 
 class TestLiveChannels:
     def test_live_socket_sends_hello_then_binary_columns(self, client) -> None:

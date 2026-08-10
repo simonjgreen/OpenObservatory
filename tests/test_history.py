@@ -203,6 +203,89 @@ class TestNamedRanges:
         assert window.start.tzinfo is not None
 
 
+class TestRangeGrammar:
+    """The relative and calendar ranges added by ADR-056.
+
+    Everything here is resolved in the station's timezone and stored in UTC,
+    so most assertions are about British Summer Time being applied to a
+    *local* calendar boundary rather than a UTC one.
+    """
+
+    NOW = datetime(2026, 8, 10, 13, 30, tzinfo=UTC)
+
+    def _resolve(self, name: str) -> history.Range | None:
+        return history.resolve_range(name, LONDON, now=self.NOW)
+
+    def test_relative_days_are_rolling_and_end_now(self) -> None:
+        window = self._resolve("last-7d")
+        assert window is not None
+        assert window.end == self.NOW
+        assert window.seconds == 7 * 86400
+        assert window.label == "last 7 days"
+
+    def test_relative_hours_are_bounded(self) -> None:
+        assert self._resolve("last-3h") is not None
+        assert self._resolve(f"last-{history.MAX_RELATIVE_HOURS}h") is not None
+        assert self._resolve(f"last-{history.MAX_RELATIVE_HOURS + 1}h") is None
+        assert self._resolve("last-0d") is None
+        assert self._resolve(f"last-{history.MAX_RELATIVE_DAYS + 1}d") is None
+
+    def test_a_calendar_month_starts_at_local_midnight(self) -> None:
+        window = self._resolve("2026-07")
+        assert window is not None
+        # 1 July 00:00 local is 30 June 23:00 UTC in British Summer Time. A UTC
+        # month boundary would put the first hour of July into June.
+        assert window.start == datetime(2026, 6, 30, 23, 0, tzinfo=UTC)
+        assert window.end == datetime(2026, 7, 31, 23, 0, tzinfo=UTC)
+        assert window.label == "July 2026"
+
+    def test_a_month_spanning_a_clock_change_is_not_a_whole_number_of_days(self) -> None:
+        """March has 31 days and 743 hours in London, and the window must agree."""
+        window = history.resolve_range("2026-03", LONDON, now=datetime(2026, 6, 1, tzinfo=UTC))
+        assert window is not None
+        assert window.seconds == 743 * 3600
+
+    def test_an_unfinished_period_is_truncated_at_now(self) -> None:
+        """`coverage()` divides by the window length, so an un-truncated
+        in-progress month would report ~30% captured and look like a dead
+        microphone (charter item 2) rather than a month that is not over."""
+        window = self._resolve("this-month")
+        assert window is not None
+        assert window.end == self.NOW
+        assert window.start == datetime(2026, 7, 31, 23, 0, tzinfo=UTC)
+        assert window.label == "August 2026"
+
+    def test_iso_weeks_start_on_monday_and_match_their_literal(self) -> None:
+        by_name = self._resolve("last-week")
+        by_literal = self._resolve("2026-W32")
+        assert by_name is not None and by_literal is not None
+        assert (by_name.start, by_name.end) == (by_literal.start, by_literal.end)
+        assert by_name.seconds == 7 * 86400
+        assert by_name.label == "week of 3 August 2026"
+
+    def test_calendar_literals_are_validated_not_guessed(self) -> None:
+        for bad in ("2026-13", "2026-02-30", "2026-7", "1999", "3000", "2026-W99", "nonsense", ""):
+            assert self._resolve(bad) is None, bad
+
+    def test_lenient_wrapper_still_falls_back_for_the_new_grammar_too(self) -> None:
+        window = history.resolve_named_range("2026-99", LONDON, now=self.NOW)
+        assert window.seconds == 3600
+        assert window.label == "last hour"
+
+    def test_no_relative_or_calendar_range_resolves_into_the_future(self) -> None:
+        names = [
+            "last-7d", "last-3h", "this-week", "last-week", "this-month",
+            "last-month", "this-year", "last-year", "2026", "2026-08", "2026-08-10",
+        ]
+        for hour in range(24):
+            now = datetime(2026, 8, 10, hour, 30, tzinfo=UTC)
+            for name in names:
+                window = history.resolve_range(name, LONDON, now=now)
+                assert window is not None, name
+                assert window.end <= now, f"{name} at {hour:02d}:30 ends in the future"
+                assert window.start <= window.end, name
+
+
 class TestBucketSizing:
     def test_scales_to_roughly_the_target_count(self) -> None:
         for window_seconds in (3600, 12 * 3600, 24 * 3600, 7 * 86400):

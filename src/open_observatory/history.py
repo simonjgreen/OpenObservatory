@@ -13,9 +13,10 @@ to a few hundred. Every function here returns something already reduced.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -128,29 +129,100 @@ def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def resolve_named_range(
-    name: str, timezone: str, *, now: datetime | None = None
-) -> Range:
-    """Turn a name like ``last-night`` into an explicit UTC window.
+#: The longest relative range the name grammar will resolve, in days. Ten years
+#: is past any plausible life of one station's record and well past the point
+#: where the aggregate has to come from a roll-up rather than the detection
+#: table (ADR-056); the cap exists so that a mistyped `last-99999d` is refused
+#: rather than turned into a full-table scan on a Raspberry Pi.
+MAX_RELATIVE_DAYS = 3660
+#: The same, for hour-denominated relative ranges. A week; past that, ask in days.
+MAX_RELATIVE_HOURS = 168
 
-    Resolved against the station's configured timezone rather than UTC, because
-    "last night" is a local idea: a window computed in UTC would drift an hour with
-    British Summer Time and quietly clip the interesting end of the night.
+#: Calendar literals are bounded so that a typo ("0002-01") cannot become a
+#: window eight hundred thousand days long. Nothing older than the project can
+#: be in the record, and nothing later than this is a question anyone can be
+#: asking yet.
+MIN_CALENDAR_YEAR = 2000
+MAX_CALENDAR_YEAR = 2999
+
+_RELATIVE_HOURS = re.compile(r"^last-(\d{1,4})h$")
+_RELATIVE_DAYS = re.compile(r"^last-(\d{1,5})d$")
+_CALENDAR_YEAR = re.compile(r"^(\d{4})$")
+_CALENDAR_MONTH = re.compile(r"^(\d{4})-(\d{2})$")
+_CALENDAR_WEEK = re.compile(r"^(\d{4})-W(\d{2})$")
+_CALENDAR_DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _zone(timezone: str) -> tzinfo:
+    """The station's timezone, or UTC if the configured name is not a real one.
+
+    Falling back rather than raising: a mistyped `timezone` setting must not
+    make every history query 500. The window it produces is still honest, it is
+    just expressed in UTC.
     """
     try:
-        zone = ZoneInfo(timezone)
+        return ZoneInfo(timezone)
     except Exception:
-        zone = UTC
+        return UTC
+
+
+def resolve_range(
+    name: str, timezone: str, *, now: datetime | None = None
+) -> Range | None:
+    """Resolve a window name, or return ``None`` if the grammar does not know it.
+
+    The strict half of :func:`resolve_named_range`, which keeps a silent
+    fall-back for compatibility. Everything is resolved in the station's own
+    timezone, because every name here describes a *local* idea -- a night, a
+    calendar month, "the last seven days" as a person standing in the garden
+    means it -- and is then stored in UTC, per the project's rule that UTC is
+    the internal representation and local time is presentation only.
+
+    The grammar, in the order it is tried:
+
+    ==========================  ==================================================
+    ``last-hour``               the six original named windows, unchanged
+    ``last-24h`` ``today``
+    ``yesterday`` ``last-night``
+    ``dawn-chorus``
+    ``last-7d`` ``last-36h``    rolling relative ranges, ending now
+    ``this-week`` ``last-week`` calendar periods, ISO weeks starting Monday
+    ``this-month`` ``last-month``
+    ``this-year`` ``last-year``
+    ``2026-08-05``              calendar literals: a day, an ISO week, a month,
+    ``2026-W32`` ``2026-08``    a year
+    ``2026``
+    ==========================  ==================================================
+
+    **No window ever ends in the future.** A calendar period that has not
+    finished is truncated at ``now``, so "this month" on the fifth is five
+    days long rather than thirty-one. That is not cosmetic: `coverage()`
+    divides captured seconds by the window's length, so an un-truncated
+    in-progress month would report about 16% captured and look exactly like
+    the dead microphone charter item 2 exists to distinguish it from.
+    """
+    zone = _zone(timezone)
     moment = (now or datetime.now(UTC)).astimezone(zone)
 
     def local(day: datetime, hour: int) -> datetime:
         return day.replace(hour=hour, minute=0, second=0, microsecond=0)
 
     def window(start: datetime, end: datetime, label: str) -> Range:
-        # Boundaries are chosen in local time, because "last night" is a local idea,
-        # but stored in UTC to honour the project's rule that UTC is the internal
-        # representation and local time is only for presentation.
         return Range(start.astimezone(UTC), end.astimezone(UTC), label)
+
+    def at_midnight(day: date) -> datetime:
+        return datetime(day.year, day.month, day.day, tzinfo=zone)
+
+    def period(first: date, last_exclusive: date, label: str) -> Range:
+        """A calendar period, truncated at `now` so it never runs into the future."""
+        start = at_midnight(first)
+        end = min(at_midnight(last_exclusive), moment)
+        return window(min(start, end), end, label)
 
     if name == "last-hour":
         return window(moment - timedelta(hours=1), moment, "last hour")
@@ -182,7 +254,119 @@ def resolve_named_range(
         anchor = moment if moment.hour >= 3 else moment - timedelta(days=1)
         start = local(anchor, 3)
         return window(start, start + timedelta(hours=7), "dawn chorus")
-    return window(moment - timedelta(hours=1), moment, "last hour")
+
+    # -- rolling relative ranges, ending now ------------------------------
+    #
+    # Rolling rather than whole-calendar-day on purpose: someone who taps
+    # "7 days" in the garden at nine in the evening means the week up to this
+    # moment, not a week that stopped at midnight and threw away tonight.
+    match = _RELATIVE_HOURS.match(name)
+    if match:
+        hours = int(match.group(1))
+        if not 1 <= hours <= MAX_RELATIVE_HOURS:
+            return None
+        plural = "" if hours == 1 else "s"
+        return window(moment - timedelta(hours=hours), moment, f"last {hours} hour{plural}")
+    match = _RELATIVE_DAYS.match(name)
+    if match:
+        days = int(match.group(1))
+        if not 1 <= days <= MAX_RELATIVE_DAYS:
+            return None
+        plural = "" if days == 1 else "s"
+        return window(moment - timedelta(days=days), moment, f"last {days} day{plural}")
+
+    # -- calendar periods, named relative to today ------------------------
+    today = moment.date()
+    if name in ("this-week", "last-week"):
+        monday = today - timedelta(days=today.weekday())
+        if name == "last-week":
+            monday -= timedelta(days=7)
+        return period(monday, monday + timedelta(days=7), _week_label(monday))
+    if name in ("this-month", "last-month"):
+        year, month = today.year, today.month
+        if name == "last-month":
+            year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+        return period(
+            date(year, month, 1),
+            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1),
+            f"{_MONTH_NAMES[month - 1]} {year}",
+        )
+    if name in ("this-year", "last-year"):
+        year = today.year - 1 if name == "last-year" else today.year
+        return period(date(year, 1, 1), date(year + 1, 1, 1), str(year))
+
+    # -- calendar literals ------------------------------------------------
+    match = _CALENDAR_DAY.match(name)
+    if match:
+        day = _safe_date(*(int(part) for part in match.groups()))
+        if day is None:
+            return None
+        return period(day, day + timedelta(days=1), _day_label(day))
+    match = _CALENDAR_WEEK.match(name)
+    if match:
+        year, week = int(match.group(1)), int(match.group(2))
+        try:
+            monday = date.fromisocalendar(year, week, 1)
+        except ValueError:
+            return None
+        return period(monday, monday + timedelta(days=7), _week_label(monday))
+    match = _CALENDAR_MONTH.match(name)
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        if not 1 <= month <= 12 or not MIN_CALENDAR_YEAR <= year <= MAX_CALENDAR_YEAR:
+            return None
+        return period(
+            date(year, month, 1),
+            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1),
+            f"{_MONTH_NAMES[month - 1]} {year}",
+        )
+    match = _CALENDAR_YEAR.match(name)
+    if match:
+        year = int(match.group(1))
+        if not MIN_CALENDAR_YEAR <= year <= MAX_CALENDAR_YEAR:
+            return None
+        return period(date(year, 1, 1), date(year + 1, 1, 1), str(year))
+    return None
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    if not MIN_CALENDAR_YEAR <= year <= MAX_CALENDAR_YEAR:
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _day_label(day: date) -> str:
+    return f"{day.day} {_MONTH_NAMES[day.month - 1]} {day.year}"
+
+
+def _week_label(monday: date) -> str:
+    return f"week of {_day_label(monday)}"
+
+
+def resolve_named_range(
+    name: str, timezone: str, *, now: datetime | None = None
+) -> Range:
+    """Turn a name like ``last-night`` into an explicit UTC window.
+
+    The lenient wrapper around :func:`resolve_range`: an unrecognised name
+    falls back to ``last-hour`` rather than raising. The fall-back is
+    deliberate and is asserted by
+    ``tests/test_history.py::TestNamedRanges::test_unknown_name_falls_back_rather_than_raising``
+    -- every caller is an HTTP query parameter, and answering the smallest,
+    cheapest window is a safer failure than a 500. The returned `Range` always
+    carries its own honest `label`, so a client that asked for something the
+    station did not understand is told what it actually got.
+    """
+    resolved = resolve_range(name, timezone, now=now)
+    if resolved is not None:
+        return resolved
+    moment = (now or datetime.now(UTC)).astimezone(_zone(timezone))
+    return Range(
+        (moment - timedelta(hours=1)).astimezone(UTC), moment.astimezone(UTC), "last hour"
+    )
 
 
 def bucket_expression(dialect: Dialect, column: ColumnElement, seconds: int) -> ColumnElement:
