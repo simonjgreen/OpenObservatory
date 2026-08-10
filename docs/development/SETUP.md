@@ -147,6 +147,22 @@ knob an operator actually reaches for after the station is running:
 | capture: source, device key, preferred rates and formats, block size, ring depth, ring seconds | saved now, applied at the next restart — a form submission never tears down capture |
 | logging, metrics, queue depths, the counter-top display channel | restart-pinned |
 
+### What is deliberately *not* a setting: the pause (ADR-055)
+
+The privacy pause is a button in the UI header and an endpoint
+(`POST`/`DELETE /api/v1/pause`), not a settings field. A setting describes how
+the station behaves indefinitely; a pause is an action with a deadline, taken
+repeatedly, and it is never written to `runtime.env`. Only the *menu* is a
+setting: `pause_presets` and `pause_default_preset`, in the new **Privacy**
+category.
+
+While paused the station persists, publishes and streams nothing — including
+refusing live listening, which is what makes it a pause rather than a label —
+but **capture keeps running**, deliberately, so the ALSA device is never closed.
+The pause expires by itself, survives a restart (the deadline is persisted, not
+a countdown) and is recorded in `capture_pause` so history shows it as
+deliberate rather than as a hole.
+
 `config/example.env` and `runtime.env` still work exactly as before, and remain
 the only route for the settings that are deliberately not browser-editable
 (authentication, bind address, storage paths, `replay_path`, `web_dist`,

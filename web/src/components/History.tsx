@@ -53,6 +53,21 @@ interface HistoryPayload {
     fraction_captured: number | null
     gaps: number
     estimated_missing_frames: number
+    /** ADR-055. Time inside this window that the operator deliberately paused
+     *  recording for. Reported separately from `seconds_captured` and never
+     *  subtracted from it: the station really was capturing throughout, so
+     *  deducting it would make a pause indistinguishable from the dead
+     *  microphone charter item 2 exists to tell it apart from. */
+    seconds_paused?: number
+    pauses?: Array<{
+      pause_id: string
+      start_utc: string
+      end_utc: string
+      seconds: number
+      label: string
+      end_reason: string | null
+      running: boolean
+    }>
     streams: Array<{
       stream_id: string
       source_kind: string
@@ -216,6 +231,18 @@ export function History({
                 {payload.coverage.gaps} gaps
               </span>
               <span>{payload.coverage.streams.length} streams</span>
+              {/* ADR-055. Only when there was one -- an "0s paused" on every
+                  window would be noise on a figure that is normally zero, and
+                  the point of showing it at all is that a paused window is not
+                  a quiet one. */}
+              {(payload.coverage.seconds_paused ?? 0) > 0 && (
+                <span
+                  className="pause-coverage"
+                  title="Time the operator deliberately paused recording for. Audio was still being captured, but nothing was detected, stored or published, so an absence here means nothing about the garden."
+                >
+                  {duration(payload.coverage.seconds_paused ?? 0)} paused
+                </span>
+              )}
             </div>
           </div>
 
@@ -379,6 +406,29 @@ function CoverageBar({
             title={`${stream.source_kind} · ${timeFormat.format(from)}–${timeFormat.format(
               to,
             )} · ${(stream.sample_rate / 1000).toFixed(0)} kHz`}
+          />
+        )
+      })}
+      {/* ADR-055, drawn over the stream spans rather than in place of them.
+          The audio underneath a pause really was captured; what stopped was
+          everything downstream. An operator looking at a silent afternoon has
+          to be able to see that it was deliberate, or the only two readings
+          available are "quiet garden" and "broken station" -- and both are
+          wrong. */}
+      {(payload.coverage.pauses ?? []).map((pause) => {
+        const from = Date.parse(pause.start_utc)
+        const to = Date.parse(pause.end_utc)
+        return (
+          <span
+            key={pause.pause_id}
+            className="paused"
+            style={{
+              left: `${((from - start) / span) * 100}%`,
+              width: `${Math.max(0.3, ((to - from) / span) * 100)}%`,
+            }}
+            title={`paused by the operator · ${timeFormat.format(from)}–${timeFormat.format(to)}${
+              pause.running ? ' (still paused)' : ''
+            } · nothing was detected, stored or published in this window`}
           />
         )
       })}

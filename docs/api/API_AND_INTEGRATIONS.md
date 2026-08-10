@@ -28,6 +28,9 @@ those merges and was missing seven routes.
 | `PUT /settings` | partial update; validates, persists to `config/runtime.env`, applies live where safe |
 | `GET /setup` | guided first-run state: what a new station still needs (ADR-048) |
 | `GET /retention/status` | tiered clip retention state (ADR-026/029) |
+| `GET /pause` | the privacy pause: current state **and** the durations offered, in one response (ADR-055) |
+| `POST /pause` | body `{"preset": "15m"\|"1h"\|"3h"\|"6h"\|"until-midnight"}`. Stops detection, evidence, publishing and live listening until the deadline; capture keeps running. Pressing it while paused *replaces* the deadline. 422 on an unknown key |
+| `DELETE /pause` | resume now. Idempotent — resuming a station that is not paused is a 200 |
 | `GET /audio/devices` | |
 | `POST /audio/probe` | |
 | `GET /audiomoth` | |
@@ -96,7 +99,9 @@ unchanged and still used by clients (a phone) that never had that problem.
 44-byte WAV header with both size fields set to `0xFFFFFFFF` (the endless-
 stream convention) followed by continuous 16-bit little-endian mono PCM,
 answers `503` if the ultrasonic channel is unavailable for this station's
-native rate, and carries `Cache-Control: no-store` plus `X-Live-Sample-Rate`
+native rate **or if the operator has paused the station (ADR-055)** — in the
+pause case the `detail` is the pause banner, which `web/src/audio.ts` surfaces
+on the listen control — and carries `Cache-Control: no-store` plus `X-Live-Sample-Rate`
 (and, on the ultrasonic channel, `X-Live-Tune-Hz`/`X-Live-Bandwidth-Hz`)
 response headers in place of the WebSocket's JSON hello frame.
 

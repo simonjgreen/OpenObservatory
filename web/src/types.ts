@@ -122,6 +122,39 @@ export interface DetectorStatus {
   circuit_open: boolean
 }
 
+/** The operator privacy pause (ADR-055), as `/api/v1/pause` and the live
+ *  status frame both report it. */
+export interface PauseState {
+  active: boolean
+  /** When the pause ends. Null when not paused. The authoritative field. */
+  ends_utc: string | null
+  started_utc: string | null
+  remaining_s: number
+  /** The preset key chosen, e.g. `"1h"`. */
+  preset: string | null
+  label: string | null
+  actor: string | null
+  detections_suppressed: number
+  pauses_started: number
+}
+
+/** One entry in the pause control's drop-down. `seconds` is null for
+ *  "until midnight", which only the station can resolve. */
+export interface PausePreset {
+  key: string
+  label: string
+  seconds: number | null
+}
+
+/** `GET/POST/DELETE /api/v1/pause` — the state and the menu in one response,
+ *  so the split button can never offer a duration the station would refuse. */
+export interface PausePayload extends PauseState {
+  presets: PausePreset[]
+  default_preset: string
+  timezone: string
+  banner: string
+}
+
 export interface StationStatus {
   station: {
     id: string | null
@@ -137,6 +170,11 @@ export interface StationStatus {
      *  start, so not yet in force — e.g. `["latitude", "longitude"]`. */
     site_pending_restart: string[]
   }
+  /** ADR-055. Present on every status frame, so a browser learns the station
+   *  is paused within one 2 s tick even if the pause was set from another
+   *  device. `ends_utc` is authoritative; render the countdown from it, not
+   *  from `remaining_s`, which is stale the moment it arrives. */
+  pause?: PauseState
   capture: CaptureStatus
   resampler: {
     backend: string

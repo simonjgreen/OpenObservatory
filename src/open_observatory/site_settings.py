@@ -67,6 +67,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 
+from . import pause as pause_module
 from .config import Settings
 
 Tier = Literal["live", "restart"]
@@ -138,6 +139,13 @@ CATEGORIES: tuple[SettingCategory, ...] = (
         "Evidence clips",
         "What gets recorded as evidence for a detection, and the hard limits "
         "that stop a pathological night filling the disk.",
+    ),
+    SettingCategory(
+        "privacy",
+        "Privacy",
+        "The controls that make the charter's privacy constraint operable "
+        "rather than aspirational. The pause itself is a button on the main "
+        "page, not a setting -- these only decide what durations it offers.",
     ),
     SettingCategory(
         "retention",
@@ -766,6 +774,18 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
        help="The unit is fenced to two cores, so more threads than that is "
             "context switching, not throughput."),
     _e("refinement_refiner", "refinement", label="refiner"),
+    # ---- privacy (ADR-055) --------------------------------------------------
+    _e("pause_presets", "privacy", label="pause durations offered",
+       help="Which durations the pause control's drop-down lists, as a "
+            "comma-separated list of keys: 15m, 1h, 3h, 6h, until-midnight. "
+            "'until-midnight' means the end of the day in the station's own "
+            "timezone, not 24 hours.",
+       note="The pause itself is an action, not a setting -- it has its own "
+            "button and its own endpoint. This only changes the menu."),
+    _e("pause_default_preset", "privacy", label="pre-selected duration",
+       choices=("15m", "1h", "3h", "6h", "until-midnight"),
+       help="What the split button offers before anyone has chosen on this "
+            "browser. The browser then remembers the last choice made on it."),
     # ---- counter-top display ------------------------------------------------
     _e("display_channel_heartbeat_s", "display", label="heartbeat interval",
        unit="s", minimum=1, maximum=600,
@@ -1252,6 +1272,30 @@ def validate_merged(settings: Settings, updates: dict[str, Any]) -> None:
         bool(merged["preferred_formats"]),
         "at least one sample format must be offered, or capture has nothing to "
         "negotiate and cannot start",
+    )
+    # ADR-055. A duration key the station cannot compute is not a menu entry,
+    # it is a button that fails when someone presses it -- and the moment they
+    # press it is the moment they least want to debug a settings file.
+    unknown = tuple(
+        key for key in merged["pause_presets"] if key not in pause_module.PRESETS_BY_KEY
+    )
+    rule(
+        ("pause_presets",),
+        not unknown,
+        "unknown pause duration(s) "
+        + ", ".join(repr(key) for key in unknown)
+        + f"; expected from: {', '.join(pause_module.PRESETS_BY_KEY)}",
+    )
+    rule(
+        ("pause_presets",),
+        bool(merged["pause_presets"]),
+        "at least one pause duration must be offered, or the privacy pause "
+        "control has nothing to do",
+    )
+    rule(
+        ("pause_default_preset", "pause_presets"),
+        merged["pause_default_preset"] in merged["pause_presets"],
+        "the pre-selected pause duration must be one of the durations offered",
     )
     if errors:
         raise SettingValueError(errors)

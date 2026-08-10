@@ -55,6 +55,28 @@ class PrometheusExporter:
             "1 when capturing from the real microphone rather than a synthetic source",
             1.0 if capture["is_live_hardware"] else 0.0,
         )
+        # ADR-055. The pause is deliberately *not* folded into
+        # `oo_capture_state` -- capture is genuinely running throughout one, and
+        # an alert that cannot tell a paused station from a dead one is the
+        # charter item 2 failure in Prometheus form.
+        pause = snapshot.get("pause") or {}
+        self._set(
+            "oo_paused",
+            "1 while the operator has paused recording (ADR-055). Capture is "
+            "still running; detection, evidence, publishing and live listening "
+            "are suppressed",
+            1.0 if pause.get("active") else 0.0,
+        )
+        self._set(
+            "oo_pause_remaining_seconds",
+            "Seconds until the current operator pause expires; 0 when not paused",
+            pause.get("remaining_s", 0.0),
+        )
+        self._set(
+            "oo_pause_detections_suppressed_total",
+            "Detections discarded because the station was paused, since process start",
+            pause.get("detections_suppressed", 0),
+        )
         self._set(
             "oo_capture_frames_total",
             "Frames captured in the current stream",

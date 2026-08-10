@@ -594,6 +594,59 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
     covered = _merged_seconds([(a, b) for a, b, _ in intervals])
     live = _merged_seconds([(a, b) for a, b, kind in intervals if kind == LIVE_SOURCE_KIND])
 
+    # ADR-055. Deliberate operator pauses, clipped to the window and merged.
+    #
+    # These are reported *separately* from `seconds_captured` rather than
+    # subtracted from it, because they are a different fact and conflating them
+    # would make both dishonest. The station really was capturing throughout a
+    # pause -- the device stayed open, frames kept arriving, continuity is
+    # unbroken -- so deducting the time would understate coverage and would
+    # look, in the record, exactly like the dead microphone charter item 2
+    # exists to distinguish. What a pause changes is whether anything could
+    # have been *detected*, and that is what a client needs to be able to draw
+    # over the window before concluding a quiet afternoon means anything.
+    pause_rows = session.execute(
+        select(
+            orm.CapturePause.id,
+            orm.CapturePause.started_utc,
+            orm.CapturePause.ends_utc,
+            orm.CapturePause.ended_utc,
+            orm.CapturePause.end_reason,
+            orm.CapturePause.label,
+        ).where(
+            orm.CapturePause.started_utc < window.end,
+            # An unfinished pause runs to its deadline, which may be in the
+            # future; a finished one to when it actually stopped.
+            func.coalesce(orm.CapturePause.ended_utc, orm.CapturePause.ends_utc)
+            > window.start,
+        )
+    ).all()
+    pauses: list[dict[str, object]] = []
+    pause_intervals: list[tuple[datetime, datetime]] = []
+    for row in pause_rows:
+        finished = _aware(row.ended_utc) if row.ended_utc else _aware(row.ends_utc)
+        # Never past now: an open pause has not yet covered the time between
+        # here and its deadline, and claiming it had would be a coverage figure
+        # about the future.
+        finished = min(finished, now)
+        start = max(_aware(row.started_utc), window.start)
+        end = min(finished, window.end)
+        seconds = max(0.0, (end - start).total_seconds())
+        if seconds <= 0:
+            continue
+        pause_intervals.append((start, end))
+        pauses.append(
+            {
+                "pause_id": str(row.id),
+                "start_utc": _iso(start),
+                "end_utc": _iso(end),
+                "seconds": round(seconds, 1),
+                "label": row.label,
+                "end_reason": row.end_reason,
+                "running": row.ended_utc is None,
+            }
+        )
+
     gap_rows = session.execute(
         select(
             func.count().label("gaps"),
@@ -618,6 +671,11 @@ def coverage(session: Session, window: Range) -> dict[str, object]:
         "estimated_missing_frames": int(gap_rows.frames or 0),
         "suspect_stream_count": suspect_count,
         "streams": spans,
+        # ADR-055. Merged before summing, for the same reason the stream
+        # intervals are: overlapping rows (a restart mid-pause, a pause
+        # superseded by a longer one) must not be counted twice.
+        "seconds_paused": round(_merged_seconds(pause_intervals), 1),
+        "pauses": pauses,
     }
 
 

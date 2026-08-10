@@ -13,6 +13,7 @@ import { History } from './components/History'
 import { NearMissPanel } from './components/NearMissPanel'
 import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
+import { PauseBanner, PauseControl } from './components/PauseControl'
 import { RetentionPanel } from './components/RetentionPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { estimatePlayhead } from './components/playhead'
@@ -23,6 +24,7 @@ import { useFirstRun } from './hooks/useFirstRun'
 import { useHistoryBrowser } from './hooks/useHistoryBrowser'
 import { useLiveAudio } from './hooks/useLiveAudio'
 import { useLiveConnection } from './hooks/useLiveConnection'
+import { usePause } from './hooks/usePause'
 import { useSpectrogramControls } from './hooks/useSpectrogramControls'
 import { useViewMode } from './hooks/useViewMode'
 
@@ -52,6 +54,10 @@ export default function App() {
   const audio = useLiveAudio()
   const view = useViewMode()
   const firstRun = useFirstRun()
+  // ADR-055. Fed the live status frame so a pause set from another device
+  // appears here within a tick, and `clock` so the countdown ticks without a
+  // second timer.
+  const pause = usePause(live.status?.pause, clock)
 
   const [selected, setSelected] = useState<Detection | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -97,6 +103,10 @@ export default function App() {
         localTimeZone={timeZone}
         showDiagnostics={diagnosing}
       >
+        {/* First in the header's controls, before the view switches: it is a
+            privacy control, not a preference, and the moment it is wanted is
+            not a moment to go looking for it. */}
+        <PauseControl pause={pause} timeZone={timeZone} />
         <div className="segmented mode-switch">
           <button
             className={history.mode === 'live' ? 'on' : ''}
@@ -149,6 +159,10 @@ export default function App() {
           </button>
         )}
       </Header>
+
+      {/* Above everything, including the first-run flow: while this is on, it
+          is the most important true thing about the station. */}
+      <PauseBanner pause={pause} timeZone={timeZone} />
 
       {/* Day one: guide rather than fail. The panel appears only while the
           station itself reports required questions outstanding, and its

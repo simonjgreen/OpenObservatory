@@ -476,7 +476,7 @@ Frame keys:
 | `v` | `h` | Wire version, currently `1`. A client that does not know it must refuse the frame rather than half-parse it. |
 | `now` | `h`, `s` | The station's Unix epoch seconds. The display has no RTC and no NTP; this is its only clock. |
 | `hb` | `h` | Heartbeat period in seconds. The display treats three missed beats as a stale feed. |
-| `st` | `h`, `s` | `L` listening, `D` degraded. **Never offline** — that is a fact only the client can know. |
+| `st` | `h`, `s` | `L` listening, `D` degraded. **Never offline** — that is a fact only the client can know. An operator pause (ADR-055) is also sent as `D`, with the pause wording in `d`: the firmware in the field maps any letter that is not `D` to "listening", so a new letter would make a paused station read as recording on every display not yet updated. |
 | `d` | `h`, `s` | The station's own words for a degraded state. Absent when listening. |
 | `sp` | any | Distinct species today. On a `d` frame only when the count moved. |
 | `f` | `h` | The connect snapshot: `rows` rows, already run-collapsed. |

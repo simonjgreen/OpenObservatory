@@ -308,6 +308,26 @@ def health_state(health: Mapping[str, Any]) -> tuple[str, str]:
     ``D`` is degraded; offline is a fact only the device can know, so it is not
     one of the states the station can send.
     """
+    # ADR-055, checked first. A paused station is not broken and not quiet: it
+    # is deliberately not recording, and that is both the most surprising thing
+    # a person can read off this glass and the only one of these states they
+    # can do something about from the room they are standing in. Everything
+    # else here describes a fault; this describes a decision, so it must not be
+    # displaced by one.
+    #
+    # It reports as `D` rather than a fourth state letter on purpose. The
+    # firmware in the field maps any letter that is not `D` to "listening", and
+    # a new letter would therefore make a paused station read as recording on
+    # every display that has not been updated yet -- the exact failure this is
+    # meant to prevent, introduced by the fix for it. `D` puts the banner on
+    # the screen with the pause's own wording in it today, on the firmware that
+    # is already out there. See the ADR for the presentation upgrade this
+    # defers.
+    pause = health.get("pause") or {}
+    if pause.get("active"):
+        banner = pause.get("banner")
+        return "D", str(banner) if banner else "PAUSED BY OPERATOR - NOT RECORDING"
+
     capture = health.get("capture") or {}
     if not capture.get("is_live_hardware", False):
         detail = (

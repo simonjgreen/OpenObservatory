@@ -297,6 +297,43 @@ systemd tracks the unit's cgroup, not a string match against argv.
 `GET /api/v1/health` on port 8080 is what `deploy.sh` polls after a restart.
 It is also the right first check after any manual `systemctl restart`.
 
+### Pausing recording for visitors (ADR-055)
+
+When the garden is about to be full of people who never consented to a
+microphone, use the **pause** control in the web UI header — not
+`systemctl stop`. Stopping the service closes the ALSA device, and this station
+has already lost 29 hours of recording to a device that did not come back
+(HANDOVER §3a).
+
+The split button pauses for whatever duration is selected; the caret changes the
+selection (15 minutes, 1 hour, 3 hours, 6 hours, until midnight in the station's
+configured timezone) and remembers it. While paused:
+
+- no detection rows, no evidence clips, no MQTT, no display pushes;
+- **live listening is refused** on both channels — `GET /api/v1/live/audio.wav`
+  answers `503` with the pause banner as its detail;
+- **capture keeps running.** Frames keep arriving, continuity is unbroken, the
+  device is never closed.
+
+It ends by itself at the deadline, and it survives a restart — the deadline is
+persisted, so a Pi rebooted mid-pause comes back paused. The counter-top display
+shows `PAUSED BY OPERATOR - RECORDING RESUMES HH:MM`, and the window appears in
+`GET /api/v1/history`'s coverage as `pauses[]` / `seconds_paused` so a silent
+afternoon reads as deliberate rather than as a dead microphone.
+
+From the command line:
+
+```bash
+curl -s -X POST http://<station-host>:8080/api/v1/pause \
+  -H 'content-type: application/json' -d '{"preset": "3h"}'
+curl -s -X DELETE http://<station-host>:8080/api/v1/pause     # resume now
+curl -s http://<station-host>:8080/api/v1/pause                # what is it doing
+```
+
+If a station is ever stuck paused with the API unreachable, clear it in the
+database and restart — see the ADR-055 rollback section in
+[`../architecture/ADRS.md`](../architecture/ADRS.md).
+
 ### Live listening: two transports, since ADR-019
 
 The debug UI's GO LIVE button plays audio from `GET /api/v1/live/audio.wav` by
@@ -686,6 +723,13 @@ Generated from the code — regenerate with
 | `clip_max_total_gb` | live (pushed) | `20.0` GB | clip directory budget |
 | `clip_min_free_gb` | live (pushed) | `5.0` GB | stop clipping below free space |
 | `clip_retention_days` | live (pushed) | `30` days | clip manager retention |
+
+#### Privacy
+
+| setting | tier | default | notes |
+|---|---|---|---|
+| `pause_presets` | live | `15m,1h,3h,6h,until-midnight` | pause durations offered |
+| `pause_default_preset` | live | `1h` | pre-selected duration |
 
 #### Retention
 

@@ -179,6 +179,26 @@ class Settings(BaseSettings):
     #: must never be able to apply back-pressure to anything upstream.
     display_channel_queue_max: int = 64
 
+    # ---- operator pause (ADR-055) -----------------------------------------
+    #: The durations the pause control offers, in the order the drop-down lists
+    #: them. Keys are resolved against `pause.PRESETS`, which is where the
+    #: arithmetic for each one lives -- "until-midnight" depends on `timezone`
+    #: and on the time of day, so it cannot be a number here.
+    #:
+    #: `NoDecode`: same pydantic-settings decoding bug as `clip_plugins`.
+    pause_presets: Annotated[tuple[str, ...], NoDecode] = (
+        "15m",
+        "1h",
+        "3h",
+        "6h",
+        "until-midnight",
+    )
+    #: Pre-selected in the split button before the operator has chosen anything
+    #: on this browser. The UI remembers the last choice locally and falls back
+    #: to this, so a station whose operator always wants six hours can say so
+    #: once instead of every time.
+    pause_default_preset: str = "1h"
+
     # ---- inside-observer firmware updates (ADR-050) -----------------------
     #: Tell a display about a published firmware image during its connect
     #: handshake, when the version it reports is older than the published one.
@@ -645,6 +665,7 @@ class Settings(BaseSettings):
         "preferred_formats",
         "clip_plugins",
         "auth_public_read_paths",
+        "pause_presets",
         mode="before",
     )
     @classmethod
