@@ -358,7 +358,17 @@ pause for a release. Charter item 1 does not have a maintenance window.
 A home for enhancements that are wanted and not urgent, so they stop being ideas
 and start being decisions. Nothing here blocks an exit gate.
 
-Currently one entry: **taxonomic grouping above species (ADR-053)**, raised
+Two entries.
+
+**Environmental sensors: lux and rain**, raised 2026-08-10. Both would make the
+acoustic record easier to interpret — measured light rather than an almanac
+calculation, and a rain flag to explain a noisy hour. Undecided how to attach
+them: Pi GPIO, the ESP32 display, or ingestion from Home Assistant under
+Milestone 6's environmental telemetry. The last is cheapest but least
+self-contained, and the charter requires the station to work without Home
+Assistant present.
+
+**Taxonomic grouping above species (ADR-053)**, raised
 2026-08-09. The detector exposes nothing between a species binomial and
 "bird" — the label file has no hierarchy and `taxonomic_group` is a claim-kind
 marker, not a rank. Genus grouping is free and exact; family is a real data

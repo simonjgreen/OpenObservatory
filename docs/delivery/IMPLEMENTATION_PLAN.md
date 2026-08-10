@@ -319,6 +319,24 @@ rather than an idea that evaporates.
   ADR-053 records the reasoning, and refuses the hardcoded-species-list shortcut
   in writing.
 
+- **Environmental sensors: lux and rain.** Both would make the acoustic record
+  easier to interpret. A lux reading distinguishes a genuinely dark night from an
+  overcast dusk, where the station currently has only an almanac calculation from
+  its coordinates. A rain reading explains a whole class of confusing data: rain
+  lifts the broadband noise floor, suppresses bird activity, and produces
+  transients that `ultrasonic-pass-v1` can read as a pass.
+
+  **How to attach them is the open question, and is the reason this is a note
+  rather than a plan.** Three routes, none chosen: the Pi's GPIO, closest to the
+  audio but adding wiring to an enclosure that currently has none and sitting
+  indoors in the summer house; the ESP32 display, already networked and already
+  in conversation with the station, but indoors and therefore blind to the
+  weather; or ingestion from Home Assistant, which Milestone 6 already scopes as
+  environmental telemetry ingestion and which would reduce this to subscribing to
+  sensors that may already exist. The third is the cheapest and the least
+  self-contained, which is the trade to think about — the charter's local-first
+  constraint means the station must still work when Home Assistant is not there.
+
 Exit gate: none. Items graduate out of this section into a numbered milestone
 when someone decides to do them.
 

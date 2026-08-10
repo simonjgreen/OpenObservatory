@@ -449,6 +449,29 @@ room, and why the microphone's exact position has a larger effect on the data
 than any setting in this repository. Moving it a few feet changed the noise
 floor materially.
 
+### Wanted later
+
+Two sensors would make the record more useful, and neither is decided yet.
+
+A **lux sensor** would say whether a detection happened in daylight, twilight or
+darkness as measured rather than as calculated. The station already computes
+civil dusk and dawn from its coordinates to gate the bat detector, but that is
+an almanac answer, and an overcast dusk is not the same as a clear one.
+
+A **rain sensor** would explain a category of otherwise puzzling data. Rain
+raises the broadband noise floor, suppresses bird activity and produces
+transients that a pass detector can mistake for something else, so knowing it
+was raining turns a confusing hour into an explained one.
+
+How to attach either is the open question. Three plausible routes, none chosen:
+the Pi's own GPIO, which is closest to the audio but adds wiring to the enclosure
+that currently has none; the ESP32 counter-top display, which is already on the
+WiFi and already talks to the station, but is indoors and so cannot see the
+weather; or ingesting from Home Assistant, which Milestone 6 already scopes as
+environmental telemetry and which would make this mostly a matter of subscribing
+to sensors that already exist. See Milestone 9 in
+[`docs/delivery/IMPLEMENTATION_PLAN.md`](docs/delivery/IMPLEMENTATION_PLAN.md).
+
 ### Notes worth knowing before you copy it
 
 - **The AudioMoth's three-position switch matters.** `DEFAULT` streams audio;
