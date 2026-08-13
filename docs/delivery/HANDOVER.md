@@ -216,6 +216,109 @@ a tuning experiment on 2026-08-09 and deliberately left. It roughly doubles
 detections, and therefore clips: daily growth went from ~15 GB to ~33 GB. Judge
 any soak figure about volume against that, not against the defaults.
 
+## 1d. Mid-soak reading, 2026-08-12 21:10 UTC — 54.7 h into the 72
+
+Taken read-only from the live station (`/api/v1/health`, `/metrics`, `journalctl`,
+`oo refine status`). Nothing was deployed, restarted or written. **Every figure
+here is a snapshot at 54.7 h, not a result**; the soak's own window runs to
+**2026-08-13 14:27 UTC**, 72 h after the stream started at 2026-08-10 14:27:49 UTC
+with `stream_restarts: 0`.
+
+### The gate passes, with almost no margin
+
+`continuity_ratio` was **0.999056** against an acceptance criterion of ≥ 99.9%
+(`ACCEPTANCE_CRITERIA.md`). That is 0.006 pp of headroom: 175 s lost across the
+run, 601 gaps with loss, 306 ALSA overruns. **One bad hour fails the gate**, so
+the number to read at the end is this one, and a pass should be reported with its
+margin attached rather than as a clean pass.
+
+### `late_read_max_frames` went the wrong way
+
+**188,982 of the 192,000-frame ALSA ring — 98.4%**, against the 81% that ADR-059
+was written to fix. The reads are landing within about 8 ms of an overrun. This is
+the sharpest live risk in the run and the first thing to look at afterwards. The
+experiment named in §6.1 is still the right one: `OO_RETENTION_ENABLED=false`,
+restart, see whether the ~304 s beat stops.
+
+### Evidence writing does not keep up at activity peaks
+
+Two distinct losses, neither of which touches capture, and both of which mean
+"evidence clips obey maximum duration and retention" is not currently true in the
+way the criteria assume:
+
+| Symptom | Reading at 54.7 h | Mechanism |
+|---|---|---|
+| `evidence.dropped` | 2,743 detections published with **no clip at all**, every one `activity-v1` | `_evidence_queue` is `maxsize=32` and full; ADR-045's bounded queue dropping rather than blocking, working as designed |
+| `clip.not_in_ring` / `clips_failed_total` | 1,909 | the audio had already been evicted from the native ring before the clip was cut |
+
+Both cluster where the detections are: 540 drops in the 05:00 hour, 164 in the
+20:00 hour. Sampled over 12 minutes at dusk the clip failure rate was **9 of 93
+attempts, about 10%**. `ring_extraction_misses_total{ring="native"}` tracks
+`clips_failed_total` exactly (1,909 = 1,909); `{ring="audible"}` is 0.
+
+### Retention has still never deleted anything, and now it is overdue
+
+The oldest clip is 2026-08-05 18:44 UTC, so the 7-day native tier **crossed its
+threshold at about 18:44 UTC on the 12th** and every
+`oo_retention_files_deleted_total{tier=…}` was still 0.0 two hours later. The
+sweep also reports `complete=false` on every pass — `retention_batch_budget_s` is
+**1.5 s** and the measured sweep takes **2.0 s**, so it hits its deadline every
+time (276 `housekeeping.retention_not_keeping_up` warnings in 24 h).
+
+**The open question is whether the deadline is being hit *before* the sweep
+reaches a deletable candidate.** A `--dry-run` sweep answers it and mutates
+nothing; it was deliberately not run mid-soak, because it competes for the same
+CPU and the same already-contended SQLite connection as the thing being measured.
+Run it first thing afterwards.
+
+Volume is not the constraint either way: 200 GB of 458 used, growing at ~150 MB
+per 12 min ≈ **18 GB/day** (below the ~33 GB/day §1c predicted from the lowered
+`birdnet_threshold_in_range`), so ~14 days of headroom. The soak completes
+whatever retention does.
+
+### The refinement runner's first real pass completed
+
+**2026-08-12 01:00 BST, exit 0**, 39 min wall and 56 min CPU inside its
+`AllowedCPUs=2-3` fence, **2,399 proposals written**. That closes one of the four
+watch items in §6.1 — the mechanism has now been observed running end to end, not
+forced by hand. It does not close ADR-045's own warning: **15,704 bat detections
+have never been examined by a refiner**, and retention deletes on age alone.
+
+### Two things suspected, not established — do not report either as fact
+
+1. **SQLite lock contention is losing detections.** 331 `sqlite3.OperationalError:
+   database is locked` tracebacks in 24 h, and `detections_persist_failures_total`
+   = 310. Bursty rather than continuous — flat across a 12-minute sample. Worth
+   knowing that the counter and the traceback count agree to within 7%, which is
+   the kind of agreement that usually means one mechanism.
+2. **All three detectors report `lag_seconds` ≈ 185 s, identically**, and that is
+   exactly `expected_frames - frames` expressed in seconds. Detections are being
+   timestamped ~3 minutes behind wall clock. At −51.62 ppm the crystal accounts
+   for only ~10 s of a 54.7 h deficit, so **ADR-046's "98% crystal drift" framing
+   does not hold at this duration** and most of this deficit looks like real lost
+   audio. This is the same class of defect as the four in §1b: an instrument
+   disagreeing with the thing it claims to measure. Treat it as unexplained and
+   measure it properly rather than patching the number.
+
+### Healthy, for completeness
+
+RSS oscillating 1.37–1.72 GB with no upward trend across the run (so no leak),
+`hot_path_cpu_ratio` 0.036, SoC 61.7 °C, MQTT connected with 129,888 publishes and
+0 failures, no pause taken (`detections_suppressed` 0, so ADR-055 is untested this
+run), `rows_claiming_missing_files` 0 with a completed audit pass over 65,556 rows
+— ADR-057 is holding.
+
+### What to do at the end of the soak, in order
+
+1. Read `continuity_ratio` and report it **with its margin**.
+2. Run the retention `--dry-run` sweep and find out why nothing was deleted.
+3. Take `late_read_max_frames` again; if still ≈98%, run the
+   `OO_RETENTION_ENABLED=false` experiment.
+4. Decide whether `_evidence_queue`'s 32 slots are the right bound, or whether
+   `activity-v1` should stop requesting evidence it cannot be given.
+5. Explain the 185 s detector lag before trusting any event timestamp to the
+   second.
+
 ## 2. How to operate it
 
 ```bash
@@ -386,14 +489,18 @@ unless noted.
    - **`late_read_max_frames` against the 192,000-frame ring.** ADR-059 removed
      the 30 s beat that had taken it to 81%. What remains beats at ~304 s, which
      is `retention_interval_s`. If that climbs, retention is the cause and
-     `OO_RETENTION_ENABLED=false` is the experiment.
+     `OO_RETENTION_ENABLED=false` is the experiment. **Read 98.4% at 54.7 h
+     (§1d) — worse than before ADR-059, so run the experiment.**
    - **The first retention deletion**, due around 12 August, mid-soak. Nothing has
      ever aged out of the 7-day native tier. Steady state should be ~231 GB of
      458; if no deletion happens, there are ~9 days of headroom, so the soak
-     finishes either way but the mechanism is unproven.
+     finishes either way but the mechanism is unproven. **Overdue as of
+     2026-08-12 18:44 UTC and still zero deletions (§1d); the sweep hits its
+     1.5 s budget every pass.**
    - **The refinement timer at 01:00 UTC.** It has never completed a real pass.
      A forced dry run classified 1,200 candidates and 1,796 s of audio after
-     ADR-057 unblocked it, but nothing has been written.
+     ADR-057 unblocked it, but nothing has been written. **Closed: a real timed
+     pass completed 2026-08-12 01:00 BST with 2,399 proposals written (§1d).**
    - **`detections_suppressed` on the pause endpoint**, if the operator pauses
      during the run. A paused stretch is recorded and reported beside capture,
      never subtracted from it (ADR-055).
