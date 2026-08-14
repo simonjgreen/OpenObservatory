@@ -195,10 +195,17 @@ See `tests/test_cli_audio.py` (9 tests) and `docs/development/SETUP.md`.
 
 Still outstanding in this milestone:
 
-* **The 72-hour soak.** The single biggest remaining item, and the one CLAUDE.md
-  names before the word "complete" may be used. A soak and a deploy are mutually
-  exclusive, because deploying restarts capture and voids the run — so it needs a
-  deliberate quiet period with no changes landing.
+* **The 72-hour soak. Run 2026-08-10 to 2026-08-13, and it FAILED its own
+  continuity criterion.** The run was restart-free for the whole window, which is
+  itself a first, but continuity over the exact 72 hours was **99.865%** against a
+  criterion of ≥ 99.9% — 349.3 s of audio lost out of 259,200 s. Reconstructed
+  from the `capture_gap` table, and cross-checked against the live
+  `continuity_ratio` counter over an identical window (184.4 s vs 175.0 s, within
+  5%), so the two independent instruments agree and the loss is real. Eleven hours
+  after the window closed the stream wedged completely — see `HANDOVER.md` §1e,
+  which also explains why the loss rate stepped up mid-run. **A re-run is needed
+  after the §1e defect is fixed**, and it is still true that a soak and a deploy
+  are mutually exclusive.
 * **The one-hour drift run.** Not run at full duration. The best evidence to date is
   ADR-046's 42.7-minute restart-free sampling run, whose longest *clean* segment was
   22.2 minutes — see the Milestone 1 exit-gate note above for why that is not the same

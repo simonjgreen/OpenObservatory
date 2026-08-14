@@ -319,6 +319,93 @@ run), `rows_claiming_missing_files` 0 with a completed audit pass over 65,556 ro
 5. Explain the 185 s detector lag before trusting any event timestamp to the
    second.
 
+## 1e. The 2026-08-14 capture wedge — one `continue` disabled the whole recovery architecture
+
+**Found because the operator looked at the indoor display**, which read `no audio
+block for 12815.893s` beside a bat pass from three hours earlier. The station had
+been deaf for **3 h 35 min** and nothing had alerted; `/api/v1/health` said
+`degraded`, with `state: "capturing"`, while no audio had arrived since
+02:12 UTC. That is the third time (§1c) this station's own reporting has described
+a dead mechanism as a working one.
+
+### The root cause, stated exactly
+
+`src/open_observatory/audio/alsa_source.py:334` treats **any** ALSA error whose
+text contains `Input/output error` as a transient xrun: it increments
+`overrun_count`, logs, and `continue`s — **inside the `while collected <
+self._block_frames` block-assembly loop**. When the error is permanent rather than
+transient, that loop can never finish a block, so `_read_blocking` never returns
+and never raises; `_capture_loop` never returns; and
+**`_capture_supervisor` — whose own docstring is "Reopen the device with bounded
+backoff after any loss", and which increments `stream_restarts`, applies backoff
+and emits a `critical` health event — is never reached.**
+
+The recovery architecture was correct and complete. One `continue` in the layer
+below it meant control never got there. The evidence:
+
+| Signal | Reading after 3.6 h wedged |
+|---|---|
+| `capture.overrun … 'Input/output error [hw:CARD=Microphone,DEV=0]'` | logged every 0.576 s, forever; count 306 → **23,135** |
+| `stream_restarts` / `open_failures` | **0 / 0** — the supervisor never ran |
+| `state` | still `"capturing"` |
+| `/proc/asound/card2/pcm0c/sub0/status` | `state: RUNNING`, `avail: 0`, `hw_ptr` frozen at **768** |
+| `dmesg` | **last USB event 2026-08-08 13:47** — no disconnect, no reset, no xhci error |
+
+**The device never left the bus and was never at fault.** `power/control` was
+`on`, so USB autosuspend is ruled out. A plain `systemctl restart
+open-observatory` restored capture immediately — 0 overruns, 0 discontinuities,
+`block_age_s` 0.12 — which proves the PCM was reopenable the whole time. **The
+supervisor would have fixed this by itself within seconds of it starting.**
+
+This is the same failure as §3a and the fix for §3a does not cover it: there,
+ALSA raised `File descriptor in bad state`, which did *not* match the overrun
+branch, so it propagated and the station fell back to synthetic. Here the string
+*did* match, so it was swallowed. `hardware_recheck_s` only re-probes while
+running on the **fallback synthetic** source, and this station never got there.
+
+### Why it wedged when it did — evidenced, but not proven
+
+Gap rows per hour are metronomic from 2026-08-13 00:00 onward: **22–24 rows/hour,
+~7 s lost/hour, and they come in `overrun`+`frame_deficit` pairs about 300 s
+apart — exactly `retention_interval_s`.** That is the ~304 s beat §1c and §6.1
+suspected, now visible from an independent direction, and it means **every
+retention sweep was costing audio**. The sweep also got slower as the archive grew
+(2.0 s at 54.7 h, 2.44 s by the 14th, against a 1.5 s budget), and the loss rate
+stepped up sharply around 13 Aug 00:00 — 184 s lost in the first 54.7 h, then
+~168 s/day. The wedge at 02:12 UTC came at the end of that ramp, not out of a
+clear sky. **Do not treat "the sweep caused the wedge" as established**; treat
+"the sweep is costing ~7 s of audio an hour" as established, because the period
+matches to the second.
+
+### The two-branch version of the same bug
+
+The `length == 0` branch twelve lines further down carries the comment "treat a
+run of them as a stalled device rather than spinning" — and then does not: it
+counts, logs every 500th, sleeps 1 ms and continues, with no bound either. **Both
+branches need the same bound**, and a fix that only addresses the `-EIO` one
+leaves an identical trap.
+
+### What the fix has to do (needs an ADR, not a patch)
+
+1. **Bound the swallow.** Consecutive recoverable errors with no successful read
+   must, after a configured count or elapsed time, raise `AlsaCaptureError` so the
+   supervisor gets control. Both branches.
+2. **Watchdog on `block_age_s`** independent of the read loop, so a stall is
+   detected even if a future branch swallows something else.
+3. **`critical`, not `degraded`**, once no block has arrived for more than a few
+   seconds — and the display and MQTT should say the station is *deaf*, not report
+   a stale bat pass under a healthy-looking header.
+4. `state` must not read `capturing` when nothing has been captured for an hour.
+
+### The soak verdict
+
+The 72-hour window (2026-08-10 14:27 → 2026-08-13 14:27 UTC) closed **11.7 hours
+before** the wedge, so the wedge did not spoil it — but the soak **failed anyway**
+on continuity: **99.865% against a ≥ 99.9% criterion**, 349.3 s lost of 259,200 s.
+See `MILESTONE_STATUS.md`, which is the authority. The §1d reading of 99.906% at
+54.7 h was accurate at the time; the run got worse after it, which is exactly why
+that entry said one bad hour would take it out.
+
 ## 2. How to operate it
 
 ```bash
