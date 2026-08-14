@@ -981,6 +981,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"{settings.retention_watermark_ratio:.0%} watermark and the retention "
                 "sweep is not keeping up"
             )
+        # ADR-061: the watermark tier's one deliberate refusal. It will not
+        # delete a `kept` recording to get under the watermark -- that is the
+        # design, not a bug -- so if disk is still over the line with kept
+        # bytes sitting on it, silence here would look exactly like a station
+        # quietly handling it. It is not: unless an operator frees space (or
+        # clears a keep) by hand, the disk fills and clip writes start
+        # failing. Capture itself is unaffected either way.
+        watermark_blocked_by_kept = int(retention.get("watermark_blocked_by_kept") or 0)
+        if (
+            settings.retention_enabled
+            and storage["disk_used_ratio"] is not None
+            and storage["disk_used_ratio"] > settings.retention_watermark_ratio
+            and watermark_blocked_by_kept > 0
+        ):
+            problems.append(
+                f"disk usage {storage['disk_used_ratio']:.0%} exceeds the "
+                f"{settings.retention_watermark_ratio:.0%} watermark and "
+                f"{watermark_blocked_by_kept:,} bytes of it are operator-kept recordings "
+                "the retention sweep will not delete: free space by hand or the disk "
+                "will fill and clip writes will start failing"
+            )
         # ADR-034: visible rather than silent. `auth_enabled: false` is the
         # shipped default and is never itself a `problems` entry -- an
         # operator who has not opted in should see a status of exactly what
@@ -1204,6 +1225,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "exact": bool(sweeper.audit_passes),
             },
             "disk_reclaim_threshold": sweeper.watermark_ratio,
+            # ADR-061: 0 unless the last sweep found disk over the watermark
+            # with nothing left to reclaim but kept evidence -- see
+            # `RetentionSweeper._watermark_reclaim` and `/health`, which
+            # escalates this into a named problem.
+            "watermark_blocked_by_kept": sweeper.last_watermark_blocked_by_kept,
             "last_run_utc": sweeper.last_sweep_at.isoformat() if sweeper.last_sweep_at else None,
             # The sweeper deletes for real when enabled; `--dry-run` is a CLI
             # affordance, never a server mode, so this is always False here.

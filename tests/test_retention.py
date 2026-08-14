@@ -421,6 +421,37 @@ class TestKeptFlag:
         with session_scope() as session:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is None
 
+    def test_the_watermark_reports_rather_than_deleting_what_was_kept(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """Silently deleting a recording a human asked to keep would be worse
+        than a full disk they can see coming (ADR-061)."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=400,
+                kept=True,
+                kinds=("evidence_native",),
+                byte_length=2048,
+            )
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        report = _sweeper(db, watermark_ratio=0.85).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+        assert report.watermark_blocked_by_kept == 2048
+
     def test_unkeeping_makes_it_deletable_again(self, db, station_and_detector) -> None:
         """Only a human clears the flag -- but when they do, normal rules resume."""
         station_id, detector_id = station_and_detector
@@ -794,6 +825,8 @@ class TestWatermarkReclaim:
             )
         report = _sweeper(db).sweep()
         assert report.tier_counts.get("watermark", 0) == 0
+        # A healthy station never pays for the blocked-bytes query.
+        assert report.watermark_blocked_by_kept == 0
         with session_scope() as session:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is None
 

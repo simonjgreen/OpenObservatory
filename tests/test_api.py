@@ -104,6 +104,37 @@ class TestStationEndpoints:
         assert body["status"] == "critical", body["status"]
         assert response.status_code == 503
 
+    def test_health_names_kept_evidence_when_the_watermark_cannot_be_met(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full disk must be visible before it is a surprise (ADR-061).
+
+        `_watermark_reclaim` refuses to delete operator-kept recordings, so a
+        station stuck over the watermark on nothing but kept evidence would
+        otherwise fill silently. The health payload must name the byte figure
+        and that these are kept recordings, not just "not keeping up".
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def blocked_snapshot() -> dict:
+            snapshot = real_snapshot()
+            snapshot["storage"] = {**snapshot["storage"], "disk_used_ratio": 0.99}
+            snapshot["retention"] = {
+                **snapshot["retention"],
+                "watermark_blocked_by_kept": 5_242_880,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", blocked_snapshot)
+        response = client.get("/api/v1/health")
+        body = response.json()
+
+        assert any(
+            "5,242,880" in problem and "kept" in problem for problem in body["problems"]
+        ), body["problems"]
+        assert body["status"] != "ok"
+
     def test_health_reports_synthetic_source_honestly(self, client) -> None:
         payload = client.get("/api/v1/health").json()
         assert payload["capture"]["state"] == "capturing"

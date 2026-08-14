@@ -110,6 +110,13 @@ class RetentionReport:
     #: Count of detections exempted from this sweep by an explicit human
     #: hold (ADR-043) -- see `RetentionSweeper._strip_native` et al.
     held_detections: int = 0
+    #: Bytes held by kept, un-reclaimed media assets that `_watermark_reclaim`
+    #: declined to reclaim (ADR-061). Only ever non-zero when the watermark
+    #: was actually exceeded this sweep -- see `_watermark_reclaim` -- so a
+    #: healthy station never pays for the query that produces it. This is
+    #: the number that makes "the sweep is not deleting kept evidence" an
+    #: observable fact rather than an assumption: see `_health_payload`.
+    watermark_blocked_by_kept: int = 0
     already_missing: int = 0
     #: Per-tier counts/bytes: keys are "native", "exemplar_only", "expired", "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
@@ -136,6 +143,7 @@ class RetentionReport:
             "disk_used_ratio_after": self.disk_used_ratio_after,
             "kept_detections": self.kept_detections,
             "held_detections": self.held_detections,
+            "watermark_blocked_by_kept": self.watermark_blocked_by_kept,
             "already_missing": self.already_missing,
             "tier_counts": dict(self.tier_counts),
             "tier_bytes": dict(self.tier_bytes),
@@ -189,6 +197,7 @@ class RetentionSweeper:
         self.last_disk_used_ratio: float | None = None
         self.last_kept_detections: int = 0
         self.last_held_detections: int = 0
+        self.last_watermark_blocked_by_kept: int = 0
 
         # -- rolling missing-file audit (ADR-057) ---------------------------
         #: Cursor into ``(media_asset.created_at, id)``, advanced by
@@ -301,6 +310,7 @@ class RetentionSweeper:
         self.last_disk_used_ratio = report.disk_used_ratio_after
         self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
+        self.last_watermark_blocked_by_kept = report.watermark_blocked_by_kept
         if not dry_run:
             for tier, count in report.tier_counts.items():
                 self.totals[f"{tier}_deleted"] = self.totals.get(f"{tier}_deleted", 0) + count
@@ -450,6 +460,21 @@ class RetentionSweeper:
         if ratio <= self.watermark_ratio:
             return budget
         bytes_over = int((ratio - self.watermark_ratio) * usage.total)
+        # Computed only now, past the early return above: a healthy station
+        # (the common case, every tick) never pays for this query. This is
+        # not "how much more would close the gap" -- it is every kept,
+        # un-reclaimed byte this tier is refusing to touch, because that is
+        # the number an operator needs to decide whether to intervene, not
+        # an estimate of how close the safety valve came to running dry.
+        report.watermark_blocked_by_kept = int(
+            session.execute(
+                select(func.coalesce(func.sum(orm.MediaAsset.byte_length), 0))
+                .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+                .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+                .where(orm.MediaAsset.reclaimed_at.is_(None))
+                .where(orm.Detection.kept_at.is_not(None))
+            ).scalar_one()
+        )
         freed = 0
         query = (
             select(orm.MediaAsset, orm.Detection.id)
@@ -731,6 +756,7 @@ class RetentionSweeper:
             "last_disk_used_ratio": self.last_disk_used_ratio,
             "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,
+            "watermark_blocked_by_kept": self.last_watermark_blocked_by_kept,
             "totals": dict(self.totals),
             # ADR-057. Named "missing_audit", not folded into `totals`: these
             # count rows whose file vanished *without* a retention decision,
