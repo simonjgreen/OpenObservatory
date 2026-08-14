@@ -1070,7 +1070,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "still running, so the device stays open (ADR-055)."
             )
 
-        status = "ok" if not problems else ("degraded" if capture["state"] == "capturing" else "critical")
+        # A station that has heard nothing for a sustained period is critical
+        # whatever `capture.state` claims. `state` is what the capture task was
+        # asked to do; silence is what it achieved, and only one of those is an
+        # observation. See HANDOVER §1e.
+        deaf_for = capture["block_age_s"]
+        deaf = deaf_for is not None and deaf_for > settings.capture_silence_critical_s
+        status = (
+            "ok"
+            if not problems
+            else ("degraded" if capture["state"] == "capturing" and not deaf else "critical")
+        )
         return {
             "status": status,
             "problems": problems,

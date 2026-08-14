@@ -835,8 +835,21 @@ class Station:
     # -- the hot path ---------------------------------------------------
 
     async def _capture_loop(self, source: Any) -> None:
+        # Live hardware is expected to deliver on the crystal's schedule, so a
+        # read that takes many seconds is a dead stream, not a slow one, and the
+        # supervisor's reopen is the answer. A replay source has no such
+        # obligation -- `step` mode blocks until a test says otherwise -- so it
+        # is left alone. HANDOVER §1e.
+        timeout = (
+            self.settings.capture_read_timeout_s
+            if self.stream is not None and self.stream.source_kind == SourceKind.ALSA
+            else None
+        )
         while self._running:
-            block = await source.read()
+            if timeout is None:
+                block = await source.read()
+            else:
+                block = await asyncio.wait_for(source.read(), timeout)
             if block is None:
                 return
             began = time.perf_counter()

@@ -104,6 +104,21 @@ class Settings(BaseSettings):
     #: someone restarts the service. Measured on 2026-08-08, that cost a day of
     #: recording after the AudioMoth's mode switch was moved.
     hardware_recheck_s: float = 30.0
+    #: How long the station may hear nothing before it reports itself `critical`
+    #: rather than `degraded`. `capture.state` describes what the capture task
+    #: was asked to do, not whether audio is arriving, so it must never be what
+    #: caps the severity: on 2026-08-14 a wedged device left the station deaf for
+    #: 3 h 35 min while `state` read "capturing", health read "degraded" and
+    #: /api/v1/health answered 200 (HANDOVER §1e). Longer than a reopen plus
+    #: backoff, so an ordinary recovery does not trip it.
+    capture_silence_critical_s: float = 30.0
+    #: How long a single read from *live hardware* may take before the capture
+    #: loop stops waiting and lets the supervisor reopen the device. This is the
+    #: backstop for HANDOVER §1e that does not need to know why a read stopped
+    #: coming back. Applied to ALSA sources only: a `step`-mode replay source
+    #: blocks deliberately and must not be timed out. Comfortably longer than
+    #: `AlsaSource.stall_timeout_s`, so the source gets to name the fault first.
+    capture_read_timeout_s: float = 15.0
     reopen_backoff_min_s: float = 1.0
     reopen_backoff_max_s: float = 30.0
 

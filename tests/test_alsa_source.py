@@ -16,7 +16,7 @@ import uuid
 import numpy as np
 import pytest
 
-from open_observatory.audio.alsa_source import AlsaSource
+from open_observatory.audio.alsa_source import AlsaCaptureError, AlsaSource
 from open_observatory.audio.contracts import (
     AudioFormat,
     ClockCorrelation,
@@ -411,3 +411,101 @@ def test_crystal_drift_is_absorbed_rather_than_reported_as_a_gap(
 
     assert source.gaps_with_loss == 0
     assert source.missing_frames_total == 0
+
+
+# -- giving up, so the supervisor can take over --------------------------
+#
+# The 2026-08-14 wedge (HANDOVER §1e): every read raised `Input/output error`
+# for 3 h 35 min. That branch counted, logged and `continue`d inside the
+# block-assembly loop, so `_read_blocking` never returned and never raised —
+# and `_capture_supervisor`, which exists to reopen the device with backoff and
+# would have fixed it in seconds, was never reached. `stream_restarts` stayed 0
+# through 23,135 errors.
+#
+# Both fakes below have a hard attempt cap that raises `_Wedged`. Without it a
+# regression would hang the suite forever instead of failing it.
+
+
+class _Wedged(Exception):
+    """The fake gave up before the source did — i.e. the source never gave up."""
+
+
+class PermanentlyFailingPcm:
+    """A device whose every read raises the error the wedge actually produced."""
+
+    def __init__(self, *, cap: int = 10_000) -> None:
+        self.reads = 0
+        self._cap = cap
+
+    def read(self) -> tuple[int, bytes]:
+        self.reads += 1
+        if self.reads > self._cap:
+            raise _Wedged(f"source still looping after {self.reads} failed reads")
+        raise _ensure_alsaaudio()("Input/output error [hw:CARD=Microphone,DEV=0]")
+
+
+class SilentPcm:
+    """A device that never errors and never returns data (`length == 0`)."""
+
+    def __init__(self, *, cap: int = 10_000) -> None:
+        self.reads = 0
+        self._cap = cap
+
+    def read(self) -> tuple[int, bytes]:
+        self.reads += 1
+        if self.reads > self._cap:
+            raise _Wedged(f"source still looping after {self.reads} empty reads")
+        return 0, b""
+
+
+def _stall_clock(monkeypatch: pytest.MonkeyPatch, *, per_read_s: float) -> None:
+    """Advance the wall clock the source measures stalls with, per read attempt."""
+    state = {"now": 1000.0}
+
+    def monotonic() -> float:
+        state["now"] += per_read_s
+        return state["now"]
+
+    monkeypatch.setattr("open_observatory.audio.alsa_source.time.monotonic", monotonic)
+
+
+def test_a_permanently_failing_device_gives_up_instead_of_looping_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _prepared_source()
+    source.stall_timeout_s = 5.0
+    source._pcm = PermanentlyFailingPcm()
+    _stall_clock(monkeypatch, per_read_s=0.576)  # the interval the wedge logged at
+
+    with pytest.raises(AlsaCaptureError, match="no audio"):
+        source._read_blocking()
+
+
+def test_a_device_returning_no_data_gives_up_instead_of_spinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `length == 0` branch claims to do this already, and does not."""
+    source = _prepared_source()
+    source.stall_timeout_s = 5.0
+    source._pcm = SilentPcm()
+    _stall_clock(monkeypatch, per_read_s=0.01)
+
+    with pytest.raises(AlsaCaptureError, match="no audio"):
+        source._read_blocking()
+
+
+def test_a_recoverable_overrun_is_still_absorbed_without_giving_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound must not turn an ordinary xrun into a stream teardown."""
+    source = _prepared_source()
+    source.stall_timeout_s = 5.0
+    source._pcm = FakePcm(raise_overrun_at=3)
+    clock = _Clock()
+    monkeypatch.setattr("open_observatory.audio.alsa_source.time.monotonic_ns", clock)
+    _stall_clock(monkeypatch, per_read_s=0.001)
+
+    block = source._read_blocking()
+    assert block is not None
+    assert block.frame_count == BLOCK_FRAMES
+    assert source.overrun_count == 1

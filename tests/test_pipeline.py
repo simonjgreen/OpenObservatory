@@ -1155,3 +1155,71 @@ class TestHousekeepingDoesNotStarveCapture:
         assert "storage" in snapshot["snapshot_phase_s"]
         assert all(cost >= 0.0 for cost in snapshot["snapshot_phase_s"].values())
         assert "loop_lag_max_s" in snapshot["capture"]
+
+
+class TestCaptureLoopWatchdog:
+    """A source that stops delivering must not hold the loop forever.
+
+    HANDOVER §1e: the read never returned, so `_capture_loop` never returned,
+    so `_capture_supervisor` never got to reopen the device. `AlsaSource` now
+    bounds its own stalls, but that only covers the branches we knew about.
+    This is the layer that does not need to know why a read stopped coming
+    back — it only needs to know that one did.
+
+    Live hardware only: a `step`-mode replay source blocks deliberately, and
+    timing that out would break the fixture-driven tests it exists for.
+    """
+
+    @staticmethod
+    def _station(source_kind, read_timeout_s: float = 0.05):
+        from open_observatory.audio.contracts import SourceKind  # noqa: F401
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        settings = Settings(capture_read_timeout_s=read_timeout_s)
+        station = Station.__new__(Station)
+        station.settings = settings
+        station._running = True
+        station.stream = SimpleNamespace(source_kind=source_kind)
+        return station
+
+    @pytest.mark.asyncio
+    async def test_a_live_source_that_stops_delivering_ends_the_loop(self) -> None:
+        from open_observatory.audio.contracts import SourceKind
+
+        station = self._station(SourceKind.ALSA)
+
+        class WedgedSource:
+            async def read(self):
+                await asyncio.sleep(3600)
+
+        # The outer bound only stops a regression hanging the suite. The
+        # assertion that matters is *who* timed out: production at 0.05 s, or
+        # this test at 5 s. Without the fix, elapsed is 5 s and this fails.
+        started = time.perf_counter()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(station._capture_loop(WedgedSource()), timeout=5.0)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0, (
+            f"the loop was held by the read for {elapsed:.1f}s; only the test's "
+            "own bound ended it, so the supervisor would still never run"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_replay_source_may_block_as_long_as_it_likes(self) -> None:
+        """`step` mode is driven by the test, not the clock."""
+        from open_observatory.audio.contracts import SourceKind
+
+        station = self._station(SourceKind.REPLAY)
+        released = asyncio.Event()
+
+        class SteppedSource:
+            async def read(self):
+                await released.wait()
+                return None
+
+        task = asyncio.create_task(station._capture_loop(SteppedSource()))
+        await asyncio.sleep(0.2)  # comfortably longer than capture_read_timeout_s
+        assert not task.done(), "a deliberately blocking replay read was timed out"
+        released.set()
+        await asyncio.wait_for(task, timeout=5.0)

@@ -393,6 +393,32 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
         "the real device coming back. 0 disables recovery -- a reattached "
         "microphone then goes unnoticed until a restart.",
     ),
+    _e(
+        "capture_silence_critical_s",
+        "capture",
+        label="report critical after silence of",
+        unit="s",
+        minimum=1.0,
+        maximum=3600,
+        help="How long the station may hear nothing before health reports "
+        "`critical` rather than `degraded`, and /api/v1/health answers 503. "
+        "On 2026-08-14 a wedged device left it deaf for 3h35m while health "
+        "read `degraded`, because `capture.state` still said 'capturing' "
+        "(ADR-060). Longer than a reopen plus backoff.",
+    ),
+    _e(
+        "capture_read_timeout_s",
+        "capture",
+        tier="restart",
+        label="give up on a read after",
+        unit="s",
+        minimum=1.0,
+        maximum=600,
+        help="How long one read from the microphone may take before the "
+        "capture loop stops waiting and the supervisor reopens the device. "
+        "The backstop for ADR-060 that does not need to know why a read "
+        "stopped coming back. Live hardware only; replay sources may block.",
+    ),
     _e("reopen_backoff_min_s", "capture", label="reopen backoff, minimum",
        unit="s", minimum=0.1, maximum=60),
     _e("reopen_backoff_max_s", "capture", label="reopen backoff, maximum",

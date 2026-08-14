@@ -160,6 +160,9 @@ PINNED_AT_CAPTURE_START: tuple[str, ...] = (
     "capture_channels",
     "capture_block_ms",
     "capture_buffer_ms",
+    # Read once when `_capture_loop` is entered, so it takes effect on the next
+    # stream open rather than the next request (ADR-060).
+    "capture_read_timeout_s",
     "native_ring_seconds",
     "audible_ring_seconds",
     "audible_sample_rate",

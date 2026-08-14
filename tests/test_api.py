@@ -76,6 +76,34 @@ class TestStationEndpoints:
         assert body["status"] != "ok"
         assert any("not a mount point" in problem for problem in body["problems"]), body["problems"]
 
+    def test_a_station_that_has_heard_nothing_for_hours_is_critical_not_degraded(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """HANDOVER §1e: deaf for 3 h 35 min, reported `degraded`, HTTP 200.
+
+        `state` stayed "capturing" throughout — it describes what the capture
+        task was asked to do, not whether audio is arriving — and the severity
+        expression let that cap the whole station at `degraded`. Home Assistant
+        and any HTTP check saw a 200 and nothing escalated. The operator found
+        it on the indoor display, by eye.
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def deaf_snapshot() -> dict:
+            snapshot = real_snapshot()
+            snapshot["capture"] = {**snapshot["capture"], "block_age_s": 12815.893}
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", deaf_snapshot)
+        response = client.get("/api/v1/health")
+        body = response.json()
+
+        assert body["capture"]["state"] == "capturing"
+        assert any("no audio block" in problem for problem in body["problems"])
+        assert body["status"] == "critical", body["status"]
+        assert response.status_code == 503
+
     def test_health_reports_synthetic_source_honestly(self, client) -> None:
         payload = client.get("/api/v1/health").json()
         assert payload["capture"]["state"] == "capturing"

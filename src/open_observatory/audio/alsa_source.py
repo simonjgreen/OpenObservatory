@@ -74,6 +74,12 @@ class AlsaSource:
         #: capture path can absorb without losing audio. Must comfortably exceed
         #: ``block_ms``; see :meth:`_periods_for_buffer`.
         buffer_ms: float = 500.0,
+        #: How long a read may make no progress at all — every attempt erroring,
+        #: or returning no data — before the source declares the stream dead and
+        #: raises, handing control to the supervisor to reopen the device. See
+        #: HANDOVER §1e: without this bound the device wedged for 3 h 35 min
+        #: while the recovery path above it sat unreached.
+        stall_timeout_s: float = 5.0,
     ) -> None:
         self._device_key = device_key
         self._preferred_rates = preferred_rates
@@ -82,6 +88,7 @@ class AlsaSource:
         self._block_ms = block_ms
         self._period_ms = period_ms
         self._buffer_ms = buffer_ms
+        self.stall_timeout_s = stall_timeout_s
 
         self.device: CaptureDevice | None = None
         self.info: StreamInfo
@@ -324,6 +331,24 @@ class AlsaSource:
         self._pending_discontinuity = None
         self._pending_missing = 0
 
+        # A read that makes no progress is only recoverable for so long. Every
+        # `continue` below is a bet that the next attempt will do better; this
+        # is what stops that bet being placed forever. Reset by any read that
+        # actually yields audio, so an ordinary xrun costs nothing.
+        stalled_since: float | None = None
+
+        def _no_progress(reason: str, detail: str) -> None:
+            nonlocal stalled_since
+            now = time.monotonic()
+            if stalled_since is None:
+                stalled_since = now
+                return
+            waited = now - stalled_since
+            if waited >= self.stall_timeout_s:
+                raise AlsaCaptureError(
+                    f"no audio for {waited:.1f}s ({reason}): {detail}"
+                )
+
         while collected < self._block_frames:
             if self._closed:
                 return None
@@ -335,6 +360,7 @@ class AlsaSource:
                     self.overrun_count += 1
                     discontinuity = DiscontinuityReason.OVERRUN
                     log.warning("capture.overrun", detail=message, count=self.overrun_count)
+                    _no_progress("read errors", message)
                     continue
                 raise AlsaCaptureError(f"ALSA read failed: {exc}") from exc
 
@@ -344,6 +370,7 @@ class AlsaSource:
             if length < 0:
                 self.overrun_count += 1
                 discontinuity = DiscontinuityReason.OVERRUN
+                _no_progress("negative-length reads", f"length={length}")
                 continue
             if length == 0:
                 # No data ready. With PCM_NORMAL this is unusual; treat a run of
@@ -351,8 +378,10 @@ class AlsaSource:
                 self.short_read_count += 1
                 if self.short_read_count % 500 == 0:
                     log.warning("capture.short_reads", count=self.short_read_count)
+                _no_progress("empty reads", f"{self.short_read_count} short reads")
                 time.sleep(0.001)
                 continue
+            stalled_since = None
 
             samples = np.frombuffer(data, dtype=self._dtype)
             if self._channels > 1:
