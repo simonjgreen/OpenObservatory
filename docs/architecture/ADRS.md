@@ -72,7 +72,7 @@ reasoning is retained and is often the most useful part.
 | 043 | Taxon correction closes the review workflow; a human's ear outranks a machine's | active; closes the open item in ADR-029 |
 | 044 | A withdrawn detection is marked in the record and suppressed on the claim surfaces; the BirdNET week index is confirmed correct | active; completes ADR-032 |
 | 045 | The refinement runner is a separate, CPU-fenced process, and the BatDetect2 cascade may only propose | active; promotes ADR-017's offline cascade to a scheduled job without adopting it as a source of station claims |
-| 046 | The frame deficit is 98% crystal drift, and "audio lost" must not show it | active; resolves the open question in ADR-039 and amends ADR-030's presentation |
+| 046 | The frame deficit is 98% crystal drift, and "audio lost" must not show it | active; resolves the open question in ADR-039 and amends ADR-030's presentation. **Holds at ≤ 1 h; at the 72-hour soak the residual (~175 s of ~185 s) is unexplained — see the 2026-08-14 status note in the ADR body** |
 | 047 | Site parameters are runtime state, managed through the web UI; the repository ships no site | active; widened by ADR-048 from site identity to the whole of `Settings` |
 | 048 | Every setting is web-configurable, in three declared tiers, with the exclusions named | active; extends ADR-047's mechanism rather than replacing it |
 | 049 | BirdNET's eleven sound categories are not species: no clip for human speech, no bird claim, no plausibility floor | active; corrects ADR-032's floor and ADR-044's flag for non-taxonomic classes |
@@ -3119,6 +3119,8 @@ curl -s http://<station-host>:8080/api/v1/station \
 # expect [("audible", -95.0, -15.0), ("ultrasonic", -85.0, -30.0)]
 # then open http://<station-host>:8080/ with the ultrasonic panel selected and
 # confirm the noise floor reads dark rather than saturated orange.
+```
+
 ## ADR-042: `alembic upgrade head` runs in `deploy/deploy.sh`, not application startup; `create_all()`/the ALTER TABLE patcher are retired from production use
 
 **Decision:** `deploy/deploy.sh` runs `alembic upgrade head` against the
@@ -3305,6 +3307,8 @@ ssh <user>@<station-host> "cd open-observatory && .venv/bin/python -m alembic cu
 # -> "==> running database migrations" step prints, exits 0, and the rest of
 #    the deploy proceeds; the station's /api/v1/health check at the end
 #    confirms the service came back up.
+```
+
 ## ADR-044: A withdrawn detection is marked in the record and suppressed on the claim surfaces; and the BirdNET week index is correct
 
 **Decision.** ADR-032 stopped the detector from ever writing another implausible
@@ -3930,10 +3934,14 @@ cat /sys/fs/cgroup/system.slice/open-observatory-refine.service/cpuset.cpus.effe
 #    estimated_missing_seconds, which ADR-039 made a decomposition of the deficit
 #    rather than a second number, and cross-check the gap counters against the
 #    database rather than believing either alone.
+#    2026-08-14: the "~98% crystal drift" figure holds at this run's duration
+#    (<=1h) only. At the 72-hour soak the residual deficit was unexplained by
+#    drift -- see ADR-046's 2026-08-14 status note.
 curl -s localhost:8080/api/v1/health | python3 -c \
   'import json,sys; c=json.load(sys.stdin)["capture"]; print(c["frames"], c["expected_frames"], c["gaps_with_loss"], c["gaps_without_loss"], c["loop_lag_max_s"], c["loop_lag_events"])'
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
+```
 
 ## ADR-047: Site parameters are runtime state, managed through the web UI; the repository ships no site
 
@@ -4082,6 +4090,18 @@ on this evidence.
 rules out a continuous leak, which was the specific worry. It does not rule out
 a rare or long-period event, and a restart-free multi-hour run is still worth
 taking — the method now costs 15 minutes.
+
+**Status note, 2026-08-14: the claim holds at ≤ 1 hour and does not extend to
+72 hours.** The 72-hour soak (2026-08-10 to 2026-08-13) gives the long run this
+ADR asked for, and at that duration the crystal no longer explains the deficit.
+All three detectors reported `lag_seconds` ≈ 185 s at 54.7 h into the run; at
+this station's measured −51.62 ppm, drift accounts for only about 10 s of that
+185 s deficit. The title and this ADR's index row state "98% crystal drift" as
+a settled, duration-independent fact; it is settled only for the runs measured
+here (minutes to about an hour). At 72 hours the residual is unexplained and
+should be read as suspected real loss, not drift, until isolated. See
+`HANDOVER.md`'s "Two things suspected, not established" note and
+`MILESTONE_STATUS.md` §Milestone 4.5.
 
 **A correction to how these two numbers were being reasoned about.** They were
 treated as independent measurements that had to be reconciled. They are not
@@ -5459,6 +5479,8 @@ chromium --headless --disable-gpu --no-sandbox --mute-audio --hide-scrollbars \
 # 3. The assertion that matters, run in the page rather than judged by eye:
 #    every element's right edge inside document.documentElement.clientWidth,
 #    and .go-live topmost at its own centre.
+```
+
 ## ADR-055: The operator can pause recording for a chosen time — and it expires, survives a restart, and is recorded as a pause
 
 **Status:** active. The first implementation of the charter's privacy
@@ -5859,6 +5881,7 @@ chromium --headless --disable-gpu --no-sandbox --mute-audio --hide-scrollbars \
 # What must be true in the picture: no two labels overlapping, no species name
 # cut short, nothing crossing the canvas edge, and a repeated species reading
 # "<name> ×N · best NN%" rather than N labels in one place.
+```
 
 ## ADR-057: A row that claims evidence must be checkable; reconcile the ones that lie, and keep "missing" distinct from "reclaimed"
 
@@ -6070,6 +6093,8 @@ print(db.execute(\"select count(*) from media_asset\").fetchone(),
       db.execute(\"select count(*) from detection\").fetchone(),
       db.execute(\"select reclaim_reason, count(*) from media_asset where reclaimed_at is not null group by 1\").fetchall())
 "'
+```
+
 ---
 
 ## ADR-059: The clip archive is measured off the event loop, because a status snapshot must not walk a filesystem
@@ -6165,12 +6190,15 @@ deliberately a separate decision.
   synchronously if it finds it cleared. That path is unreachable in the station
   (nothing calls `enforce_retention`) and is exercised only by tests.
 
-**Status: not deployed, and not verified on target.** Written while the operator
-was using the station and while a 72-hour soak was pending, under an explicit
-instruction not to deploy or restart. Every number above is a read-only
-measurement of the *unfixed* station. The predicted post-fix behaviour —
-`capture.late_read` falling to near zero and `late_read_max_frames` dropping off
-the 30 s beat — has not been observed.
+**Status: deployed 2026-08-10, before the 72-hour soak, and its verification
+FAILED.** The pass criterion above was `late_read_max_frames` "well under
+100,000". The post-deploy reading, taken from the 72-hour soak window, was
+**188,982 of 192,000 (98.4%)** — worse than the 81% this change was written
+to fix, not better. This does not mean chunking the walk was wrong; the
+"What this does *not* fix" note above already named a separate cost on the
+same beat, the retention sweep's own query cost, as the suspected remaining
+cause. ADR-061 (2026-08-14) has since removed that cost — see its entry for
+the re-verification.
 
 **Verification, to run after deploying:**
 

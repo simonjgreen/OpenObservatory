@@ -16,8 +16,10 @@
 > deliverables done (ADR-050's display OTA, flashed and verified on hardware);
 > Milestone 9 not started, by design.
 >
-> **The 72-hour soak has never run**, and `CLAUDE.md` forbids describing the
-> system as complete until it passes.
+> **The 72-hour soak ran 2026-08-10 to 2026-08-13 and failed** its continuity
+> criterion (99.865% against ≥ 99.9%; see `MILESTONE_STATUS.md` §Milestone
+> 4.5), and `CLAUDE.md` forbids describing the system as complete until a soak
+> passes.
 
 ## Milestone 0 — Repository and target diagnostics
 

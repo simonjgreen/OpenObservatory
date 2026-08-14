@@ -110,12 +110,18 @@ own counters (`display_channel.per_client`) cover the display.
 
 ### L7 — Soak and endurance
 
-**The 72-hour soak has never run**, and `CLAUDE.md` forbids the word "complete"
-until it passes. A deploy voids it, so it needs a deliberate quiet period.
+**The 72-hour soak ran 2026-08-10 to 2026-08-13 and failed**, at 99.865%
+continuity against a ≥ 99.9% criterion (349.3 s lost out of 259,200 s; see
+`docs/delivery/MILESTONE_STATUS.md` §Milestone 4.5). `CLAUDE.md` forbids the
+word "complete" until it passes, and it has not passed yet. A re-run is needed
+once ADR-060 and ADR-061 are deployed and verified; a deploy voids a soak in
+progress, so it needs a deliberate quiet period.
 
-Watch: `oo_capture_continuity_ratio`, real deficit (`expected_frames - frames`,
-**not** `estimated_missing_seconds`), `loop_lag_max_s`, `late_reads`, RSS,
-disk growth, clip budget, MQTT drops, display reconnects.
+Watch: `oo_capture_continuity_ratio`, real deficit as judged by
+`estimated_missing_seconds` (**not** the raw `expected_frames - frames`,
+which also carries crystal drift and sampling-phase artefact — see ADR-046),
+`loop_lag_max_s`, `late_reads`, RSS, disk growth, clip budget, MQTT drops,
+display reconnects.
 
 Also outstanding: the **one-hour drift run** (verified at 5 minutes only).
 

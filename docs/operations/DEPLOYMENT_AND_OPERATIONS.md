@@ -1010,8 +1010,9 @@ setting took effect.
 The acceptance criteria require a continuous 72-hour soak test on the target
 device before the system may be described as complete (see
 `docs/delivery/ACCEPTANCE_CRITERIA.md`). `TARGET_DIAGNOSTICS.md` records
-that this has **not** been run as of the most recent diagnostic capture.
-Capture the following over the run:
+that one was run 2026-08-10 to 2026-08-13 and **failed** its continuity
+criterion (99.865% against ≥ 99.9%); a re-run is needed once ADR-060 and
+ADR-061 are deployed and verified. Capture the following over the run:
 
 - frame continuity and gaps (frames captured ÷ frames elapsed time implies);
 - USB disconnect/reconnect behaviour;

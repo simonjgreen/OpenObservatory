@@ -52,8 +52,10 @@ Milestone 5 (ultrasonic and bat support) is complete: a bat pass detector runs
 live, gated to night by a solar scheduler, and BatDetect2 was benchmarked on the
 target and deliberately *not* adopted as a live detector — see §1a. It is
 **not complete** as a whole system, and `CLAUDE.md` forbids that word until the
-acceptance criteria pass a continuous 72-hour soak on the Pi. **That soak has
-never been run.** Also outstanding: the one-hour drift run at full duration, what
+acceptance criteria pass a continuous 72-hour soak on the Pi. **That soak ran
+2026-08-10 to 2026-08-13 and failed** — 99.865% continuity against a ≥ 99.9%
+criterion, 349.3 s lost out of 259,200 s; see `MILESTONE_STATUS.md` §Milestone
+4.5 and §1e below for the wedge that followed it. Also outstanding: the one-hour drift run at full duration, what
 remains of the capture-gap investigation, the three plausibility/taxonomy/privacy
 repair commands never applied to the live database, Milestone 6's alert engine,
 Milestone 7 entirely, and most of Milestone 8.
@@ -248,7 +250,7 @@ way the criteria assume:
 
 | Symptom | Reading at 54.7 h | Mechanism |
 |---|---|---|
-| `evidence.dropped` | 2,743 detections published with **no clip at all**, every one `activity-v1` | `_evidence_queue` is `maxsize=32` and full; ADR-045's bounded queue dropping rather than blocking, working as designed |
+| `evidence.dropped` | 2,743 detections published with **no clip at all**, every one `activity-v1` | `_evidence_queue` is `maxsize=32` and full; `station.py`'s bounded queue (Milestone 5 work, not ADR-045) dropping rather than blocking, working as designed |
 | `clip.not_in_ring` / `clips_failed_total` | 1,909 | the audio had already been evicted from the native ring before the clip was cut |
 
 Both cluster where the detections are: 540 drops in the 05:00 hour, 164 in the
@@ -579,7 +581,7 @@ unless noted.
 | BirdNET | p95 77–109 ms, ~40× realtime, 6522 labels |
 | Ultrasonic detector | p95 54–104 ms, ~36–40× realtime |
 | Activity detector | p95 13–16 ms, ~95× realtime, fires on ~9% of windows |
-| BirdNET plausibility | week 29, 139 species plausible at the station's configured location |
+| BirdNET plausibility | ISO week 29, 2026 (2026-07-13 to 07-19): 139 species plausible at the station's configured location — this figure changes weekly with BirdNET's seasonal range model |
 | BatDetect2 (measured, not adopted live) | p95 968 ms per 0.5 s clip, 0.52× realtime, +459 MB RSS |
 | BatDetect2 cascade (offline, trimmed 1.5 s clips) | 2.1 s inference per pass; ~36 min classifier work for 1015 passes in one night |
 
@@ -587,10 +589,13 @@ unless noted.
 
 ### 6.1 Close the Milestone 1–3 gates properly
 
-1. **Run the 72-hour soak.** The single biggest outstanding item, and the
-   acceptance criteria require it before the word "complete" may be used.
-   **Scheduled for Tuesday 11 to Thursday 13 August 2026**, from a station
-   deployed and frozen on the evening of the 10th.
+1. ~~**Run the 72-hour soak.**~~ **Run 2026-08-10 to 2026-08-13, and it
+   FAILED.** The acceptance criteria require it before the word "complete" may
+   be used, and continuity over the exact 72 hours came in at 99.865% against
+   a ≥ 99.9% criterion — 349.3 s of audio lost out of 259,200 s. See
+   `MILESTONE_STATUS.md` §Milestone 4.5 for the full account and §1e below for
+   the wedge that followed the window. A re-run is needed once ADR-060 and
+   ADR-061 are deployed and verified.
 
    Watch `oo_capture_continuity_ratio`, `oo_ring_extraction_misses_total`,
    `oo_detector_windows_dropped_total`, RSS and the clip budget — and these four,
@@ -908,10 +913,12 @@ useful addition and is not currently planned.
     `api/app.py`/`cli.py` call a new `ensure_schema_at_head()` instead of
     `create_all()`. The `create_all()`+ALTER TABLE patcher is retired from every
     production code path (`create_all()` itself survives only as a test helper).
-    **There are now six revisions, and the live station is at `0006_refinement`,
-    which is `head`** — read from its own `alembic_version` table, read-only, on
-    2026-08-09 at 21:46Z, holding 74,969 detections, 35,285 media assets, 65
-    reviews and 0 refinements. ADR-042's deploy step has therefore carried a real
+    **There were six revisions on 2026-08-09, with the live station at
+    `0006_refinement`, which was `head` at the time** — read from its own
+    `alembic_version` table, read-only, on 2026-08-09 at 21:46Z, holding 74,969
+    detections, 35,285 media assets, 65 reviews and 0 refinements. **As of
+    2026-08-14 there are ten revisions; head is `0010_kept_at_partial_index`.**
+    ADR-042's deploy step has therefore carried a real
     station across three revisions (`0004` → `0005` → `0006`) unattended, which is
     the thing that was untested when that ADR was written. An earlier reading at
     `0004` (65,515 detections, 28,183 media assets) also confirmed
@@ -1018,8 +1025,8 @@ authority; the short version:
 - **PostgreSQL migration.** ADR-007 keeps SQLite for the debug slice. Anything
   needing concurrent writers, `LISTEN/NOTIFY` or JSON indexing must wait for this.
   The DSN is intended to be the only change. **The Alembic environment now
-  exists** (ADR-035; six revisions as of 2026-08-09, live station at
-  `0006_refinement`), so the prerequisite this entry used to name is met — but it
+  exists** (ADR-035; ten revisions as of 2026-08-14, head `0010_kept_at_partial_index`),
+  so the prerequisite this entry used to name is met — but it
   has only ever been exercised against SQLite, so "the DSN swap is
   configuration-only" stays unverified until someone runs it against a real
   PostgreSQL 16 instance.
@@ -1030,8 +1037,8 @@ authority; the short version:
   and drop counters already model the back-pressure a real transport imposes.
 - **USB SSD: done (2026-08-08, ADR-021).** Evidence clips now live on a 465.8 GB
   SanDisk Extreme Portable SSD mounted at `data/clips`; the SD card's old clip
-  directory is retained at `data/clips.sdcard-backup` pending deletion — that
-  deletion is a small remaining cleanup item. The database deliberately stays on
+  directory, `data/clips.sdcard-backup`, was **deleted 2026-08-10** (see §6.3b),
+  freeing 21 GB on the SD card. The database deliberately stays on
   the SD card. A continuous native-rate audio archive remains explicitly out of
   scope regardless of available space (see §6.2).
 

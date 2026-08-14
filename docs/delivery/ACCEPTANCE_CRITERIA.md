@@ -5,12 +5,25 @@ acceptance criteria in this file pass on the Raspberry Pi 5 for a continuous
 72-hour soak test."*
 
 **No box below is ticked, and that is accurate rather than neglectful: no formal
-acceptance run has ever been performed.** Several criteria are believed met from
+acceptance run has passed.** One has been attempted — see "Attempts" below —
+and it failed on the capture-continuity criterion, so every other box remains
+unticked on the same "believed met from ordinary use is not passed an
+acceptance run" basis as before. Several criteria are believed met from
 day-to-day measurement — capture is addressed by stable identity, exactly one
 process opens ALSA, CSV/JSON export works, health checks exist — but "believed met
 from ordinary use" is not "passed an acceptance run", and this project does not
 tick a box on the former. Ticking these is a deliberate acceptance exercise
-somebody has to run, alongside the 72-hour soak, and record here with dates.
+somebody has to run, alongside a passing 72-hour soak, and record here with dates.
+
+## Attempts
+
+- **Attempt 1, 2026-08-10 to 2026-08-13. FAILED.** Continuity over the exact
+  72-hour window was 99.865% against the ≥ 99.9% criterion below —
+  349.3 s of audio lost out of 259,200 s. Restart-free for the whole window,
+  which is itself a first. See `MILESTONE_STATUS.md` §Milestone 4.5 and
+  `../operations/TARGET_DIAGNOSTICS.md` for the full figures. No other
+  criterion below was formally exercised during this attempt. A re-run is
+  needed once ADR-060 and ADR-061 are deployed and verified.
 
 For what *is* delivered, with evidence, see
 [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md). For the measured figures the capture
@@ -49,7 +62,11 @@ deploying restarts capture and voids the run.
 ## Evidence and privacy
 
 - [ ] Continuous raw disk recording is off by default.
-- [ ] Evidence clips obey maximum duration and retention.
+- [ ] Evidence clips obey maximum duration and retention. **Known not met as of
+  2026-08-14**: 2,743 detections were published with no clip at all (the bounded
+  evidence queue dropping under load, `HANDOVER.md` §1b), and retention had
+  never deleted anything until today's ADR-061 deploy — see
+  `../operations/TARGET_DIAGNOSTICS.md`.
 - [ ] Clip checksum and source-frame provenance are stored.
 - [ ] Publishing integrations are off by default.
 - [ ] Location precision for outbound integrations is configurable.
@@ -68,7 +85,9 @@ deploying restarts capture and voids the run.
 ## Operations
 
 - [ ] All services have health checks.
-- [ ] Containers restart after host reboot.
+- [ ] Services restart after host reboot. (There are no containers — ADR-008
+  chose native systemd deployment for this project. `WantedBy=multi-user.target`
+  is the thing to verify here, not a container runtime.)
 - [ ] Disk-full behaviour preserves database integrity.
 - [ ] Thermal throttling triggers visible degradation policy.
 - [ ] Upgrade preflight and rollback instructions exist.

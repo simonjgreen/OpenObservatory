@@ -24,8 +24,10 @@ Every item below has since been checked on the real device. Resolutions added
   silently resamples, which the capture path refuses.
 - ~~Sustained Pi 5 capture stability at 384 kHz.~~ **RESOLVED over hours, not over
   days.** Continuity 0.9990–0.9997, ~29% of four cores with all three detectors.
-  **The 72-hour soak that would make this a durable claim has never been run**,
-  and there is an open capture-gap investigation.
+  **The 72-hour soak that would make this a durable claim ran 2026-08-10 to
+  2026-08-13 and failed its continuity criterion** — 99.865% against ≥ 99.9%,
+  349.3 s lost out of 259,200 s (`MILESTONE_STATUS.md` §Milestone 4.5) — and
+  there is an open capture-gap investigation.
 - **Whether USB/host power and enclosure produce electrical or fan noise.**
   *Partly open.* A weak PSU was found to cause intermittent USB enumeration and
   was replaced. Enclosure and fan noise as such have not been characterised.

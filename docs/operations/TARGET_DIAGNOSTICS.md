@@ -46,8 +46,8 @@ serving ALSA reads through the same shared thread pool.
 | Database | stays on the SD card — small, and the SD card is the system disk that is always present |
 
 The disk previously held an unrelated Ubuntu amd64 installer and was wiped before
-use. 21 GB of existing clips were migrated across; the old directory is retained at
-`data/clips.sdcard-backup` was **deleted 2026-08-10**, freeing 21 GB on the SD
+use. 21 GB of existing clips were migrated across; the old directory, retained at
+`data/clips.sdcard-backup`, was **deleted 2026-08-10**, freeing 21 GB on the SD
 card. Before removal, ADR-057 confirmed no live `media_asset` row pointed into
 it and that none of the 8,067 missing clips were recoverable from it. A clip recorded the day
 before the migration was verified afterwards to still download as a valid 384 kHz WAV
@@ -123,6 +123,10 @@ is picked up without a manual restart. This recovery behaviour is not itself rec
 as an ADR (it is a bugfix, not an architectural deviation); ADR-020 covers the
 separate, related decision to exclude synthetic-source detections from browsing
 views by default (`source_kind`/`is_live_source` on every detection).
+
+`hardware_recheck_s` only covers this fallback-synthetic path — it did nothing for
+the 2026-08-14 wedge, where the real device was still open but stopped answering
+reads. See ADR-060.
 
 ### Negotiated capture profile
 
@@ -359,8 +363,10 @@ server-side gain on the stream, not a client-side audio node.
   defaults leave latitude and longitude unset and `birdnet_use_location_filter`
   `False`, so every species is judged on confidence alone. The development
   station's coordinates were written to the Pi's `config/runtime.env` — which is deliberately
-  not in version control — and the model is enabled there: week 29, 139 species
-  plausible, 7 suppressed as implausible. It matters more than it sounds: before it
+  not in version control — and the model is enabled there. This figure changes
+  weekly with BirdNET's own seasonal range model; as measured for ISO week 29,
+  2026 (2026-07-13 to 07-19): 139 species plausible, 7 suppressed as
+  implausible. It matters more than it sounds: before it
   was enabled, "Great Bittern" and "Spotted Crake" were stored at 0.9 confidence in
   an ordinary inland garden. To enable it on another station, set `OO_LATITUDE`,
   `OO_LONGITUDE` and `OO_BIRDNET_USE_LOCATION_FILTER=true`.
@@ -378,8 +384,9 @@ server-side gain on the stream, not a client-side audio node.
   *Pipistrellus pygmaeus* on a 34 kHz call, when soprano pipistrelle actually peaks
   near 55 kHz. The AudioMoth's hot gain (see above) is a plausible confound. This
   needs more clips and a human ear on the audible renderings, not a code change.
-- **72-hour soak test not run.** The acceptance criteria require it before the
-  system may be described as complete. Still true on 2026-08-09.
+- **72-hour soak test run 2026-08-10 to 2026-08-13, and it failed.** See the
+  dated section below for the measured figures. The system may not be
+  described as complete until a soak passes.
 - **`estimated_missing_seconds` is the figure to read for lost audio, and
   `expected_frames - frames` is not** — settled by ADR-046 on 2026-08-09, which
   reverses the guidance an earlier version of this file gave. The raw deficit is
@@ -409,3 +416,51 @@ server-side gain on the stream, not a client-side audio node.
   it enabled, `GET /api/v1/detections`, `GET /api/v1/health` and `/metrics` stay
   reachable with no credential by design (the ESP32 display cannot carry one, and
   `deploy.sh` polls health with none). There is no TLS anywhere in this codebase.
+
+## 2026-08-10 to 2026-08-13: the 72-hour soak, measured
+
+The single formal acceptance run to date. Continuity over the exact 72-hour
+window was **99.865%** against a ≥ 99.9% criterion — **349.3 s of audio lost
+out of 259,200 s**. Reconstructed from the `capture_gap` table and cross-checked
+against the live `continuity_ratio` counter over an identical window (184.4 s vs
+175.0 s, within 5%), so two independent instruments agree the loss is real, not
+an artefact of either one. Other figures from the same window:
+
+| Property | Value |
+|---|---|
+| Continuity (exact 72 h) | 99.865% (criterion ≥ 99.9%) |
+| Audio lost | 349.3 s of 259,200 s |
+| `late_read_max_frames` | 188,982 of a 192,000-frame ring (98.4%) |
+| RSS | 1.37–1.72 GB over the run |
+| SoC temperature | 61.7 °C |
+
+The run was restart-free for the whole 72 hours, which is itself a first, but
+the loss rate stepped up mid-run; see `HANDOVER.md` §1e and
+`MILESTONE_STATUS.md` §Milestone 4.5 for the full account, including why
+`late_read_max_frames` at 98.4% is worse than the 81% ADR-059 was written to
+fix — ADR-059's own verification, below, failed.
+
+## 2026-08-14 02:18:22 UTC: the capture wedge
+
+The microphone wedged for 3 h 35 min. ALSA returned `-EIO` on every read,
+roughly 0.576 s apart, until a manual service restart. Root cause:
+`alsa_source.py` swallowed the error as a transient xrun inside the
+block-assembly loop, so `_read_blocking` never returned or raised, and
+`_capture_supervisor` — which exists to reopen the device and would have fixed
+this in seconds — was never reached. Fixed by ADR-060. The device itself was
+never at fault: no USB event since 8 August, autosuspend off, and a plain
+restart recovered it instantly.
+
+## 2026-08-14: retention sweep fix, verified on the station
+
+ADR-061 replaces the retention sweep's unbounded exemplar query — the deeper
+cause of both the soak's continuity failure and the wedge above, which was
+starving the capture event loop and forcing roughly 12 device restarts an
+hour. Verified on the station today:
+
+| Property | Value |
+|---|---|
+| Retention deletions | 800 files, 3.5 GB, draining |
+| Sweep duration | 0.696 s (budget 1.5 s) |
+| Preamble | 0.0027 s |
+| `capture_gap` rows, 30 min post-deploy | 0 (was 22–24/hour before) |

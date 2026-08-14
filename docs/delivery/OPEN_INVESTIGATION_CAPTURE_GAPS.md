@@ -8,8 +8,11 @@
 > come back for the reasoning.
 >
 > Nothing here is a soak. The longest window recorded in this document is 4.03
-> hours; the longest *clean* one is 22.2 minutes. **The 72-hour soak has never
-> run.**
+> hours; the longest *clean* one is 22.2 minutes. **The 72-hour soak ran
+> 2026-08-10 to 2026-08-13 and failed** its continuity criterion (99.865%
+> against ≥ 99.9%; see `MILESTONE_STATUS.md` §Milestone 4.5) — the first
+> window long enough to expose a deficit this document's shorter runs could
+> not.
 
 > **2026-08-08, evening.** Gaps returned after seven branches were merged into
 > `main` and deployed at 17:13Z. They were caused by the retention sweep moving to
@@ -1303,9 +1306,12 @@ place.
 - **Finding 2 is unfixed and unisolated.** The `OO_RETENTION_ENABLED=false`
   experiment above is cheap and has not been run.
 - **ADR-059 is unverified on target.** No post-fix reading exists.
-- **The 72-hour soak has still never run**, and on this evidence should not start
-  before finding 1 is deployed and confirmed: within about half a day the walk
-  exceeds the whole ring.
+- **The 72-hour soak was run anyway, 2026-08-10 to 2026-08-13, before finding 1
+  was deployed and confirmed — and it failed**, at 99.865% continuity against
+  a ≥ 99.9% criterion. This document's own prediction held: the walk starved
+  the capture loop and forced device restarts through most of the window. See
+  `MILESTONE_STATUS.md` §Milestone 4.5 and ADR-061, which removes the walk's
+  successor cost (the retention sweep's unbounded exemplar query).
 - **`OO_CAPTURE_BUFFER_MS` was not touched.** Widening the ring was the lever the
   previous round nominated, and it would buy time — but the walk grows without
   bound and the ring does not, so it treats the symptom for a few days at most.

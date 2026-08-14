@@ -28,8 +28,9 @@ control plane, a React debug/operator UI, an optional MQTT publisher and an
 ESP32 counter-top display.
 
 It is **not complete**. `CLAUDE.md` forbids that word until the acceptance
-criteria pass a continuous 72-hour soak on the Pi, and that soak has never been
-run. See [`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) for an
+criteria pass a continuous 72-hour soak on the Pi. That soak ran 2026-08-10 to
+2026-08-13 and **failed** its continuity criterion (99.865% against ≥ 99.9%).
+See [`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) for an
 honest account of what works.
 
 ### The repository ships no site (ADR-047)

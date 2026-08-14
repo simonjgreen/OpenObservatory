@@ -177,20 +177,22 @@ in `docs/operations/TARGET_DIAGNOSTICS.md` and are not restated in full here.
 An earlier version of this paragraph added "with zero gaps and overruns". That is no
 longer true and should not be restated: the live station reported 369 `capture.gap`
 records and 3 ALSA overruns over 12.4 hours on 2026-08-09, at continuity 0.999907. Almost
-none of that is lost audio — the real frame deficit over the same period was 4.15 s
-(0.0095%) against an `estimated_missing_seconds` of 54.5 — because the deficit-step
-estimator credits a *late* read as lost audio. See
-`docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-033. Judge real loss by
-`frames` against `expected_frames`, never by `estimated_missing_seconds`.
+none of that was lost audio at the time — the real frame deficit over the same period was
+4.15 s (0.0095%) against an `estimated_missing_seconds` of 54.5 — because the pre-fix
+deficit-step estimator credited a *late* read as lost audio. See
+`docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-033.
 
 That estimator was corrected on 2026-08-09 (**ADR-039**): a deficit step is now
 credited only once it fails to come back, `reason=overrun` is reserved for an event
 ALSA actually reported, and a late read that cost nothing increments `late_reads`
-instead of minting a gap. **The fix has not been deployed**, so every figure in the
-paragraph above still describes the running station, and
-`frames` against `expected_frames` remains the number to judge loss by until an
-on-target before/after has been taken.
+instead of minting a gap. The fix was deployed and confirmed on target 2026-08-09.
+Since then, **judge real loss by `estimated_missing_seconds`, never by the raw
+`expected_frames - frames` deficit** — the raw deficit also carries crystal drift
+and a ±50 ms block-sampling phase artefact, and conflating the two is exactly the
+mistake ADR-039 fixed. If an earlier reading of this document told you to prefer
+the raw deficit, it predates ADR-046, which is the record of this reversal.
 
 Note also that the one-hour no-drift test this document's "Resampling correctness" list
-asks for has been run at **five minutes**, not one hour, and the 72-hour soak has never
-run. Neither gap is closed.
+asks for has been run at **five minutes**, not one hour, and the 72-hour soak ran
+2026-08-10 to 2026-08-13 and **failed** its continuity criterion (99.865% against
+≥ 99.9%; see `docs/delivery/MILESTONE_STATUS.md` §Milestone 4.5). Neither gap is closed.

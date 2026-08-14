@@ -180,12 +180,20 @@ An earlier draft of this charter argued that retention should keep
 low-confidence evidence indefinitely, because item 5 needs it. **The operator
 rejected that, and was right.**
 
-Refinement runs daily. Every event therefore meets the refiner within about a
-day. If something is still unrefined at 90 days, the refiner has already
-examined it and could not improve it — and it will not spontaneously improve.
-In the operator's words: *"If we haven't refined by 90 days I see no reason to
-think we'd ever refine. Unrefined data is close to worthless to us after a
-refinement pass has happened."*
+**The intention** is that refinement runs daily, so that every event meets the
+refiner within about a day. If something is still unrefined at 90 days, the
+refiner has already examined it and could not improve it — and it will not
+spontaneously improve. In the operator's words: *"If we haven't refined by 90
+days I see no reason to think we'd ever refine. Unrefined data is close to
+worthless to us after a refinement pass has happened."*
+
+**That intention is not yet the measured reality.** The refinement timer's
+first real timed pass completed only on 2026-08-12 (`HANDOVER.md`, "The
+refinement runner's first real pass completed"), and as of that pass
+**15,704 bat detections have never been examined by a refiner** (ADR-045).
+The daily-cadence argument above governs steady state, once the timer has
+been running long enough to have caught up; it does not yet describe this
+station's backlog.
 
 So the tiers stand as they are. Passive uncertainty does not earn storage.
 
@@ -197,7 +205,8 @@ Two safeguards keep that rule honest rather than weakening it:
   silently, having never examined it once. Each event should carry the fact that
   refinement ran, at what version, with what outcome, and deletion should
   require it.
-- **An explicit human hold exempts an item.** The `review` table exists and
-  nothing writes to it yet. Someone marking something as needing their ear is a
+- **An explicit human hold exempts an item.** The `review` table exists and,
+  as of ADR-043 (2026-08-09), is written to: the live station's `review` table
+  holds 65+ rows. Someone marking something as needing their ear is a
   positive act, and is not the same thing as passive uncertainty.
 

@@ -16,7 +16,9 @@
 > FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-015's
 > MCP interface does not exist; FR-017's upgrade preflight and backup guidance do
 > not exist; §10's configurable location precision does not exist; and §11's
-> 72-hour soak has never been run.
+> 72-hour soak ran 2026-08-10 to 2026-08-13 and **failed** its continuity
+> criterion (99.865% against ≥ 99.9%; see `../delivery/MILESTONE_STATUS.md`
+> §Milestone 4.5).
 
 ## 1. Product name
 

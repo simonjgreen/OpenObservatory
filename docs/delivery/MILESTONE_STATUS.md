@@ -430,7 +430,9 @@ applies, corrected 2026-08-09 — four items on the earlier version of this list
 `oo audio window-dump`) have since been delivered and are struck rather than
 deleted, so the record of what was outstanding when survives:
 
-- **the 72-hour soak test** — the single biggest item, never run;
+- **the 72-hour soak test** — run 2026-08-10 to 2026-08-13 and **failed** its
+  continuity criterion (99.865% against ≥ 99.9%); see the Milestone 4.5 section
+  above for the full account and the re-run condition;
 - **the one-hour drift run at full duration** — best evidence is a 42.7-minute
   run whose longest clean window was 22.2 minutes (ADR-046);
 - **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
