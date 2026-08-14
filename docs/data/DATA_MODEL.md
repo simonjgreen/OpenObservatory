@@ -242,7 +242,7 @@ Columns as implemented:
 - reclaimed_at nullable — set by the retention sweeper (ADR-026) when it
   deletes the underlying file; the row itself is never deleted
 - reclaim_reason nullable — which tier reclaimed it (`native`,
-  `exemplar_only`, `expired`, `watermark`)
+  `unkept`, `watermark`)
 - detail JSON
 
 ### detection_media — Implemented

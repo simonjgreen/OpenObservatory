@@ -740,8 +740,7 @@ Generated from the code — regenerate with
 |---|---|---|---|
 | `retention_enabled` | live | `True` | tiered retention |
 | `retention_native_days` | live (pushed) | `7` days | keep full-rate audio for |
-| `retention_audible_only_days` | live (pushed) | `30` days | keep every audible clip for |
-| `retention_exemplar_only_days` | live (pushed) | `90` days | keep exemplar clips for |
+| `retention_audible_only_days` | live (pushed) | `30` days | keep every audible clip for, unless kept (ADR-061) |
 | `retention_watermark_ratio` | live (pushed) | `0.85` | reclaim above disk usage |
 | `retention_batch_size` | live (pushed) | `200` | assets per sweep |
 | `retention_batch_budget_s` | live (pushed) | `1.5` s | sweep time budget |

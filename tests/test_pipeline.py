@@ -1164,15 +1164,15 @@ class TestHousekeepingDoesNotStarveCapture:
         station._running = True
         await station._housekeeping_loop()
 
-    async def test_never_reached_a_tier_fires_when_all_four_skipped(self, monkeypatch) -> None:
+    async def test_never_reached_a_tier_fires_when_all_three_skipped(self, monkeypatch) -> None:
         """The nine-day incident's exact shape: every tier guard evaluated
         False in the same sweep. This is the one case the new ERROR event
         exists to make loud."""
         result = SimpleNamespace(
             total_deleted=0,
             complete=False,
-            tiers_skipped=["native", "unkept", "expired", "watermark"],
-            to_dict=lambda: {"tiers_skipped": ["native", "unkept", "expired", "watermark"]},
+            tiers_skipped=["native", "unkept", "watermark"],
+            to_dict=lambda: {"tiers_skipped": ["native", "unkept", "watermark"]},
         )
         with capture_logs() as cap:
             await self._run_one_tick_with_fake_sweep(monkeypatch, result)
@@ -1191,8 +1191,8 @@ class TestHousekeepingDoesNotStarveCapture:
         result = SimpleNamespace(
             total_deleted=3,
             complete=False,
-            tiers_skipped=["expired", "watermark"],
-            to_dict=lambda: {"tiers_skipped": ["expired", "watermark"]},
+            tiers_skipped=["watermark"],
+            to_dict=lambda: {"tiers_skipped": ["watermark"]},
         )
         with capture_logs() as cap:
             await self._run_one_tick_with_fake_sweep(monkeypatch, result)

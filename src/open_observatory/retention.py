@@ -10,9 +10,8 @@ so this module implements exactly it and nothing more:
 
   - 0-7 days: native (full-rate) clip and its audible rendering both survive.
   - 7-30 days: native clip deleted; audible rendering survives.
-  - 30-90 days: only clips an operator has explicitly kept survive; every
+  - 30+ days: only clips an operator has explicitly kept survive; every
     other detection in this age band loses its remaining clip(s) too.
-  - 90+ days: deleted, unless kept.
   - **Always**, independent of the above: once the clip filesystem exceeds a
     configurable watermark, the oldest surviving *unkept* clips are reclaimed
     first, regardless of tier. This is the safety valve -- disk space always
@@ -21,17 +20,16 @@ so this module implements exactly it and nothing more:
 
 * **A human `kept` flag** (ADR-061, `detection.kept_at`/`kept_by`) means
   "keep forever, until a human removes it". It is set and cleared only by a
-  human -- never by age, the 90-day expiry, or disk pressure -- and every
-  tier's candidate query excludes it, including the watermark reclaim. It
-  replaces a computed first-of-species/best-of-species rule that used to cost
-  an unbounded per-sweep table scan; see ADR-061 for the incident that forced
-  the change.
+  human -- never by age or disk pressure -- and every tier's candidate query
+  excludes it, including the watermark reclaim. It replaces a computed
+  first-of-species/best-of-species rule that used to cost an unbounded
+  per-sweep table scan; see ADR-061 for the incident that forced the change.
 
-* **A human hold is exempt from the three age-based tiers** (ADR-043). A
+* **A human hold is exempt from the two age-based tiers** (ADR-043). A
   detection whose latest human review (`review.py`) has status `"held"` --
-  an explicit "keep this, it needs my ear" -- is skipped by `_strip_native`,
-  `_strip_unkept` and `_strip_expired`, the same way a kept detection is.
-  Deliberately narrower than `kept`: the watermark reclaim tier does **not**
+  an explicit "keep this, it needs my ear" -- is skipped by `_strip_native`
+  and `_strip_unkept`, the same way a kept detection is. Deliberately
+  narrower than `kept`: the watermark reclaim tier does **not**
   check it, on purpose, because it is this module's one hard safety valve
   (see the bullet above) and a held-but-not-kept detection is still only
   evidence, not something the station can let disk exhaustion turn into an
@@ -84,7 +82,7 @@ NATIVE_KINDS = frozenset({"evidence_native"})
 #: Order the four tiers run in `sweep()`, used to expand "interrupted here"
 #: into "skipped from here on", the same shape a batch/deadline backlog
 #: drain already produces (see `RetentionReport.tiers_skipped`).
-_TIER_ORDER = ("native", "unkept", "expired", "watermark")
+_TIER_ORDER = ("native", "unkept", "watermark")
 
 #: SQLite VM instructions between `sqlite3.Connection.set_progress_handler`
 #: callbacks (ADR-061's statement-timeout addendum). Chosen small enough to
@@ -125,7 +123,7 @@ class RetentionReport:
     disk_used_ratio_before: float | None = None
     disk_used_ratio_after: float | None = None
     #: Count of detections currently marked `kept` (ADR-061) -- exempt from
-    #: every tier, including the 90-day expiry and the watermark reclaim.
+    #: every tier, including the watermark reclaim.
     kept_detections: int = 0
     #: Count of detections exempted from this sweep by an explicit human
     #: hold (ADR-043) -- see `RetentionSweeper._strip_native` et al.
@@ -138,7 +136,7 @@ class RetentionReport:
     #: observable fact rather than an assumption: see `_health_payload`.
     watermark_blocked_by_kept: int = 0
     already_missing: int = 0
-    #: Per-tier counts/bytes: keys are "native", "exemplar_only", "expired", "watermark".
+    #: Per-tier counts/bytes: keys are "native", "unkept", "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
     tier_bytes: dict[str, int] = field(default_factory=dict)
     decisions: list[RetentionDecision] = field(default_factory=list)
@@ -155,14 +153,14 @@ class RetentionReport:
     #: itself close to (or past) the budget is the nine-day failure
     #: recurring.
     preamble_s: float = 0.0
-    #: Name of every tier ("native", "unkept", "expired", "watermark") whose
-    #: guard evaluated False, in evaluation order -- appended whether the
-    #: cause was the wall-clock deadline, an exhausted batch, or the tier
-    #: being disabled by configuration (a `*_days` of 0). Distinguishing a
-    #: broken sweep from a merely partial one is not "was anything
-    #: skipped" but "was *everything* skipped": a backlog drain only ever
-    #: skips a trailing suffix of tiers because the ones before it consumed
-    #: real budget or time, whereas all four skipped together -- with the
+    #: Name of every tier ("native", "unkept", "watermark") whose guard
+    #: evaluated False, in evaluation order -- appended whether the cause
+    #: was the wall-clock deadline, an exhausted batch, or the tier being
+    #: disabled by configuration (a `*_days` of 0). Distinguishing a broken
+    #: sweep from a merely partial one is not "was anything skipped" but
+    #: "was *everything* skipped": a backlog drain only ever skips a
+    #: trailing suffix of tiers because the ones before it consumed real
+    #: budget or time, whereas all three skipped together -- with the
     #: batch budget still full -- means the sweep never did any work at
     #: all, which a healthy station in steady state never produces (see
     #: `station.py`'s `housekeeping.retention_never_reached_a_tier`).
@@ -232,7 +230,6 @@ class RetentionSweeper:
         session_factory: SessionFactory,
         native_days: int = 7,
         audible_only_days: int = 30,
-        exemplar_only_days: int = 90,
         watermark_ratio: float = 0.85,
         batch_size: int = 200,
         batch_budget_s: float = 1.5,
@@ -242,7 +239,6 @@ class RetentionSweeper:
         self._session_factory = session_factory
         self.native_days = native_days
         self.audible_only_days = audible_only_days
-        self.exemplar_only_days = exemplar_only_days
         self.watermark_ratio = watermark_ratio
         self.batch_size = batch_size
         self.batch_budget_s = batch_budget_s
@@ -403,19 +399,6 @@ class RetentionSweeper:
                         )
                     else:
                         report.tiers_skipped.append("unkept")
-                    current_tier = "expired"
-                    if self.exemplar_only_days > 0 and budget > 0 and time.monotonic() < deadline:
-                        budget = self._strip_expired(
-                            session,
-                            report,
-                            now=now,
-                            deadline=deadline,
-                            budget=budget,
-                            dry_run=dry_run,
-                            held_ids=held_ids,
-                        )
-                    else:
-                        report.tiers_skipped.append("expired")
                     current_tier = "watermark"
                     if budget > 0 and time.monotonic() < deadline:
                         budget = self._watermark_reclaim(
@@ -571,48 +554,8 @@ class RetentionSweeper:
                 report,
                 asset,
                 detection_id=detection_id,
-                tier="exemplar_only",
+                tier="unkept",
                 reason=f"age >= {self.audible_only_days}d and not kept",
-                dry_run=dry_run,
-            )
-            budget -= 1
-        return budget
-
-    def _strip_expired(
-        self,
-        session: Session,
-        report: RetentionReport,
-        *,
-        now: datetime,
-        deadline: float,
-        budget: int,
-        dry_run: bool,
-        held_ids: set[uuid.UUID] | None = None,
-    ) -> int:
-        cutoff = now - timedelta(days=self.exemplar_only_days)
-        query = (
-            select(orm.MediaAsset, orm.Detection.id)
-            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
-            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
-            .where(orm.MediaAsset.reclaimed_at.is_(None))
-            .where(orm.Detection.event_start_utc <= cutoff)
-            .where(orm.Detection.kept_at.is_(None))
-        )
-        if held_ids:
-            query = query.where(orm.Detection.id.notin_(held_ids))
-        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
-        for asset, detection_id in session.execute(query).all():
-            if time.monotonic() >= deadline or budget <= 0:
-                break
-            self._delete_asset(
-                report,
-                asset,
-                detection_id=detection_id,
-                tier="expired",
-                reason=(
-                    f"age >= {self.exemplar_only_days}d: final expiry, but not an "
-                    "explicit human hold or keep"
-                ),
                 dry_run=dry_run,
             )
             budget -= 1
@@ -920,7 +863,6 @@ class RetentionSweeper:
             "enabled": True,
             "native_days": self.native_days,
             "audible_only_days": self.audible_only_days,
-            "exemplar_only_days": self.exemplar_only_days,
             "watermark_ratio": self.watermark_ratio,
             "batch_size": self.batch_size,
             "batch_budget_s": self.batch_budget_s,

@@ -203,7 +203,6 @@ def _sweeper(settings, **overrides) -> RetentionSweeper:
         session_factory=session_scope,
         native_days=7,
         audible_only_days=30,
-        exemplar_only_days=90,
         watermark_ratio=0.85,
         batch_size=1000,
         batch_budget_s=30.0,
@@ -333,6 +332,44 @@ class TestTierBoundaries:
             assert _asset(session, oldest["playback"]).reclaimed_at is not None
             # The clip is gone; the detection row -- the "log entry" -- is not.
             assert session.get(orm.Detection, detection_id) is not None
+
+    def test_a_detection_past_90_days_is_deleted_by_the_30_day_tier_not_the_90_day_one(
+        self, db, station_and_detector
+    ) -> None:
+        """Characterisation test for the ADR-061 finding that the former
+        90-day tier (``_strip_expired``, driven by the removed
+        ``exemplar_only_days``) was unreachable: its candidate set -- unkept,
+        unheld, older than 90 days -- was a strict subset of the 30-day
+        tier's (unkept, unheld, older than 30 days), and the 30-day tier ran
+        first, oldest-first, with the whole batch budget. So a detection at
+        200 days old was always claimed by the 30-day tier before the 90-day
+        tier ever saw it. That is what made removing the 90-day tier safe: it
+        only changed which label was written to the deletion decision (an
+        unreachable-code cleanup), never whether or when the clip is
+        deleted. This assertion held on the code before the removal and
+        holds unchanged after it.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
+                common_name="Common Woodpigeon",
+                score=0.99,
+                kinds=("playback",),
+            )
+        report = _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["playback"]).reclaimed_at is not None
+        deleted = [d for d in report.decisions if d.asset_id == assets["playback"]]
+        assert len(deleted) == 1
+        # Whatever the surviving 30-day tier's label is called this sweep, the
+        # would-be-90-day tier ("expired", while it still exists) never fires.
+        assert deleted[0].tier != "expired"
+        assert report.tier_counts.get("expired", 0) == 0
 
 
 class TestHumanHold:
@@ -1110,7 +1147,7 @@ class TestReportInvariants:
     @given(
         tiers_and_bytes=st.lists(
             st.tuples(
-                st.sampled_from(["native", "exemplar_only", "expired", "watermark"]),
+                st.sampled_from(["native", "unkept", "watermark"]),
                 st.integers(min_value=0, max_value=10_000_000),
                 st.booleans(),  # existed_on_disk
             ),
@@ -1173,7 +1210,7 @@ class TestPreambleVisibility:
         monkeypatch.setattr(sweeper, "batch_budget_s", 0.0)
         report = sweeper.sweep()
         assert report.complete is False
-        assert report.tiers_skipped == ["native", "unkept", "expired", "watermark"]
+        assert report.tiers_skipped == ["native", "unkept", "watermark"]
         assert report.preamble_s >= 0.0
 
     def test_a_healthy_sweep_with_nothing_to_delete_skips_no_tier(
@@ -1199,7 +1236,7 @@ class TestPreambleVisibility:
     ) -> None:
         """Running out of batch mid-sweep is normal and self-correcting: it
         skips only whichever tiers come after the one that used up the
-        budget, never all four."""
+        budget, never all three."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             for index in range(5):
@@ -1215,7 +1252,7 @@ class TestPreambleVisibility:
         report = _sweeper(db, batch_size=2, batch_budget_s=30.0).sweep()
         assert report.complete is False
         assert report.tiers_skipped != []
-        assert len(report.tiers_skipped) < 4
+        assert len(report.tiers_skipped) < 3
 
 
 class TestStatementTimeout:

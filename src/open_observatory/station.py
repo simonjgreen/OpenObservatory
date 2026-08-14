@@ -249,7 +249,6 @@ class Station:
             session_factory=session_scope,
             native_days=settings.retention_native_days,
             audible_only_days=settings.retention_audible_only_days,
-            exemplar_only_days=settings.retention_exemplar_only_days,
             watermark_ratio=settings.retention_watermark_ratio,
             batch_size=settings.retention_batch_size,
             batch_budget_s=settings.retention_batch_budget_s,
@@ -1876,12 +1875,12 @@ class Station:
                     # deletion count. `tiers_skipped` is what tells them
                     # apart: a backlog drain only ever skips a trailing
                     # suffix of tiers, because the ones before it consumed
-                    # real budget or time, whereas all four tiers skipped
+                    # real budget or time, whereas all three tiers skipped
                     # together means no tier ever ran -- which a healthy
                     # station in steady state (nothing left to delete) never
                     # produces, because every guard is still reached and each
                     # tier's own query simply finds nothing.
-                    if len(result.tiers_skipped) == 4:
+                    if len(result.tiers_skipped) == 3:
                         log.error(
                             "housekeeping.retention_never_reached_a_tier",
                             **result.to_dict(),

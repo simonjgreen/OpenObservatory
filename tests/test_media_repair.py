@@ -193,13 +193,12 @@ class TestApply:
                 row = session.get(orm.MediaAsset, asset_id)
                 assert row.reclaimed_at is not None
                 assert row.reclaim_reason == MISSING_REASON
-                # Not "native"/"exemplar_only"/"expired"/"watermark": no policy
-                # decided to give this clip up, and recording that it did would
-                # be the system lying about its own history.
+                # Not "native"/"unkept"/"watermark": no policy decided to give
+                # this clip up, and recording that it did would be the system
+                # lying about its own history.
                 assert row.reclaim_reason not in {
                     "native",
-                    "exemplar_only",
-                    "expired",
+                    "unkept",
                     "watermark",
                 }
 

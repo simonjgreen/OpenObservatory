@@ -1553,7 +1553,6 @@ def clips_retention(
         session_factory=session_scope,
         native_days=settings.retention_native_days,
         audible_only_days=settings.retention_audible_only_days,
-        exemplar_only_days=settings.retention_exemplar_only_days,
         watermark_ratio=settings.retention_watermark_ratio,
         batch_size=settings.retention_batch_size,
         batch_budget_s=settings.retention_batch_budget_s,
@@ -1567,7 +1566,7 @@ def clips_retention(
     table.add_column("tier")
     table.add_column("files", justify="right")
     table.add_column("bytes", justify="right")
-    for tier in ("native", "exemplar_only", "expired", "watermark"):
+    for tier in ("native", "unkept", "watermark"):
         table.add_row(
             tier,
             str(report.tier_counts.get(tier, 0)),
@@ -1576,7 +1575,7 @@ def clips_retention(
     console.print(table)
     console.print(
         f"kept detections (operator-flagged, exempt from every tier "
-        f"including the {settings.retention_exemplar_only_days}d expiry): "
+        f"including the {settings.retention_audible_only_days}d expiry): "
         f"{report.kept_detections}"
     )
     if report.already_missing:

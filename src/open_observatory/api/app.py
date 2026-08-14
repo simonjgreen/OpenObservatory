@@ -1177,12 +1177,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         native_d = sweeper.native_days
         audible_d = sweeper.audible_only_days
-        exemplar_d = sweeper.exemplar_only_days
+        # ADR-061: past `audible_d`, nothing distinguishes further age bands --
+        # only a `kept` detection's clip survives, and it survives forever, not
+        # to some later cutoff. What used to be a separate "kept only" tier
+        # (a fixed 30-90 day band, back when a 90-day tier deleted anything not
+        # kept) is therefore this same overdue bucket, not a distinct one.
         overdue = select(
             func.count(orm.MediaAsset.id), func.coalesce(func.sum(orm.MediaAsset.byte_length), 0)
         ).where(
             orm.MediaAsset.reclaimed_at.is_(None),
-            orm.MediaAsset.created_at <= now - timedelta(days=exemplar_d),
+            orm.MediaAsset.created_at <= now - timedelta(days=audible_d),
         )
         overdue_clips, overdue_bytes = session.execute(overdue).one()
 
@@ -1190,11 +1194,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "tiers": [
                 {"name": "native + audible", "age_days_max": native_d, **bucket(None, native_d)},
                 {"name": "audible only", "age_days_max": audible_d, **bucket(native_d, audible_d)},
-                {
-                    "name": "kept only",
-                    "age_days_max": exemplar_d,
-                    **bucket(audible_d, exemplar_d),
-                },
             ],
             # Past the last tier and not yet reclaimed. Non-zero here is normal
             # between sweeps, not a fault; persistently non-zero means the sweep

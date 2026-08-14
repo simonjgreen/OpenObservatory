@@ -44,8 +44,8 @@ from .detectors import birdnet_classes
 log = structlog.get_logger(__name__)
 
 #: Written to ``media_asset.reclaim_reason``, alongside retention's tier names
-#: ("native", "exemplar_only", "expired", "watermark"), so an operator reading
-#: the column can tell a privacy purge from an age-out.
+#: ("native", "unkept", "watermark"), so an operator reading the column can
+#: tell a privacy purge from an age-out.
 RECLAIM_REASON = "privacy_human_audio"
 
 

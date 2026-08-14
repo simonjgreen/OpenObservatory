@@ -109,7 +109,6 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     # -- retention sweeper ---------------------------------------------------
     "retention_native_days": LiveTarget("retention", "native_days"),
     "retention_audible_only_days": LiveTarget("retention", "audible_only_days"),
-    "retention_exemplar_only_days": LiveTarget("retention", "exemplar_only_days"),
     "retention_watermark_ratio": LiveTarget("retention", "watermark_ratio"),
     "retention_batch_size": LiveTarget("retention", "batch_size"),
     "retention_batch_budget_s": LiveTarget("retention", "batch_budget_s"),

@@ -1170,7 +1170,6 @@ class TestRetentionStatus:
         assert [tier["name"] for tier in payload["tiers"]] == [
             "native + audible",
             "audible only",
-            "kept only",
         ]
         # Ascending, and matching the configured policy rather than hardcoded
         # numbers -- the boundaries are settings, and a test that restated them
@@ -1179,7 +1178,6 @@ class TestRetentionStatus:
         assert [tier["age_days_max"] for tier in payload["tiers"]] == [
             settings.retention_native_days,
             settings.retention_audible_only_days,
-            settings.retention_exemplar_only_days,
         ]
         assert payload["disk_reclaim_threshold"] == settings.retention_watermark_ratio
 
@@ -1201,7 +1199,6 @@ class TestRetentionStatus:
         tiers = {tier["name"]: tier for tier in payload["tiers"]}
 
         assert tiers["audible only"]["clips"] == 0
-        assert tiers["kept only"]["clips"] == 0
         assert payload["eligible_for_deletion"]["clips"] == 0
 
     def test_never_counts_bytes_that_have_already_been_reclaimed(self, client, settings) -> None:

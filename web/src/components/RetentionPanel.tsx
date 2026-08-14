@@ -11,9 +11,12 @@
  *      {
  *        "tiers": [
  *          { "name": "native + audible", "age_days_max": 7, "clips": 123, "bytes": 456 },
- *          { "name": "audible only",      "age_days_max": 30, "clips": ..., "bytes": ... },
- *          { "name": "kept only",         "age_days_max": 90, "clips": ..., "bytes": ... }
+ *          { "name": "audible only",      "age_days_max": 30, "clips": ..., "bytes": ... }
  *        ],
+ *        // ADR-061: past "audible only", only a `kept` detection's clip
+ *        // survives (forever, not to some later cutoff), so anything past
+ *        // that boundary is reported below as `eligible_for_deletion`
+ *        // rather than as a further named tier.
  *        "eligible_for_deletion": { "clips": N, "bytes": N, "bytes_verified_present": N },
  *        "missing_files": { "clips": N, "bytes": N, "exact": bool, ... },
  *        "disk_reclaim_threshold": 0.85,

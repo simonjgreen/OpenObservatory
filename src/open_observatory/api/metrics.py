@@ -415,7 +415,7 @@ class PrometheusExporter:
             "Wall-clock duration of the last missing-file audit slice",
             missing_audit.get("last_audit_duration_s"),
         )
-        for tier in ("native", "exemplar_only", "expired", "watermark"):
+        for tier in ("native", "unkept", "watermark"):
             self._set(
                 "oo_retention_files_deleted_total",
                 "Clip files deleted by the retention sweeper",

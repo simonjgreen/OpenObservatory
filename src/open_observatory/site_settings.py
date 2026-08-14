@@ -751,12 +751,9 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
             "survives."),
     _e("retention_audible_only_days", "retention", label="keep every audible clip for",
        unit="days", minimum=0, maximum=3650,
-       help="After this, only first-of-species and best-of-species exemplars "
-            "keep their audio."),
-    _e("retention_exemplar_only_days", "retention", label="keep exemplar clips for",
-       unit="days", minimum=0, maximum=3650,
-       help="Detection rows -- species, times, scores -- are never deleted by "
-            "any tier. Only the bytes age out."),
+       help="After this, only detections an operator has explicitly kept "
+            "(ADR-061) keep their audio. Detection rows -- species, times, "
+            "scores -- are never deleted by any tier. Only the bytes age out."),
     _e("retention_watermark_ratio", "retention", label="reclaim above disk usage",
        minimum=0.1, maximum=0.99,
        help="Continuous oldest-first reclaim above this fraction of the clip "
@@ -1187,8 +1184,8 @@ def validate_merged(settings: Settings, updates: dict[str, Any]) -> None:
     The bar this enforces, from the charter: a settings write must never leave
     the station in a state where capture cannot start. A floor above a ceiling
     renders a blank spectrogram; a ring buffer shorter than a block silently
-    drops audio; a retention ladder out of order deletes the exemplar before
-    the copy it was promoted from.
+    drops audio; a retention ladder out of order deletes the audible copy
+    before the native one it was rendered from.
     """
     merged = _merged(settings, updates)
     errors: dict[str, str] = {}
@@ -1261,11 +1258,6 @@ def validate_merged(settings: Settings, updates: dict[str, Any]) -> None:
         ("retention_native_days", "retention_audible_only_days"),
         merged["retention_native_days"] <= merged["retention_audible_only_days"],
         "the native tier must expire no later than the audible tier",
-    )
-    rule(
-        ("retention_audible_only_days", "retention_exemplar_only_days"),
-        merged["retention_audible_only_days"] <= merged["retention_exemplar_only_days"],
-        "the audible tier must expire no later than the exemplar tier",
     )
     rule(
         ("refinement_window_start_hour_utc", "refinement_window_end_hour_utc"),

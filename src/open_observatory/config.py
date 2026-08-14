@@ -383,13 +383,10 @@ class Settings(BaseSettings):
     retention_native_days: int = 7
     #: Age at which everything except a detection an operator has explicitly
     #: marked `kept` (ADR-061) is deleted. Below this age, every detection
-    #: keeps its audible clip; above it, only kept detections do.
+    #: keeps its audible clip; above it, only kept detections do -- forever,
+    #: until a human clears the flag. Detection rows are never deleted by
+    #: this or any other tier.
     retention_audible_only_days: int = 30
-    #: Age at which even kept-but-not-permanently-exported clips would be
-    #: deleted by age alone -- except `kept` (ADR-061) exempts a detection
-    #: from this tier too, so in practice only unkept clips are affected.
-    #: Detection rows are never deleted by this or any other tier.
-    retention_exemplar_only_days: int = 90
     #: Continuous oldest-first reclaim kicks in above this fraction of the
     #: clip filesystem used, regardless of tier -- the NVR "overwrite oldest
     #: before the disk fills" behaviour the operator asked for. A `kept`

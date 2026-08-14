@@ -7155,3 +7155,92 @@ station's. The rule this ADR should have followed from the start, and now
 states: **for any index on a hot path, produce `EXPLAIN QUERY PLAN` against a
 station-sized database, for every query that touches the column, before and
 after.** 924 passing tests said nothing useful about any of this.
+
+### ADR-061 third addendum, 2026-08-14: the deferred rename, taken — and the 90-day tier retired as dead code
+
+The "Names that outlived the concept" section above deliberately left
+`tier="exemplar_only"` and `retention_exemplar_only_days` alone and deferred
+the decision to the operator. The operator has now made it, and a second
+finding came with it: the 90-day tier those names belonged to,
+`_strip_expired`, is unreachable and is removed as dead code, not merely
+renamed.
+
+**Why `_strip_expired` never ran.** `_strip_unkept` (30 d) and
+`_strip_expired` (90 d) issued byte-for-byte identical queries — same joins,
+same `reclaimed_at IS NULL`, same `kept_at IS NULL`, same `notin_(held_ids)`,
+same `order_by(event_start_utc.asc())`, same `limit(budget)` — differing only
+in the cutoff constant and the label written to the decision. Because 90 > 30,
+`_strip_expired`'s candidate set was always a subset of `_strip_unkept`'s, and
+`_strip_unkept` ran first, oldest-first, against the same shared `budget`.
+Three ways this was checked, not assumed:
+
+1. If `_strip_unkept` exhausts its `budget` or the wall-clock `deadline`
+   before finishing, the `budget > 0 and time.monotonic() < deadline` guard
+   before `_strip_expired` fails and it is skipped outright.
+2. If `_strip_unkept`'s query returns fewer rows than `budget` (proof it
+   found every row matching a strictly looser condition), every row
+   `_strip_expired` could ever have wanted was already offered to and
+   processed by `_strip_unkept` first.
+3. There is no asset-kind filter, ordering subtlety, or budget interaction
+   that changes this: both queries scan the same table with the same joins
+   and the same order.
+
+This was true before ADR-026's `kept` predicate existed too, but it did not
+matter then: exemplars were exempt from the 30-day tier but not the 90-day
+one, so the two tiers protected different rows and "between 30 and 90 days,
+only exemplars survive" was a real, distinct policy. `kept` (this ADR)
+exempts a detection from *every* tier identically, which is what collapsed
+the two tiers into duplicates without anyone deciding that on purpose.
+
+**What changed.** `_strip_expired`, its `sweep()` call site, the `"expired"`
+tier key, the `exemplar_only_days` constructor parameter/attribute, and the
+`retention_exemplar_only_days` setting (`OO_RETENTION_EXEMPLAR_ONLY_DAYS`) are
+all removed. `_TIER_ORDER` and `RetentionReport.tiers_skipped` go from four
+tiers to three (`native`, `unkept`, `watermark`), so
+`housekeeping.retention_never_reached_a_tier`'s gate moves from
+`len(tiers_skipped) == 4` to `== 3` — still every tier, still sound for the
+same reason: the watermark guard has no config-disable clause, so all three
+land in `tiers_skipped` together only through genuine deadline or budget
+exhaustion, never configuration. `GET /api/v1/retention/status` loses its
+"kept only" tier entry (it described the now-nonexistent 30–90 day band);
+`eligible_for_deletion`'s cutoff moves from `exemplar_only_days` to
+`audible_only_days`, since that is now the last age boundary the policy has.
+
+**Test-first verification.** Before touching `retention.py`, a
+characterisation test was added and confirmed to pass against the
+*unmodified* code: a detection 200 days old is deleted, its recorded tier is
+never `"expired"`, and `tier_counts.get("expired", 0) == 0` — i.e. the 90-day
+tier already contributes nothing, on the code as it stood. The same test
+passes unchanged after the removal (`"expired"` simply cannot appear once the
+key no longer exists), which is the point of a characterisation test: the
+observable behaviour is identical on both sides of the change.
+
+**The tier key rename, taken this time.**
+`oo_retention_files_deleted_total{tier="exemplar_only"}` becomes
+`{tier="unkept"}`, and `{tier="expired"}` disappears with the tier it named.
+Both are breaking Prometheus label changes, accepted deliberately for the
+same reason the metric rename earlier in this ADR was: a label naming a
+mechanism (`exemplar_only`) or a tier (`expired`) that no longer exists is a
+worse instrument than a breaking one. No alias is added.
+
+**The silent-drop hazard this leaves behind.** `Settings` is built with
+`extra="ignore"`, so an operator's `runtime.env` that still sets
+`OO_RETENTION_EXEMPLAR_ONLY_DAYS=90` — including the live station's, per the
+"Names that outlived the concept" section above — will not raise on startup;
+Pydantic drops it silently, and the value is simply never read again. That is
+the dangerous kind of stale config: not a crash that demands attention, but a
+setting that keeps *looking* live in an env file while doing nothing. This is
+recorded here rather than fixed here, because fixing it (an unknown-key
+warning, or refusing to start) is a `Settings`-wide decision, not one this
+retention change should make unilaterally — but the next person who greps
+`runtime.env` for why a number they changed had no effect should find the
+answer here.
+
+**Consequences.** No behaviour change to what gets deleted or when — the
+characterisation test is the evidence for that claim, not merely an
+assertion of it. `retention.py`'s module docstring's tier table drops the
+30–90/90+ split in favour of a single "30+ days: only kept survives"
+statement. The live station's `runtime.env` still carries
+`OO_RETENTION_EXEMPLAR_ONLY_DAYS=90`; per the paragraph above, this deploy
+makes that line inert rather than erroring, and it should be removed by the
+operator at the same time as the deploy, not left to be rediscovered later.
