@@ -434,8 +434,37 @@ def test_kept_columns_exist_at_head(migrated_session: Session) -> None:
     assert "kept_by" in columns
 
 
-def test_kept_at_is_indexed(migrated_session: Session) -> None:
-    """Every tier's candidate query filters on kept_at; an unindexed filter
-    would reintroduce the scan this change exists to remove."""
+def test_kept_at_is_deliberately_not_indexed(migrated_session: Session) -> None:
+    """`ix_detection_kept_at` was a pessimisation and revision 0009 drops it.
+
+    It was added on the reasoning that every tier's candidate query filters on
+    `kept_at`, so the filter should be indexed. That reasoning was wrong, and
+    wrong in a way that took the station down: `kept_at IS NULL` matches ~99.8%
+    of rows (112 non-null out of ~46,000 on the live station), so the index is
+    useless as a filter -- but SQLite *preferred* it anyway, which cost it
+    `ix_detection_event_start_utc`, the index serving both the range predicate
+    and the `ORDER BY`. The plan fell back to materialising the join into a
+    temp B-tree and sorting it.
+
+    Measured on the live station's own database, `_strip_native`'s candidate
+    query, best of three:
+
+        with the index:     SEARCH d USING ix_detection_kept_at
+                            + USE TEMP B-TREE FOR ORDER BY      0.555 s
+        without the index:  SEARCH d USING ix_detection_event_start_utc
+                            (no sort)                           0.117 s
+
+    Under live WAL contention the indexed plan blocked a real sweep for over
+    five minutes inside one statement, which wedged the whole housekeeping loop
+    behind it -- stream heartbeats, the media audit and the disk-usage refresh
+    all stopped (ADR-061, and the incident note in HANDOVER).
+
+    So this asserts the *absence* of an index on purpose. If a future change
+    adds one back, the query plan must be re-measured on a database of the
+    station's size first: no test fixture here is large enough for SQLite to
+    make the bad choice.
+    """
     indexes = {i["name"] for i in sa.inspect(migrated_session.bind).get_indexes("detection")}
-    assert "ix_detection_kept_at" in indexes
+    assert "ix_detection_kept_at" not in indexes
+    # The index that must survive, because it serves the filter *and* the order.
+    assert "ix_detection_event_start_utc" in indexes

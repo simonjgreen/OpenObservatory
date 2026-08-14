@@ -217,10 +217,18 @@ class Detection(Base):
     #: Set by a human who wants this recording kept; cleared only by a
     #: human. Every retention tier exempts a row with this set, including the
     #: 90-day expiry and the disk watermark -- "keep" that a sweep can overrule
-    #: is not a keep. Indexed because all four candidate queries filter on it.
-    kept_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    #: is not a keep.
+    #:
+    #: **Deliberately not indexed**, and revision 0009 drops the index revision
+    #: 0008 created. `kept_at IS NULL` matches ~99.8% of rows (112 non-null of
+    #: ~46,000 on the live station), so an index on it narrows nothing -- but
+    #: SQLite preferred it anyway, which cost the planner
+    #: `ix_detection_event_start_utc` and turned `_strip_native`'s ordered,
+    #: indexed scan into a temp B-tree sort. On the station that blocked one
+    #: `sweep()` inside a single statement for over five minutes and wedged the
+    #: housekeeping loop behind it. Measured: 0.555 s with the index, 0.117 s
+    #: without. See ADR-061 and revision 0009 before adding one back.
+    kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: Who kept it. "exemplar-backfill" for the rows migrated from the computed
     #: first-of-species rule this replaced.
     kept_by: Mapped[str | None] = mapped_column(String(120), nullable=True)

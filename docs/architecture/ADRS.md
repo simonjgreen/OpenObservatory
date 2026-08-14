@@ -7020,3 +7020,63 @@ of the implementing plan flags this explicitly):
    there, the sweep is still costing audio and the fix is incomplete — that
    must be reported plainly rather than reporting (1) and (2) as success on
    their own.
+
+### ADR-061 addendum, 2026-08-14: the first deploy failed, and the index was why
+
+**The pass criteria above were run, and criterion 1 failed.** Recorded here
+rather than quietly fixed, because the failure is more instructive than the
+decision it followed.
+
+The 2.978 s exemplar preamble was genuinely gone: `preamble_s` was ~0 and the
+sweep reached `_strip_native` for the first time in the station's life. It then
+blocked **inside a single SQL statement for over five minutes.** `py-spy dump`
+caught it exactly:
+
+```
+do_execute (sqlalchemy/engine/default.py:941)
+  _strip_native (open_observatory/retention.py:397)
+    sweep (open_observatory/retention.py:288)
+```
+
+Retention runs in the evidence executor and the housekeeping loop awaits it, so
+everything behind it stopped: stream heartbeats, the ADR-057 media audit, the
+ADR-059 disk-usage refresh. `clip_usage_age_s` climbed 1:1 with wall clock and
+`housekeeping_blocking_s` was byte-identical between samples — a stopped clock,
+not a slow one. Capture was untouched, because it owns its own thread (ADR-030).
+
+**Cause: `ix_detection_kept_at`, added by this ADR's own revision 0008.**
+`kept_at IS NULL` matches ~99.8% of rows (112 non-null of ~46,000), so the index
+narrows nothing — but SQLite preferred it, and preferring it meant abandoning
+`ix_detection_event_start_utc`, which had been serving the range predicate *and*
+the `ORDER BY` together. Measured on the station's own database, best of three:
+
+| | Plan | Time |
+|---|---|---|
+| Index present | `SEARCH d USING ix_detection_kept_at` + `USE TEMP B-TREE FOR ORDER BY` | 0.555 s |
+| Index dropped | `SEARCH d USING ix_detection_event_start_utc (event_start_utc<?)`, no sort | 0.117 s |
+
+Revision `0009_drop_kept_at_index` drops it. The predicate still applies; it is
+just evaluated against rows the ordering index has already narrowed.
+
+**Three things worth keeping from this.**
+
+1. **923 passing tests could not have caught it, and did not.** No fixture in
+   this repository is within two orders of magnitude of 119,476 media assets and
+   ~46,000 detections, and below some size SQLite's planner simply makes the
+   right choice. A green suite is not evidence about a query plan. Measure the
+   plan on a database the size of the station's, or do not claim anything.
+2. **`retention_batch_budget_s` cannot bound a single statement.** The budget is
+   checked *between* rows of the result. A slow query therefore blows through it
+   entirely instead of degrading to "fewer deletions", which is what the budget
+   was designed to do. This was always true; the old code never reached a tier,
+   so it never showed. **Still open** — the honest fix is a statement timeout
+   (`sqlite3` `progress_handler`, or `Connection.interrupt` from a watchdog),
+   not a larger budget.
+3. **An index added to make a filter cheap can make the query dearer**, when the
+   planner takes it in preference to one that was also providing the ordering. A
+   low-selectivity index is not merely useless; it is a live hazard next to an
+   `ORDER BY ... LIMIT`.
+
+**Interim state on the station:** `retention_enabled=false` was written to the
+station's `config/runtime.env` to unwedge the housekeeping loop, and must be set
+back to `true` once revision 0009 is deployed and criterion 1 actually passes.
