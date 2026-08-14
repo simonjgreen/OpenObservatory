@@ -387,15 +387,38 @@ leaves an identical trap.
 
 ### What the fix has to do (needs an ADR, not a patch)
 
+**Delivered by ADR-060; not yet deployed or re-verified on the station.**
+
 1. **Bound the swallow.** Consecutive recoverable errors with no successful read
    must, after a configured count or elapsed time, raise `AlsaCaptureError` so the
-   supervisor gets control. Both branches.
+   supervisor gets control. Both branches. — done: `AlsaSource.stall_timeout_s`
+   (default 5 s), applied to both the `-EIO` and the `length == 0` branch.
 2. **Watchdog on `block_age_s`** independent of the read loop, so a stall is
-   detected even if a future branch swallows something else.
+   detected even if a future branch swallows something else. — done:
+   `_capture_loop` wraps a live read in `asyncio.wait_for(…, capture_read_timeout_s)`
+   (default 15 s), ALSA sources only.
 3. **`critical`, not `degraded`**, once no block has arrived for more than a few
    seconds — and the display and MQTT should say the station is *deaf*, not report
-   a stale bat pass under a healthy-looking header.
+   a stale bat pass under a healthy-looking header. — done: `capture_silence_critical_s`
+   (default 30 s) now caps severity independent of `capture.state`.
 4. `state` must not read `capturing` when nothing has been captured for an hour.
+   — deliberately **not** done this way: `capture.state` still describes what the
+   capture task was asked to do; `block_age_s` and the new severity rule carry the
+   "is audio actually arriving" fact instead, so no field is overloaded with two
+   meanings. See ADR-060's "left deliberately unchanged" note.
+
+**What ADR-060 does not fix, and does not attempt to: the wedge itself is
+unexplained** — the AudioMoth never left the USB bus and `hw_ptr` was found frozen
+at 768 with `state: RUNNING`. ADR-060 makes the station survive a repeat, not
+prevents one. **What it does explain is the cost named above as "~7 s of audio an
+hour":** ADR-061 traces that beat to the retention sweep's exemplar computation
+(2.978 s against a 1.5 s budget) starving the capture event loop every
+`retention_interval_s`, each overrun forcing an `snd_pcm_prepare()` restart, and
+proves the coupling to this specific wedge to the millisecond — sweep `started_at`
+02:18:19.893, `duration_s` 2.6608, first `-EIO` at 02:18:22.552. Same root cause,
+same incident, two ADRs: ADR-060 bounds the failure mode, ADR-061 removes the
+query that was driving it. Neither has been deployed to the station as of this
+writing.
 
 ### The soak verdict
 

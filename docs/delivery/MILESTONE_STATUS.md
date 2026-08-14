@@ -162,7 +162,7 @@ single surface with two depths.
 | Operator/diagnostic disclosure | done (ADR-028) — one depth toggle via `?view=operate\|diagnose`, not a second route |
 | `App.tsx` state extraction | done — decomposed into `web/src/hooks/*` and `web/src/state/*`; `useLiveAudio.test.tsx` guards the ADR-022 retune fix from regressing |
 | Review workflow | done (ADR-043) — confirm, reject, **correct** and hold. A correction is a new `Review` row, never an edit: the detection's own claim columns are untouched, so the original stays visible and attributable. Human review outranks machine refinement in code (`plausibility_repair` skips any human-reviewed detection at both find and apply time), and a held review exempts evidence from the age tiers though **not** from the disk watermark. Two stated limits: a correction can only name a taxon the station has itself identified before, and `/api/v1/history` still aggregates on the original taxonomy. **In real use, not merely built** — the live station's `review` table held 65 rows on 2026-08-09 |
-| Retention job and UI | done — tiered age-out backend (ADR-026) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions |
+| Retention job and UI | done — tiered age-out backend (ADR-026) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions. **The first/best-of-species exemption is replaced by an operator-set `kept` flag (ADR-061)** — `PUT`/`DELETE /api/v1/detections/{id}/keep`, `oo detections keep`, and a drawer toggle. Not yet deployed; see the Milestone 4.5 §1e note below |
 | CSV/JSON export | done — `GET /api/v1/detections/export`, registered before `/detections/{id}` so it is not swallowed by the path parameter |
 | Authentication foundation | done (ADR-034) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 counter-top display keeps working |
 | Inside-observer push channel | done (ADR-038) — `GET /api/v1/display`, a detections-only WebSocket. 49 B a detection against the polled transport's ~127 kB/20 s; deployed to the Pi and flashed to the board on 2026-08-09. Elapsed times ("4s ago") ticking once a second, partial repaints only. HTTP polling retained and exercised as the fallback. Verified live 2026-08-09 21:46Z: one client connected, 2,784 frames sent, 0 dropped, mean 42.5 B a frame |
@@ -206,6 +206,18 @@ Still outstanding in this milestone:
   which also explains why the loss rate stepped up mid-run. **A re-run is needed
   after the §1e defect is fixed**, and it is still true that a soak and a deploy
   are mutually exclusive.
+  **The §1e defect now has two fixes, neither yet deployed or re-verified on the
+  station.** ADR-060 bounds the ALSA read/error loop, adds an `asyncio.wait_for`
+  backstop and stops `capture.state` capping health severity at "degraded" — a
+  wedged device now costs seconds and a `critical` health event instead of
+  3 h 35 min of silence. ADR-061 removes the query that was forcing the device
+  restarts in the first place: the retention sweep's unbounded exemplar
+  computation, measured at 2.978 s against a 1.5 s budget, is replaced with an
+  operator-set `kept` flag and one indexed query per tier. Both are documented
+  only as of this entry; `deploy/deploy.sh` has not been run against them and
+  none of ADR-060's or ADR-061's target smoke tests have been executed on the
+  Pi. The re-run this bullet calls for should follow that deploy, not precede
+  it.
 * **The one-hour drift run.** Not run at full duration. The best evidence to date is
   ADR-046's 42.7-minute restart-free sampling run, whose longest *clean* segment was
   22.2 minutes — see the Milestone 1 exit-gate note above for why that is not the same

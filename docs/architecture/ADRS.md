@@ -86,6 +86,8 @@ reasoning is retained and is often the most useful part.
 | 057 | A row that claims evidence must be checkable; reconcile the ones that lie, and keep "missing" distinct from "reclaimed" | active. 8,067 of 48,941 live `media_asset` rows (16.5%, 20.59 GB) claimed clips that `ClipManager.enforce_retention` had unlinked without marking them — **not** ADR-021, which is where it stopped. None are recoverable. No schema change; head stays `0007_capture_pause` |
 | 058 | The spectrogram's detection labels are placed, not drawn where they fall | active; a truncated species name can read as a different species, so a dropped label is the honest failure |
 | 059 | The clip archive is measured off the event loop, because a status snapshot must not walk a filesystem | active |
+| 060 | A read that never returns is a dead stream, not a slow one | active; the wedge itself remains unexplained, and its cost is attributed by ADR-061 |
+| 061 | An operator-set keep flag replaces the computed exemplar rule | active; supersedes ADR-026's first/best-of-species exemption; deployment and on-station verification pending |
 
 ## ADR-001: Single exclusive audio capture owner
 
@@ -6808,3 +6810,213 @@ left the USB bus — no `dmesg` event since 8 August, autosuspend off — and
 ADR makes the station survive it, not prevent it. Related and also open: gap rows
 arrive in pairs exactly `retention_interval_s` apart, so the retention sweep is
 costing about 7 s of audio an hour (§1e).
+
+## ADR-061: An operator-set keep flag replaces the computed exemplar rule
+
+**Status:** active. Removes `RetentionSweeper._exemplar_detection_ids()`;
+supersedes ADR-026's first/best-of-species exemption; deployment and
+on-station verification pending (Task 6 of the implementing plan is
+documentation only, by the controller's instruction).
+
+**The measurement.** `_exemplar_detection_ids()` ran first inside `sweep()`,
+before any deadline check: an unbounded `DISTINCT` join across every live
+`media_asset` — ~46,000 rows, seven columns including the `native_result` JSON
+blob — materialised into Python so first-of-species/best-of-species ranking
+could be done in a loop. Measured on the station: **2.978 s**, against a
+`retention_batch_budget_s` of **1.5 s**.
+
+**Three failures from one query.**
+
+1. **Retention never deleted a single file, nine days past its threshold.**
+   The budget was spent in the preamble, before the first tier's guard ran, so
+   `_strip_native` was never entered. `complete=False` and a flat zero
+   deletion count read identically whether a sweep merely ran out of time with
+   real work left, or never started at all — which is why nine days of this
+   produced no symptom worth noticing.
+2. **~7 s of audio lost per hour**, which cost the 72-hour soak (2026-08-10 to
+   2026-08-13) its continuity gate: **99.865%** against a **≥99.9%**
+   criterion (`MILESTONE_STATUS.md`, Milestone 4.5). ~3 s of GIL-holding ORM
+   work every 300 s starved the capture event loop long enough to overrun the
+   0.5 s ALSA ring. `capture_gap` rows arrive in pairs ~300 s apart, matching
+   `retention_interval_s` to the second — the same beat `HANDOVER.md` §1e
+   names.
+3. **The 2026-08-14 wedge.** Each overrun forces an `snd_pcm_prepare()`
+   device restart — roughly 12 an hour — and one of those did not come back,
+   leaving the microphone deaf for **3 h 35 min** (ADR-060, `HANDOVER.md`
+   §1e). The coupling to this query is proven to the millisecond, not merely
+   correlated: the sweep began at **02:18:19.893** with **`duration_s`
+   `2.6608`**, and the first `-EIO` landed at **02:18:22.552** — 2.66 s later,
+   the length of the sweep itself. ADR-060 made the wedge survivable (bounded
+   reads, a watchdog, a severity that no longer trusts `capture.state`); this
+   ADR removes the query that was forcing the restarts in the first place.
+   The self-reinforcing shape is worth naming: the query's cost scales with
+   the number of live media assets, which grows precisely because the query
+   was the thing preventing deletion.
+
+**Decision: a human sets `kept`; nothing computes it.** `detection.kept_at`
+(indexed) / `detection.kept_by` replace the first-of-species/best-of-species
+computation. `kept` means **keep forever, until a human removes the flag** —
+set and cleared only through `PUT`/`DELETE /api/v1/detections/{id}/keep`,
+`oo detections keep <id> [--unkeep]`, or the drawer's keep toggle. Every
+tier's candidate query now excludes `kept_at IS NOT NULL`: `_strip_native`
+(7 d), `_strip_unkept` (renamed from `_strip_non_exemplar`, 30 d),
+`_strip_expired` (90 d), and — the one place a computed exemplar rule never
+reached — `_watermark_reclaim`. A kept recording survives the disk running
+out, not just the calendar.
+
+**Why a human flag beats a computed one.** The computed rule answered "is
+this recording special", cheaply for one row but expensively for the whole
+table, and an operator had no way to add to or override its judgement. A flag
+answers "did someone decide to keep this", is one indexed boolean check per
+row, and puts the judgement where it belongs — with the person who heard the
+recording, not a query. The cost of a wrong computed answer was silent (a
+recording quietly not exempted, or exempted for the wrong reason); the cost
+of a wrong flag is visible and correctable by the same operator who set it.
+
+**Why first-of-species is backfilled and best is not.** The `0008_detection_kept`
+migration (Alembic revision `0008_detection_kept`, parent
+`0007_capture_pause`) stamps `kept_at`/`kept_by = 'exemplar-backfill'` on
+exactly one detection per species key — the earliest by `event_start_utc`,
+ranked with a `ROW_NUMBER()` window function rather than `GROUP BY … HAVING
+event_start_utc = MIN(…)`, because two detectors can fire on the same window
+and share an `event_start_utc` to the second, which would otherwise stamp
+both rows for one species. A first-ever record of a species at this station
+cannot be recreated once its clip is gone. A *better* recording, by contrast,
+may come along at any time — "best" was always a moving target the computed
+rule re-evaluated every sweep, and there is no equivalent loss in leaving it
+unflagged: nothing is destroyed by not backfilling it, and a human can mark a
+genuinely exceptional recording kept the moment they hear it. The backfill
+set is therefore smaller than the ~177 recordings the old computation
+protected, which was the union of first and best.
+
+**Why kept survives the watermark, and what that costs.** ADR-026's
+watermark tier is this project's one hard safety valve: disk space wins over
+any retention preference, so that clip writes never fail outright. Making
+`kept` exempt there too means a station whose operator keeps enough evidence
+can, in principle, stay over its watermark with nothing left to reclaim.
+`_watermark_reclaim` now reports this rather than overriding it:
+`RetentionReport.watermark_blocked_by_kept` sums the bytes held by kept,
+un-reclaimed assets, computed only when the watermark is actually exceeded so
+a healthy station never pays for the query. It surfaces in
+`housekeeping.retention_not_keeping_up`, `GET /api/v1/retention/status`, and
+as a named `/api/v1/health` `problems` entry naming the byte figure and that
+these are operator-kept recordings the sweep will not delete. The operator
+gets a loud health problem instead of a silently deleted keep, which is the
+trade this project's charter requires: a human's decision outranks the
+sweep's convenience. `held` (ADR-043) is unchanged and deliberately narrower
+— it exempts the three age-based tiers but not the watermark, since it is a
+review-workflow marker ("needs my ear"), not a permanent keep; an operator
+who needs the watermark exemption too must mark the detection `kept`.
+
+**Breaking metric rename, accepted deliberately.**
+`oo_retention_exemplar_detections` becomes `oo_retention_kept_detections`,
+with **no backwards-compatible alias**. Any Home Assistant sensor or Grafana
+panel bound to the old name breaks on this deploy. This was a deliberate
+choice, not an oversight: the number now counts something genuinely
+different — detections a human chose to keep, not detections a computation
+decided were exemplary — and giving it the old, familiar name over changed
+semantics would be exactly the kind of dishonest instrumentation this
+project's counters exist to refuse (see `MEMORY.md`,
+"Measure the instrument, not just the thing"). `RetentionReport.exemplar_detections`
+is renamed to `kept_detections` for the same reason, and every consumer
+(`api/app.py`, `api/metrics.py`, `cli.py`, `RetentionPanel.tsx`) was updated
+in the same commit so nothing reads the old field name.
+
+**A deviation from the approved design, ruled on here.**
+`docs/superpowers/specs/2026-08-14-keep-flag-retention-design.md` specified
+that a sweep exiting with budget unspent while candidates remain should log a
+`WARN` enriching the existing `housekeeping.retention_not_keeping_up` event.
+The implementation instead adds a **separate ERROR event**,
+`housekeeping.retention_never_reached_a_tier`, gated on
+`len(result.tiers_skipped) == 4`, and leaves `retention_not_keeping_up`
+untouched. **Ruling: accepted as an improvement on the design doc, not a
+regression from it.** The existing WARN fired every 300 s for nine days
+during the incident this ADR fixes, and nobody noticed — the noise was *why*
+the failure hid, not despite it. Enriching a WARN that already fires
+routinely would have reproduced the same blind spot with more fields
+attached. An event that fires only when a sweep did no work at all — every
+tier skipped, not merely a backlog trailing off — is rare enough in a healthy
+station's steady state to mean something when it does fire.
+`len(tiers_skipped) == 4` is sound as the gate specifically because the
+watermark tier's guard has no config-disable clause, unlike the other three
+(each can be turned off by setting its `*_days` to 0): all four can only
+land in `tiers_skipped` together through genuine deadline or budget
+exhaustion, never through configuration. `RetentionReport.preamble_s` (the
+monotonic time from sweep start to the first tier guard) rides alongside
+both events and the new `oo_retention_preamble_seconds` gauge, so a future
+preamble regression is visible as a number close to `batch_budget_s`, not
+just as an absence of deletions.
+
+**Names that outlived the concept — left deliberately, decision deferred to
+the operator.** The tier key `tier="exemplar_only"` (a Prometheus label and
+an `/api/v1/retention/status` field) and the setting
+`retention_exemplar_only_days` (env var `OO_RETENTION_EXEMPLAR_ONLY_DAYS`,
+present in the live station's `runtime.env`) both still name the mechanism
+this ADR removes — the 90-day tier now exempts `kept`, not "exemplars".
+Renaming either is a second breaking metric change (`exemplar_only` is a
+label value scraped by anything graphing per-tier deletions) plus a hand-edit
+to an operator-owned env file this repository does not control. That is a
+cost worth naming, not paying silently: this ADR leaves both names as they
+are and records the mismatch here so it is found by reading this document,
+not rediscovered as a mystery by whoever next greps `retention.py` for
+"exemplar" and finds nothing computing one.
+
+**Known asymmetry, out of scope here.** `_watermark_reclaim` already ignored
+`held_ids` before this change — a held-but-not-kept recording could be
+reclaimed at the watermark. This ADR makes `kept` exempt there; it
+deliberately leaves `held`'s narrower, unchanged behaviour alone, since
+widening ADR-043's watermark behaviour is a separate decision. An operator
+who needs a hold to survive the watermark must mark it `kept` as well.
+
+**Consequences.** A station that has never once deleted a file (nine days
+overdue) starts deleting again on the next sweep after this deploys. The
+preamble drops from an unbounded ~3 s scan to one indexed `COUNT` and one
+`held_detection_ids` query — small and bounded regardless of table size,
+which also removes the self-reinforcing growth loop. `oo_retention_exemplar_detections`
+disappears from `/metrics`; anything graphing it must be repointed at
+`oo_retention_kept_detections` by hand.
+
+**Rollback.** `.venv/bin/alembic downgrade 0007_capture_pause` drops
+`kept_at`/`kept_by` entirely. **Every operator keep is lost and is not
+recoverable from the code** — export the kept detection ids first:
+
+```bash
+sqlite3 -json data/openobservatory.sqlite \
+  "SELECT id, kept_at, kept_by FROM detection WHERE kept_at IS NOT NULL" \
+  > kept-detections-backup.json
+.venv/bin/alembic downgrade 0007_capture_pause
+sudo systemctl restart open-observatory
+```
+
+Reverting the application code without downgrading the migration is safe on
+its own: `kept_at`/`kept_by` are additive columns and nothing reads them once
+`retention.py`'s exemption clauses are reverted alongside it — but doing that
+without the migration leaves the columns in place unused, which is a valid
+intermediate state, not a hazard.
+
+**Target smoke test**, to run after deploying and before trusting the
+figures:
+
+```bash
+HOST=simon@192.168.1.195 ./deploy/deploy.sh --no-web   # runs alembic upgrade head
+
+curl -s http://192.168.1.195:8080/metrics | grep -E "oo_retention_(files_deleted|kept_detections|preamble_seconds)"
+curl -s http://192.168.1.195:8080/api/v1/retention/status | python3 -m json.tool
+curl -s http://192.168.1.195:8080/api/v1/health | python3 -m json.tool | grep -A3 retention
+```
+
+Pass criteria, none of which may be assumed from the first two alone (Task 6
+of the implementing plan flags this explicitly):
+
+1. `oo_retention_files_deleted_total{tier="native"}` is **non-zero** —
+   deletion has never once happened on this station, so this is the claim
+   that matters most.
+2. Sweep `duration_s` is **inside** `retention_batch_budget_s` (1.5 s), and
+   `complete` is `true`. `preamble_s` should read as a small fraction of the
+   budget, not close to it.
+3. After ~30 minutes, `capture_gap` rows are **no longer arriving in pairs
+   ~300 s apart** (read-only against the station database,
+   `sqlite3.connect('file:...?mode=ro', uri=True)`). If the beat is still
+   there, the sweep is still costing audio and the fix is incomplete — that
+   must be reported plainly rather than reporting (1) and (2) as success on
+   their own.
