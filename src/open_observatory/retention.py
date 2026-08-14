@@ -66,6 +66,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import func, select, tuple_
+from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -349,6 +350,7 @@ class RetentionSweeper:
 
         with self._session_factory() as session:
             current_tier = "preamble"
+            aborted = False
             try:
                 with self._bounded_statements(session, deadline):
                     # A plain indexed count, not the materialised-into-Python
@@ -373,39 +375,48 @@ class RetentionSweeper:
                     # fast one.
                     report.preamble_s = round(time.monotonic() - start_perf, 4)
 
-                    current_tier = "native"
-                    if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
-                        budget = self._strip_native(
-                            session,
-                            report,
-                            now=now,
-                            deadline=deadline,
-                            budget=budget,
-                            dry_run=dry_run,
-                            held_ids=held_ids,
-                        )
-                    else:
-                        report.tiers_skipped.append("native")
-                    current_tier = "unkept"
-                    if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
-                        budget = self._strip_unkept(
-                            session,
-                            report,
-                            now=now,
-                            deadline=deadline,
-                            budget=budget,
-                            dry_run=dry_run,
-                            held_ids=held_ids,
-                        )
-                    else:
-                        report.tiers_skipped.append("unkept")
-                    current_tier = "watermark"
-                    if budget > 0 and time.monotonic() < deadline:
-                        budget = self._watermark_reclaim(
-                            session, report, deadline=deadline, budget=budget, dry_run=dry_run
-                        )
-                    else:
-                        report.tiers_skipped.append("watermark")
+                # C1 (2026-08-14): each tier below arms its own
+                # `_bounded_statements` (inside `_run_tier` for native/unkept,
+                # inline for watermark) and commits its own real work before
+                # returning, rather than sharing one continuous arming across
+                # all three the way the preamble's query above still can
+                # safely (it never mutates anything). Committing per tier is
+                # what removes the cross-tier-autoflush hazard C1 found: a
+                # completed tier has nothing left pending for the *next*
+                # tier's `session.execute()` to autoflush.
+                current_tier = "native"
+                if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
+                    budget = self._strip_native(
+                        session,
+                        report,
+                        now=now,
+                        deadline=deadline,
+                        budget=budget,
+                        dry_run=dry_run,
+                        held_ids=held_ids,
+                    )
+                else:
+                    report.tiers_skipped.append("native")
+                current_tier = "unkept"
+                if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
+                    budget = self._strip_unkept(
+                        session,
+                        report,
+                        now=now,
+                        deadline=deadline,
+                        budget=budget,
+                        dry_run=dry_run,
+                        held_ids=held_ids,
+                    )
+                else:
+                    report.tiers_skipped.append("unkept")
+                current_tier = "watermark"
+                if budget > 0 and time.monotonic() < deadline:
+                    budget = self._watermark_reclaim(
+                        session, report, deadline=deadline, budget=budget, dry_run=dry_run
+                    )
+                else:
+                    report.tiers_skipped.append("watermark")
             except OperationalError as exc:
                 if "interrupted" not in str(getattr(exc, "orig", exc)):
                     # A genuine database error, not our deadline guard --
@@ -414,6 +425,7 @@ class RetentionSweeper:
                 report.interrupted_tier = current_tier
                 report.interrupted_after_s = round(time.monotonic() - start_perf, 4)
                 report.complete = False
+                aborted = True
                 # Every tier at or after the one whose statement was aborted
                 # did not run (or did not finish) this sweep -- record them
                 # the same way an ordinary batch/deadline backlog drain
@@ -433,18 +445,35 @@ class RetentionSweeper:
                     batch_budget_s=self.batch_budget_s,
                 )
 
-            # A dry run still stamps `reclaimed_at` in-memory in `_delete_asset`
-            # -- purely so a later tier's candidate query (which filters on
-            # `reclaimed_at IS NULL`) does not re-offer, and double-count, an
-            # asset an earlier tier already decided on within this same sweep.
-            # Rolling back here is what keeps that staged state from ever
-            # reaching disk, so "dry run" still means nothing is persisted.
-            # An interrupted statement never hands back a row (`.all()` is
-            # all-or-nothing), so there is nothing of its own to roll back --
-            # only earlier tiers' already-flushed work, which this commits.
-            if dry_run:
+            if aborted:
+                # C1: the interrupted tier's own flush/commit (inside
+                # `_run_tier`) may have left this session's transaction
+                # marked rollback-only -- `session.commit()` on that state
+                # raises `PendingRollbackError`, an `InvalidRequestError`
+                # `except OperationalError` above cannot catch, which is
+                # exactly how this used to escape `sweep()` after files were
+                # already gone from disk. `rollback()` is the documented
+                # recovery (SQLAlchemy's own `PendingRollbackError` message
+                # names it) and is always safe here: every earlier tier that
+                # finished already committed its own work in its own
+                # transaction, so this only ever discards the interrupted
+                # tier's own not-yet-committed staging -- and `_run_tier`
+                # guarantees nothing was unlinked for that tier before its
+                # commit succeeded, so nothing durable is lost by discarding
+                # it.
+                session.rollback()
+            elif dry_run:
+                # Nothing above committed anything real (`_run_tier` and
+                # `_watermark_reclaim` both gate their `session.commit()` on
+                # `not dry_run`), but every processed tier's decisions are
+                # still staged in-memory so a later tier's candidate query
+                # would not re-offer one within this same pass. Discard all
+                # of it here, so "dry run" still means nothing persisted.
                 session.rollback()
             else:
+                # Ordinarily a no-op: every tier that ran committed its own
+                # work already. Kept as a safety net, not the load-bearing
+                # commit it used to be.
                 session.commit()
 
         # "Complete" means neither bound was the reason a candidate went
@@ -483,6 +512,81 @@ class RetentionSweeper:
 
     # -- tiers ------------------------------------------------------------
 
+    def _run_tier(
+        self,
+        session: Session,
+        report: RetentionReport,
+        *,
+        tier: str,
+        query: Any,
+        reason: str,
+        deadline: float,
+        budget: int,
+        dry_run: bool,
+    ) -> int:
+        """Fetch one tier's candidates, stage every decision, and commit the
+        whole tier as one transaction *before* unlinking a single file.
+
+        C1 (2026-08-14): this is what replaces the old per-row
+        unlink-then-mark-then-commit-much-later order (see
+        `_stage_delete`'s docstring for the measured failure it caused). The
+        `SELECT`, every row's staging, and the explicit `flush()` all happen
+        inside one `_bounded_statements` arming, so an abort anywhere in
+        this tier's own work -- including its own flush -- propagates out of
+        this call with **no file for this tier unlinked yet**: `to_unlink`
+        is a local list, never consulted by the caller when an exception
+        escapes this method. `session.commit()` deliberately runs *after*
+        that arming exits, not inside it: `_bounded_statements` disarms by
+        calling `set_progress_handler(None, 0)` on the DBAPI connection it
+        captured at entry, and `Session.commit()` checks that connection
+        back into the pool, which turns SQLAlchemy's proxy for it into a
+        dead reference -- disarming against it afterwards raised
+        `AttributeError: 'NoneType' object has no attribute
+        'set_progress_handler'` (caught while writing this fix's own test).
+        `flush()` alone does not release the connection, so committing
+        outside the arm loses nothing: the interruptible part -- the
+        autoflush of every staged `UPDATE` -- already happened above, and a
+        commit with nothing left to flush is an ordinary fast `COMMIT`. A
+        tier's commit succeeding here means its work is durable before the
+        *next* tier's `session.execute()` runs, which is also what removes
+        the cross-tier-autoflush hazard this bug depended on: there is
+        nothing of a completed tier's left pending for a later tier to
+        autoflush.
+        """
+        to_unlink: list[tuple[uuid.UUID, Path]] = []
+        with self._bounded_statements(session, deadline):
+            for asset, detection_id in session.execute(query).all():
+                if time.monotonic() >= deadline or budget <= 0:
+                    break
+                staged = self._stage_delete(
+                    report,
+                    asset,
+                    detection_id=detection_id,
+                    tier=tier,
+                    reason=reason,
+                    dry_run=dry_run,
+                )
+                if staged is not None:
+                    to_unlink.append(staged)
+                budget -= 1
+            # Explicit, and still inside the armed block: this is the flush
+            # that used to happen implicitly, unarmed, at the start of the
+            # *next* tier's query (or not at all until the final commit).
+            # Doing it here, ourselves, is what makes it this tier's own
+            # concern instead of a later, unrelated caller's.
+            session.flush()
+        # Outside the arm on purpose -- see the docstring above.
+        if not dry_run:
+            session.commit()
+        # Only reached if nothing above raised -- every row staged above is
+        # now durably committed (or, dry run, safely never going to be).
+        # Unlinking is pure filesystem I/O, not a database statement, so it
+        # has nothing to do with the deadline guard armed above.
+        if not dry_run:
+            for asset_id, path in to_unlink:
+                self._unlink_staged(asset_id, path)
+        return budget
+
     def _strip_native(
         self,
         session: Session,
@@ -507,22 +611,19 @@ class RetentionSweeper:
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
         query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
-        for asset, detection_id in session.execute(query).all():
-            if time.monotonic() >= deadline or budget <= 0:
-                break
-            self._delete_asset(
-                report,
-                asset,
-                detection_id=detection_id,
-                tier="native",
-                reason=(
-                    f"age >= {self.native_days}d: native clip superseded by "
-                    "audible-only tier"
-                ),
-                dry_run=dry_run,
-            )
-            budget -= 1
-        return budget
+        return self._run_tier(
+            session,
+            report,
+            tier="native",
+            query=query,
+            reason=(
+                f"age >= {self.native_days}d: native clip superseded by "
+                "audible-only tier"
+            ),
+            deadline=deadline,
+            budget=budget,
+            dry_run=dry_run,
+        )
 
     def _strip_unkept(
         self,
@@ -547,19 +648,16 @@ class RetentionSweeper:
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
         query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
-        for asset, detection_id in session.execute(query).all():
-            if time.monotonic() >= deadline or budget <= 0:
-                break
-            self._delete_asset(
-                report,
-                asset,
-                detection_id=detection_id,
-                tier="unkept",
-                reason=f"age >= {self.audible_only_days}d and not kept",
-                dry_run=dry_run,
-            )
-            budget -= 1
-        return budget
+        return self._run_tier(
+            session,
+            report,
+            tier="unkept",
+            query=query,
+            reason=f"age >= {self.audible_only_days}d and not kept",
+            deadline=deadline,
+            budget=budget,
+            dry_run=dry_run,
+        )
 
     def _watermark_reclaim(
         self,
@@ -577,21 +675,7 @@ class RetentionSweeper:
         if ratio <= self.watermark_ratio:
             return budget
         bytes_over = int((ratio - self.watermark_ratio) * usage.total)
-        # Computed only now, past the early return above: a healthy station
-        # (the common case, every tick) never pays for this query. This is
-        # not "how much more would close the gap" -- it is every kept,
-        # un-reclaimed byte this tier is refusing to touch, because that is
-        # the number an operator needs to decide whether to intervene, not
-        # an estimate of how close the safety valve came to running dry.
-        report.watermark_blocked_by_kept = int(
-            session.execute(
-                select(func.coalesce(func.sum(orm.MediaAsset.byte_length), 0))
-                .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
-                .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
-                .where(orm.MediaAsset.reclaimed_at.is_(None))
-                .where(orm.Detection.kept_at.is_not(None))
-            ).scalar_one()
-        )
+
         freed = 0
         query = (
             select(orm.MediaAsset, orm.Detection.id)
@@ -602,28 +686,115 @@ class RetentionSweeper:
             .order_by(orm.MediaAsset.created_at.asc())
             .limit(budget)
         )
-        for asset, detection_id in session.execute(query).all():
-            if time.monotonic() >= deadline or budget <= 0 or freed >= bytes_over:
-                break
-            self._delete_asset(
-                report,
-                asset,
-                detection_id=detection_id,
-                tier="watermark",
-                reason=(
-                    f"disk usage {ratio:.1%} exceeds watermark "
-                    f"{self.watermark_ratio:.0%}: oldest-first reclaim, tier "
-                    "ignored, but kept recordings are never reclaimed"
-                ),
-                dry_run=dry_run,
-            )
-            freed += asset.byte_length
-            budget -= 1
+        reason = (
+            f"disk usage {ratio:.1%} exceeds watermark "
+            f"{self.watermark_ratio:.0%}: oldest-first reclaim, tier "
+            "ignored, but kept recordings are never reclaimed"
+        )
+        to_unlink: list[tuple[uuid.UUID, Path]] = []
+        with self._bounded_statements(session, deadline):
+            for asset, detection_id in session.execute(query).all():
+                if time.monotonic() >= deadline or budget <= 0 or freed >= bytes_over:
+                    break
+                staged = self._stage_delete(
+                    report,
+                    asset,
+                    detection_id=detection_id,
+                    tier="watermark",
+                    reason=reason,
+                    dry_run=dry_run,
+                )
+                if staged is not None:
+                    to_unlink.append(staged)
+                freed += asset.byte_length
+                budget -= 1
+            session.flush()
+        # `commit()` runs outside the arm, same reason as `_run_tier` (see
+        # its docstring): committing inside would check the captured DBAPI
+        # connection back into the pool before `_bounded_statements`'
+        # `finally` tries to disarm the (by then stale) reference to it.
+        if not dry_run:
+            session.commit()
+        if not dry_run:
+            for asset_id, path in to_unlink:
+                self._unlink_staged(asset_id, path)
+
+        # I3 (final pre-merge review, 2026-08-14): this used to run *before*
+        # the reclaim loop above -- the observability query ahead of the
+        # work it observes, the same structural mistake this whole branch
+        # exists to correct (ADR-061's own preamble/statement-timeout
+        # lesson), and it only ever runs on the one tick that least wants an
+        # extra unbounded-feeling query: disk already over the watermark.
+        # Now run after the reclaim above, so an abort here costs only the
+        # reporting figure, never the reclaim itself.
+        #
+        # Measured (`EXPLAIN QUERY PLAN`, a 119,476-media_asset /
+        # 46,000-detection / 112-kept synthetic fixture matching the
+        # station's own counts, no `ANALYZE` run -- SQLite has no stats
+        # table without one, which is the state a station actually runs in):
+        # rewriting which table the ORM `select()` names first
+        # (`select_from(Detection)` vs. `select_from(MediaAsset)`) changes
+        # nothing -- SQLite's cost-based planner reorders joins on its own
+        # estimates regardless of `FROM`-clause order, and both shapes
+        # compiled to the identical plan, `SCAN detection_media`, **0.20 s**,
+        # scaling with every live asset. `Session.with_hint()` compiles to
+        # nothing on SQLAlchemy's SQLite dialect (confirmed: no
+        # `get_select_hint_text` override exists), so the only way to force
+        # the planner onto `ix_detection_kept_at_partial` is SQLite's own
+        # `INDEXED BY` syntax, which SQLAlchemy has no portable spelling
+        # for -- hence the raw `text()` below, gated to the SQLite dialect,
+        # with the portable ORM query kept for anything else (PostgreSQL,
+        # ADR-007, has no `INDEXED BY` equivalent and its planner is
+        # cost-based enough not to need one). Measured with the hint:
+        # `SEARCH detection USING INDEX ix_detection_kept_at_partial
+        # (kept_at>?)`, **0.0004 s** -- about 500x, and scaling with the 112
+        # kept rows the query actually cares about, not the 119,476 live
+        # ones. See `docs/architecture/ADRS.md` ADR-061 fourth correction.
+        if time.monotonic() < deadline:
+            try:
+                with self._bounded_statements(session, deadline):
+                    if session.get_bind().dialect.name == "sqlite":
+                        kept_bytes_query: Any = sa_text(
+                            "SELECT coalesce(sum(media_asset.byte_length), 0) "
+                            "FROM detection INDEXED BY ix_detection_kept_at_partial "
+                            "JOIN detection_media "
+                            "ON detection_media.detection_id = detection.id "
+                            "JOIN media_asset "
+                            "ON media_asset.id = detection_media.media_asset_id "
+                            "WHERE detection.kept_at IS NOT NULL "
+                            "AND media_asset.reclaimed_at IS NULL"
+                        )
+                    else:
+                        kept_bytes_query = (
+                            select(func.coalesce(func.sum(orm.MediaAsset.byte_length), 0))
+                            .select_from(orm.Detection)
+                            .join(
+                                orm.DetectionMedia,
+                                orm.DetectionMedia.detection_id == orm.Detection.id,
+                            )
+                            .join(
+                                orm.MediaAsset,
+                                orm.MediaAsset.id == orm.DetectionMedia.media_asset_id,
+                            )
+                            .where(orm.Detection.kept_at.is_not(None))
+                            .where(orm.MediaAsset.reclaimed_at.is_(None))
+                        )
+                    report.watermark_blocked_by_kept = int(
+                        session.execute(kept_bytes_query).scalar_one()
+                    )
+            except OperationalError as exc:
+                if "interrupted" not in str(getattr(exc, "orig", exc)):
+                    raise
+                # The reclaim above already ran and already committed --
+                # only this reporting figure is stale. Left at its previous
+                # value (0 on a sweep that never got this far before) rather
+                # than guessed at.
+                log.warning("retention.watermark_blocked_by_kept_query_interrupted")
         return budget
 
     # -- mechanics ------------------------------------------------------
 
-    def _delete_asset(
+    def _stage_delete(
         self,
         report: RetentionReport,
         asset: orm.MediaAsset,
@@ -632,7 +803,47 @@ class RetentionSweeper:
         tier: str,
         reason: str,
         dry_run: bool,
-    ) -> None:
+    ) -> tuple[uuid.UUID, Path] | None:
+        """Record a deletion decision and mark the row reclaimed -- but never
+        touch the filesystem. Returns the asset id and path still needing an
+        `_unlink_staged()` call once this tier's transaction is durably
+        committed, or `None` when there is nothing to unlink (dry run, or the
+        file was already gone).
+
+        **C1, final pre-merge review (2026-08-14): row-committed-before-
+        unlinked, on purpose, replacing unlink-then-mark-then-commit-much-
+        later.** The previous order unlinked the file first and left
+        `reclaimed_at` staged in the ORM, to be persisted either by the next
+        tier's autoflush or by `sweep()`'s single commit at the very end.
+        Measured, with real files, over 8,000 candidates: whenever the
+        per-statement deadline guard (`_bounded_statements`) happened to
+        abort mid-*flush* rather than mid-*read* --
+
+            budget=0.467s -> PendingRollbackError; rows marked reclaimed=0; files gone=8000
+            budget=0.518s -> ok deleted=7400;      rows marked reclaimed=7400; files gone=7400
+            budget=0.529s -> PendingRollbackError; rows marked reclaimed=0; files gone from disk=8000
+
+        `PendingRollbackError` is an `InvalidRequestError`, not an
+        `OperationalError`, raised by the *later*, unrelated
+        `session.commit()` -- by which point the files named by the failed
+        flush were already unlinked. That is ADR-057's defect reintroduced
+        verbatim: a live row (`reclaimed_at IS NULL`) naming a file that is
+        not on disk, undetectable except by the reconciliation command that
+        incident needed. A comment used to sit here asserting the opposite
+        as settled fact ("there is nothing of its own to roll back"); it was
+        wrong, and this replaces it with the measurement.
+
+        Committing the row *before* unlinking means an abort here can only
+        ever cost a **deletion** -- the file stays on disk, retried next
+        sweep -- never a **record of one**. ADR-057 already answered which
+        of those two failures this project prefers: a live row whose file
+        happens to still be present is a few wasted kilobytes, discoverable
+        by `find_orphans`; a live row whose file is gone is undetectable
+        evidence loss, which is what actually happened and took a dedicated
+        reconciliation command to fix. See `_unlink_staged` for the other
+        half -- what happens if the unlink itself fails *after* the commit
+        that authorised it.
+        """
         path = Path(asset.storage_uri)
         existed = path.exists()
         size = int(asset.byte_length)
@@ -649,7 +860,7 @@ class RetentionSweeper:
         )
         report.decisions.append(decision)
         log.info(
-            "retention.would_delete" if dry_run else "retention.delete",
+            "retention.would_delete" if dry_run else "retention.staged_delete",
             asset_id=str(asset.id),
             detection_id=str(detection_id) if detection_id else None,
             kind=asset.kind,
@@ -665,38 +876,45 @@ class RetentionSweeper:
         if not existed:
             report.already_missing += 1
 
-        if dry_run:
-            # No file I/O and nothing persisted (see the `sweep()` rollback),
-            # but the in-memory flag still gets set so a later tier's
-            # candidate query -- which filters on `reclaimed_at IS NULL` --
-            # does not re-offer this same asset and double-count it.
-            asset.reclaimed_at = self._clock()
-            asset.reclaim_reason = tier
-            return
-
-        if existed:
-            try:
-                path.unlink()
-            except OSError as exc:
-                log.warning(
-                    "retention.unlink_failed",
-                    asset_id=str(asset.id),
-                    path=str(path),
-                    error=str(exc),
-                )
-                # Leave reclaimed_at unset: an unlink failure is retried next
-                # sweep rather than silently recorded as done.
-                return
-            parent = path.parent
-            if parent != self.clip_dir and parent.is_dir():
-                try:
-                    if not any(parent.iterdir()):
-                        parent.rmdir()
-                except OSError:
-                    pass
-
+        # Staged in-memory either way -- dry run or real -- so a later
+        # tier's candidate query (`reclaimed_at IS NULL`) never re-offers,
+        # and double-counts, an asset this sweep already decided on.
         asset.reclaimed_at = self._clock()
         asset.reclaim_reason = tier
+
+        if dry_run or not existed:
+            return None
+        return asset.id, path
+
+    def _unlink_staged(self, asset_id: uuid.UUID, path: Path) -> None:
+        """Remove a file whose row is already durably committed `reclaimed`.
+
+        Called only after the tier's transaction has committed (see
+        `_run_tier`), so a failure here -- the file already gone, a
+        permissions error -- leaves an **orphan**: a reclaimed row whose file
+        still happens to exist. That is the failure direction `_stage_delete`
+        chooses on purpose (see its docstring); the row is not, and cannot
+        be, un-committed from here to "retry next sweep" the way the old
+        unlink-first order could. An orphan wastes disk space, discoverable
+        with `find_orphans`; it does not lie about evidence being present.
+        """
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.warning(
+                "retention.unlink_failed",
+                asset_id=str(asset_id),
+                path=str(path),
+                error=str(exc),
+            )
+            return
+        parent = path.parent
+        if parent != self.clip_dir and parent.is_dir():
+            try:
+                if not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                pass
 
     def _disk_used_ratio(self) -> float | None:
         try:

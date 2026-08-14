@@ -748,12 +748,17 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _e("retention_native_days", "retention", label="keep full-rate audio for",
        unit="days", minimum=0, maximum=3650,
        help="After this, the native WAV is deleted and the audible rendering "
-            "survives."),
+            "survives. 0 disables this tier entirely -- combined with 0 "
+            "below, nothing is ever deleted by age (the retired 90-day tier "
+            "is gone, ADR-061 third addendum), only the disk watermark, "
+            "which a rejected settings write warns you about."),
     _e("retention_audible_only_days", "retention", label="keep every audible clip for",
        unit="days", minimum=0, maximum=3650,
        help="After this, only detections an operator has explicitly kept "
             "(ADR-061) keep their audio. Detection rows -- species, times, "
-            "scores -- are never deleted by any tier. Only the bytes age out."),
+            "scores -- are never deleted by any tier. Only the bytes age out. "
+            "0 disables this tier entirely -- combined with 0 above, nothing "
+            "is ever deleted by age, only the disk watermark."),
     _e("retention_watermark_ratio", "retention", label="reclaim above disk usage",
        minimum=0.1, maximum=0.99,
        help="Continuous oldest-first reclaim above this fraction of the clip "
@@ -1258,6 +1263,18 @@ def validate_merged(settings: Settings, updates: dict[str, Any]) -> None:
         ("retention_native_days", "retention_audible_only_days"),
         merged["retention_native_days"] <= merged["retention_audible_only_days"],
         "the native tier must expire no later than the audible tier",
+    )
+    rule(
+        ("retention_native_days", "retention_audible_only_days"),
+        not (
+            merged["retention_native_days"] == 0
+            and merged["retention_audible_only_days"] == 0
+        ),
+        "disabling both age tiers leaves nothing that ever deletes clips by "
+        "age -- the retired 90-day tier is gone (ADR-061 third addendum), so "
+        "only the disk watermark reclaims space, and kept/held clips are "
+        "exempt from that too; if you mean to keep every clip forever, "
+        "raise the disk watermark instead of zeroing both of these",
     )
     rule(
         ("refinement_window_start_hour_utc", "refinement_window_end_hour_utc"),

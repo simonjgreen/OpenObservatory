@@ -143,10 +143,17 @@ def purge_human_audio(
 ) -> PurgeReport:
     """Find and (unless ``dry_run``) delete human-sound evidence.
 
-    Deliberately mirrors ``retention.RetentionSweeper._delete_asset``: the
-    file is unlinked first and only then is the row marked, so an unlink
-    failure leaves ``reclaimed_at`` unset and the asset is retried next run
-    rather than being recorded as done while the audio is still on disk.
+    Unlinks the file first and only then marks the row, so an unlink failure
+    leaves ``reclaimed_at`` unset and the asset is retried next run rather
+    than being recorded as done while the audio is still on disk. This is
+    the *opposite* order to ``retention.RetentionSweeper``'s tiered sweep
+    (see ``_stage_delete``'s docstring, C1, 2026-08-14): that sweep commits a
+    whole tier's rows before unlinking any of them, because a single slow
+    statement there can be aborted mid-flight by its own statement-timeout
+    guard. This function has no such guard and processes one row at a time
+    inside its own commit, so the two failure directions are not
+    comparable -- there is no batch of already-unlinked files whose commit
+    can still fail out from under it.
     """
     report = PurgeReport(dry_run=dry_run)
     with session_factory() as session:

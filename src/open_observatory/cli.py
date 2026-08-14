@@ -1241,9 +1241,12 @@ def detections_keep(
 ) -> None:
     """Mark a detection kept forever, or clear that flag (ADR-061).
 
-    `kept` means kept until a human removes it: age, the 90-day expiry and
-    disk pressure never clear it once set (see the four retention tiers'
-    exemption and the watermark's refusal to delete kept evidence, Tasks 1-4).
+    `kept` means kept until a human removes it: age and disk pressure never
+    clear it once set (see the retention tiers' exemption and the
+    watermark's refusal to delete kept evidence, Tasks 1-4). The 90-day tier
+    named in earlier versions of this help text is gone -- retired as dead
+    code, not merely renamed (ADR-061 third addendum); there are three
+    tiers now: native, unkept, and the watermark.
     This is the CLI half of the operator surface for that flag, alongside
     `PUT`/`DELETE /api/v1/detections/{id}/keep` and the drawer toggle.
 

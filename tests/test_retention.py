@@ -13,6 +13,7 @@ A fake clock (`clock=lambda: FIXED_NOW`) makes every age deterministic:
 
 from __future__ import annotations
 
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +26,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
+import open_observatory.retention as retention_module
 from open_observatory.config import REPO_ROOT
 from open_observatory.db import models as orm
 from open_observatory.db.session import create_all, init_engine, session_scope
@@ -185,6 +187,126 @@ def _bulk_seed_native_candidates(
             dict(
                 id=asset_id,
                 kind="evidence_native",
+                storage_uri=f"/nonexistent/{detection_id}.wav",
+                mime_type="audio/wav",
+                byte_length=1024,
+                sha256="0" * 64,
+            )
+        )
+        links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
+    session.execute(sa.insert(orm.Detection), detections)
+    session.execute(sa.insert(orm.MediaAsset), assets)
+    session.execute(sa.insert(orm.DetectionMedia), links)
+
+
+def _bulk_seed_real_native_candidates(
+    session, station_id: uuid.UUID, detector_id: uuid.UUID, clip_dir: Path, *, count: int
+) -> None:
+    """Like `_bulk_seed_native_candidates`, but with a real (tiny) file
+    written for every row, old enough (100 days) to sort first in
+    `_strip_native`'s ascending `event_start_utc` scan ahead of anything
+    seeded at the default 8-day age -- so this batch, not some other
+    candidate set, is what that tier actually processes first.
+    """
+    event_start = FIXED_NOW - timedelta(days=100)
+    day_dir = Path(clip_dir) / event_start.strftime("%Y-%m-%d")
+    day_dir.mkdir(parents=True, exist_ok=True)
+    detections = []
+    assets = []
+    links = []
+    for i in range(count):
+        detection_id = uuid.uuid4()
+        asset_id = uuid.uuid4()
+        path = day_dir / f"{detection_id}_evidence_native.wav"
+        path.write_bytes(b"\x00" * 64)
+        detections.append(
+            dict(
+                id=detection_id,
+                station_id=station_id,
+                detector_id=detector_id,
+                stream_id=uuid.uuid4(),
+                window_id=uuid.uuid4(),
+                event_start_utc=event_start - timedelta(seconds=i),
+                event_end_utc=event_start - timedelta(seconds=i) + timedelta(seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label="event",
+                common_name="Robin",
+                scientific_name="Erithacus rubecula",
+                canonical_taxon_id=None,
+                rank=None,
+                taxonomic_group="bird",
+                score=0.5,
+                calibrated_probability=None,
+                peak_frequency_hz=None,
+                native_result={},
+                kept_at=None,
+                kept_by=None,
+            )
+        )
+        assets.append(
+            dict(
+                id=asset_id,
+                kind="evidence_native",
+                storage_uri=str(path),
+                mime_type="audio/wav",
+                byte_length=64,
+                sha256="0" * 64,
+            )
+        )
+        links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
+    session.execute(sa.insert(orm.Detection), detections)
+    session.execute(sa.insert(orm.MediaAsset), assets)
+    session.execute(sa.insert(orm.DetectionMedia), links)
+
+
+def _bulk_seed_unkept_candidates(
+    session, station_id: uuid.UUID, detector_id: uuid.UUID, *, count: int
+) -> None:
+    """Like `_bulk_seed_native_candidates`, but old enough for `_strip_unkept`
+    (30 d) and a non-native ``kind`` so `_strip_native`'s
+    ``kind.in_(NATIVE_KINDS)`` filter excludes them -- these rows must only
+    ever be offered to the *second* tier, never the first, so a test can
+    force a genuinely slow statement specifically in `_strip_unkept` while
+    a small, separate batch of real native-tier deletions has already run
+    and staged real file removals ahead of it in the same sweep.
+    """
+    event_start = FIXED_NOW - timedelta(days=31)
+    detections = []
+    assets = []
+    links = []
+    for i in range(count):
+        detection_id = uuid.uuid4()
+        asset_id = uuid.uuid4()
+        detections.append(
+            dict(
+                id=detection_id,
+                station_id=station_id,
+                detector_id=detector_id,
+                stream_id=uuid.uuid4(),
+                window_id=uuid.uuid4(),
+                event_start_utc=event_start - timedelta(seconds=i),
+                event_end_utc=event_start - timedelta(seconds=i) + timedelta(seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label="event",
+                common_name="Robin",
+                scientific_name="Erithacus rubecula",
+                canonical_taxon_id=None,
+                rank=None,
+                taxonomic_group="bird",
+                score=0.5,
+                calibrated_probability=None,
+                peak_frequency_hz=None,
+                native_result={},
+                kept_at=None,
+                kept_by=None,
+            )
+        )
+        assets.append(
+            dict(
+                id=asset_id,
+                kind="playback",
                 storage_uri=f"/nonexistent/{detection_id}.wav",
                 mime_type="audio/wav",
                 byte_length=1024,
@@ -913,6 +1035,57 @@ class TestWatermarkReclaim:
             oldest_reclaimed = _asset(session, fresh_but_oldest["evidence_native"]).reclaimed_at
             assert oldest_reclaimed is not None
 
+    def test_blocked_by_kept_query_uses_the_partial_index_hint(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """I3 (final pre-merge review, 2026-08-14): `select_from(Detection)`
+        alone does not change SQLite's plan -- confirmed on a station-sized
+        fixture, both shapes compiled to `SCAN detection_media` -- so the
+        query must actually carry SQLite's `INDEXED BY` syntax to reach
+        `ix_detection_kept_at_partial`. `Session.with_hint()` compiles to
+        nothing on SQLAlchemy's SQLite dialect, so this only passes if the
+        raw-SQL path (gated to the SQLite dialect) is really taken.
+        """
+        import shutil as shutil_module
+
+        import sqlalchemy.event as sa_event
+
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=0.1,
+                kinds=("evidence_native",),
+                kept=True,
+            )
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        from open_observatory.db.session import _engine
+
+        statements: list[str] = []
+
+        def capture(conn, cursor, statement, *_a):
+            statements.append(statement)
+
+        sa_event.listen(_engine, "before_cursor_execute", capture)
+        try:
+            report = _sweeper(db, watermark_ratio=0.85).sweep()
+        finally:
+            sa_event.remove(_engine, "before_cursor_execute", capture)
+
+        assert report.watermark_blocked_by_kept > 0
+        assert any(
+            "INDEXED BY ix_detection_kept_at_partial" in s for s in statements
+        ), "the blocked-by-kept query did not use the partial index hint"
+
     def test_below_watermark_does_not_touch_fresh_clips(self, db, station_and_detector) -> None:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
@@ -1317,3 +1490,132 @@ class TestStatementTimeout:
         with session_scope() as session:
             count = session.execute(sa.select(sa.func.count()).select_from(orm.Detection)).scalar_one()
         assert count == n
+
+
+class TestAbortAfterRealDeletion:
+    """C1 (final pre-merge review, 2026-08-14): the abort handler is armed
+    across an entire sweep's tier sequence, and the session it runs against
+    has `autoflush=True` (SQLAlchemy's default, `db/session.py` never turns
+    it off). `_delete_asset` unlinks a file *before* staging
+    `asset.reclaimed_at` in the ORM, and that staged (uncommitted) change
+    used to sit pending until either the next tier's own `session.execute()`
+    autoflushed it, or the sweep's single commit at the very end. If the
+    deadline expired during that autoflush, SQLAlchemy marked the session
+    rollback-only; the later `session.commit()` then raised
+    `sqlalchemy.exc.PendingRollbackError` -- an `InvalidRequestError`, not an
+    `OperationalError` -- which escaped `sweep()` entirely, after the file
+    was already gone from disk. Reproduced here with real files unlinked by
+    a small native-tier batch, followed by a genuinely slow `_strip_unkept`
+    statement (20,000 bulk-seeded rows) forced to trip the same
+    `batch_budget_s` deadline -- exactly ADR-057's defect: a live row
+    claiming evidence that is not on disk.
+    """
+
+    def test_an_abort_during_the_next_tiers_autoflush_never_leaves_a_file_gone_with_its_row_unmarked(
+        self, db, station_and_detector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uses the *real* abort mechanism (`_bounded_statements`'s SQLite
+        `progress_handler`) rather than mocking it away, but controls
+        deterministically -- by counting only the `time.monotonic()` calls
+        made from inside `_past_deadline` (the progress-handler callback
+        itself, identified by stack frame, distinct from the ordinary
+        per-row/guard budget checks elsewhere in `sweep()`) -- exactly which
+        SQLite progress-handler tick the deadline appears to expire on. A
+        wall-clock race (as in `TestStatementTimeout`) cannot target "the
+        autoflush of the *previous* tier's `UPDATE`s specifically, not the
+        `SELECT` that follows it": that window is a handful of VM-instruction
+        ticks wide out of hundreds, and its position depends on exactly how
+        many rows the real native tier processed, not on wall-clock budget.
+
+        The window was located empirically against this exact fixture (3,000
+        real native-tier files, a second-tier bulk candidate set): ticks
+        1-184 land inside `_strip_native`'s own `SELECT`, ticks 186-312 land
+        inside the autoflush of `_strip_native`'s pending `UPDATE`s that
+        `_strip_unkept`'s `SELECT` triggers, and tick 314 onward lands in
+        `_strip_unkept`'s own `SELECT`. Tick 250 (mid-window, with margin on
+        both sides) is used here.
+        """
+        station_id, detector_id = station_and_detector
+        native_n = 3000
+        with session_scope() as session:
+            # Enough real native-tier deletions that the autoflush of their
+            # pending `UPDATE`s is itself a multi-tick SQLite statement --
+            # a single real file's `UPDATE` is cheap enough that the
+            # progress handler never ticks inside it at all (confirmed
+            # empirically), so this is not an arbitrary batch size.
+            _bulk_seed_real_native_candidates(
+                session, station_id, detector_id, db.clip_dir, count=native_n
+            )
+            _bulk_seed_unkept_candidates(session, station_id, detector_id, count=5000)
+
+        with session_scope() as session:
+            native_paths = [
+                Path(row[0])
+                for row in session.execute(
+                    sa.select(orm.MediaAsset.storage_uri).where(
+                        orm.MediaAsset.kind == "evidence_native"
+                    )
+                ).all()
+            ]
+        assert len(native_paths) == native_n
+        assert all(p.exists() for p in native_paths)
+
+        tick_at_which_deadline_appears_passed = 250
+        ticks_seen = 0
+        real_monotonic = retention_module.time.monotonic
+
+        def fake_monotonic() -> float:
+            nonlocal ticks_seen
+            # Only calls made from inside the progress-handler callback are
+            # faked; every other caller (guard checks, per-row budget
+            # checks, `preamble_s`/`duration_s` bookkeeping) sees real time,
+            # so this does not also race the rest of the sweep.
+            if sys._getframe(1).f_code.co_name == "_past_deadline":
+                ticks_seen += 1
+                if ticks_seen > tick_at_which_deadline_appears_passed:
+                    return real_monotonic() + 1e9
+                return 0.0
+            return real_monotonic()
+
+        monkeypatch.setattr(retention_module.time, "monotonic", fake_monotonic)
+
+        sweeper = _sweeper(
+            db, batch_budget_s=1e9, batch_size=native_n + 5010, native_days=7
+        )
+        # Must return a clean partial report -- never raise. Before the fix,
+        # this raised `sqlalchemy.exc.PendingRollbackError`
+        # (an `InvalidRequestError`, not an `OperationalError`) out of
+        # `sweep()`, after every native-tier file was already unlinked.
+        report = sweeper.sweep()
+        assert ticks_seen > tick_at_which_deadline_appears_passed, (
+            "the progress handler never ticked past the target -- "
+            "recalibrate tick_at_which_deadline_appears_passed for this fixture"
+        )
+        monkeypatch.undo()
+
+        assert report.complete is False
+
+        # The disk and the database must agree: either every native file is
+        # still present (deletion not committed, retried next sweep) or
+        # every native file is gone *and* its row is durably marked
+        # `reclaimed_at` -- never a live row naming a file that is not on
+        # disk (ADR-057's defect).
+        with session_scope() as session:
+            reclaimed_count = session.execute(
+                sa.select(sa.func.count())
+                .select_from(orm.MediaAsset)
+                .where(orm.MediaAsset.kind == "evidence_native")
+                .where(orm.MediaAsset.reclaimed_at.is_not(None))
+            ).scalar_one()
+        remaining_on_disk = sum(1 for p in native_paths if p.exists())
+        deleted_from_disk = native_n - remaining_on_disk
+        assert reclaimed_count == deleted_from_disk, (
+            f"reclaimed_count={reclaimed_count} deleted_from_disk={deleted_from_disk}: "
+            "a live row must never claim a file that is not on disk -- "
+            "ADR-057's defect reintroduced"
+        )
+
+        # The aborted tier's statement must not wedge the connection for a
+        # later, well-budgeted sweep.
+        report2 = _sweeper(db, batch_budget_s=30.0, batch_size=native_n + 5010).sweep()
+        assert report2.complete is True

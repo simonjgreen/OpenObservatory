@@ -68,7 +68,9 @@ function useReview(detectionId: string | null) {
 }
 
 /** The keep flag (ADR-061): keep this recording forever, until a human
- *  removes it. Age, the 90-day expiry and disk pressure never clear it --
+ *  removes it. Age and disk pressure never clear it -- the retired 90-day
+ *  tier no longer exists (ADR-061 third addendum: it was dead code, and is
+ *  gone, not merely renamed) --
  *  Tasks 1-4 already made `kept_at IS NOT NULL` exempt on every retention
  *  tier and the watermark; this hook is what lets an operator set or clear
  *  it, via `PUT`/`DELETE /api/v1/detections/{id}/keep`.
@@ -406,10 +408,10 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
             disabled={keepSaving}
             title={
               keptAt
-                ? `Kept forever by ${keptBy ?? 'operator'}. Age, the 90-day expiry and disk ` +
-                  'pressure will never remove it -- click to release it back to normal retention.'
+                ? `Kept forever by ${keptBy ?? 'operator'}. Age and disk pressure ` +
+                  'will never remove it -- click to release it back to normal retention.'
                 : 'Keep this recording forever, until a human removes the flag -- exempt from ' +
-                  'age, the 90-day expiry and disk pressure'
+                  'age and disk pressure'
             }
             onClick={toggleKeep}
           >

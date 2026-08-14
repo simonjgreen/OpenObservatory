@@ -379,13 +379,19 @@ class Settings(BaseSettings):
     retention_enabled: bool = True
     #: Age at which the native, full-rate WAV is deleted. The audible
     #: rendering (playback derivative / audible_ultrasonic) survives past this
-    #: point -- only ``evidence_native`` assets are affected.
+    #: point -- only ``evidence_native`` assets are affected. 0 disables this
+    #: tier. `site_settings.validate_merged` rejects 0 here combined with 0
+    #: on `retention_audible_only_days`: since the 90-day tier was retired as
+    #: dead code (ADR-061 third addendum), that combination was found to
+    #: leave *nothing* deleting clips by age -- only the disk watermark,
+    #: which kept/held clips are exempt from too.
     retention_native_days: int = 7
     #: Age at which everything except a detection an operator has explicitly
     #: marked `kept` (ADR-061) is deleted. Below this age, every detection
     #: keeps its audible clip; above it, only kept detections do -- forever,
     #: until a human clears the flag. Detection rows are never deleted by
-    #: this or any other tier.
+    #: this or any other tier. 0 disables this tier; see
+    #: `retention_native_days` for the combination `validate_merged` rejects.
     retention_audible_only_days: int = 30
     #: Continuous oldest-first reclaim kicks in above this fraction of the
     #: clip filesystem used, regardless of tier -- the NVR "overwrite oldest

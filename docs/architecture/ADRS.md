@@ -7185,6 +7185,30 @@ Three ways this was checked, not assumed:
    that changes this: both queries scan the same table with the same joins
    and the same order.
 
+**Correction (fourth correction to this ADR, final pre-merge review,
+2026-08-14): the unreachability claim above is about row *logic*, given the
+default tier configuration, and was stated without qualification. It is not
+also true of every configuration.** Both `_strip_native` (`retention_native_days`)
+and `_strip_unkept` (`retention_audible_only_days`) are individually
+disabled by setting their `*_days` to `0` (`sweep()`'s guards:
+`self.native_days > 0 and ...`, `self.audible_only_days > 0 and ...`). With
+both set to `0`, both age tiers are disabled by configuration, not by the
+row-subset argument above, and since `_strip_expired` no longer exists to
+fall back on, **nothing in `retention.py` ever deletes a clip by age** —
+only `_watermark_reclaim`, which `kept` and `held` both partially or wholly
+exempt. `validate_merged` (`site_settings.py`) previously permitted this
+combination outright, and the settings help text for both fields never
+said `0` disables the tier. Fixed the same day this was found: a
+`validate_merged` rule now rejects `retention_native_days == 0 and
+retention_audible_only_days == 0` together, and both fields' help text
+states plainly that `0` disables the tier and what disabling both leaves
+running (the watermark only). An operator who wants every clip kept forever
+should raise `retention_watermark_ratio` and mark evidence `kept`, not zero
+both age tiers -- the watermark is this project's one tier with no
+config-disable clause, by design (see the "Why kept survives the
+watermark" section above), so it is the correct place to express "never
+delete by age" rather than a configuration this ADR now blocks.
+
 This was true before ADR-026's `kept` predicate existed too, but it did not
 matter then: exemplars were exempt from the 30-day tier but not the 90-day
 one, so the two tiers protected different rows and "between 30 and 90 days,
