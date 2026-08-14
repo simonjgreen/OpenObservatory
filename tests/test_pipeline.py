@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from structlog.testing import capture_logs
 
 from open_observatory.audio.contracts import (
     NS_PER_S,
@@ -1138,6 +1139,86 @@ class TestHousekeepingDoesNotStarveCapture:
         await station._housekeeping_loop()
 
         assert sweeps == 5
+
+    async def _run_one_tick_with_fake_sweep(self, monkeypatch, result: SimpleNamespace) -> None:
+        """Drives `_housekeeping_loop` through exactly one tick with a
+        fabricated `RetentionSweeper.sweep()` result, so the log-emission
+        code around it -- not the sweeper itself -- is what's under test."""
+        from open_observatory.config import Settings
+        from open_observatory.station import Station
+
+        station = Station(Settings(retention_interval_s=0.0))
+        monkeypatch.setattr(station.retention, "sweep", lambda: result)
+        monkeypatch.setattr(station.leases, "sweep", lambda: None)
+        monkeypatch.setattr(station, "status_snapshot", lambda: {})
+
+        sleeps = 0
+
+        async def _fake_sleep(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 0:
+                station._running = False
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+        station._running = True
+        await station._housekeeping_loop()
+
+    async def test_never_reached_a_tier_fires_when_all_four_skipped(self, monkeypatch) -> None:
+        """The nine-day incident's exact shape: every tier guard evaluated
+        False in the same sweep. This is the one case the new ERROR event
+        exists to make loud."""
+        result = SimpleNamespace(
+            total_deleted=0,
+            complete=False,
+            tiers_skipped=["native", "unkept", "expired", "watermark"],
+            to_dict=lambda: {"tiers_skipped": ["native", "unkept", "expired", "watermark"]},
+        )
+        with capture_logs() as cap:
+            await self._run_one_tick_with_fake_sweep(monkeypatch, result)
+
+        events = [entry["event"] for entry in cap]
+        assert "housekeeping.retention_never_reached_a_tier" in events
+        fired = next(
+            entry for entry in cap if entry["event"] == "housekeeping.retention_never_reached_a_tier"
+        )
+        assert fired["log_level"] == "error"
+
+    async def test_never_reached_a_tier_stays_silent_on_a_backlog_drain(self, monkeypatch) -> None:
+        """A sweep that ran out of budget partway through -- self-correcting,
+        the next sweep continues -- must not trip the "did no work at all"
+        alarm just because `complete` is also False here."""
+        result = SimpleNamespace(
+            total_deleted=3,
+            complete=False,
+            tiers_skipped=["expired", "watermark"],
+            to_dict=lambda: {"tiers_skipped": ["expired", "watermark"]},
+        )
+        with capture_logs() as cap:
+            await self._run_one_tick_with_fake_sweep(monkeypatch, result)
+
+        events = [entry["event"] for entry in cap]
+        assert "housekeeping.retention_never_reached_a_tier" not in events
+        # The existing, broader warning is unchanged and still fires here.
+        assert "housekeeping.retention_not_keeping_up" in events
+
+    async def test_never_reached_a_tier_stays_silent_on_a_healthy_sweep(
+        self, monkeypatch
+    ) -> None:
+        """The steady-state case this whole judgement call exists to keep
+        quiet: nothing to delete, every tier guard reached and run."""
+        result = SimpleNamespace(
+            total_deleted=0,
+            complete=True,
+            tiers_skipped=[],
+            to_dict=lambda: {"tiers_skipped": []},
+        )
+        with capture_logs() as cap:
+            await self._run_one_tick_with_fake_sweep(monkeypatch, result)
+
+        events = [entry["event"] for entry in cap]
+        assert "housekeeping.retention_never_reached_a_tier" not in events
+        assert "housekeeping.retention_not_keeping_up" not in events
 
     async def test_status_snapshot_reports_its_own_cost(self) -> None:
         """The snapshot runs on the event loop; its cost must be observable.
