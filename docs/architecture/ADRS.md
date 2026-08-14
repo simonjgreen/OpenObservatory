@@ -7080,3 +7080,50 @@ just evaluated against rows the ordering index has already narrowed.
 **Interim state on the station:** `retention_enabled=false` was written to the
 station's `config/runtime.env` to unwedge the housekeeping loop, and must be set
 back to `true` once revision 0009 is deployed and criterion 1 actually passes.
+
+### ADR-061 second addendum, 2026-08-14: the same symptom, a third cause
+
+Revision 0009 fixed `_strip_native` and broke the other half of the same sweep.
+`RetentionReport.kept_detections` counts `kept_at IS NOT NULL`; with no index
+that is a full `SCAN detection` over **290,956 rows**, measured ~6 s on the live
+station under WAL contention. It sits in the sweep's *preamble*, before any tier
+guard, so the 1.5 s budget was gone before the first tier and all four were
+skipped. Zero deletions again — same symptom, third distinct cause.
+
+**The observability from this ADR is what made that a ten-minute diagnosis
+rather than a nine-day one.** The first sweep after deploy reported
+`preamble_s: 6.0778`, `duration_s: 6.0781` and
+`tiers_skipped: ["native","unkept","expired","watermark"]`. That is the entire
+failure, stated by the station, on its first occurrence. Before this ADR the
+same condition produced `complete=False` and a flat zero — indistinguishable
+from "nothing to delete".
+
+**Resolution: a partial index (revision 0010).** The two requirements only look
+contradictory:
+
+* the count wants an index on `kept_at`;
+* the four candidate queries must have none available, or SQLite prefers it over
+  `ix_detection_event_start_utc` and loses the ordering.
+
+`CREATE INDEX ... ON detection(kept_at) WHERE kept_at IS NOT NULL` indexes 112
+rows of 290,956. The planner may use it for `IS NOT NULL` and cannot use it for
+`IS NULL`. Measured on a copy of the station's database, best of three:
+
+| | before | after |
+|---|---|---|
+| `kept_detections` count | 0.151 s, `SCAN detection` | **0.000 s**, covering index |
+| `_strip_native` candidates | 0.113 s, `ix_detection_event_start_utc` | 0.115 s, **unchanged**, no sort |
+
+`tests/test_migrations.py` asserts the `WHERE` clause itself, not the index
+name: a plain index would satisfy a name check and restore both failures at
+once.
+
+**The generalisable lesson, since this ADR has now been wrong twice about the
+same column.** An index is not a property of a column, it is a property of the
+*query plans it makes available* — including the plans you did not want. Both
+mistakes were locally reasonable ("the filter should be indexed", then "so drop
+the index") and both were made without measuring a plan on data the size of the
+station's. The rule this ADR should have followed from the start, and now
+states: **for any index on a hot path, produce `EXPLAIN QUERY PLAN` against a
+station-sized database, for every query that touches the column, before and
+after.** 924 passing tests said nothing useful about any of this.

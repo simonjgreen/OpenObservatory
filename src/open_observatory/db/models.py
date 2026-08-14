@@ -29,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -238,7 +239,22 @@ class Detection(Base):
     )
     detector: Mapped[Detector] = relationship(lazy="joined")
 
-    __table_args__ = (Index("ix_detection_group_start", "taxonomic_group", "event_start_utc"),)
+    __table_args__ = (
+        Index("ix_detection_group_start", "taxonomic_group", "event_start_utc"),
+        # Partial, and the `WHERE` is the entire point (ADR-061, revision 0010).
+        # It indexes only the kept rows -- 112 of 290,956 on the station -- so
+        # the planner may use it for the `kept_at IS NOT NULL` count and *cannot*
+        # use it for the `kept_at IS NULL` filter in every tier's candidate
+        # query. A plain index on this column is available to both, and SQLite
+        # prefers it over `ix_detection_event_start_utc`, losing the index that
+        # serves the range predicate and the `ORDER BY` together. That wedged
+        # the station for five minutes inside one statement.
+        Index(
+            "ix_detection_kept_at_partial",
+            "kept_at",
+            sqlite_where=text("kept_at IS NOT NULL"),
+        ),
+    )
 
 
 class MediaAsset(Base):

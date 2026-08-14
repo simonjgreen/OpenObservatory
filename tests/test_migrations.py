@@ -468,3 +468,39 @@ def test_kept_at_is_deliberately_not_indexed(migrated_session: Session) -> None:
     assert "ix_detection_kept_at" not in indexes
     # The index that must survive, because it serves the filter *and* the order.
     assert "ix_detection_event_start_utc" in indexes
+
+
+def test_kept_at_has_a_partial_index_that_cannot_steal_the_ordered_plan(
+    migrated_session: Session,
+) -> None:
+    """Revision 0010: an index over only the *kept* rows, and only those.
+
+    Dropping the full index in 0009 fixed `_strip_native` and broke something
+    else: `RetentionReport.kept_detections` counts `kept_at IS NOT NULL`, which
+    without an index is a full `SCAN detection` over 290,956 rows. On the live
+    station that ran ~6 s under WAL contention -- and because it sits in the
+    sweep's preamble, before any tier guard, it spent the entire 1.5 s budget
+    and every tier was skipped again. Same silent-zero-deletions symptom, a
+    different cause.
+
+    A *partial* index is the shape that satisfies both. It contains only the
+    non-null rows (112 on the station, against 290,956), so:
+
+      * `kept_at IS NOT NULL` can use it -- the count becomes a covering index
+        lookup, measured 0.151 s -> 0.000 s;
+      * `kept_at IS NULL` **cannot** use it, so it cannot be preferred over
+        `ix_detection_event_start_utc` in `_strip_native`, whose plan is
+        measured unchanged at 0.113 s -> 0.115 s with no temp B-tree.
+
+    That asymmetry is the whole point, so this test asserts the `WHERE` clause
+    is really there. A plain index on the same column would pass a bare
+    name check and reintroduce the outage.
+    """
+    sql = migrated_session.execute(
+        sa.text(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='ix_detection_kept_at_partial'"
+        )
+    ).scalar_one_or_none()
+    assert sql is not None, "the partial index is missing"
+    assert "WHERE kept_at IS NOT NULL" in sql.replace("\n", " "), sql
