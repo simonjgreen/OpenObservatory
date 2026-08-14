@@ -134,6 +134,69 @@ def _seed_detection(
     return detection_id, asset_ids
 
 
+def _bulk_seed_native_candidates(
+    session, station_id: uuid.UUID, detector_id: uuid.UUID, *, count: int
+) -> None:
+    """Insert `count` native-tier candidates via bulk `INSERT` statements,
+    bypassing per-row file I/O and the ORM identity map.
+
+    This exists to make a *real* slow statement inside an otherwise-fast test
+    suite: `_seed_detection`'s per-row `session.add()` plus file writes is far
+    too slow to seed the tens of thousands of rows needed for
+    `_strip_native`'s join + `ORDER BY` to take measurable wall-clock time.
+    No clip files are written; a `_delete_asset` on one of these rows would
+    just record `already_missing`, which does not matter here because the
+    point is proving the statement gets aborted before any row is even
+    handed to Python, not exercising deletion.
+    """
+    event_start = FIXED_NOW - timedelta(days=8)
+    detections = []
+    assets = []
+    links = []
+    for i in range(count):
+        detection_id = uuid.uuid4()
+        asset_id = uuid.uuid4()
+        detections.append(
+            dict(
+                id=detection_id,
+                station_id=station_id,
+                detector_id=detector_id,
+                stream_id=uuid.uuid4(),
+                window_id=uuid.uuid4(),
+                event_start_utc=event_start - timedelta(seconds=i),
+                event_end_utc=event_start - timedelta(seconds=i) + timedelta(seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label="event",
+                common_name="Robin",
+                scientific_name="Erithacus rubecula",
+                canonical_taxon_id=None,
+                rank=None,
+                taxonomic_group="bird",
+                score=0.5,
+                calibrated_probability=None,
+                peak_frequency_hz=None,
+                native_result={},
+                kept_at=None,
+                kept_by=None,
+            )
+        )
+        assets.append(
+            dict(
+                id=asset_id,
+                kind="evidence_native",
+                storage_uri=f"/nonexistent/{detection_id}.wav",
+                mime_type="audio/wav",
+                byte_length=1024,
+                sha256="0" * 64,
+            )
+        )
+        links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
+    session.execute(sa.insert(orm.Detection), detections)
+    session.execute(sa.insert(orm.MediaAsset), assets)
+    session.execute(sa.insert(orm.DetectionMedia), links)
+
+
 def _sweeper(settings, **overrides) -> RetentionSweeper:
     kwargs = dict(
         clip_dir=settings.clip_dir,
@@ -1153,3 +1216,67 @@ class TestPreambleVisibility:
         assert report.complete is False
         assert report.tiers_skipped != []
         assert len(report.tiers_skipped) < 4
+
+
+class TestStatementTimeout:
+    """ADR-061's second addendum: `batch_budget_s` and `batch_size` are only
+    checked *between* rows of a result set that `session.execute(query).all()`
+    already returned in full -- so a single slow statement runs to
+    completion however long that takes (measured on the station: over five
+    minutes) instead of degrading to "fewer deletions this pass", which is
+    what the budget was always meant to mean. These tests seed enough real
+    rows that `_strip_native`'s join + `ORDER BY` genuinely takes tens of
+    milliseconds, so a tiny budget proves the statement is aborted mid-flight
+    -- not merely that some flag gets set afterwards.
+    """
+
+    def test_a_genuinely_slow_statement_is_interrupted_not_run_to_completion(
+        self, db, station_and_detector
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        n = 20000
+        with session_scope() as session:
+            _bulk_seed_native_candidates(session, station_id, detector_id, count=n)
+
+        sweeper = _sweeper(db, batch_budget_s=0.02, batch_size=n)
+        report = sweeper.sweep()
+
+        # Proof of interruption, not just a flag: the aborted statement never
+        # hands any row back to Python (`.all()` is all-or-nothing), so the
+        # native tier recorded *zero* deletions -- while an uninterrupted
+        # scan over 20,000 rows measurably takes hundreds of milliseconds on
+        # this machine (measured ~0.35s), the whole sweep here must finish in
+        # a small fraction of that.
+        assert report.tier_counts.get("native", 0) == 0
+        assert report.duration_s < 0.2
+        assert report.complete is False
+        assert "native" in report.tiers_skipped
+        assert report.interrupted_tier == "native"
+        assert report.interrupted_after_s is not None
+
+        # The aborted statement must not wedge or corrupt the connection --
+        # a later sweep on the same sweeper (now with a real budget) still
+        # works and actually deletes.
+        report2 = _sweeper(db, batch_budget_s=30.0, batch_size=n).sweep()
+        assert report2.tier_counts.get("native", 0) == n
+
+    def test_the_handler_is_disarmed_afterwards_and_does_not_abort_later_queries(
+        self, db, station_and_detector
+    ) -> None:
+        """The handler must be scoped to the sweep that armed it. If it were
+        left installed on a pooled connection, a stale (already-passed)
+        deadline would abort the *next* query issued on that connection too
+        -- including one that has nothing to do with retention."""
+        station_id, detector_id = station_and_detector
+        n = 20000
+        with session_scope() as session:
+            _bulk_seed_native_candidates(session, station_id, detector_id, count=n)
+
+        # Force an interrupt, leaving a long-since-expired deadline.
+        _sweeper(db, batch_budget_s=0.02, batch_size=n).sweep()
+
+        # An unrelated, ordinary query against the same pooled connection(s)
+        # must not be aborted by the stale deadline from the sweep above.
+        with session_scope() as session:
+            count = session.execute(sa.select(sa.func.count()).select_from(orm.Detection)).scalar_one()
+        assert count == n

@@ -60,7 +60,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,6 +68,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import func, select, tuple_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from . import review as review_queries
@@ -79,6 +80,25 @@ log = structlog.get_logger(__name__)
 #: else (``playback``, ``audible_ultrasonic``) is a human/browser-audible
 #: derivative and is what the 7-30 day tier is trying to keep.
 NATIVE_KINDS = frozenset({"evidence_native"})
+
+#: Order the four tiers run in `sweep()`, used to expand "interrupted here"
+#: into "skipped from here on", the same shape a batch/deadline backlog
+#: drain already produces (see `RetentionReport.tiers_skipped`).
+_TIER_ORDER = ("native", "unkept", "expired", "watermark")
+
+#: SQLite VM instructions between `sqlite3.Connection.set_progress_handler`
+#: callbacks (ADR-061's statement-timeout addendum). Chosen small enough to
+#: be responsive -- SQLite executes on the order of tens of millions of VM
+#: instructions per second for ordinary row scans, so 1000 instructions is
+#: comfortably sub-millisecond of work between checks, meaning a statement
+#: is aborted within about a millisecond of its deadline passing even deep
+#: inside a large scan -- while staying coarse enough that the callback
+#: itself (one `time.monotonic()` call) is invoked at a rate that cannot be
+#: measured against the cost of the query it is bounding. Not exposed as a
+#: constructor argument: it tunes responsiveness of the abort, not sweep
+#: policy, and `batch_budget_s`/`batch_size` remain the only two knobs an
+#: operator needs.
+_PROGRESS_HANDLER_INSTRUCTIONS = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +167,19 @@ class RetentionReport:
     #: all, which a healthy station in steady state never produces (see
     #: `station.py`'s `housekeeping.retention_never_reached_a_tier`).
     tiers_skipped: list[str] = field(default_factory=list)
+    #: Name of the tier whose *statement* (not merely its row-by-row budget)
+    #: was aborted this sweep by the per-statement deadline guard -- `None`
+    #: on every ordinary sweep, including a normal batch/deadline backlog
+    #: drain. `"preamble"` if the abort happened before any tier guard ran.
+    #: This is the ADR-061 second-addendum fix: `batch_budget_s` used to be
+    #: checked only between rows of a result set already fully returned by
+    #: `session.execute(query).all()`, so one slow statement ran to
+    #: completion however long that took (over five minutes, measured on
+    #: the station) instead of degrading to "fewer deletions this pass".
+    interrupted_tier: str | None = None
+    #: Monotonic seconds from sweep start to the moment the aborted
+    #: statement's exception was caught, alongside `interrupted_tier`.
+    interrupted_after_s: float | None = None
 
     @property
     def total_deleted(self) -> int:
@@ -174,6 +207,8 @@ class RetentionReport:
             "complete": self.complete,
             "preamble_s": self.preamble_s,
             "tiers_skipped": list(self.tiers_skipped),
+            "interrupted_tier": self.interrupted_tier,
+            "interrupted_after_s": self.interrupted_after_s,
         }
 
 
@@ -220,6 +255,8 @@ class RetentionSweeper:
         self.last_sweep_complete: bool = True
         self.last_preamble_s: float = 0.0
         self.last_tiers_skipped: list[str] = []
+        self.last_interrupted_tier: str | None = None
+        self.last_interrupted_after_s: float | None = None
         self.last_disk_used_ratio: float | None = None
         self.last_kept_detections: int = 0
         self.last_held_detections: int = 0
@@ -253,6 +290,57 @@ class RetentionSweeper:
 
     # ------------------------------------------------------------------
 
+    @contextmanager
+    def _bounded_statements(self, session: Session, deadline: float) -> Iterator[None]:
+        """Arm a per-statement abort for this sweep's own queries, scoped narrowly.
+
+        ADR-061's second addendum: `batch_budget_s`/`batch_size` are only
+        checked *between* rows of a result set `session.execute(query).all()`
+        has already fully returned, so a single slow statement runs to
+        completion however long that takes -- once, on the station, for over
+        five minutes, wedging the housekeeping loop behind it (retention
+        runs in the evidence executor the housekeeping loop awaits, so
+        stream heartbeats, the ADR-057 media audit and the ADR-059 disk-usage
+        refresh all stopped for the duration; capture was unaffected, since
+        it owns its own thread, ADR-030).
+
+        `sqlite3.Connection.set_progress_handler(handler, n)` calls `handler`
+        every `n` VM instructions while a statement is executing and aborts
+        that statement with `sqlite3.OperationalError: interrupted` if it
+        returns truthy -- exactly the mechanism this ADR named as the open
+        fix. Installed on the session's own DBAPI connection (reached via
+        `session.connection().connection`, which SQLAlchemy's pool proxies
+        straight through to the real `sqlite3.Connection`) and always
+        removed in `finally`, before this connection can be checked back
+        into the pool: a handler left armed there would abort the next,
+        unrelated caller's query the moment its own already-expired deadline
+        was next evaluated, on a connection it never agreed to share a
+        budget with.
+
+        A no-op on any non-SQLite dialect. PostgreSQL (the eventual
+        production DSN, ADR-007) has no equivalent DBAPI hook; a statement
+        timeout there is a `SET LOCAL statement_timeout` decision, out of
+        scope here.
+        """
+        if session.get_bind().dialect.name != "sqlite":
+            yield
+            return
+
+        # SQLAlchemy's pool proxy (`PoolProxiedConnection`) forwards unknown
+        # attributes straight through to the real driver connection, but its
+        # type stub does not know about `sqlite3.Connection`-specific
+        # methods -- hence `Any` here rather than fighting the stub.
+        dbapi_connection: Any = session.connection().connection
+
+        def _past_deadline() -> int:
+            return 1 if time.monotonic() >= deadline else 0
+
+        dbapi_connection.set_progress_handler(_past_deadline, _PROGRESS_HANDLER_INSTRUCTIONS)
+        try:
+            yield
+        finally:
+            dbapi_connection.set_progress_handler(None, 0)
+
     def sweep(self, *, dry_run: bool = False) -> RetentionReport:
         """Run one bounded retention pass. Safe to call on a schedule."""
         start_perf = time.monotonic()
@@ -264,85 +352,125 @@ class RetentionSweeper:
         report.disk_used_ratio_before = self._disk_used_ratio()
 
         with self._session_factory() as session:
-            # A plain indexed count, not the materialised-into-Python scan
-            # this replaces (ADR-061): `ix_detection_kept_at` makes this an
-            # index-only count, not a table scan, and nothing here reads
-            # `native_result` or any other wide column.
-            report.kept_detections = session.execute(
-                select(func.count()).select_from(orm.Detection).where(
-                    orm.Detection.kept_at.is_not(None)
-                )
-            ).scalar_one()
-            held_ids = review_queries.held_detection_ids(session)
-            report.held_detections = len(held_ids)
+            current_tier = "preamble"
+            try:
+                with self._bounded_statements(session, deadline):
+                    # A plain indexed count, not the materialised-into-Python
+                    # scan this replaces (ADR-061): `ix_detection_kept_at`
+                    # makes this an index-only count, not a table scan, and
+                    # nothing here reads `native_result` or any other wide
+                    # column.
+                    report.kept_detections = session.execute(
+                        select(func.count()).select_from(orm.Detection).where(
+                            orm.Detection.kept_at.is_not(None)
+                        )
+                    ).scalar_one()
+                    held_ids = review_queries.held_detection_ids(session)
+                    report.held_detections = len(held_ids)
 
-            # Everything above this line is the preamble that, unbounded,
-            # caused the nine-day incident (ADR-061): recorded *before* the
-            # first tier guard so a preamble that alone ate the budget shows
-            # up as a large `preamble_s` next to an empty `tiers_skipped`-
-            # causing deadline, rather than being indistinguishable from a
-            # fast one.
-            report.preamble_s = round(time.monotonic() - start_perf, 4)
+                    # Everything above this line is the preamble that,
+                    # unbounded, caused the nine-day incident (ADR-061):
+                    # recorded *before* the first tier guard so a preamble
+                    # that alone ate the budget shows up as a large
+                    # `preamble_s` next to an empty `tiers_skipped`-causing
+                    # deadline, rather than being indistinguishable from a
+                    # fast one.
+                    report.preamble_s = round(time.monotonic() - start_perf, 4)
 
-            if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
-                budget = self._strip_native(
-                    session,
-                    report,
-                    now=now,
-                    deadline=deadline,
-                    budget=budget,
-                    dry_run=dry_run,
-                    held_ids=held_ids,
+                    current_tier = "native"
+                    if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
+                        budget = self._strip_native(
+                            session,
+                            report,
+                            now=now,
+                            deadline=deadline,
+                            budget=budget,
+                            dry_run=dry_run,
+                            held_ids=held_ids,
+                        )
+                    else:
+                        report.tiers_skipped.append("native")
+                    current_tier = "unkept"
+                    if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
+                        budget = self._strip_unkept(
+                            session,
+                            report,
+                            now=now,
+                            deadline=deadline,
+                            budget=budget,
+                            dry_run=dry_run,
+                            held_ids=held_ids,
+                        )
+                    else:
+                        report.tiers_skipped.append("unkept")
+                    current_tier = "expired"
+                    if self.exemplar_only_days > 0 and budget > 0 and time.monotonic() < deadline:
+                        budget = self._strip_expired(
+                            session,
+                            report,
+                            now=now,
+                            deadline=deadline,
+                            budget=budget,
+                            dry_run=dry_run,
+                            held_ids=held_ids,
+                        )
+                    else:
+                        report.tiers_skipped.append("expired")
+                    current_tier = "watermark"
+                    if budget > 0 and time.monotonic() < deadline:
+                        budget = self._watermark_reclaim(
+                            session, report, deadline=deadline, budget=budget, dry_run=dry_run
+                        )
+                    else:
+                        report.tiers_skipped.append("watermark")
+            except OperationalError as exc:
+                if "interrupted" not in str(getattr(exc, "orig", exc)):
+                    # A genuine database error, not our deadline guard --
+                    # never swallow it as if it were a bounded timeout.
+                    raise
+                report.interrupted_tier = current_tier
+                report.interrupted_after_s = round(time.monotonic() - start_perf, 4)
+                report.complete = False
+                # Every tier at or after the one whose statement was aborted
+                # did not run (or did not finish) this sweep -- record them
+                # the same way an ordinary batch/deadline backlog drain
+                # already does, so the report reads as "fewer deletions this
+                # pass", the entire point of `batch_budget_s`, not as a
+                # crash.
+                start_index = (
+                    _TIER_ORDER.index(current_tier) if current_tier in _TIER_ORDER else 0
                 )
-            else:
-                report.tiers_skipped.append("native")
-            if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
-                budget = self._strip_unkept(
-                    session,
-                    report,
-                    now=now,
-                    deadline=deadline,
-                    budget=budget,
-                    dry_run=dry_run,
-                    held_ids=held_ids,
+                for tier in _TIER_ORDER[start_index:]:
+                    if tier not in report.tiers_skipped:
+                        report.tiers_skipped.append(tier)
+                log.error(
+                    "retention.statement_interrupted",
+                    tier=current_tier,
+                    after_s=report.interrupted_after_s,
+                    batch_budget_s=self.batch_budget_s,
                 )
-            else:
-                report.tiers_skipped.append("unkept")
-            if self.exemplar_only_days > 0 and budget > 0 and time.monotonic() < deadline:
-                budget = self._strip_expired(
-                    session,
-                    report,
-                    now=now,
-                    deadline=deadline,
-                    budget=budget,
-                    dry_run=dry_run,
-                    held_ids=held_ids,
-                )
-            else:
-                report.tiers_skipped.append("expired")
-            if budget > 0 and time.monotonic() < deadline:
-                budget = self._watermark_reclaim(
-                    session, report, deadline=deadline, budget=budget, dry_run=dry_run
-                )
-            else:
-                report.tiers_skipped.append("watermark")
+
             # A dry run still stamps `reclaimed_at` in-memory in `_delete_asset`
             # -- purely so a later tier's candidate query (which filters on
             # `reclaimed_at IS NULL`) does not re-offer, and double-count, an
             # asset an earlier tier already decided on within this same sweep.
             # Rolling back here is what keeps that staged state from ever
             # reaching disk, so "dry run" still means nothing is persisted.
+            # An interrupted statement never hands back a row (`.all()` is
+            # all-or-nothing), so there is nothing of its own to roll back --
+            # only earlier tiers' already-flushed work, which this commits.
             if dry_run:
                 session.rollback()
             else:
                 session.commit()
 
         # "Complete" means neither bound was the reason a candidate went
-        # unprocessed: the batch budget wasn't exhausted, and the wall-clock
-        # deadline wasn't hit. Either false means there may be more
-        # candidates than this call looked at, and the next sweep should
-        # pick up where this one left off.
-        report.complete = budget > 0 and time.monotonic() < deadline
+        # unprocessed: the batch budget wasn't exhausted, the wall-clock
+        # deadline wasn't hit, and no statement was aborted outright. Any of
+        # those false means there may be more candidates than this call
+        # looked at, and the next sweep should pick up where this one left
+        # off.
+        report.complete = report.complete and budget > 0 and time.monotonic() < deadline
         report.duration_s = round(time.monotonic() - start_perf, 4)
         report.disk_used_ratio_after = self._disk_used_ratio()
 
@@ -351,6 +479,8 @@ class RetentionSweeper:
         self.last_sweep_complete = report.complete
         self.last_preamble_s = report.preamble_s
         self.last_tiers_skipped = list(report.tiers_skipped)
+        self.last_interrupted_tier = report.interrupted_tier
+        self.last_interrupted_after_s = report.interrupted_after_s
         self.last_disk_used_ratio = report.disk_used_ratio_after
         self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
@@ -799,6 +929,8 @@ class RetentionSweeper:
             "last_sweep_complete": self.last_sweep_complete,
             "last_preamble_s": self.last_preamble_s,
             "last_tiers_skipped": list(self.last_tiers_skipped),
+            "last_interrupted_tier": self.last_interrupted_tier,
+            "last_interrupted_after_s": self.last_interrupted_after_s,
             "last_disk_used_ratio": self.last_disk_used_ratio,
             "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,
