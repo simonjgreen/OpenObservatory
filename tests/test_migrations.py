@@ -30,6 +30,7 @@ import argparse
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -55,6 +56,18 @@ def _alembic_config(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> Config:
     cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     cfg.attributes["configure_logger"] = False
     return cfg
+
+
+@pytest.fixture
+def migrated_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Session]:
+    """A throwaway SQLite database migrated to head, with an open ORM session."""
+    db_path = tmp_path / "migrated_session.sqlite"
+    cfg = _alembic_config(monkeypatch, db_path)
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
 
 
 def _table_names(engine: sa.Engine) -> set[str]:
@@ -409,3 +422,20 @@ def test_ensure_schema_at_head_refuses_a_stale_database(tmp_path: Path) -> None:
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
     with pytest.raises(RuntimeError, match="expects"):
         ensure_schema_at_head(engine)
+
+
+# --- 0008_detection_kept (ADR-061) -------------------------------------------
+
+
+def test_kept_columns_exist_at_head(migrated_session: Session) -> None:
+    """ADR-061: retention filters on these in SQL, so they must be real columns."""
+    columns = {c["name"] for c in sa.inspect(migrated_session.bind).get_columns("detection")}
+    assert "kept_at" in columns
+    assert "kept_by" in columns
+
+
+def test_kept_at_is_indexed(migrated_session: Session) -> None:
+    """Every tier's candidate query filters on kept_at; an unindexed filter
+    would reintroduce the scan this change exists to remove."""
+    indexes = {i["name"] for i in sa.inspect(migrated_session.bind).get_indexes("detection")}
+    assert "ix_detection_kept_at" in indexes

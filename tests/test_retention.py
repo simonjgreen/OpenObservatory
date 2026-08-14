@@ -18,9 +18,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
 from hypothesis import given
 from hypothesis import strategies as st
+from sqlalchemy.orm import Session
 
+from open_observatory.config import REPO_ROOT
 from open_observatory.db import models as orm
 from open_observatory.db.session import create_all, init_engine, session_scope
 from open_observatory.retention import BAT_GROUP, RetentionSweeper
@@ -481,6 +486,235 @@ class TestExemplarPreservation:
         with session_scope() as session:
             assert _asset(session, high_score_low_snr["playback"]).reclaimed_at is not None
             assert _asset(session, low_score_high_snr["playback"]).reclaimed_at is None
+
+
+def _seed_pre_migration_detection(
+    conn,
+    *,
+    station_id: uuid.UUID,
+    detector_id: uuid.UUID,
+    common_name: str,
+    age_days: float,
+    score: float,
+    reclaimed: bool = False,
+) -> uuid.UUID:
+    """Insert one detection plus one un-reclaimed (unless `reclaimed`) media
+    asset directly via SQL, against the schema as it exists *before*
+    `0008_detection_kept` -- i.e. with no `kept_at` / `kept_by` columns.
+
+    Deliberately not the ORM: `orm.Detection` now has `kept_at`/`kept_by`
+    mapped, so an ORM insert against a pre-0008 table would fail with
+    "table detection has no column named kept_at" -- which is accurate, and
+    exactly why this test cannot use `_seed_detection` like the rest of the
+    file. This reproduces what a station's *existing* rows genuinely look
+    like the moment before this migration runs.
+    """
+    detection_id = uuid.uuid4()
+    asset_id = uuid.uuid4()
+    event_start = FIXED_NOW - timedelta(days=age_days)
+
+    def fmt(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO detection (
+                id, station_id, detector_id, stream_id, window_id,
+                event_start_utc, event_end_utc, source_start_frame, source_end_frame,
+                detector_label, common_name, scientific_name, canonical_taxon_id, rank,
+                taxonomic_group, score, native_result, created_at
+            ) VALUES (
+                :id, :station_id, :detector_id, :stream_id, :window_id,
+                :event_start_utc, :event_end_utc, 0, 1,
+                :label, :common_name, :sci_name, NULL, NULL,
+                'bird', :score, '{}', :created_at
+            )
+            """
+        ),
+        {
+            "id": detection_id.hex,
+            "station_id": station_id.hex,
+            "detector_id": detector_id.hex,
+            "stream_id": uuid.uuid4().hex,
+            "window_id": uuid.uuid4().hex,
+            "event_start_utc": fmt(event_start),
+            "event_end_utc": fmt(event_start + timedelta(seconds=3)),
+            "label": common_name,
+            "common_name": common_name,
+            "sci_name": f"Sci {common_name}",
+            "score": score,
+            "created_at": fmt(datetime.now(UTC)),
+        },
+    )
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO media_asset (
+                id, kind, storage_uri, mime_type, byte_length, sha256,
+                created_at, detail, reclaimed_at
+            ) VALUES (
+                :id, 'playback', :uri, 'audio/wav', 1024, :sha256,
+                :created_at, '{}', :reclaimed_at
+            )
+            """
+        ),
+        {
+            "id": asset_id.hex,
+            "uri": f"/tmp/{asset_id}.wav",
+            "sha256": "0" * 64,
+            "created_at": fmt(datetime.now(UTC)),
+            "reclaimed_at": fmt(FIXED_NOW) if reclaimed else None,
+        },
+    )
+    conn.execute(
+        sa.text(
+            "INSERT INTO detection_media (detection_id, media_asset_id, role)"
+            " VALUES (:d, :m, 'evidence')"
+        ),
+        {"d": detection_id.hex, "m": asset_id.hex},
+    )
+    return detection_id
+
+
+class TestExemplarBackfill:
+    """ADR-061: the `0008_detection_kept` migration's backfill.
+
+    Unlike the rest of this file, these build a database with real Alembic
+    migrations rather than `create_all()`, because the thing under test *is*
+    the migration: it has to reproduce `_exemplar_detection_ids`'s "first"
+    key exactly, from raw SQL, without the class above it to fall back on.
+    """
+
+    def _cfg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tuple[Config, Path]:
+        db_path = tmp_path / name
+        monkeypatch.setenv("OO_DATABASE_DSN", f"sqlite+pysqlite:///{db_path}")
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.attributes["configure_logger"] = False
+        return cfg, db_path
+
+    def test_backfill_keeps_the_first_of_each_species_and_nothing_else(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """First-ever is irreplaceable; 'best' is not, and is not backfilled."""
+        cfg, db_path = self._cfg(tmp_path, monkeypatch, "backfill.sqlite")
+        # Pre-migration schema: the state every currently-deployed station is
+        # in before this revision ships.
+        command.upgrade(cfg, "0007_capture_pause")
+
+        engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+        station_id = uuid.uuid4()
+        detector_id = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO station (id, name, timezone, software_version, created_at)"
+                    " VALUES (:id, 'test', 'UTC', '0.0.0', :now)"
+                ),
+                {"id": station_id.hex, "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO detector (id, plugin_id, plugin_version, model_id,"
+                    " model_version, licence_name, claim, calibrated, configuration,"
+                    " installed_at)"
+                    " VALUES (:id, 'birdnet-v2.4', '1', 'm', '1', '', '', 0, '{}', :now)"
+                ),
+                {"id": detector_id.hex, "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")},
+            )
+            # Earlier robin: the one the backfill must keep.
+            earlier_robin_id = _seed_pre_migration_detection(
+                conn,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="European Robin",
+                age_days=60,
+                score=0.2,
+            )
+            # Later robin, higher score: what the old 'best' rule would have
+            # kept. The backfill must leave it alone.
+            later_robin_id = _seed_pre_migration_detection(
+                conn,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="European Robin",
+                age_days=40,
+                score=0.9,
+            )
+            # A single wren: first-of-species trivially, and its own species
+            # key, to prove the backfill is per-key and not global.
+            wren_id = _seed_pre_migration_detection(
+                conn,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="Eurasian Wren",
+                age_days=10,
+                score=0.5,
+            )
+        engine.dispose()
+
+        command.upgrade(cfg, "head")
+
+        engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+        with Session(engine) as session:
+            earlier_robin = session.get(orm.Detection, earlier_robin_id)
+            later_robin = session.get(orm.Detection, later_robin_id)
+            wren = session.get(orm.Detection, wren_id)
+
+        assert earlier_robin.kept_by == "exemplar-backfill"
+        assert earlier_robin.kept_at is not None
+        assert wren.kept_by == "exemplar-backfill"
+        assert wren.kept_at is not None
+        assert later_robin.kept_by is None
+        assert later_robin.kept_at is None
+
+    def test_backfill_skips_species_with_no_surviving_media(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A detection whose only media asset is already reclaimed has
+        nothing left to protect, so the backfill must not touch it."""
+        cfg, db_path = self._cfg(tmp_path, monkeypatch, "backfill_reclaimed.sqlite")
+        command.upgrade(cfg, "0007_capture_pause")
+
+        engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+        station_id = uuid.uuid4()
+        detector_id = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO station (id, name, timezone, software_version, created_at)"
+                    " VALUES (:id, 'test', 'UTC', '0.0.0', :now)"
+                ),
+                {"id": station_id.hex, "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")},
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO detector (id, plugin_id, plugin_version, model_id,"
+                    " model_version, licence_name, claim, calibrated, configuration,"
+                    " installed_at)"
+                    " VALUES (:id, 'birdnet-v2.4', '1', 'm', '1', '', '', 0, '{}', :now)"
+                ),
+                {"id": detector_id.hex, "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")},
+            )
+            reclaimed_id = _seed_pre_migration_detection(
+                conn,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="Blackbird",
+                age_days=60,
+                score=0.2,
+                reclaimed=True,
+            )
+        engine.dispose()
+
+        command.upgrade(cfg, "head")
+
+        engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+        with Session(engine) as session:
+            reclaimed = session.get(orm.Detection, reclaimed_id)
+        assert reclaimed.kept_by is None
+        assert reclaimed.kept_at is None
 
 
 class TestWatermarkReclaim:

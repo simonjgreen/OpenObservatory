@@ -214,6 +214,18 @@ class Detection(Base):
     #: treated it as examined would destroy the evidence silently.
     refinement_outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
+    # -- operator keep flag (ADR-061) ----------------------------------------
+    #: Set by a human who wants this recording kept; cleared only by a
+    #: human. Every retention tier exempts a row with this set, including the
+    #: 90-day expiry and the disk watermark -- "keep" that a sweep can overrule
+    #: is not a keep. Indexed because all four candidate queries filter on it.
+    kept_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    #: Who kept it. "exemplar-backfill" for the rows migrated from the computed
+    #: first-of-species rule this replaced.
+    kept_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
     media: Mapped[list[DetectionMedia]] = relationship(
         back_populates="detection", cascade="all, delete-orphan"
     )
