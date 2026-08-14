@@ -12,7 +12,7 @@
  *        "tiers": [
  *          { "name": "native + audible", "age_days_max": 7, "clips": 123, "bytes": 456 },
  *          { "name": "audible only",      "age_days_max": 30, "clips": ..., "bytes": ... },
- *          { "name": "first/best per species", "age_days_max": 90, "clips": ..., "bytes": ... }
+ *          { "name": "kept only",         "age_days_max": 90, "clips": ..., "bytes": ... }
  *        ],
  *        "eligible_for_deletion": { "clips": N, "bytes": N, "bytes_verified_present": N },
  *        "missing_files": { "clips": N, "bytes": N, "exact": bool, ... },
@@ -29,8 +29,9 @@
  *  so hiding the correction where they are shown would defeat it.
  *
  *  This matches the operator decision already recorded for this session
- *  (0–7d native+audible, 7–30d audible-only, 30–90d first/best-per-species,
- *  90d+ deleted; continuous oldest-first reclaim above 85% disk) and keeps
+ *  (0–7d native+audible, 7–30d audible-only, 30–90d kept-only (ADR-061),
+ *  90d+ deleted unless kept; continuous oldest-first reclaim above 85% disk,
+ *  also exempting kept clips) and keeps
  *  detection metadata retention — which is unbounded and not shown here —
  *  conceptually separate from clip bytes, which is what this panel is about.
  *

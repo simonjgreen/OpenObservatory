@@ -1508,9 +1508,9 @@ def clips_retention(
         )
     console.print(table)
     console.print(
-        f"exemplar detections (first/best-of-species, exempt through the "
-        f"{settings.retention_audible_only_days}-{settings.retention_exemplar_only_days}d tier): "
-        f"{report.exemplar_detections}"
+        f"kept detections (operator-flagged, exempt from every tier "
+        f"including the {settings.retention_exemplar_only_days}d expiry): "
+        f"{report.kept_detections}"
     )
     if report.already_missing:
         console.print(

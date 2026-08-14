@@ -173,8 +173,7 @@ class Detection(Base):
     common_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     #: Not indexed (ADR-037 option B, revision 0004): only ever selected, never
-    #: filtered or ordered by -- ``retention.py``'s exemplar scan reads it into
-    #: Python after the query, it does not query by it.
+    #: filtered or ordered by.
     canonical_taxon_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     rank: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: Not indexed on its own (ADR-037 option B, revision 0004): every equality

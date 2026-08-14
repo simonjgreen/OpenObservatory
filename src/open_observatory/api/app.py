@@ -1170,7 +1170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {"name": "native + audible", "age_days_max": native_d, **bucket(None, native_d)},
                 {"name": "audible only", "age_days_max": audible_d, **bucket(native_d, audible_d)},
                 {
-                    "name": "first/best per species",
+                    "name": "kept only",
                     "age_days_max": exemplar_d,
                     **bucket(audible_d, exemplar_d),
                 },

@@ -1,7 +1,7 @@
 """NVR-style tiered clip retention.
 
-The operator's decision (recorded in ADR-026) is precise, so this module
-implements exactly it and nothing more:
+The operator's decision (recorded in ADR-026, revised by ADR-061) is precise,
+so this module implements exactly it and nothing more:
 
 * **Detection metadata is kept forever.** Species, timestamps, scores, peak
   frequency, capture coverage -- nothing here ever deletes a ``detection`` row
@@ -10,24 +10,35 @@ implements exactly it and nothing more:
 
   - 0-7 days: native (full-rate) clip and its audible rendering both survive.
   - 7-30 days: native clip deleted; audible rendering survives.
-  - 30-90 days: only the first-ever and best-of-species clips survive; every
+  - 30-90 days: only clips an operator has explicitly kept survive; every
     other detection in this age band loses its remaining clip(s) too.
-  - 90+ days: deleted, including the exemplars.
+  - 90+ days: deleted, unless kept.
   - **Always**, independent of the above: once the clip filesystem exceeds a
-    configurable watermark, the oldest surviving clips are reclaimed first,
-    regardless of tier or exemplar status. This is the safety valve -- disk
-    space always wins over any retention preference.
+    configurable watermark, the oldest surviving *unkept* clips are reclaimed
+    first, regardless of tier. This is the safety valve -- disk space always
+    wins over any retention preference, except an explicit keep, which this
+    tier also honours (see below).
+
+* **A human `kept` flag** (ADR-061, `detection.kept_at`/`kept_by`) means
+  "keep forever, until a human removes it". It is set and cleared only by a
+  human -- never by age, the 90-day expiry, or disk pressure -- and every
+  tier's candidate query excludes it, including the watermark reclaim. It
+  replaces a computed first-of-species/best-of-species rule that used to cost
+  an unbounded per-sweep table scan; see ADR-061 for the incident that forced
+  the change.
 
 * **A human hold is exempt from the three age-based tiers** (ADR-043). A
   detection whose latest human review (`review.py`) has status `"held"` --
   an explicit "keep this, it needs my ear" -- is skipped by `_strip_native`,
-  `_strip_non_exemplar` and `_strip_expired`, the same way an exemplar is.
-  Deliberately narrower than an unconditional hold: the watermark reclaim
-  tier does **not** check it, on purpose, because it is this module's one
-  hard safety valve (see the bullet above) and a held detection is still
-  only evidence, not something the station can let disk exhaustion turn
-  into an outage over. An operator who needs a genuinely permanent hold
-  should export the clip. See ADR-043's "known limitation" note.
+  `_strip_unkept` and `_strip_expired`, the same way a kept detection is.
+  Deliberately narrower than `kept`: the watermark reclaim tier does **not**
+  check it, on purpose, because it is this module's one hard safety valve
+  (see the bullet above) and a held-but-not-kept detection is still only
+  evidence, not something the station can let disk exhaustion turn into an
+  outage over. An operator who needs a genuinely permanent hold should
+  either mark it `kept` or export the clip. See ADR-043's "known limitation"
+  note. `held` and `kept` are independent: a detection may be both, either,
+  or neither.
 
 Deleting a clip never deletes its ``media_asset`` row: the row is marked
 ``reclaimed_at``/``reclaim_reason`` instead, so `/api/v1/media/{id}` can keep
@@ -56,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from . import review as review_queries
@@ -68,12 +79,6 @@ log = structlog.get_logger(__name__)
 #: else (``playback``, ``audible_ultrasonic``) is a human/browser-audible
 #: derivative and is what the 7-30 day tier is trying to keep.
 NATIVE_KINDS = frozenset({"evidence_native"})
-
-#: Detections in this taxonomic group have no species identity to rank by
-#: score -- `ultrasonic-pass-v1` detects passes, not species (see the
-#: honesty rules in `normaliser.py` and CLAUDE.md) -- so "best" for this
-#: group is defined on the detector's own physical measurements instead.
-BAT_GROUP = "bat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +104,9 @@ class RetentionReport:
     duration_s: float = 0.0
     disk_used_ratio_before: float | None = None
     disk_used_ratio_after: float | None = None
-    exemplar_detections: int = 0
+    #: Count of detections currently marked `kept` (ADR-061) -- exempt from
+    #: every tier, including the 90-day expiry and the watermark reclaim.
+    kept_detections: int = 0
     #: Count of detections exempted from this sweep by an explicit human
     #: hold (ADR-043) -- see `RetentionSweeper._strip_native` et al.
     held_detections: int = 0
@@ -127,7 +134,7 @@ class RetentionReport:
             "duration_s": self.duration_s,
             "disk_used_ratio_before": self.disk_used_ratio_before,
             "disk_used_ratio_after": self.disk_used_ratio_after,
-            "exemplar_detections": self.exemplar_detections,
+            "kept_detections": self.kept_detections,
             "held_detections": self.held_detections,
             "already_missing": self.already_missing,
             "tier_counts": dict(self.tier_counts),
@@ -180,7 +187,7 @@ class RetentionSweeper:
         self.last_sweep_duration_s: float = 0.0
         self.last_sweep_complete: bool = True
         self.last_disk_used_ratio: float | None = None
-        self.last_exemplar_detections: int = 0
+        self.last_kept_detections: int = 0
         self.last_held_detections: int = 0
 
         # -- rolling missing-file audit (ADR-057) ---------------------------
@@ -222,8 +229,15 @@ class RetentionSweeper:
         report.disk_used_ratio_before = self._disk_used_ratio()
 
         with self._session_factory() as session:
-            exemplar_ids = self._exemplar_detection_ids(session)
-            report.exemplar_detections = len(exemplar_ids)
+            # A plain indexed count, not the materialised-into-Python scan
+            # this replaces (ADR-061): `ix_detection_kept_at` makes this an
+            # index-only count, not a table scan, and nothing here reads
+            # `native_result` or any other wide column.
+            report.kept_detections = session.execute(
+                select(func.count()).select_from(orm.Detection).where(
+                    orm.Detection.kept_at.is_not(None)
+                )
+            ).scalar_one()
             held_ids = review_queries.held_detection_ids(session)
             report.held_detections = len(held_ids)
 
@@ -238,11 +252,10 @@ class RetentionSweeper:
                     held_ids=held_ids,
                 )
             if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
-                budget = self._strip_non_exemplar(
+                budget = self._strip_unkept(
                     session,
                     report,
                     now=now,
-                    exemplar_ids=exemplar_ids,
                     deadline=deadline,
                     budget=budget,
                     dry_run=dry_run,
@@ -262,9 +275,16 @@ class RetentionSweeper:
                 budget = self._watermark_reclaim(
                     session, report, deadline=deadline, budget=budget, dry_run=dry_run
                 )
-            # dry_run never mutates ORM state above, so this commit is a no-op
-            # for a dry run and the real deletions otherwise.
-            session.commit()
+            # A dry run still stamps `reclaimed_at` in-memory in `_delete_asset`
+            # -- purely so a later tier's candidate query (which filters on
+            # `reclaimed_at IS NULL`) does not re-offer, and double-count, an
+            # asset an earlier tier already decided on within this same sweep.
+            # Rolling back here is what keeps that staged state from ever
+            # reaching disk, so "dry run" still means nothing is persisted.
+            if dry_run:
+                session.rollback()
+            else:
+                session.commit()
 
         # "Complete" means neither bound was the reason a candidate went
         # unprocessed: the batch budget wasn't exhausted, and the wall-clock
@@ -279,7 +299,7 @@ class RetentionSweeper:
         self.last_sweep_duration_s = report.duration_s
         self.last_sweep_complete = report.complete
         self.last_disk_used_ratio = report.disk_used_ratio_after
-        self.last_exemplar_detections = report.exemplar_detections
+        self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
         if not dry_run:
             for tier, count in report.tier_counts.items():
@@ -315,6 +335,7 @@ class RetentionSweeper:
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.MediaAsset.kind.in_(NATIVE_KINDS))
             .where(orm.Detection.event_start_utc <= cutoff)
+            .where(orm.Detection.kept_at.is_(None))
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
@@ -336,36 +357,30 @@ class RetentionSweeper:
             budget -= 1
         return budget
 
-    def _strip_non_exemplar(
+    def _strip_unkept(
         self,
         session: Session,
         report: RetentionReport,
         *,
         now: datetime,
-        exemplar_ids: set[uuid.UUID],
         deadline: float,
         budget: int,
         dry_run: bool,
         held_ids: set[uuid.UUID] | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.audible_only_days)
-        held_ids = held_ids or set()
-        # Over-fetch: exemplar (and held) filtering happens in Python because
-        # "is this detection an exemplar" isn't expressible as a join
-        # condition without materialising `exemplar_ids` into the query. The
-        # multiplier is a small constant, not an unbounded walk.
         query = (
             select(orm.MediaAsset, orm.Detection.id)
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.Detection.event_start_utc <= cutoff)
-            .order_by(orm.Detection.event_start_utc.asc())
-            .limit(budget * 4)
+            .where(orm.Detection.kept_at.is_(None))
         )
+        if held_ids:
+            query = query.where(orm.Detection.id.notin_(held_ids))
+        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
         for asset, detection_id in session.execute(query).all():
-            if detection_id in exemplar_ids or detection_id in held_ids:
-                continue
             if time.monotonic() >= deadline or budget <= 0:
                 break
             self._delete_asset(
@@ -373,10 +388,7 @@ class RetentionSweeper:
                 asset,
                 detection_id=detection_id,
                 tier="exemplar_only",
-                reason=(
-                    f"age >= {self.audible_only_days}d and not first-of-species "
-                    "or best-of-species"
-                ),
+                reason=f"age >= {self.audible_only_days}d and not kept",
                 dry_run=dry_run,
             )
             budget -= 1
@@ -400,6 +412,7 @@ class RetentionSweeper:
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.Detection.event_start_utc <= cutoff)
+            .where(orm.Detection.kept_at.is_(None))
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
@@ -413,8 +426,8 @@ class RetentionSweeper:
                 detection_id=detection_id,
                 tier="expired",
                 reason=(
-                    f"age >= {self.exemplar_only_days}d: final expiry, including exemplars "
-                    "but not an explicit human hold"
+                    f"age >= {self.exemplar_only_days}d: final expiry, but not an "
+                    "explicit human hold or keep"
                 ),
                 dry_run=dry_run,
             )
@@ -443,6 +456,7 @@ class RetentionSweeper:
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.Detection.kept_at.is_(None))
             .order_by(orm.MediaAsset.created_at.asc())
             .limit(budget)
         )
@@ -456,84 +470,14 @@ class RetentionSweeper:
                 tier="watermark",
                 reason=(
                     f"disk usage {ratio:.1%} exceeds watermark "
-                    f"{self.watermark_ratio:.0%}: oldest-first reclaim, tier and "
-                    "exemplar status ignored"
+                    f"{self.watermark_ratio:.0%}: oldest-first reclaim, tier "
+                    "ignored, but kept recordings are never reclaimed"
                 ),
                 dry_run=dry_run,
             )
             freed += asset.byte_length
             budget -= 1
         return budget
-
-    # -- exemplar selection -------------------------------------------------
-
-    def _exemplar_detection_ids(self, session: Session) -> set[uuid.UUID]:
-        """First-ever and best-of-species detections, exempt through the 30-90d tier.
-
-        "Species" is `canonical_taxon_id` when there is one (species-rank
-        birds), else `common_name`, else the taxonomic group itself. That last
-        fallback is deliberate, not an omission: it collapses every
-        `ultrasonic-pass-v1` bat pass into a single group, because that
-        detector identifies passes, not species (see the honesty rules this
-        project enforces in `normaliser.py`) -- there is no finer species key
-        to exempt by without inventing a claim the detector never made. In
-        practice this keeps one best and one first bat-pass clip, not one per
-        (non-existent) bat species.
-
-        "Best" is highest `score` for anything with a real, comparable score.
-        Bats are the deliberate exception: `ultrasonic-pass-v1`'s `score` is a
-        composite ``0.4*min(1, pulses/8) + 0.6*min(1, (peak_snr_db-12)/24)``
-        (see `detectors/ultrasonic.py`) that is not calibrated and not
-        comparable across taxonomic groups, so bats are instead ranked by
-        `peak_snr_db` from `native_result` -- the detector's own physical
-        measurement -- with `pulse_count` as a tiebreaker.
-
-        Only detections that still have at least one non-reclaimed media asset
-        are considered: there is nothing to exempt for a detection that has
-        already lost all its evidence. Detection metadata volume is the
-        "kilobytes per day" the operator described, so this is a plain read
-        into Python rather than a cross-dialect JSON aggregate query.
-        """
-        rows = session.execute(
-            select(
-                orm.Detection.id,
-                orm.Detection.canonical_taxon_id,
-                orm.Detection.common_name,
-                orm.Detection.taxonomic_group,
-                orm.Detection.event_start_utc,
-                orm.Detection.score,
-                orm.Detection.native_result,
-            )
-            .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
-            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
-            .where(orm.MediaAsset.reclaimed_at.is_(None))
-            .distinct()
-        ).all()
-
-        first: dict[str, tuple[datetime, uuid.UUID]] = {}
-        best: dict[str, tuple[tuple[float, float], uuid.UUID]] = {}
-        for det_id, taxon, common, group, start, score, native_result in rows:
-            key = taxon or common or group or "unknown"
-
-            existing_first = first.get(key)
-            if existing_first is None or start < existing_first[0]:
-                first[key] = (start, det_id)
-
-            if group == BAT_GROUP:
-                result = native_result or {}
-                rank_value = (
-                    float(result.get("peak_snr_db") or 0.0),
-                    float(result.get("pulse_count") or 0.0),
-                )
-            else:
-                rank_value = (float(score or 0.0), 0.0)
-            existing_best = best.get(key)
-            if existing_best is None or rank_value > existing_best[0]:
-                best[key] = (rank_value, det_id)
-
-        exemplars = {det_id for _, det_id in first.values()}
-        exemplars.update(det_id for _, det_id in best.values())
-        return exemplars
 
     # -- mechanics ------------------------------------------------------
 
@@ -580,6 +524,12 @@ class RetentionSweeper:
             report.already_missing += 1
 
         if dry_run:
+            # No file I/O and nothing persisted (see the `sweep()` rollback),
+            # but the in-memory flag still gets set so a later tier's
+            # candidate query -- which filters on `reclaimed_at IS NULL` --
+            # does not re-offer this same asset and double-count it.
+            asset.reclaimed_at = self._clock()
+            asset.reclaim_reason = tier
             return
 
         if existed:
@@ -779,7 +729,7 @@ class RetentionSweeper:
             "last_sweep_duration_s": self.last_sweep_duration_s,
             "last_sweep_complete": self.last_sweep_complete,
             "last_disk_used_ratio": self.last_disk_used_ratio,
-            "exemplar_detections": self.last_exemplar_detections,
+            "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,
             "totals": dict(self.totals),
             # ADR-057. Named "missing_audit", not folded into `totals`: these

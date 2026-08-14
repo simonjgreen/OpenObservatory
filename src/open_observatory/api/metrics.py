@@ -366,9 +366,9 @@ class PrometheusExporter:
             last_sweep_at.timestamp() if last_sweep_at else None,
         )
         self._set(
-            "oo_retention_exemplar_detections",
-            "Detections currently exempt from the 30-90 day cull as first- or best-of-species",
-            retention["exemplar_detections"],
+            "oo_retention_kept_detections",
+            "Detections currently marked kept (ADR-061), exempt from every retention tier",
+            retention["kept_detections"],
         )
         # ADR-057. Not a retention tier and deliberately not filed under one:
         # these rows lost their evidence without any policy deciding to give

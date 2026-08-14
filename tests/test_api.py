@@ -1060,7 +1060,7 @@ class TestRetentionStatus:
         assert [tier["name"] for tier in payload["tiers"]] == [
             "native + audible",
             "audible only",
-            "first/best per species",
+            "kept only",
         ]
         # Ascending, and matching the configured policy rather than hardcoded
         # numbers -- the boundaries are settings, and a test that restated them
@@ -1091,7 +1091,7 @@ class TestRetentionStatus:
         tiers = {tier["name"]: tier for tier in payload["tiers"]}
 
         assert tiers["audible only"]["clips"] == 0
-        assert tiers["first/best per species"]["clips"] == 0
+        assert tiers["kept only"]["clips"] == 0
         assert payload["eligible_for_deletion"]["clips"] == 0
 
     def test_never_counts_bytes_that_have_already_been_reclaimed(self, client, settings) -> None:

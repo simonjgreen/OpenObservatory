@@ -381,17 +381,19 @@ class Settings(BaseSettings):
     #: rendering (playback derivative / audible_ultrasonic) survives past this
     #: point -- only ``evidence_native`` assets are affected.
     retention_native_days: int = 7
-    #: Age at which everything except the first-ever and best-of-species clip
-    #: is deleted. Below this age, every detection keeps its audible clip;
-    #: above it, only exemplar detections do.
+    #: Age at which everything except a detection an operator has explicitly
+    #: marked `kept` (ADR-061) is deleted. Below this age, every detection
+    #: keeps its audible clip; above it, only kept detections do.
     retention_audible_only_days: int = 30
-    #: Age at which even the exemplar clips are deleted. Detection rows are
-    #: never deleted by this or any other tier.
+    #: Age at which even kept-but-not-permanently-exported clips would be
+    #: deleted by age alone -- except `kept` (ADR-061) exempts a detection
+    #: from this tier too, so in practice only unkept clips are affected.
+    #: Detection rows are never deleted by this or any other tier.
     retention_exemplar_only_days: int = 90
     #: Continuous oldest-first reclaim kicks in above this fraction of the
-    #: clip filesystem used, regardless of tier or exemplar status -- the
-    #: NVR "overwrite oldest before the disk fills" behaviour the operator
-    #: asked for.
+    #: clip filesystem used, regardless of tier -- the NVR "overwrite oldest
+    #: before the disk fills" behaviour the operator asked for. A `kept`
+    #: detection (ADR-061) is exempt from this tier as well.
     retention_watermark_ratio: float = 0.85
     #: Bounded work per `RetentionSweeper.sweep()` call, so a large backlog
     #: drains over many housekeeping ticks instead of one long stall.

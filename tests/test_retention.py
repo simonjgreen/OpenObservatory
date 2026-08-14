@@ -1,11 +1,11 @@
-"""Tests for tiered clip retention (ADR-026).
+"""Tests for tiered clip retention (ADR-026, revised by ADR-061).
 
 This code deletes the operator's evidence irreversibly, so these tests are
-written to be paranoid: every tier boundary, the watermark reclaim, exemplar
-preservation, dry-run-matches-real-run, a clip missing from disk but present
-in the database (and the reverse), and -- above everything else -- that a
-sweep never deletes a `detection` row or any of its columns, whatever tier
-fires.
+written to be paranoid: every tier boundary, the watermark reclaim, the
+`kept` exemption, dry-run-matches-real-run, a clip missing from disk but
+present in the database (and the reverse), and -- above everything else --
+that a sweep never deletes a `detection` row or any of its columns, whatever
+tier fires.
 
 A fake clock (`clock=lambda: FIXED_NOW`) makes every age deterministic:
 `event_start_utc` is set relative to `FIXED_NOW`, never to real wall time.
@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from open_observatory.config import REPO_ROOT
 from open_observatory.db import models as orm
 from open_observatory.db.session import create_all, init_engine, session_scope
-from open_observatory.retention import BAT_GROUP, RetentionSweeper
+from open_observatory.retention import RetentionSweeper
 
 FIXED_NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
@@ -73,8 +73,15 @@ def _seed_detection(
     native_result: dict | None = None,
     write_files: bool = True,
     byte_length: int = 1024,
+    kept: bool = False,
+    held: bool = False,
 ) -> tuple[uuid.UUID, dict[str, uuid.UUID]]:
-    """Insert one detection plus one media asset per `kind`, with real files."""
+    """Insert one detection plus one media asset per `kind`, with real files.
+
+    `kept` stamps `kept_at`/`kept_by` directly on the row (ADR-061); `held`
+    adds an ADR-043 `Review` with status `"held"` -- the two are deliberately
+    independent so a test can set either, both, or neither.
+    """
     detection_id = uuid.uuid4()
     event_start = FIXED_NOW - timedelta(days=age_days)
     session.add(
@@ -96,8 +103,12 @@ def _seed_detection(
             taxonomic_group=taxonomic_group,
             score=score,
             native_result=native_result or {},
+            kept_at=FIXED_NOW if kept else None,
+            kept_by="test-operator" if kept else None,
         )
     )
+    if held:
+        session.add(orm.Review(detection_id=detection_id, actor="op", status="held"))
     asset_ids: dict[str, uuid.UUID] = {}
     day_dir = clip_dir / event_start.strftime("%Y-%m-%d")
     for kind in kinds:
@@ -207,20 +218,9 @@ class TestTierBoundaries:
         assert not native_path.exists()
         assert playback_path.exists()
 
-    def test_non_exemplar_loses_everything_at_30_days(self, db, station_and_detector) -> None:
+    def test_unkept_loses_everything_at_30_days(self, db, station_and_detector) -> None:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            # An older, better exemplar of the same species so this one is not it.
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=200,
-                common_name="Common Woodpigeon",
-                score=0.99,
-                kinds=("playback",),
-            )
             _, assets = _seed_detection(
                 session,
                 station_id=station_id,
@@ -235,19 +235,9 @@ class TestTierBoundaries:
         with session_scope() as session:
             assert _asset(session, assets["playback"]).reclaimed_at is not None
 
-    def test_non_exemplar_survives_just_under_30_days(self, db, station_and_detector) -> None:
+    def test_unkept_survives_just_under_30_days(self, db, station_and_detector) -> None:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=200,
-                common_name="Common Woodpigeon",
-                score=0.99,
-                kinds=("playback",),
-            )
             _, assets = _seed_detection(
                 session,
                 station_id=station_id,
@@ -262,10 +252,10 @@ class TestTierBoundaries:
         with session_scope() as session:
             assert _asset(session, assets["playback"]).reclaimed_at is None
 
-    def test_everything_including_exemplars_deleted_at_90_days(self, db, station_and_detector) -> None:
+    def test_everything_unkept_deleted_at_90_days(self, db, station_and_detector) -> None:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            detection_id, best_ever = _seed_detection(
+            detection_id, oldest = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
@@ -277,7 +267,7 @@ class TestTierBoundaries:
             )
         _sweeper(db).sweep()
         with session_scope() as session:
-            assert _asset(session, best_ever["playback"]).reclaimed_at is not None
+            assert _asset(session, oldest["playback"]).reclaimed_at is not None
             # The clip is gone; the detection row -- the "log entry" -- is not.
             assert session.get(orm.Detection, detection_id) is not None
 
@@ -381,111 +371,144 @@ class TestHumanHold:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
 
 
-class TestExemplarPreservation:
-    def test_first_of_species_survives_30_90_day_cull(self, db, station_and_detector) -> None:
+class TestKeptFlag:
+    """ADR-061: an operator-set `kept` flag replaces the computed exemplar
+    rule, and every tier must honour it -- see the module docstring."""
+
+    def test_a_kept_detection_survives_every_tier(self, db, station_and_detector) -> None:
+        """Age, the 90-day expiry and the watermark must all leave it alone."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            first_id, first_assets = _seed_detection(
+            _, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
                 clip_dir=db.clip_dir,
-                age_days=60,
-                common_name="European Robin",
-                score=0.4,
-                kinds=("playback",),
-            )
-            # Lower score than the first-ever detection, so this one is
-            # neither first-of-species nor best-of-species -- isolating the
-            # "first" exemption from the "best" one, which has its own test.
-            _, later_assets = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=40,
-                common_name="European Robin",
-                score=0.1,
-                kinds=("playback",),
+                age_days=400,
+                kept=True,
+                kinds=("evidence_native",),
             )
         _sweeper(db).sweep()
         with session_scope() as session:
-            assert _asset(session, first_assets["playback"]).reclaimed_at is None
-            assert _asset(session, later_assets["playback"]).reclaimed_at is not None
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None, (
+                "a kept recording was deleted by age"
+            )
 
-    def test_best_of_species_survives_30_90_day_cull(self, db, station_and_detector) -> None:
+    def test_a_kept_detection_survives_the_watermark(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            # `best` is also the first-ever of this species (older / earlier
-            # event_start_utc) so that this test genuinely isolates "best":
-            # `mediocre` is neither first nor best and must be reclaimed
-            # purely because its score loses, not because it also lost "first".
-            _, best = _seed_detection(
+            _, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
                 clip_dir=db.clip_dir,
-                age_days=45,
-                common_name="European Robin",
-                score=0.95,
-                kinds=("playback",),
+                age_days=1,
+                kept=True,
+                kinds=("evidence_native",),
             )
-            _, mediocre = _seed_detection(
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        _sweeper(db, watermark_ratio=0.85).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+
+    def test_unkeeping_makes_it_deletable_again(self, db, station_and_detector) -> None:
+        """Only a human clears the flag -- but when they do, normal rules resume."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
                 clip_dir=db.clip_dir,
-                age_days=40,
-                common_name="European Robin",
-                score=0.3,
-                kinds=("playback",),
+                age_days=400,
+                kept=True,
+                kinds=("evidence_native",),
+            )
+        with session_scope() as session:
+            det = session.get(orm.Detection, detection_id)
+            det.kept_at = None
+            det.kept_by = None
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+
+    def test_the_native_tier_runs_on_the_first_sweep(self, db, station_and_detector) -> None:
+        """The regression this whole change exists to fix: the 3 s exemplar
+        preamble spent the budget before any tier was entered, so nothing was
+        ever deleted."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=30,
+                kept=False,
+                kinds=("evidence_native",),
+            )
+        report = _sweeper(db).sweep()
+        assert report.tier_counts.get("native", 0) > 0
+
+    def test_a_held_detection_is_still_exempt_and_held_is_not_kept(
+        self, db, station_and_detector
+    ) -> None:
+        """ADR-043's mechanism is untouched, and the two remain distinct."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=400,
+                held=True,
+                kinds=("evidence_native",),
             )
         _sweeper(db).sweep()
         with session_scope() as session:
-            assert _asset(session, mediocre["playback"]).reclaimed_at is not None
-            assert _asset(session, best["playback"]).reclaimed_at is None
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+            held = session.get(orm.Detection, detection_id)
+            assert held.kept_at is None
 
-    def test_bat_exemplar_ranked_by_snr_not_composite_score(self, db, station_and_detector) -> None:
-        """A bat pass with a lower composite `score` but higher SNR must win.
-
-        `ultrasonic-pass-v1` never claims species, so all bat passes collapse
-        into one exemplar group (see ADR-026); "best" for that group is
-        `peak_snr_db`, not the pulses/SNR composite `score`.
-        """
+    def test_a_held_but_unkept_detection_is_not_exempt_from_the_watermark(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """The documented asymmetry: `held` exempts the three age tiers but
+        not the watermark; only `kept` reaches the watermark too."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            # `low_score_high_snr` is also the first-ever bat pass (older),
-            # so the test isolates SNR-based ranking: `high_score_low_snr` is
-            # reclaimed purely because it loses on SNR, not because it also
-            # loses "first".
-            _, low_score_high_snr = _seed_detection(
+            _, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
                 clip_dir=db.clip_dir,
-                age_days=45,
-                taxonomic_group=BAT_GROUP,
-                common_name=None,
-                score=0.2,
-                native_result={"peak_snr_db": 30.0, "pulse_count": 20},
-                kinds=("playback",),
+                age_days=1,
+                held=True,
+                kinds=("evidence_native",),
             )
-            _, high_score_low_snr = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=40,
-                taxonomic_group=BAT_GROUP,
-                common_name=None,
-                score=0.9,
-                native_result={"peak_snr_db": 13.0, "pulse_count": 3},
-                kinds=("playback",),
-            )
-        _sweeper(db).sweep()
+
+        class FakeUsage:
+            total = 1000
+            free = 100
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        _sweeper(db, watermark_ratio=0.85).sweep()
         with session_scope() as session:
-            assert _asset(session, high_score_low_snr["playback"]).reclaimed_at is not None
-            assert _asset(session, low_score_high_snr["playback"]).reclaimed_at is None
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
 
 
 def _seed_pre_migration_detection(
@@ -827,7 +850,7 @@ class TestDryRun:
         real = _sweeper(db).sweep(dry_run=False)
         assert dry.tier_counts == real.tier_counts
         assert dry.tier_bytes == real.tier_bytes
-        assert dry.exemplar_detections == real.exemplar_detections
+        assert dry.kept_detections == real.kept_detections
 
 
 class TestDiskAndDbDisagreements:

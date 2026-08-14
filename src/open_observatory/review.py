@@ -102,10 +102,9 @@ def latest_review(session: Session, detection_id: uuid.UUID) -> orm.Review | Non
 def held_detection_ids(session: Session) -> set[uuid.UUID]:
     """Every detection whose *current* review status is ``held``.
 
-    Scoped to the whole review table rather than a candidate id list, on the
-    same shape as ``retention._exemplar_detection_ids``: the retention
-    sweeper needs this before it knows which detections it is about to
-    consider for deletion.
+    Scoped to the whole review table rather than a candidate id list: the
+    retention sweeper needs this before it knows which detections it is about
+    to consider for deletion.
     """
     latest_ts = (
         select(orm.Review.detection_id, func.max(orm.Review.created_at).label("ts"))
