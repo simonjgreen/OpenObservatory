@@ -24,6 +24,7 @@ from alembic import command
 from alembic.config import Config
 from hypothesis import given
 from hypothesis import strategies as st
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 import open_observatory.retention as retention_module
@@ -1619,3 +1620,150 @@ class TestAbortAfterRealDeletion:
         # later, well-budgeted sweep.
         report2 = _sweeper(db, batch_budget_s=30.0, batch_size=native_n + 5010).sweep()
         assert report2.complete is True
+
+
+def _flunk_flush(monkeypatch: pytest.MonkeyPatch, *, when: int) -> None:
+    """Force `Session.flush()` to raise the same `OperationalError` shape
+    `_bounded_statements`'s progress handler raises, but only the `when`-th
+    time it is called with real pending state (`dirty`/`new`/`deleted`) --
+    i.e. genuinely mid a tier's own flush of its staged `UPDATE`s, never the
+    read-only preamble (which has nothing dirty to flush in the first
+    place). Counting only *substantive* flushes, rather than every call,
+    means `when=1` always lands on the first tier that actually stages a
+    decision, `when=2` the next one, and so on, regardless of how many
+    no-op autoflush calls SQLAlchemy makes around them.
+    """
+    calls = {"n": 0}
+    real_flush = Session.flush
+
+    def fake_flush(self: Session, *args: object, **kwargs: object) -> None:
+        if self.dirty or self.new or self.deleted:
+            calls["n"] += 1
+            if calls["n"] == when:
+                raise OperationalError("flush", {}, Exception("interrupted (test)"))
+        return real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "flush", fake_flush)
+
+
+class TestAbortedTierTalliesNeverReachTheReport:
+    """C1 follow-up (2026-08-14): `_stage_delete` used to write straight into
+    `report.tier_counts`/`tier_bytes`/`already_missing`/`decisions` the
+    moment a candidate was staged -- before that tier's `session.commit()`
+    ever returned. `sweep()`'s abort handler correctly `session.rollback()`s
+    an interrupted tier's uncommitted rows, but never unwound those
+    already-written tallies, so an aborted tier reported deletions that were
+    never durable, and `sweep()` folded the same fiction into
+    `RetentionSweeper.totals` -- the cumulative counter that feeds
+    `oo_retention_files_deleted_total`/`oo_retention_bytes_deleted_total`
+    (`api/metrics.py`). A tier's tallies must only ever reach the report
+    after its own `session.commit()` has returned.
+    """
+
+    def test_a_tier_aborted_mid_flush_reports_nothing_for_that_tier(
+        self, db, station_and_detector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        n = 50
+        with session_scope() as session:
+            _bulk_seed_real_native_candidates(
+                session, station_id, detector_id, db.clip_dir, count=n
+            )
+        with session_scope() as session:
+            native_paths = [
+                Path(row[0])
+                for row in session.execute(
+                    sa.select(orm.MediaAsset.storage_uri).where(
+                        orm.MediaAsset.kind == "evidence_native"
+                    )
+                ).all()
+            ]
+        assert len(native_paths) == n
+        assert all(p.exists() for p in native_paths)
+
+        _flunk_flush(monkeypatch, when=1)
+
+        sweeper = _sweeper(db)
+        report = sweeper.sweep()
+
+        assert report.interrupted_tier == "native"
+        assert report.complete is False
+
+        # The defect: these used to be non-zero (50 / 50*64 bytes) despite
+        # nothing being committed.
+        assert report.tier_counts.get("native", 0) == 0
+        assert report.tier_bytes.get("native", 0) == 0
+        assert report.already_missing == 0
+        assert report.total_deleted == 0
+        assert report.total_bytes == 0
+        assert not any(d.tier == "native" for d in report.decisions)
+
+        # The cumulative Prometheus-feeding counter must not have advanced
+        # either.
+        assert sweeper.totals == {}
+
+        # Nothing durable actually happened: every row still live, every
+        # file still on disk.
+        with session_scope() as session:
+            still_live = session.execute(
+                sa.select(sa.func.count())
+                .select_from(orm.MediaAsset)
+                .where(orm.MediaAsset.kind == "evidence_native")
+                .where(orm.MediaAsset.reclaimed_at.is_(None))
+            ).scalar_one()
+        assert still_live == n
+        assert all(p.exists() for p in native_paths)
+
+    def test_a_tier_that_completed_before_a_later_aborted_tier_keeps_its_tallies(
+        self, db, station_and_detector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        native_n = 5
+        with session_scope() as session:
+            _bulk_seed_real_native_candidates(
+                session, station_id, detector_id, db.clip_dir, count=native_n
+            )
+            _bulk_seed_unkept_candidates(session, station_id, detector_id, count=50)
+
+        # `when=2`: the native tier's own flush (call 1) is allowed to
+        # succeed and commit; the unkept tier's flush (call 2) is the one
+        # that gets interrupted.
+        _flunk_flush(monkeypatch, when=2)
+
+        sweeper = _sweeper(db)
+        report = sweeper.sweep()
+
+        assert report.interrupted_tier == "unkept"
+        assert report.complete is False
+
+        # The tier that finished and committed before the abort keeps its
+        # tallies in full.
+        assert report.tier_counts.get("native", 0) == native_n
+        assert report.tier_bytes.get("native", 0) == native_n * 64
+        assert report.total_deleted == native_n
+
+        # The interrupted tier contributes nothing.
+        assert report.tier_counts.get("unkept", 0) == 0
+        assert report.tier_bytes.get("unkept", 0) == 0
+        assert not any(d.tier == "unkept" for d in report.decisions)
+
+        assert sweeper.totals.get("native_deleted") == native_n
+        assert sweeper.totals.get("native_bytes") == native_n * 64
+        assert sweeper.totals.get("unkept_deleted", 0) == 0
+        assert sweeper.totals.get("unkept_bytes", 0) == 0
+
+        with session_scope() as session:
+            native_reclaimed = session.execute(
+                sa.select(sa.func.count())
+                .select_from(orm.MediaAsset)
+                .where(orm.MediaAsset.kind == "evidence_native")
+                .where(orm.MediaAsset.reclaimed_at.is_not(None))
+            ).scalar_one()
+            unkept_still_live = session.execute(
+                sa.select(sa.func.count())
+                .select_from(orm.MediaAsset)
+                .where(orm.MediaAsset.kind == "playback")
+                .where(orm.MediaAsset.reclaimed_at.is_(None))
+            ).scalar_one()
+        assert native_reclaimed == native_n
+        assert unkept_still_live == 50

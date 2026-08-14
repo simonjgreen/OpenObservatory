@@ -115,6 +115,25 @@ class RetentionDecision:
 
 
 @dataclass(slots=True)
+class _TierTally:
+    """One tier's staged-but-not-yet-reported tallies (C1, 2026-08-14).
+
+    `_stage_delete` writes here, never straight to `RetentionReport`: a
+    tier's count/bytes/`already_missing`/decisions must only become visible
+    on the report -- and thence `RetentionSweeper.totals`, which feeds the
+    Prometheus deletion counters -- once that tier's own transaction is
+    durably committed (or, for a dry run, once its staging pass finishes
+    without being aborted). An aborted tier's `_TierTally` is simply
+    discarded by the caller, so it contributes nothing.
+    """
+
+    count: int = 0
+    bytes: int = 0
+    already_missing: int = 0
+    decisions: list[RetentionDecision] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class RetentionReport:
     """The result of one `RetentionSweeper.sweep()` call."""
 
@@ -354,10 +373,11 @@ class RetentionSweeper:
             try:
                 with self._bounded_statements(session, deadline):
                     # A plain indexed count, not the materialised-into-Python
-                    # scan this replaces (ADR-061): `ix_detection_kept_at`
-                    # makes this an index-only count, not a table scan, and
-                    # nothing here reads `native_result` or any other wide
-                    # column.
+                    # scan this replaces (ADR-061): `ix_detection_kept_at_partial`
+                    # (migration 0010; it replaced the plain `ix_detection_kept_at`
+                    # dropped by migration 0009) makes this an index-only
+                    # count, not a table scan, and nothing here reads
+                    # `native_result` or any other wide column.
                     report.kept_detections = session.execute(
                         select(func.count()).select_from(orm.Detection).where(
                             orm.Detection.kept_at.is_not(None)
@@ -552,14 +572,26 @@ class RetentionSweeper:
         the cross-tier-autoflush hazard this bug depended on: there is
         nothing of a completed tier's left pending for a later tier to
         autoflush.
+
+        C1 follow-up (2026-08-14): every decision staged above is written
+        into a local `_TierTally`, not `report`, for exactly the same
+        reason `to_unlink` is local -- an abort during the flush (or, still
+        inside the arm, during the `SELECT` itself) must propagate out of
+        this method with the tally simply discarded, before it ever reaches
+        `report.tier_counts`/`tier_bytes`/`already_missing`/`decisions` (and
+        thence `RetentionSweeper.totals`, which feeds the Prometheus
+        deletion counters). The merge below only runs once `session.commit()`
+        has returned (or, dry run, once staging finished without being
+        interrupted) -- see `_TierTally`.
         """
         to_unlink: list[tuple[uuid.UUID, Path]] = []
+        tally = _TierTally()
         with self._bounded_statements(session, deadline):
             for asset, detection_id in session.execute(query).all():
                 if time.monotonic() >= deadline or budget <= 0:
                     break
                 staged = self._stage_delete(
-                    report,
+                    tally,
                     asset,
                     detection_id=detection_id,
                     tier=tier,
@@ -580,6 +612,12 @@ class RetentionSweeper:
             session.commit()
         # Only reached if nothing above raised -- every row staged above is
         # now durably committed (or, dry run, safely never going to be).
+        # This is the merge point: the tally becomes visible on `report`
+        # only here, never earlier.
+        report.tier_counts[tier] = report.tier_counts.get(tier, 0) + tally.count
+        report.tier_bytes[tier] = report.tier_bytes.get(tier, 0) + tally.bytes
+        report.already_missing += tally.already_missing
+        report.decisions.extend(tally.decisions)
         # Unlinking is pure filesystem I/O, not a database statement, so it
         # has nothing to do with the deadline guard armed above.
         if not dry_run:
@@ -692,12 +730,13 @@ class RetentionSweeper:
             "ignored, but kept recordings are never reclaimed"
         )
         to_unlink: list[tuple[uuid.UUID, Path]] = []
+        tally = _TierTally()
         with self._bounded_statements(session, deadline):
             for asset, detection_id in session.execute(query).all():
                 if time.monotonic() >= deadline or budget <= 0 or freed >= bytes_over:
                     break
                 staged = self._stage_delete(
-                    report,
+                    tally,
                     asset,
                     detection_id=detection_id,
                     tier="watermark",
@@ -715,6 +754,14 @@ class RetentionSweeper:
         # `finally` tries to disarm the (by then stale) reference to it.
         if not dry_run:
             session.commit()
+        # Merge point (C1 follow-up, see `_run_tier`'s docstring): only
+        # reached once the commit above has returned (or, dry run, once
+        # staging finished without an abort), so an interrupted watermark
+        # pass contributes nothing to `report`.
+        report.tier_counts["watermark"] = report.tier_counts.get("watermark", 0) + tally.count
+        report.tier_bytes["watermark"] = report.tier_bytes.get("watermark", 0) + tally.bytes
+        report.already_missing += tally.already_missing
+        report.decisions.extend(tally.decisions)
         if not dry_run:
             for asset_id, path in to_unlink:
                 self._unlink_staged(asset_id, path)
@@ -796,7 +843,7 @@ class RetentionSweeper:
 
     def _stage_delete(
         self,
-        report: RetentionReport,
+        tally: _TierTally,
         asset: orm.MediaAsset,
         *,
         detection_id: uuid.UUID | None,
@@ -809,6 +856,13 @@ class RetentionSweeper:
         `_unlink_staged()` call once this tier's transaction is durably
         committed, or `None` when there is nothing to unlink (dry run, or the
         file was already gone).
+
+        Writes into the caller's local `tally`, never into the sweep's
+        `RetentionReport` directly (C1, 2026-08-14): the report must only
+        learn about a tier's deletions after that tier's own commit has
+        returned (see `_TierTally`), and this method has no way to know,
+        from inside the loop, whether the statement it is part of is about
+        to be aborted.
 
         **C1, final pre-merge review (2026-08-14): row-committed-before-
         unlinked, on purpose, replacing unlink-then-mark-then-commit-much-
@@ -858,7 +912,7 @@ class RetentionSweeper:
             bytes=size,
             existed_on_disk=existed,
         )
-        report.decisions.append(decision)
+        tally.decisions.append(decision)
         log.info(
             "retention.would_delete" if dry_run else "retention.staged_delete",
             asset_id=str(asset.id),
@@ -871,10 +925,10 @@ class RetentionSweeper:
             existed_on_disk=existed,
         )
 
-        report.tier_counts[tier] = report.tier_counts.get(tier, 0) + 1
-        report.tier_bytes[tier] = report.tier_bytes.get(tier, 0) + (size if existed else 0)
+        tally.count += 1
+        tally.bytes += size if existed else 0
         if not existed:
-            report.already_missing += 1
+            tally.already_missing += 1
 
         # Staged in-memory either way -- dry run or real -- so a later
         # tier's candidate query (`reclaimed_at IS NULL`) never re-offers,
@@ -895,8 +949,14 @@ class RetentionSweeper:
         still happens to exist. That is the failure direction `_stage_delete`
         chooses on purpose (see its docstring); the row is not, and cannot
         be, un-committed from here to "retry next sweep" the way the old
-        unlink-first order could. An orphan wastes disk space, discoverable
-        with `find_orphans`; it does not lie about evidence being present.
+        unlink-first order could. An orphan wastes disk space; it does not
+        lie about evidence being present. It is **not** discoverable by
+        `find_orphans`: that scan's known-set (`select(MediaAsset.storage_uri)`)
+        has no `reclaimed_at` filter, so a reclaimed-but-still-present row
+        counts as "known" and its file is never yielded. Nothing in this
+        codebase currently detects this direction -- the ADR-057 rolling
+        audit and the storage endpoints only ever scan `reclaimed_at IS
+        NULL` rows, which this row, by definition, is not.
         """
         try:
             path.unlink()
