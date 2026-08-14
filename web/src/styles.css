@@ -949,6 +949,7 @@ code {
 .review-btn.confirm.on { background: rgba(74, 222, 128, 0.16); border-color: var(--ok); color: var(--ok); }
 .review-btn.reject.on { background: rgba(248, 113, 113, 0.16); border-color: var(--danger); color: var(--danger); }
 .review-btn.hold.on { background: rgba(251, 191, 36, 0.16); border-color: var(--warn); color: var(--warn); }
+.review-btn.keep.on { background: rgba(111, 180, 255, 0.16); border-color: var(--accent); color: var(--accent); }
 .review-status { font-size: var(--text-2xs); }
 .review-correction {
   margin: var(--space-2) 0 0;

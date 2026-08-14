@@ -209,6 +209,102 @@ describe('DetectionDrawer review controls', () => {
   })
 })
 
+describe('DetectionDrawer keep flag (ADR-061)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps a recording and shows it as kept', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.endsWith('/review') && !init) {
+        return Promise.resolve({ ok: true, json: async () => ({ review: null }) })
+      }
+      if (typeof url === 'string' && url.endsWith('/keep') && init?.method === 'PUT') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ kept_at: '2026-08-14T12:00:00Z', kept_by: 'operator' }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<DetectionDrawer detection={detection()} localTimeZone="UTC" onClose={() => {}} />)
+
+    const keepBtn = await screen.findByText('🔓 keep forever')
+    fireEvent.click(keepBtn)
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/v1/detections/abc-123/keep',
+        expect.objectContaining({ method: 'PUT' }),
+      ),
+    )
+
+    await screen.findByText('🔒 kept forever')
+  })
+
+  it('releases an already-kept recording', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.endsWith('/review') && !init) {
+        return Promise.resolve({ ok: true, json: async () => ({ review: null }) })
+      }
+      if (typeof url === 'string' && url.endsWith('/keep') && init?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ kept_at: null, kept_by: null }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <DetectionDrawer
+        detection={{ ...detection(), kept_at: '2026-08-10T00:00:00Z', kept_by: 'operator' }}
+        localTimeZone="UTC"
+        onClose={() => {}}
+      />,
+    )
+
+    const keepBtn = await screen.findByText('🔒 kept forever')
+    fireEvent.click(keepBtn)
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/v1/detections/abc-123/keep',
+        expect.objectContaining({ method: 'DELETE' }),
+      ),
+    )
+
+    await screen.findByText('🔓 keep forever')
+  })
+
+  it('shows an already-kept detection as kept without waiting for a fetch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ review: null }) }),
+    )
+    render(
+      <DetectionDrawer
+        detection={{ ...detection(), kept_at: '2026-08-10T00:00:00Z', kept_by: 'operator' }}
+        localTimeZone="UTC"
+        onClose={() => {}}
+      />,
+    )
+    expect(await screen.findByText('🔒 kept forever')).toBeTruthy()
+  })
+
+  it('shows a fresh, unkept detection as not kept', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ review: null }) }),
+    )
+    render(<DetectionDrawer detection={detection()} localTimeZone="UTC" onClose={() => {}} />)
+    expect(await screen.findByText('🔓 keep forever')).toBeTruthy()
+  })
+})
+
 describe('DetectionDrawer withdrawal (ADR-044)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

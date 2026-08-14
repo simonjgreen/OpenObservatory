@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1227,6 +1229,71 @@ def detections_reconcile_taxonomy(
             "taxon id are preserved under native_result.taxonomy_review. These rows no "
             "longer appear in the species tallies or in the taxon search."
         )
+
+
+@detections_app.command("keep")
+def detections_keep(
+    detection_id: str = typer.Argument(..., help="Detection id to keep or unkeep"),
+    unkeep: bool = typer.Option(
+        False, "--unkeep", help="Clear the keep flag instead of setting it"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable output"),
+) -> None:
+    """Mark a detection kept forever, or clear that flag (ADR-061).
+
+    `kept` means kept until a human removes it: age, the 90-day expiry and
+    disk pressure never clear it once set (see the four retention tiers'
+    exemption and the watermark's refusal to delete kept evidence, Tasks 1-4).
+    This is the CLI half of the operator surface for that flag, alongside
+    `PUT`/`DELETE /api/v1/detections/{id}/keep` and the drawer toggle.
+
+    Run against the database directly, the same way the other `oo detections`
+    repair commands do, rather than through the HTTP API -- there is no
+    logged-in operator in a CLI session, so `kept_by` is always the fixed
+    string `"operator"`, matching the API route's anonymous-caller default.
+    """
+    from .db import models as orm
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+
+    try:
+        detection_uuid = uuid.UUID(detection_id)
+    except ValueError as exc:
+        console_err.print(f"[red]{detection_id!r} is not a valid detection id.[/red]")
+        raise typer.Exit(1) from exc
+
+    with session_scope() as session:
+        detection = session.get(orm.Detection, detection_uuid)
+        if detection is None:
+            console_err.print(f"[red]No detection with id {detection_id}.[/red]")
+            raise typer.Exit(1)
+
+        if unkeep:
+            detection.kept_at = None
+            detection.kept_by = None
+        else:
+            detection.kept_at = datetime.now(UTC)
+            detection.kept_by = "operator"
+        session.flush()
+
+        payload = {
+            "id": str(detection.id),
+            "kept_at": detection.kept_at.isoformat().replace("+00:00", "Z")
+            if detection.kept_at
+            else None,
+            "kept_by": detection.kept_by,
+        }
+
+    if json_out:
+        emit_json(payload)
+    elif unkeep:
+        console.print(f"[green]Cleared the keep flag on {detection_id}.[/green]")
+    else:
+        console.print(f"[green]{detection_id} is now kept forever.[/green]")
 
 
 # ----------------------------------------------------------------------

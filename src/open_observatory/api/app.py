@@ -1745,6 +1745,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"review": None}
         return {"review": _review_payload(latest)}
 
+    @app.put(f"{API_PREFIX}/detections/{{detection_id}}/keep")
+    def keep_detection(
+        detection_id: str,
+        session: Session = Depends(get_session),
+        principal: Principal | None = Depends(get_optional_principal),
+    ) -> dict[str, Any]:
+        """Mark a detection kept forever (ADR-061): Tasks 1-4 already made
+        `kept_at IS NOT NULL` exempt on every retention tier and the
+        watermark, so this route is the entire remaining gap between "the
+        mechanism exists" and "an operator can use it". Idempotent --
+        re-keeping an already-kept detection just refreshes `kept_at`/
+        `kept_by` to the latest actor and time, matching the review
+        endpoints' append-is-cheap posture rather than rejecting a repeat
+        click.
+
+        `kept_by` follows the same actor rule `post_detection_review` uses
+        (ADR-043): the logged-in operator's username when auth is enabled
+        and a session/token was presented, else the fixed string
+        `"operator"` -- distinct from review's `"local"` because this is an
+        explicit, named operator action rather than the anonymous
+        debug-slice default.
+        """
+        detection = session.get(orm.Detection, _uuid(detection_id))
+        if detection is None:
+            raise HTTPException(status_code=404, detail="detection not found")
+        detection.kept_at = datetime.now(UTC)
+        detection.kept_by = principal.username if principal else "operator"
+        session.commit()
+        session.refresh(detection)
+        return _detection_payload(detection)
+
+    @app.delete(f"{API_PREFIX}/detections/{{detection_id}}/keep")
+    def unkeep_detection(
+        detection_id: str,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Clear the keep flag. Age, the 90-day expiry and disk pressure never
+        clear it (ADR-061) -- only this, an explicit human action."""
+        detection = session.get(orm.Detection, _uuid(detection_id))
+        if detection is None:
+            raise HTTPException(status_code=404, detail="detection not found")
+        detection.kept_at = None
+        detection.kept_by = None
+        session.commit()
+        session.refresh(detection)
+        return _detection_payload(detection)
+
     @app.get(f"{API_PREFIX}/taxa/search")
     def search_taxa(
         q: str = Query(..., min_length=1, max_length=120),
@@ -2743,6 +2790,12 @@ def _detection_payload(
         if is_corrected and review is not None
         else row.scientific_name
     )
+    #: ADR-061. `kept_at`/`kept_by` are the operator-facing half of the keep
+    #: flag Tasks 1-4 built the retention exemption for -- present on every
+    #: detection payload (usually both null) so the drawer, list and history
+    #: views can all render current keep state without a second fetch.
+    payload["kept_at"] = _iso(row.kept_at)
+    payload["kept_by"] = row.kept_by
     if include_native:
         payload["native_result"] = row.native_result
     return payload

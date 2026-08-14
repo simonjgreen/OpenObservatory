@@ -7,6 +7,7 @@ dry-run by default, ``--apply`` alone changes nothing without confirmation,
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -194,3 +195,53 @@ def test_no_implausible_detections_reports_clean(settings) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No implausible detections found" in result.output
+
+
+class TestKeep:
+    """``oo detections keep`` (ADR-061) -- the CLI half of the operator surface
+    for the keep flag Tasks 1-4 built the retention exemption for."""
+
+    def test_keep_marks_the_detection_and_emits_json(self, settings) -> None:
+        set_settings(settings)
+        detection_id = _seed(settings)
+
+        result = runner.invoke(app, ["detections", "keep", str(detection_id), "--json"])
+
+        assert result.exit_code == 0, result.output
+        body = json.loads(result.stdout)
+        assert body["kept_at"]
+        assert body["kept_by"] == "operator"
+
+        with session_scope() as session:
+            row = session.get(orm.Detection, detection_id)
+            assert row.kept_at is not None
+            assert row.kept_by == "operator"
+
+    def test_unkeep_clears_both(self, settings) -> None:
+        set_settings(settings)
+        detection_id = _seed(settings)
+
+        runner.invoke(app, ["detections", "keep", str(detection_id)])
+        result = runner.invoke(
+            app, ["detections", "keep", str(detection_id), "--unkeep", "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        body = json.loads(result.stdout)
+        assert body["kept_at"] is None
+        assert body["kept_by"] is None
+
+        with session_scope() as session:
+            row = session.get(orm.Detection, detection_id)
+            assert row.kept_at is None
+            assert row.kept_by is None
+
+    def test_keeping_an_unknown_detection_fails_clearly(self, settings) -> None:
+        set_settings(settings)
+        init_engine(settings)
+        ensure_schema_at_head()
+
+        result = runner.invoke(app, ["detections", "keep", str(uuid.uuid4())])
+
+        assert result.exit_code != 0
+        assert result.stdout == ""  # a refusal must never land in a --json document

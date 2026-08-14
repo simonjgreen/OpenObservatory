@@ -67,6 +67,56 @@ function useReview(detectionId: string | null) {
   return { review, saving, error, submit }
 }
 
+/** The keep flag (ADR-061): keep this recording forever, until a human
+ *  removes it. Age, the 90-day expiry and disk pressure never clear it --
+ *  Tasks 1-4 already made `kept_at IS NOT NULL` exempt on every retention
+ *  tier and the watermark; this hook is what lets an operator set or clear
+ *  it, via `PUT`/`DELETE /api/v1/detections/{id}/keep`.
+ *
+ *  State seeds from the detection prop (the list/detail payload already
+ *  carries `kept_at`/`kept_by`, so a previously-kept recording shows as kept
+ *  immediately, with no extra fetch) and is then updated from the server's
+ *  response, the same wait-for-response-then-reconcile shape `useReview`
+ *  above uses -- not a bare optimistic flip, so a rejected write cannot
+ *  leave the control showing a state the server never recorded. */
+function useKeep(detection: Detection | null) {
+  const [keptAt, setKeptAt] = useState<string | null>(detection?.kept_at ?? null)
+  const [keptBy, setKeptBy] = useState<string | null>(detection?.kept_by ?? null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setKeptAt(detection?.kept_at ?? null)
+    setKeptBy(detection?.kept_by ?? null)
+    setError(null)
+  }, [detection?.id, detection?.kept_at, detection?.kept_by])
+
+  const toggle = () => {
+    if (!detection) return
+    setSaving(true)
+    setError(null)
+    fetch(`/api/v1/detections/${detection.id}/keep`, { method: keptAt ? 'DELETE' : 'PUT' })
+      .then((response) =>
+        response.ok
+          ? response.json()
+          : response
+              .json()
+              .catch(() => null)
+              .then((body) => Promise.reject(body?.detail ?? `HTTP ${response.status}`)),
+      )
+      .then((data) => {
+        setKeptAt(data.kept_at ?? null)
+        setKeptBy(data.kept_by ?? null)
+      })
+      .catch((detail: unknown) => {
+        setError(typeof detail === 'string' ? detail : 'could not save the keep flag')
+      })
+      .finally(() => setSaving(false))
+  }
+
+  return { keptAt, keptBy, saving, error, toggle }
+}
+
 /** Debounced taxon search against `GET /api/v1/taxa/search` (ADR-043),
  *  backing the "correct identification" control below. Species come only
  *  from what this station has itself already identified -- see that
@@ -222,6 +272,8 @@ interface Props {
 
 export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
   const { review, saving, error, submit } = useReview(detection?.id ?? null)
+  const { keptAt, keptBy, saving: keepSaving, error: keepError, toggle: toggleKeep } =
+    useKeep(detection)
   if (!detection) return null
   const start = new Date(detection.event_start_utc)
   const format = new Intl.DateTimeFormat('en-GB', {
@@ -349,6 +401,20 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
           >
             ★ hold
           </button>
+          <button
+            className={`review-btn keep ${keptAt ? 'on' : ''}`}
+            disabled={keepSaving}
+            title={
+              keptAt
+                ? `Kept forever by ${keptBy ?? 'operator'}. Age, the 90-day expiry and disk ` +
+                  'pressure will never remove it -- click to release it back to normal retention.'
+                : 'Keep this recording forever, until a human removes the flag -- exempt from ' +
+                  'age, the 90-day expiry and disk pressure'
+            }
+            onClick={toggleKeep}
+          >
+            {keptAt ? '🔒 kept forever' : '🔓 keep forever'}
+          </button>
           {review && (
             <span className="dim review-status">
               last reviewed: {review.status} by {review.actor}
@@ -356,6 +422,7 @@ export function DetectionDrawer({ detection, localTimeZone, onClose }: Props) {
             </span>
           )}
         </div>
+        {keepError && <p className="review-error">{keepError}</p>}
         {review?.status === 'corrected' && (
           <p className="review-correction">
             Corrected to <strong>{review.corrected_common_name ?? review.corrected_taxon_id}</strong>

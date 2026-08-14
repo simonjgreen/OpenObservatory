@@ -349,6 +349,11 @@ export interface Detection {
    *  corrected, else the original `common_name`/`scientific_name`. */
   effective_common_name?: string | null
   effective_scientific_name?: string | null
+  /** Set by `PUT /api/v1/detections/{id}/keep` (ADR-061); cleared by the
+   *  matching `DELETE`. Age, the 90-day expiry and disk pressure never clear
+   *  it -- only an explicit human action does. Null on everything else. */
+  kept_at?: string | null
+  kept_by?: string | null
 }
 
 export interface Envelope {

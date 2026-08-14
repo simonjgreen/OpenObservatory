@@ -642,6 +642,85 @@ class TestReviewWorkflow:
         assert response.status_code == 404
 
 
+class TestKeepFlag:
+    """The keep flag's operator surface (ADR-061). Tasks 1-4 built the whole
+    exemption mechanism (`kept_at`/`kept_by`, retention-tier exemption, the
+    watermark's refusal to delete); this is what lets a human actually set it.
+    """
+
+    def _seed_detection(self, client) -> str:
+        with session_scope() as session:
+            station_id = session.execute(select(orm.Station.id).limit(1)).scalar_one()
+            detector_id = session.execute(select(orm.Detector.id).limit(1)).scalar_one()
+            detection_id = uuid.uuid4()
+            now = datetime.now(UTC)
+            session.add(
+                orm.Detection(
+                    id=detection_id,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    stream_id=uuid.uuid4(),
+                    window_id=uuid.uuid4(),
+                    event_start_utc=now,
+                    event_end_utc=now,
+                    source_start_frame=0,
+                    source_end_frame=1,
+                    detector_label="Wren",
+                    common_name="Wren",
+                    scientific_name="Troglodytes troglodytes",
+                    canonical_taxon_id="sci:troglodytes_troglodytes",
+                    rank="species",
+                    taxonomic_group="bird",
+                    score=0.9,
+                )
+            )
+        return str(detection_id)
+
+    def test_keeping_a_detection_sets_who_and_when(self, client) -> None:
+        detection_id = self._seed_detection(client)
+        response = client.put(f"/api/v1/detections/{detection_id}/keep")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["kept_at"] is not None
+        assert body["kept_at"].endswith("Z")
+        assert body["kept_by"] == "operator"  # anonymous debug-slice default
+
+        # Persisted, not just echoed back.
+        detail = client.get(f"/api/v1/detections/{detection_id}?include_synthetic=true").json()
+        assert detail["kept_at"] == body["kept_at"]
+        assert detail["kept_by"] == "operator"
+
+    def test_unkeeping_clears_both(self, client) -> None:
+        detection_id = self._seed_detection(client)
+        client.put(f"/api/v1/detections/{detection_id}/keep")
+        response = client.request("DELETE", f"/api/v1/detections/{detection_id}/keep")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["kept_at"] is None
+        assert body["kept_by"] is None
+
+        detail = client.get(f"/api/v1/detections/{detection_id}?include_synthetic=true").json()
+        assert detail["kept_at"] is None
+        assert detail["kept_by"] is None
+
+    def test_keeping_an_unknown_detection_is_404(self, client) -> None:
+        assert client.put(f"/api/v1/detections/{uuid.uuid4()}/keep").status_code == 404
+
+    def test_unkeeping_an_unknown_detection_is_404(self, client) -> None:
+        response = client.request("DELETE", f"/api/v1/detections/{uuid.uuid4()}/keep")
+        assert response.status_code == 404
+
+    def test_keep_is_not_a_public_read_path(self, settings) -> None:
+        """PUT/DELETE never match the auth gate's GET-only public-read carve-out
+        (`auth_public_read_paths`), so no code change here can accidentally let
+        these operator actions through unauthenticated -- but assert it anyway,
+        since that carve-out is exactly the kind of thing a future edit could
+        widen by accident."""
+        assert "/api/v1/detections" in settings.auth_public_read_paths
+        # ^ GETs under this path are intentionally public; keep relies on the
+        # gate's `request.method == "GET"` check, not on this path being absent.
+
+
 class TestSourceFiltering:
     """The station in this fixture only ever runs the synthetic source (there is
     no ALSA hardware in CI), so every detection it produces is exactly the kind
