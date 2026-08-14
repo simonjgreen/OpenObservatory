@@ -1083,3 +1083,73 @@ class TestReportInvariants:
         payload = report.to_dict()
         assert payload["total_deleted"] == report.total_deleted
         assert payload["total_bytes"] == report.total_bytes
+
+
+class TestPreambleVisibility:
+    """ADR-061 fixed the unbounded exemplar preamble that used to exhaust the
+    whole batch budget before the first tier guard, silently skipping every
+    tier for nine days. `complete=False` read identically whether a sweep
+    ran out of time mid-backlog (normal) or never reached a single tier
+    (broken), and the deletion counter was a flat zero either way. These
+    fields exist so that distinction is visible in the log line and
+    `/api/v1/retention/status`, not something an operator has to infer."""
+
+    def test_a_sweep_that_never_reaches_a_tier_says_so(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
+            )
+        sweeper = _sweeper(db)
+        monkeypatch.setattr(sweeper, "batch_budget_s", 0.0)
+        report = sweeper.sweep()
+        assert report.complete is False
+        assert report.tiers_skipped == ["native", "unkept", "expired", "watermark"]
+        assert report.preamble_s >= 0.0
+
+    def test_a_healthy_sweep_with_nothing_to_delete_skips_no_tier(
+        self, db, station_and_detector
+    ) -> None:
+        """The steady-state case that must stay quiet: every tier guard is
+        reached and runs, it simply finds nothing to do."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+            )
+        report = _sweeper(db).sweep()
+        assert report.total_deleted == 0
+        assert report.tiers_skipped == []
+
+    def test_a_backlog_drain_only_skips_a_suffix_of_tiers(
+        self, db, station_and_detector
+    ) -> None:
+        """Running out of batch mid-sweep is normal and self-correcting: it
+        skips only whichever tiers come after the one that used up the
+        budget, never all four."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for index in range(5):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=8 + index,
+                    common_name=f"species-{index}",
+                    kinds=("evidence_native",),
+                )
+        report = _sweeper(db, batch_size=2, batch_budget_s=30.0).sweep()
+        assert report.complete is False
+        assert report.tiers_skipped != []
+        assert len(report.tiers_skipped) < 4

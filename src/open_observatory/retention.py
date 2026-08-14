@@ -125,6 +125,28 @@ class RetentionReport:
     #: False when the batch budget (count or wall-clock) was exhausted with
     #: candidate work still outstanding -- the next sweep will pick it up.
     complete: bool = True
+    #: Monotonic seconds from sweep start to just before the first tier
+    #: guard. ADR-061: the incident this exists to catch was a preamble
+    #: query alone (2.978 s) eating the entire 1.5 s budget before any tier
+    #: guard was reached, for nine days, with no symptom besides a zero
+    #: deletion count that looked identical to "nothing to delete". A
+    #: healthy sweep's preamble is a couple of indexed queries and should
+    #: read as a small fraction of `batch_budget_s`; a preamble that is
+    #: itself close to (or past) the budget is the nine-day failure
+    #: recurring.
+    preamble_s: float = 0.0
+    #: Name of every tier ("native", "unkept", "expired", "watermark") whose
+    #: guard evaluated False, in evaluation order -- appended whether the
+    #: cause was the wall-clock deadline, an exhausted batch, or the tier
+    #: being disabled by configuration (a `*_days` of 0). Distinguishing a
+    #: broken sweep from a merely partial one is not "was anything
+    #: skipped" but "was *everything* skipped": a backlog drain only ever
+    #: skips a trailing suffix of tiers because the ones before it consumed
+    #: real budget or time, whereas all four skipped together -- with the
+    #: batch budget still full -- means the sweep never did any work at
+    #: all, which a healthy station in steady state never produces (see
+    #: `station.py`'s `housekeeping.retention_never_reached_a_tier`).
+    tiers_skipped: list[str] = field(default_factory=list)
 
     @property
     def total_deleted(self) -> int:
@@ -150,6 +172,8 @@ class RetentionReport:
             "total_deleted": self.total_deleted,
             "total_bytes": self.total_bytes,
             "complete": self.complete,
+            "preamble_s": self.preamble_s,
+            "tiers_skipped": list(self.tiers_skipped),
         }
 
 
@@ -194,6 +218,8 @@ class RetentionSweeper:
         self.last_sweep_at: datetime | None = None
         self.last_sweep_duration_s: float = 0.0
         self.last_sweep_complete: bool = True
+        self.last_preamble_s: float = 0.0
+        self.last_tiers_skipped: list[str] = []
         self.last_disk_used_ratio: float | None = None
         self.last_kept_detections: int = 0
         self.last_held_detections: int = 0
@@ -250,6 +276,14 @@ class RetentionSweeper:
             held_ids = review_queries.held_detection_ids(session)
             report.held_detections = len(held_ids)
 
+            # Everything above this line is the preamble that, unbounded,
+            # caused the nine-day incident (ADR-061): recorded *before* the
+            # first tier guard so a preamble that alone ate the budget shows
+            # up as a large `preamble_s` next to an empty `tiers_skipped`-
+            # causing deadline, rather than being indistinguishable from a
+            # fast one.
+            report.preamble_s = round(time.monotonic() - start_perf, 4)
+
             if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_native(
                     session,
@@ -260,6 +294,8 @@ class RetentionSweeper:
                     dry_run=dry_run,
                     held_ids=held_ids,
                 )
+            else:
+                report.tiers_skipped.append("native")
             if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_unkept(
                     session,
@@ -270,6 +306,8 @@ class RetentionSweeper:
                     dry_run=dry_run,
                     held_ids=held_ids,
                 )
+            else:
+                report.tiers_skipped.append("unkept")
             if self.exemplar_only_days > 0 and budget > 0 and time.monotonic() < deadline:
                 budget = self._strip_expired(
                     session,
@@ -280,10 +318,14 @@ class RetentionSweeper:
                     dry_run=dry_run,
                     held_ids=held_ids,
                 )
+            else:
+                report.tiers_skipped.append("expired")
             if budget > 0 and time.monotonic() < deadline:
                 budget = self._watermark_reclaim(
                     session, report, deadline=deadline, budget=budget, dry_run=dry_run
                 )
+            else:
+                report.tiers_skipped.append("watermark")
             # A dry run still stamps `reclaimed_at` in-memory in `_delete_asset`
             # -- purely so a later tier's candidate query (which filters on
             # `reclaimed_at IS NULL`) does not re-offer, and double-count, an
@@ -307,6 +349,8 @@ class RetentionSweeper:
         self.last_sweep_at = now
         self.last_sweep_duration_s = report.duration_s
         self.last_sweep_complete = report.complete
+        self.last_preamble_s = report.preamble_s
+        self.last_tiers_skipped = list(report.tiers_skipped)
         self.last_disk_used_ratio = report.disk_used_ratio_after
         self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
@@ -753,6 +797,8 @@ class RetentionSweeper:
             "last_sweep_at": self.last_sweep_at.isoformat() if self.last_sweep_at else None,
             "last_sweep_duration_s": self.last_sweep_duration_s,
             "last_sweep_complete": self.last_sweep_complete,
+            "last_preamble_s": self.last_preamble_s,
+            "last_tiers_skipped": list(self.last_tiers_skipped),
             "last_disk_used_ratio": self.last_disk_used_ratio,
             "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,

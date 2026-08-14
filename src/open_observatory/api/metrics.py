@@ -359,6 +359,18 @@ class PrometheusExporter:
             "1 when the last sweep finished within its batch budget with no backlog left",
             1.0 if retention["last_sweep_complete"] else 0.0,
         )
+        # ADR-061. The nine-day incident this exists to catch left no other
+        # trace: a preamble query that alone exhausted the batch budget
+        # before any tier guard produced the same `complete=False` and flat
+        # zero deletion count as an ordinary, self-correcting backlog drain.
+        # A healthy sweep's preamble is a small fraction of
+        # `oo_retention_sweep_duration_seconds`; alert if it approaches
+        # `batch_budget_s`.
+        self._set(
+            "oo_retention_preamble_seconds",
+            "Wall-clock time from sweep start to the first tier guard (ADR-061)",
+            retention["last_preamble_s"],
+        )
         last_sweep_at = self.station.retention.last_sweep_at if self.station.retention else None
         self._set(
             "oo_retention_last_sweep_timestamp_seconds",

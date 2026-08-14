@@ -1867,6 +1867,25 @@ class Station:
                             "housekeeping.retention_not_keeping_up",
                             **result.to_dict(),
                         )
+                    # ADR-061. `not result.complete` above fires just as
+                    # readily for an ordinary backlog drain (self-correcting:
+                    # the next sweep continues) as it did, silently, for nine
+                    # days when an unbounded preamble query exhausted the
+                    # whole budget before the first tier guard ran. The two
+                    # look identical in that log line and in a flat zero
+                    # deletion count. `tiers_skipped` is what tells them
+                    # apart: a backlog drain only ever skips a trailing
+                    # suffix of tiers, because the ones before it consumed
+                    # real budget or time, whereas all four tiers skipped
+                    # together means no tier ever ran -- which a healthy
+                    # station in steady state (nothing left to delete) never
+                    # produces, because every guard is still reached and each
+                    # tier's own query simply finds nothing.
+                    if len(result.tiers_skipped) == 4:
+                        log.error(
+                            "housekeeping.retention_never_reached_a_tier",
+                            **result.to_dict(),
+                        )
             # ADR-057: on the same pacing and the same dedicated thread as the
             # sweep, stat one bounded slice of live media rows and count the
             # ones whose file is gone. A row asserting evidence that does not

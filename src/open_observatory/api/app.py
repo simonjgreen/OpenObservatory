@@ -1230,6 +1230,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # `RetentionSweeper._watermark_reclaim` and `/health`, which
             # escalates this into a named problem.
             "watermark_blocked_by_kept": sweeper.last_watermark_blocked_by_kept,
+            # ADR-061: how long the last sweep spent before its first tier
+            # guard, and which tier guards (if any) it never reached. A
+            # sweep that reaches every guard but deletes nothing is healthy;
+            # one whose preamble alone eats the budget looks identical in
+            # every other figure on this page, which is exactly how the
+            # original nine-day failure hid.
+            "last_preamble_s": sweeper.last_preamble_s,
+            "last_tiers_skipped": list(sweeper.last_tiers_skipped),
             "last_run_utc": sweeper.last_sweep_at.isoformat() if sweeper.last_sweep_at else None,
             # The sweeper deletes for real when enabled; `--dry-run` is a CLI
             # affordance, never a server mode, so this is always False here.

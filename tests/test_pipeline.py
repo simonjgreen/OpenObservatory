@@ -1087,7 +1087,7 @@ class TestHousekeepingDoesNotStarveCapture:
         def _sweep():
             nonlocal sweeps
             sweeps += 1
-            return SimpleNamespace(total_deleted=0, complete=True, to_dict=lambda: {})
+            return SimpleNamespace(total_deleted=0, complete=True, tiers_skipped=[], to_dict=lambda: {})
 
         monkeypatch.setattr(station.retention, "sweep", _sweep)
         monkeypatch.setattr(station.leases, "sweep", lambda: None)
@@ -1119,7 +1119,7 @@ class TestHousekeepingDoesNotStarveCapture:
         def _sweep():
             nonlocal sweeps
             sweeps += 1
-            return SimpleNamespace(total_deleted=0, complete=True, to_dict=lambda: {})
+            return SimpleNamespace(total_deleted=0, complete=True, tiers_skipped=[], to_dict=lambda: {})
 
         monkeypatch.setattr(station.retention, "sweep", _sweep)
         monkeypatch.setattr(station.leases, "sweep", lambda: None)
