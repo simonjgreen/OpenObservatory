@@ -1303,9 +1303,24 @@ place.
 
 ## What is still open after this round
 
-- **Finding 2 is unfixed and unisolated.** The `OO_RETENTION_ENABLED=false`
-  experiment above is cheap and has not been run.
-- **ADR-059 is unverified on target.** No post-fix reading exists.
+- ~~**Finding 2 is unfixed and unisolated.** The `OO_RETENTION_ENABLED=false`
+  experiment above is cheap and has not been run.~~ **CLOSED 2026-08-14 by
+  ADR-061, and the experiment was never needed.** The cause was identified
+  directly rather than by ablation: `RetentionSweeper.sweep()` ran an unbounded
+  2.978 s query *before* any deadline check, and the coupling to capture was
+  proven to the millisecond from the station's own log — a sweep beginning
+  02:18:19.893 with `duration_s=2.6608`, and the first `-EIO` at 02:18:22.552.
+  Verified on the station after the fix: **zero `capture_gap` rows in the 30
+  minutes following deployment**, against 22-24 per hour beforehand, while
+  retention deleted 800 files / 3.5 GB with a sweep duration of 0.696 s inside
+  its 1.5 s budget and a preamble of 0.0027 s.
+- ~~**ADR-059 is unverified on target.** No post-fix reading exists.~~ **A
+  post-fix reading exists and it FAILED.** ADR-059 predicted
+  `late_read_max_frames` "well under 100,000"; the reading at 54.7 h into the
+  soak was **188,982 of 192,000 (98.4%)** — worse than the 81% it was written
+  to fix. Recorded on ADR-059 itself. Its diagnosis (a filesystem walk on the
+  event loop) was correct but incomplete: the walk's *successor* cost, the
+  retention sweep, was the larger term and is what ADR-061 removed.
 - **The 72-hour soak was run anyway, 2026-08-10 to 2026-08-13, before finding 1
   was deployed and confirmed — and it failed**, at 99.865% continuity against
   a ≥ 99.9% criterion. This document's own prediction held: the walk starved
