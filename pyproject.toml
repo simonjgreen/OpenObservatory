@@ -6,30 +6,30 @@ requires-python = ">=3.12,<3.14"
 license = { text = "Apache-2.0" }
 
 dependencies = [
-  "fastapi==0.115.6",
-  "uvicorn[standard]==0.34.0",
-  "pydantic==2.10.4",
-  "pydantic-settings==2.7.1",
-  "SQLAlchemy==2.0.36",
-  "alembic==1.14.0",
-  "numpy==2.2.1",
-  "soundfile==0.13.0",
-  "typer==0.15.1",
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.1",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.15.0",
+  "SQLAlchemy==2.0.52",
+  "alembic==1.19.1",
+  "numpy==2.5.2",
+  "soundfile==0.14.0",
+  "typer==0.27.1",
   # Pinned, not left to typer's own `click>=8.0.0` range. click 8.2 changed
   # `Parameter.make_metavar()` to require a `ctx` argument; typer 0.15.1 still
   # calls it with none, so any fresh install resolving click >=8.2 makes every
   # `oo ... --help` die with a TypeError before printing anything. Found on
   # 2026-08-08 with click 8.4.2 -- on this laptop AND on the live station, so
   # the operator CLI documented in HANDOVER.md was already broken there.
-  "click==8.1.8",
+  "click==8.4.2",
   "rich==15.0.0",
   "structlog==26.1.0",
-  "prometheus-client==0.21.1",
+  "prometheus-client==0.26.0",
   "psutil==6.1.1",
   # Async MQTT client for the Milestone 6 publisher (config.py: mqtt_enabled,
   # off by default). Pure-Python wheel, no native build step, so unlike the
   # `alsa`/`birdnet` extras there is no reason to make it opt-in.
-  "aiomqtt==2.3.0",
+  "aiomqtt==2.5.1",
   # Password hashing for the Milestone 4 auth foundation (ADR-034). Argon2id,
   # winner of the 2015 Password Hashing Competition and OWASP's current
   # recommendation; cost parameters are pinned separately in config.py so a
@@ -41,22 +41,22 @@ dependencies = [
 # ALSA capture on the target device.
 alsa = ["pyalsaaudio==0.11.0"]
 # Preferred high-quality polyphase resampler. Falls back to scipy when absent.
-resample = ["soxr==0.5.0.post1", "scipy==1.15.0"]
+resample = ["soxr==0.5.0.post1", "scipy==1.18.0"]
 # TFLite inference for the BirdNET adapter. `tflite-runtime` has no cp312
 # aarch64 wheel; ai-edge-litert is its maintained successor and does.
-birdnet = ["ai-edge-litert==2.1.6"]
+birdnet = ["ai-edge-litert==2.2.0"]
 # PostgreSQL production profile (ADR-007).
-postgres = ["psycopg[binary]==3.2.3"]
+postgres = ["psycopg[binary]==3.3.4"]
 dev = [
-  "pytest==9.0.3",
-  "pytest-asyncio==1.3.0",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
   "httpx==0.28.1",
-  "ruff==0.8.6",
+  "ruff==0.16.2",
   "mypy==1.14.1",
   # Validates real emitted events against schemas/detection-event.schema.json
   # (tests/test_mqtt_schema.py) so the envelope cannot drift unnoticed again.
-  "jsonschema==4.23.0",
-  "hypothesis==6.123.2",
+  "jsonschema==4.26.0",
+  "hypothesis==6.165.5",
   # Client for scripts/probe_display_channel.py, which measures what
   # /api/v1/display actually costs on the wire against a real station (ADR-038).
   # Not a runtime dependency: the server side is Starlette's own WebSocket.
