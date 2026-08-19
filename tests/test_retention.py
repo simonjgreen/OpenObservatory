@@ -1999,3 +1999,90 @@ class TestTierAgeIsMeasuredOnTheAsset:
         assert indexed_rows() == 20
         self._sweeper(tmp_path).sweep()
         assert indexed_rows() == 0
+
+
+class TestWatermarkTierIsNotShadowedByTheAgeTiers:
+    """The safety valve must not sit downstream of what it protects against.
+
+    ADR-064. The three tiers share one `batch_size` budget and the watermark
+    tier ran last, so a native backlog consumed the whole budget and the
+    watermark tier was skipped -- precisely on the sweeps where disk pressure
+    was most likely. The first sweep after ADR-062's fix demonstrated it live:
+    200 files reclaimed in the native tier, `tiers_skipped=['unkept',
+    'watermark']`.
+    """
+
+    def _sweeper(self, tmp_path, *, watermark_ratio: float):
+        return RetentionSweeper(
+            session_factory=session_scope,
+            clip_dir=tmp_path / "clips",
+            native_days=7,
+            audible_only_days=30,
+            watermark_ratio=watermark_ratio,
+            batch_size=2,
+            clock=lambda: FIXED_NOW,
+        )
+
+    def _seed_native_backlog(self, station_id, detector_id, clip_dir, count: int):
+        with session_scope() as session:
+            for _ in range(count):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=clip_dir,
+                    age_days=8,
+                    kinds=("evidence_native",),
+                )
+
+    def test_over_the_watermark_it_runs_before_the_age_tiers(
+        self, db, station_and_detector, tmp_path
+    ):
+        station_id, detector_id = station_and_detector
+        self._seed_native_backlog(station_id, detector_id, tmp_path / "clips", 6)
+
+        # watermark_ratio 0.0 == "any disk usage at all is over the line".
+        report = self._sweeper(tmp_path, watermark_ratio=0.0).sweep()
+
+        assert "watermark" not in report.tiers_skipped, report.tiers_skipped
+        assert report.tier_counts.get("watermark", 0) > 0, report.tier_counts
+
+    def test_under_the_watermark_the_ordering_is_unchanged(
+        self, db, station_and_detector, tmp_path
+    ):
+        """The promotion is conditional; below the line nothing moves.
+
+        The age tiers stay first so that ordinary sweeps keep degrading clips
+        by policy rather than by disk, which is what ADR-026 decided.
+        """
+        station_id, detector_id = station_and_detector
+        self._seed_native_backlog(station_id, detector_id, tmp_path / "clips", 6)
+
+        report = self._sweeper(tmp_path, watermark_ratio=1.1).sweep()
+
+        assert report.tier_counts.get("native", 0) > 0
+        assert report.tier_counts.get("watermark", 0) == 0
+
+    def test_the_watermark_tier_is_not_run_twice_in_one_sweep(
+        self, db, station_and_detector, tmp_path
+    ):
+        """The promoted call must replace the trailing one, not add to it.
+
+        Running both would double-charge the budget and could report the tier
+        twice in `tiers_skipped`.
+        """
+        station_id, detector_id = station_and_detector
+        self._seed_native_backlog(station_id, detector_id, tmp_path / "clips", 2)
+        sweeper = self._sweeper(tmp_path, watermark_ratio=0.0)
+        calls = 0
+        real = sweeper._watermark_reclaim
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real(*args, **kwargs)
+
+        sweeper._watermark_reclaim = counting  # type: ignore[method-assign]
+        report = sweeper.sweep()
+        assert calls == 1
+        assert report.tiers_skipped.count("watermark") == 0

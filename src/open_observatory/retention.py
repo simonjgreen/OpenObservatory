@@ -426,6 +426,25 @@ class RetentionSweeper:
                 # what removes the cross-tier-autoflush hazard C1 found: a
                 # completed tier has nothing left pending for the *next*
                 # tier's `session.execute()` to autoflush.
+                # ADR-064. The watermark tier goes **first** whenever disk is
+                # already over the line, and only then. It is the one tier that
+                # is an emergency rather than a policy, and running it last
+                # behind two age tiers that share one `batch_size` budget meant
+                # it was skipped exactly when it was most needed: the sweep
+                # immediately after ADR-062's fix reclaimed its full 200-file
+                # batch in the native tier and reported
+                # `tiers_skipped=['unkept', 'watermark']`. A safety valve
+                # downstream of the thing it protects against is not a safety
+                # valve. Below the watermark this costs one `shutil.disk_usage`
+                # call and the ordering is unchanged.
+                if self._disk_over_watermark():
+                    current_tier = "watermark"
+                    budget = self._watermark_reclaim(
+                        session, report, deadline=deadline, budget=budget, dry_run=dry_run
+                    )
+                    watermark_ran = True
+                else:
+                    watermark_ran = False
                 current_tier = "native"
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
@@ -453,7 +472,9 @@ class RetentionSweeper:
                 else:
                     report.tiers_skipped.append("unkept")
                 current_tier = "watermark"
-                if budget > 0 and time.monotonic() < deadline:
+                if watermark_ran:
+                    pass
+                elif budget > 0 and time.monotonic() < deadline:
                     budget = self._watermark_reclaim(
                         session, report, deadline=deadline, budget=budget, dry_run=dry_run
                     )
@@ -739,6 +760,18 @@ class RetentionSweeper:
             budget=budget,
             dry_run=dry_run,
         )
+
+    def _disk_over_watermark(self) -> bool:
+        """Whether the clip filesystem is already past the watermark.
+
+        Cheap enough to ask every sweep -- one `statvfs` -- and asking it up
+        front is what lets `sweep` promote the watermark tier ahead of the age
+        tiers when it matters. `_watermark_reclaim` re-reads usage itself and
+        returns immediately if this was a false alarm, so a stale answer here
+        costs nothing but the second call.
+        """
+        ratio = self._disk_used_ratio()
+        return ratio is not None and ratio > self.watermark_ratio
 
     def _watermark_reclaim(
         self,
