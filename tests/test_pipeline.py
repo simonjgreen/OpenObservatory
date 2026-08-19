@@ -1094,12 +1094,20 @@ class TestHousekeepingDoesNotStarveCapture:
         monkeypatch.setattr(station.leases, "sweep", lambda: None)
         monkeypatch.setattr(station, "status_snapshot", lambda: {})
 
-        sleeps = 0
+        # Count only the loop's own 10 s tick sleep. Patching `asyncio.sleep`
+        # globally also intercepts sleeps inside everything the tick awaits --
+        # `clips.refresh_disk_usage()` on every third tick, mostly -- which ran
+        # the counter to 61 while `ticks` had only reached ~21, so the loop
+        # stopped before the 30th tick and this test measured zero sweeps for a
+        # reason that had nothing to do with pacing.
+        ticks = 0
 
-        async def _fake_sleep(_seconds):
-            nonlocal sleeps
-            sleeps += 1
-            if sleeps > 60:  # ten minutes of ticks
+        async def _fake_sleep(seconds):
+            nonlocal ticks
+            if seconds != 10.0:
+                return
+            ticks += 1
+            if ticks > 60:  # ten minutes of ticks
                 station._running = False
 
         monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
@@ -1107,7 +1115,7 @@ class TestHousekeepingDoesNotStarveCapture:
         await station._housekeeping_loop()
 
         # Sixty ticks is ten minutes, so exactly two sweeps at the 300 s default.
-        assert sweeps == 2
+        assert sweeps == 2, f"{sweeps} sweeps over {ticks} ticks"
 
     async def test_zero_interval_still_sweeps_every_tick(self, monkeypatch) -> None:
         """A cadence below one tick must not divide by zero or stop sweeping."""
@@ -1126,19 +1134,22 @@ class TestHousekeepingDoesNotStarveCapture:
         monkeypatch.setattr(station.leases, "sweep", lambda: None)
         monkeypatch.setattr(station, "status_snapshot", lambda: {})
 
-        sleeps = 0
+        # Only the loop's own tick sleep counts -- see the test above.
+        ticks = 0
 
-        async def _fake_sleep(_seconds):
-            nonlocal sleeps
-            sleeps += 1
-            if sleeps > 4:
+        async def _fake_sleep(seconds):
+            nonlocal ticks
+            if seconds != 10.0:
+                return
+            ticks += 1
+            if ticks > 4:
                 station._running = False
 
         monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
         station._running = True
         await station._housekeeping_loop()
 
-        assert sweeps == 5
+        assert sweeps == 5, f"{sweeps} sweeps over {ticks} ticks"
 
     async def _run_one_tick_with_fake_sweep(self, monkeypatch, result: SimpleNamespace) -> None:
         """Drives `_housekeeping_loop` through exactly one tick with a

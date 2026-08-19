@@ -5,8 +5,22 @@
 [Unit]
 Description=Open Observatory station (capture, detectors, API, debug UI)
 Documentation=file://@DEPLOY_ROOT@/docs/operations/DEPLOYMENT_AND_OPERATIONS.md
-After=network-online.target sound.target
+After=network-online.target sound.target time-sync.target
 Wants=network-online.target
+# ADR-063. A Raspberry Pi has no battery-backed RTC: it boots with the
+# timestamp systemd saved at last shutdown and NTP steps the clock forward once
+# the network is up. On 2026-08-17 capture opened 1 minute 45 seconds before
+# that step and anchored its frame-to-UTC mapping to the pre-sync clock, so
+# every detection, clip filename and spectrogram column for the following 49
+# hours carried a UTC time 106 seconds early.
+#
+# `time-sync.target` is ordering only and is reached by systemd-timesyncd
+# *before* it has actually synchronised, so this is a cheap improvement rather
+# than a guarantee -- the guarantee is `Station._reanchor_clock_if_stepped`,
+# which corrects a step whenever it happens, including mid-run. Making this a
+# hard dependency (`systemd-time-wait-sync.service`) is deliberately **not**
+# done: it would block capture indefinitely on a station with no network, and
+# recording with an imperfect clock beats not recording at all.
 
 [Service]
 Type=exec

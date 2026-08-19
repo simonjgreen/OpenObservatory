@@ -84,6 +84,16 @@ class StreamClock:
     Each block's own measured ``monotonic_start_ns`` is still the authority for
     gap detection and lag — this type answers "when did frame N happen?", not
     "when did we read it?".
+
+    **The anchor is only as right as the wall clock was when it was taken**
+    (ADR-063). Anchoring once and counting frames is what makes this drift-free
+    against the monotonic clock, and it is also why a later *step* to the system
+    wall clock is baked in permanently rather than corrected. On 2026-08-17 the
+    station anchored 1 minute 45 seconds before NTP first synchronised after a
+    boot, and every UTC timestamp it produced for the following 49 hours — every
+    detection, every clip filename, every spectrogram column — was 106 seconds
+    early. `stepped_by` and `reanchored` exist to detect and repair exactly that;
+    `Station._housekeeping_loop` calls them.
     """
 
     utc_ns_at_frame_zero: int
@@ -101,6 +111,42 @@ class StreamClock:
 
     def monotonic_ns(self, frame: int, sample_rate: int) -> int:
         return self.monotonic_ns_at_frame_zero + frame * NS_PER_S // sample_rate
+
+    @property
+    def skew_ns(self) -> int:
+        """Wall-minus-monotonic implied by this anchor.
+
+        Comparable directly against a fresh `ClockCorrelation.skew_ns`: the two
+        agree while the system wall clock only *slews*, and diverge by the full
+        amount the instant it is *stepped*.
+        """
+        return self.utc_ns_at_frame_zero - self.monotonic_ns_at_frame_zero
+
+    def stepped_by(self, sample: ClockCorrelation) -> int:
+        """Nanoseconds the wall clock has been stepped since this anchor.
+
+        Positive when the clock has jumped forward, which is the ordinary case
+        on a Raspberry Pi: it has no battery-backed RTC, so it boots with the
+        timestamp systemd saved at last shutdown and NTP steps it forward once
+        the network is up.
+        """
+        return sample.skew_ns - self.skew_ns
+
+    def reanchored(self, sample: ClockCorrelation) -> StreamClock:
+        """This clock with its wall-time anchor moved onto `sample`'s timeline.
+
+        `monotonic_ns_at_frame_zero` is deliberately untouched. The monotonic
+        clock does not step, frame N still happened when it happened, and every
+        gap and lag measurement keyed to it stays valid across this call. Only
+        the *name* the station gives that instant in UTC changes.
+
+        Timestamps already written keep the old, wrong name -- this corrects
+        the future, not the past. See ADR-063.
+        """
+        return StreamClock(
+            utc_ns_at_frame_zero=self.utc_ns_at_frame_zero + self.stepped_by(sample),
+            monotonic_ns_at_frame_zero=self.monotonic_ns_at_frame_zero,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -108,6 +108,20 @@ class PrometheusExporter:
             "Estimated frames lost to overruns and device resets",
             capture["estimated_missing_frames"],
         )
+        # ADR-063. Alertable: a station whose wall clock stepped after capture
+        # anchored has been writing wrong timestamps, and the only reason the
+        # 2026-08-17 instance was ever noticed is that a human looked at a
+        # playhead banner in the browser.
+        self._set(
+            "oo_capture_clock_reanchors_total",
+            "Times the stream clock was re-anchored onto a stepped wall clock",
+            capture.get("clock_reanchors", 0),
+        )
+        self._set(
+            "oo_capture_clock_last_step_seconds",
+            "Size of the most recent wall-clock step the stream clock absorbed",
+            capture.get("clock_last_step_s", 0.0),
+        )
         self._set(
             "oo_capture_alsa_buffer_frames",
             "Negotiated ALSA ring depth; audio is lost if a stall exceeds it",

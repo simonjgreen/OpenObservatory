@@ -42,6 +42,7 @@ from .audio.contracts import (
     NS_PER_S,
     AudioWindow,
     CaptureBlock,
+    ClockCorrelation,
     DetectorMetadata,
     DiscontinuityReason,
     NativeDetection,
@@ -103,6 +104,14 @@ UNAPPLIED = _Unapplied()
 #: above this delays the next read by an appreciable fraction of a block.
 _HOUSEKEEPING_SLOW_S = 0.05
 
+#: How far the wall clock must move relative to the monotonic clock before the
+#: stream clock is re-anchored (ADR-063). One second is far above any legitimate
+#: NTP *slew* -- capped at 500 ppm, so ~5 ms across a 10 s housekeeping tick --
+#: and far below the 106 s step that made this necessary. A step smaller than
+#: this is not worth the discontinuity in the timeline that correcting it
+#: introduces.
+_CLOCK_STEP_THRESHOLD_NS = 1_000_000_000
+
 #: Event-loop lag above this is logged individually. Half a capture block.
 _LOOP_LAG_SLOW_S = 0.05
 
@@ -135,6 +144,13 @@ class CaptureCounters:
     stream_restarts: int = 0
     open_failures: int = 0
     last_block_monotonic_ns: int = 0
+    #: How many times the stream clock has been re-anchored onto a stepped
+    #: system wall clock, and the size of the last step in seconds (ADR-063).
+    #: Non-zero means some timestamps this process wrote are wrong by roughly
+    #: `clock_last_step_s`, and which ones is decided by whether they were
+    #: written before or after `station.clock_reanchored` in the log.
+    clock_reanchors: int = 0
+    clock_last_step_s: float = 0.0
     #: Wall time spent inside the per-block hot path, for the CPU budget check.
     hot_path_seconds: float = 0.0
     #: Last housekeeping tick's synchronous, event-loop-blocking cost, and the
@@ -1743,6 +1759,57 @@ class Station:
                 self.counters.loop_lag_events += 1
                 log.warning("loop.lag", lag_s=round(lag, 4))
 
+    def _reanchor_clock_if_stepped(self) -> None:
+        """Move the stream clock onto the wall clock's timeline if it stepped.
+
+        ADR-063. `StreamClock` anchors frame zero to UTC once and then counts
+        frames, which is what makes it drift-free -- and is also why a *step* to
+        the system wall clock afterwards is baked in for the life of the stream.
+        On this hardware that is the normal boot path, not an edge case: a
+        Raspberry Pi has no battery-backed RTC, so it starts with the timestamp
+        systemd saved at last shutdown and NTP steps it forward once the network
+        is up. On 2026-08-17 capture anchored 1 minute 45 seconds before that
+        step and spent the next 49 hours stamping every detection, clip filename
+        and spectrogram column 106 seconds early.
+
+        Only *steps* are corrected, never slew. NTP slews at up to 500 ppm, so a
+        legitimate correction moves the two clocks apart by at most ~5 ms across
+        a 10 s tick -- three orders of magnitude below the threshold. Chasing
+        slew would reintroduce exactly the per-block timestamp jitter
+        `StreamClock` exists to remove.
+
+        Nothing here touches `monotonic_ns_at_frame_zero`: ordering, gap
+        detection and duration are all keyed to the monotonic clock, which does
+        not step, and they stay valid across a re-anchor. Only the UTC *name* of
+        an instant changes, and only for audio timestamped after this call --
+        rows already written keep the old, wrong name.
+        """
+        if self.clock is None:
+            return
+        sample = ClockCorrelation.sample()
+        stepped_ns = self.clock.stepped_by(sample)
+        if abs(stepped_ns) < _CLOCK_STEP_THRESHOLD_NS:
+            return
+        before = self.clock
+        self.clock = before.reanchored(sample)
+        self.counters.clock_reanchors += 1
+        self.counters.clock_last_step_s = round(stepped_ns / NS_PER_S, 6)
+        log.warning(
+            "station.clock_reanchored",
+            stepped_s=round(stepped_ns / NS_PER_S, 6),
+            was_utc_at_frame_zero=datetime.fromtimestamp(
+                before.utc_ns_at_frame_zero / NS_PER_S, tz=UTC
+            ).isoformat(),
+            now_utc_at_frame_zero=datetime.fromtimestamp(
+                self.clock.utc_ns_at_frame_zero / NS_PER_S, tz=UTC
+            ).isoformat(),
+            stream=str(self.stream.stream_id) if self.stream is not None else None,
+            note=(
+                "timestamps written before this moment keep the old value; "
+                "this corrects the future, not the past (ADR-063)"
+            ),
+        )
+
     async def _housekeeping_loop(self) -> None:
         ticks = 0
         while self._running:
@@ -1756,6 +1823,7 @@ class Station:
             loop_lag_s = time.monotonic() - slept_at - 10.0
             ticks += 1
             t0 = time.monotonic()
+            self._reanchor_clock_if_stepped()
             self.leases.sweep()
             # ADR-055. This does not *end* a pause -- a pause ends at its
             # deadline, in `PauseController.active`, with nothing needing to
@@ -2052,6 +2120,12 @@ class Station:
                 else 0.0,
                 "stream_restarts": self.counters.stream_restarts,
                 "open_failures": self.counters.open_failures,
+                # ADR-063. Non-zero means this process has written timestamps
+                # that are wrong by roughly `clock_last_step_s`, and the log's
+                # `station.clock_reanchored` line is what separates the wrong
+                # ones from the right ones.
+                "clock_reanchors": self.counters.clock_reanchors,
+                "clock_last_step_s": self.counters.clock_last_step_s,
                 "block_age_s": lag_s,
                 "hot_path_cpu_ratio": hot_path_ratio,
                 # A USB audio device runs on its own crystal. Reporting the
