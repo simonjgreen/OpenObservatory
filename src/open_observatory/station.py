@@ -382,6 +382,31 @@ class Station:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+        # ADR-066. The supervisor loop closes the stream row in
+        # `_on_stream_close` *after* `_capture_loop` returns -- and on shutdown
+        # `_capture_loop` does not return, it is cancelled. `CancelledError` is
+        # re-raised out of the supervisor by design, so it propagates straight
+        # past that call and the row is never closed.
+        #
+        # The result was invisible because `_close_orphaned_streams` repaired
+        # it at the next startup: every `audio_stream` row on the live station
+        # carried `end_reason='process_exited'`, including every clean deploy.
+        # The graceful close path had never once run in production, and the
+        # only reason anyone noticed is that ADR-065 started reporting an
+        # unclean restart after a perfectly clean `systemctl restart`.
+        #
+        # Closed here, before the executors are shut down and while the frame
+        # counters are still meaningful.
+        if self.stream is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    self._close_stream_row,
+                    self.stream.stream_id,
+                    "station_stopped",
+                    self._stream_frames,
+                    self._stream_discontinuities,
+                    self._stream_last_frame_utc,
+                )
         for worker in self.workers:
             await worker.stop()
         if self._evidence_task:
@@ -1709,7 +1734,11 @@ class Station:
     ) -> None:
         with session_scope() as session:
             row = session.get(orm.AudioStream, stream_id)
-            if row is None:
+            if row is None or row.end_utc is not None:
+                # Already closed. `stop()` closes the row directly (ADR-066)
+                # and the supervisor's own `_on_stream_close` may also reach it
+                # on an orderly source exhaustion, so this has to be safe to
+                # call twice -- and the *first* close is the honest one.
                 return
             # `end_utc` is honestly "when this row stopped being believed live" --
             # which can be much later than when audio actually stopped, if the

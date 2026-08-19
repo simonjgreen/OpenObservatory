@@ -1315,3 +1315,104 @@ class TestCaptureLoopWatchdog:
         assert not task.done(), "a deliberately blocking replay read was timed out"
         released.set()
         await asyncio.wait_for(task, timeout=5.0)
+
+
+class TestGracefulShutdownClosesTheStreamRow:
+    """A clean stop must close its own `audio_stream` row (ADR-066).
+
+    It never did. `_on_stream_close` runs after `_capture_loop` returns, and on
+    shutdown `_capture_loop` does not return -- it is cancelled, and
+    `CancelledError` is re-raised out of the supervisor by design, straight past
+    that call. Every `audio_stream` row on the live station carried
+    `end_reason='process_exited'`, written retroactively by
+    `_close_orphaned_streams` at the following startup, including after every
+    clean deploy.
+
+    It stayed invisible because the repair was so good: history was correct,
+    coverage was correct, and the only cost was that `end_reason` was a fiction
+    and `end_utc` was up to one heartbeat stale. It surfaced when ADR-065 began
+    reporting "the previous run ended without a graceful shutdown" after a
+    perfectly graceful `systemctl restart`.
+    """
+
+    async def test_stop_closes_the_row_with_a_real_reason(self, tmp_path) -> None:
+        import uuid as _uuid
+
+        from open_observatory.config import Settings
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import create_all, init_engine, session_scope
+        from open_observatory.station import Station
+
+        settings = Settings(data_dir=tmp_path, source="synthetic")
+        init_engine(settings)
+        create_all()
+
+        station = Station(settings)
+        stream_id = _uuid.uuid4()
+        with session_scope() as session:
+            session.add(
+                orm.AudioStream(
+                    id=stream_id,
+                    source_kind="synthetic",
+                    start_utc=datetime.now(UTC),
+                    start_monotonic_ns=0,
+                    sample_rate=48_000,
+                    sample_format="FLOAT_LE",
+                )
+            )
+        station.stream = SimpleNamespace(stream_id=stream_id)
+        station._stream_frames = 4_800
+        station._stream_discontinuities = 0
+        station._stream_last_frame_utc = datetime.now(UTC)
+
+        await station.stop()
+
+        with session_scope() as session:
+            row = session.get(orm.AudioStream, stream_id)
+            assert row.end_utc is not None, "the row was left open by a clean stop"
+            assert row.end_reason == "station_stopped"
+            assert row.frame_count == 4_800
+
+    async def test_closing_twice_keeps_the_first_answer(self, tmp_path) -> None:
+        """`stop()` and the supervisor can both reach it; the first is honest.
+
+        The second would overwrite `end_utc` with a later wall-clock reading and
+        `end_reason` with whatever the supervisor happened to be unwinding, which
+        is exactly the kind of quiet rewrite of history `_close_orphaned_streams`
+        documents itself as avoiding.
+        """
+        import uuid as _uuid
+
+        from open_observatory.config import Settings
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import create_all, init_engine, session_scope
+        from open_observatory.station import Station
+
+        settings = Settings(data_dir=tmp_path, source="synthetic")
+        init_engine(settings)
+        create_all()
+        station = Station(settings)
+
+        stream_id = _uuid.uuid4()
+        with session_scope() as session:
+            session.add(
+                orm.AudioStream(
+                    id=stream_id,
+                    source_kind="synthetic",
+                    start_utc=datetime.now(UTC),
+                    start_monotonic_ns=0,
+                    sample_rate=48_000,
+                    sample_format="FLOAT_LE",
+                )
+            )
+        last = datetime.now(UTC)
+        station._close_stream_row(stream_id, "station_stopped", 4_800, 0, last)
+        with session_scope() as session:
+            first_end = session.get(orm.AudioStream, stream_id).end_utc
+
+        station._close_stream_row(stream_id, "source_exhausted", 9_999, 3, last)
+        with session_scope() as session:
+            row = session.get(orm.AudioStream, stream_id)
+            assert row.end_utc == first_end
+            assert row.end_reason == "station_stopped"
+            assert row.frame_count == 4_800
