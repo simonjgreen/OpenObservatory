@@ -501,7 +501,26 @@ writing systematically wrong timestamps.** A UI that had clamped that
 impossible-looking negative number to zero would have hidden a data-integrity
 bug; keeping it honest is what surfaced it.
 
-### And one the fix immediately exposed
+### The one the *new instrument* exposed, two hours after being written
+
+ADR-065's unclean-restart note fired immediately after a completely graceful
+`systemctl restart`. The signal looked wrong. It was reporting a true fact:
+`Station.stop()` cancels the capture task, the supervisor re-raises
+`CancelledError` by design, and so it never reaches the call that closes the
+`audio_stream` row. **A clean shutdown had never once closed its own row.**
+Every row on the station carried `end_reason='process_exited'` — the value
+written by the *repair* path at the next startup.
+
+It hid for months because the repair (ADR-024) was good: history, coverage and
+frame counts were all correct, and the only costs were a fictional
+`end_reason` on every row and a `end_utc` up to one heartbeat stale.
+
+**A repair mechanism that works perfectly will hide the absence of the thing it
+repairs.** Worth looking for elsewhere: anywhere this project has a
+reconcile/repair/orphan-sweep step, it is worth asking when the primary path
+last actually ran. ADR-066.
+
+### And one the retention fix immediately exposed
 
 The first healthy sweep after ADR-062 reclaimed its full 200-file batch and
 reported `tiers_skipped=['unkept', 'watermark']`. Correct by the old rules —
