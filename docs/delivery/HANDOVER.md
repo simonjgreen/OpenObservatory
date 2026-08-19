@@ -431,6 +431,85 @@ See `MILESTONE_STATUS.md`, which is the authority. The §1d reading of 99.906% a
 54.7 h was accurate at the time; the run got worse after it, which is exactly why
 that entry said one bad hour would take it out.
 
+## 1f. The 2026-08-19 session — three failures a passing soak was hiding
+
+The station looked healthy. It was 49 hours into a restart-free run at
+0.999949 continuity with zero overruns, zero gaps and zero late reads. Every
+one of those numbers was true. Three separate things were badly wrong anyway,
+and the pattern connecting them is the reusable part.
+
+### What was wrong
+
+**1. The 72-hour soak had been voided two days earlier and nobody knew.** The
+Pi restarted at 2026-08-17 09:07 UTC, 8.9 hours short, while passing at
+99.9935%. Capture reopened in 25 seconds and health returned `ok`. Every
+counter that would have shown it — `stream_restarts`, `continuity_ratio`,
+`blocks`, `frames` — is process-scoped and reset with the process. Found by
+running `uptime`. Cause never established; the evidence (flat memory, load
+0.20, no kernel error, no undervoltage, one `LINUX RESTART` in eight days of
+sysstat) says external power, with nothing in software to fix. ADR-065 makes
+the *next* one visible.
+
+**2. Retention had reclaimed nothing for two days** while the disk climbed
+3.8 GB/hour toward a watermark whose own tier was among the ones being skipped.
+Every tier's candidate query re-walked the rows it had already reclaimed —
+~210,000 old detections examined per sweep to find the 1,699 outstanding —
+so **it got slower every time it succeeded** until it could no longer finish
+inside its 1.5 s budget. ADR-062.
+
+**3. Every UTC timestamp for 49 hours was 106 seconds early.** Capture
+anchored its frame-to-UTC mapping 1 m 45 s before NTP first synchronised after
+the boot, and `StreamClock` never revisits that anchor. ADR-063.
+
+### The pattern: a restart makes every instrument agree that everything is fine
+
+All three hid behind the same property. The station's counters are
+process-scoped, so they all reset together — and a station that has just
+restarted, with a fresh clock anchor and fresh counters, reports a beautiful
+clean run no matter what happened before or what is wrong now.
+
+**Anything that must survive a restart to stay true cannot be a counter.** It
+has to come from durable state. The two fixes here both do: ADR-065 reads
+`audio_stream` rows the previous process left open, ADR-063 compares the anchor
+against the wall clock itself.
+
+### The measurement worth stealing
+
+Retention's query was 2.2 s and three plausible explanations fitted (a bad
+plan, a slow join, accumulating results). Timing it at increasing `LIMIT`
+settled it in one step:
+
+| `LIMIT` | 1 | 10 | 50 | 250 | 1000 | 4000 |
+|---|---|---|---|---|---|---|
+| time | 2.29 s | 2.22 s | 2.25 s | 2.17 s | 2.20 s | 2.21 s |
+
+**A query whose `LIMIT 1` costs the same as its `LIMIT 4000` is not selecting
+rows, it is scanning to reach the first one.** That killed all three hypotheses
+and pointed straight at the reclaimed-row prefix. `EXPLAIN QUERY PLAN` had been
+no help at all — the plans were byte-identical either side of the problem.
+
+### The instrument that was right
+
+The 106-second error was found because the operator looked at a live-listen
+banner reading *"hearing 111.3 s ahead of the newest column"*. Sound cannot be
+ahead of the picture, so one number had to be wrong.
+
+Nothing else would have caught it. Health was `ok`, continuity was 0.999949 —
+correctly, because continuity is a monotonic-clock property and was genuinely
+fine. **A soak can pass every criterion in `ACCEPTANCE_CRITERIA.md` while
+writing systematically wrong timestamps.** A UI that had clamped that
+impossible-looking negative number to zero would have hidden a data-integrity
+bug; keeping it honest is what surfaced it.
+
+### And one the fix immediately exposed
+
+The first healthy sweep after ADR-062 reclaimed its full 200-file batch and
+reported `tiers_skipped=['unkept', 'watermark']`. Correct by the old rules —
+and the disk safety valve still did not run, because it was last in a fixed
+order and the tiers share one budget. So the whole "the watermark will catch
+it at 85%" reassurance had been false the entire time. ADR-064 promotes it
+when disk is already over the line.
+
 ## 2. How to operate it
 
 ```bash

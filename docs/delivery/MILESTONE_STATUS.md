@@ -218,6 +218,34 @@ Still outstanding in this milestone:
   none of ADR-060's or ADR-061's target smoke tests have been executed on the
   Pi. The re-run this bullet calls for should follow that deploy, not precede
   it.
+  **Second attempt, 2026-08-14 to 2026-08-17: also did not complete, and for a
+  reason nothing detected.** ADR-060 and ADR-061 were deployed and worked
+  emphatically — the run reached 62.7 hours restart-free at **0.999935**
+  continuity with 2.85 s of audio lost (against 349.3 s), 5 overruns (against
+  23,135) and 3 `capture_gap` rows in 62.7 hours (against 22–24 per hour). It
+  was 9.25 hours from completing a valid 72-hour window and passing
+  comfortably. **The Raspberry Pi then restarted at 2026-08-17 09:07 UTC**,
+  8.9 hours short, and the run was void. Cause not established; the evidence
+  points to external power loss with nothing in software to fix (see
+  `docs/operations/SOAK_2026-08-14.md`). **Nothing reported the restart** —
+  every counter that would have shown it is process-scoped and reset with the
+  process — and it was found two days later by running `uptime`. ADR-065 now
+  makes an unclean restart a health note for exactly this reason.
+
+  **And the run was hiding two defects while passing.** Retention had stopped
+  reclaiming entirely for two days (ADR-062) while the disk climbed
+  3.8 GB/hour, and every UTC timestamp the station wrote across those 49 hours
+  was **106 seconds early**, because capture anchored its frame-to-UTC mapping
+  before NTP first synchronised after the boot (ADR-063). Continuity was
+  0.999949 throughout and correctly so — continuity is a monotonic-clock
+  property and was genuinely fine. **A run can pass every criterion in
+  `ACCEPTANCE_CRITERIA.md` and still be producing systematically wrong
+  timestamps**, which is the single most important thing to know before the
+  next attempt is treated as proof of anything. All four ADRs (062–065) are
+  deployed and verified on the station as of 2026-08-19; the next 72-hour
+  attempt starts from there and should check
+  `oo_station_unclean_restart`, `oo_capture_clock_reanchors_total` and the
+  disk trend for the whole window, none of which were checkable before.
 * **The one-hour drift run.** Not run at full duration. The best evidence to date is
   ADR-046's 42.7-minute restart-free sampling run, whose longest *clean* segment was
   22.2 minutes — see the Milestone 1 exit-gate note above for why that is not the same
