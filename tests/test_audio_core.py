@@ -68,7 +68,7 @@ class TestRingBuffer:
         ring = RingBuffer(100, seconds=1.0)
         for block in range(20):
             ring.append(block * 10, np.full(10, block, dtype=np.float32), 0)
-        oldest, newest = ring.available_range
+        oldest, _newest = ring.available_range
         got = ring.extract(oldest - 50, oldest + 30, allow_partial=True)
         assert got is not None
         assert got.shape[0] == 30

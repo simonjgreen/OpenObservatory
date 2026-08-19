@@ -175,7 +175,7 @@ class AlsaSource:
         real loss between 0.10 s and 0.24 s, i.e. about one block each.
         """
         wanted = max(self._buffer_ms, 2.0 * self._block_ms)
-        return max(8, int(math.ceil(wanted / self._period_ms)))
+        return max(8, math.ceil(wanted / self._period_ms))
 
     async def open(self) -> StreamInfo:
         return await asyncio.get_running_loop().run_in_executor(
@@ -211,7 +211,7 @@ class AlsaSource:
             if fmt_const is None or sample_format not in _NUMPY_DTYPE:
                 continue
             for rate in candidates:
-                period_frames = max(64, int(round(rate * self._period_ms / 1000.0)))
+                period_frames = max(64, round(rate * self._period_ms / 1000.0))
                 try:
                     pcm = alsaaudio.PCM(
                         alsaaudio.PCM_CAPTURE,
@@ -252,7 +252,7 @@ class AlsaSource:
         self._scale = _SCALE[sample_format]
         self._period_frames = int(negotiated.get("period_size", period_frames) or period_frames)
         self._block_frames = max(
-            self._period_frames, int(round(rate * self._block_ms / 1000.0))
+            self._period_frames, round(rate * self._block_ms / 1000.0)
         )
         # Round the block to a whole number of periods so reads align.
         periods_per_block = max(1, self._block_frames // self._period_frames)

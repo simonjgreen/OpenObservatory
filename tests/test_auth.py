@@ -272,7 +272,7 @@ class TestAuthEnabledBlanketGate:
         assert client.get("/api/v1/detections/export").status_code == 401
 
     def test_health_flags_auth_enabled_with_no_active_user_as_a_problem(self, enabled_app) -> None:
-        client, configured, _password = enabled_app
+        client, _configured, _password = enabled_app
         with session_scope() as session:
             user = session.execute(select(orm.User)).scalars().one()
             user.disabled_at = datetime.now(UTC)

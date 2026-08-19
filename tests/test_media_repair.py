@@ -150,7 +150,7 @@ class TestFinding:
 
     def test_already_reclaimed_rows_are_not_findings(self, seeded) -> None:
         """A clip the retention sweeper aged out is not a fault to report."""
-        db, _detection_id, _present, absent = seeded
+        _db, _detection_id, _present, absent = seeded
         with session_scope() as session:
             row = session.get(orm.MediaAsset, absent[0])
             row.reclaimed_at = FIXED_NOW
@@ -218,7 +218,7 @@ class TestApply:
                 assert block["file_present"] is False
 
     def test_never_deletes_a_row_a_file_or_a_detection(self, seeded) -> None:
-        db, detection_id, present, absent = seeded
+        _db, detection_id, present, absent = seeded
         present_paths = []
         with session_scope() as session:
             present_paths = [
@@ -251,7 +251,7 @@ class TestApply:
         assert second.missing == 0
 
     def test_leaves_a_policy_reclaim_reason_alone(self, seeded) -> None:
-        db, _detection_id, _present, absent = seeded
+        _db, _detection_id, _present, absent = seeded
         with session_scope() as session:
             row = session.get(orm.MediaAsset, absent[0])
             row.reclaimed_at = FIXED_NOW

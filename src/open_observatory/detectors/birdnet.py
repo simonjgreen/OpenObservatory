@@ -38,8 +38,9 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -75,7 +76,7 @@ def _load_interpreter(path: Path, threads: int):  # type: ignore[no-untyped-def]
         from ai_edge_litert.interpreter import Interpreter
     except ImportError:
         try:
-            from tflite_runtime.interpreter import Interpreter  # type: ignore[no-redef]
+            from tflite_runtime.interpreter import Interpreter
         except ImportError as exc:
             raise DetectorUnavailable(
                 "no TFLite runtime installed; install the 'birdnet' extra "
@@ -194,6 +195,7 @@ class _RangeModel:
             self._interpreter.invoke()
             self._probabilities = self._interpreter.get_tensor(self._output)[0].copy()
             self._week = week
+        assert self._probabilities is not None  # set on first use above
         return self._probabilities
 
 
@@ -273,14 +275,17 @@ class BirdNetDetector:
         }
         self._max_per_window = max_per_window
 
-        self._interpreter: object | None = None
+        # `Any`: this is whichever `Interpreter` the optional import found
+        # (ai-edge-litert or tflite-runtime), neither of which can be named
+        # in an annotation on a machine where the other one is installed.
+        self._interpreter: Any = None
         self._input_index = 0
         self._output_index = 0
         self._expected_samples = int(3.0 * sample_rate)
         self._labels: list[str] = []
         self._parsed: list[tuple[str | None, str]] = []
         self._range: _RangeModel | None = None
-        self._timezone = UTC
+        self._timezone: tzinfo = UTC
         self._windows = 0
         #: Candidates that fell below the strict ``out_of_range`` bar. Kept
         #: separate from ``_suppressed_uncommon`` -- the old single counter
@@ -386,8 +391,8 @@ class BirdNetDetector:
         self.metadata = replace(self.metadata, model_sha256=digest)
 
         self._interpreter = _load_interpreter(classifier_path, self._threads)
-        details_in = self._interpreter.get_input_details()[0]  # type: ignore[attr-defined]
-        details_out = self._interpreter.get_output_details()[0]  # type: ignore[attr-defined]
+        details_in = self._interpreter.get_input_details()[0]
+        details_out = self._interpreter.get_output_details()[0]
         self._input_index = details_in["index"]
         self._output_index = details_out["index"]
         self._expected_samples = int(details_in["shape"][-1])
@@ -421,6 +426,9 @@ class BirdNetDetector:
                 f"{LABELS_FILE} has {len(self._labels)} entries"
             )
 
+        # Declared `tzinfo` at its first assignment: the happy path below stores
+        # a `ZoneInfo` and only the fallback stores `datetime.UTC`, so inferring
+        # the attribute's type from the fallback made the real assignment the error.
         try:
             self._timezone = ZoneInfo(context.timezone)
         except Exception:
@@ -465,11 +473,11 @@ class BirdNetDetector:
         elif samples.shape[0] > self._expected_samples:
             samples = samples[: self._expected_samples]
 
-        self._interpreter.set_tensor(  # type: ignore[attr-defined]
+        self._interpreter.set_tensor(
             self._input_index, samples.reshape(1, -1)
         )
-        self._interpreter.invoke()  # type: ignore[attr-defined]
-        logits = self._interpreter.get_tensor(self._output_index)[0]  # type: ignore[attr-defined]
+        self._interpreter.invoke()
+        logits = self._interpreter.get_tensor(self._output_index)[0]
         # BirdNET emits logits; a sigmoid gives the conventional "confidence".
         confidences = 1.0 / (1.0 + np.exp(-np.clip(logits, -15.0, 15.0)))
         self._windows += 1

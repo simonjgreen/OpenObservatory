@@ -238,14 +238,14 @@ class Normaliser:
         # Window offsets are in the analysed stream's own rate; convert to that
         # stream's absolute frames, then to native frames for evidence.
         window_rate = window.sample_rate
-        start_frame_local = window.start_frame + int(round(detection.offset_start_s * window_rate))
-        end_frame_local = window.start_frame + int(round(detection.offset_end_s * window_rate))
+        start_frame_local = window.start_frame + round(detection.offset_start_s * window_rate)
+        end_frame_local = window.start_frame + round(detection.offset_end_s * window_rate)
         if window_rate == native_sample_rate:
             source_start, source_end = start_frame_local, end_frame_local
         else:
             ratio = native_sample_rate / window_rate
-            source_start = int(round(start_frame_local * ratio))
-            source_end = int(round(end_frame_local * ratio))
+            source_start = round(start_frame_local * ratio)
+            source_end = round(end_frame_local * ratio)
 
         key = (metadata.plugin_id, detection.label)
         previous = self._recent.get(key)

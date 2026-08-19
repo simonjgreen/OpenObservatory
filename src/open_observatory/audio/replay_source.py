@@ -200,7 +200,7 @@ class ReplaySource(_PacedSource):
 
         super().__init__(
             sample_rate=rate,
-            block_frames=max(1, int(round(rate * block_ms / 1000.0))),
+            block_frames=max(1, round(rate * block_ms / 1000.0)),
             mode=mode,
             speed=speed,
             source_kind=SourceKind.REPLAY,
@@ -291,7 +291,7 @@ class SyntheticSource(_PacedSource):
         self._rng = np.random.default_rng(seed)
         super().__init__(
             sample_rate=sample_rate,
-            block_frames=max(1, int(round(sample_rate * block_ms / 1000.0))),
+            block_frames=max(1, round(sample_rate * block_ms / 1000.0)),
             mode=mode,
             speed=speed,
             source_kind=SourceKind.SYNTHETIC,
@@ -313,7 +313,12 @@ class SyntheticSource(_PacedSource):
 
     def _render(self, t: np.ndarray) -> np.ndarray:
         nyquist = self._sample_rate / 2.0
-        noise = self._rng.normal(0.0, self._noise_level, t.shape[0])
+        # Annotated because numpy 2.5 types `Generator.normal` as `float |
+        # ndarray` -- the scalar overload applies only when `size` is None,
+        # which it never is here.
+        noise: np.ndarray = np.asarray(
+            self._rng.normal(0.0, self._noise_level, t.shape[0])
+        )
 
         if self.scene == "silence":
             return noise * 0.1
@@ -331,7 +336,7 @@ class SyntheticSource(_PacedSource):
             # One sample-accurate click at each whole second.
             first = math.ceil(t[0])
             for second in range(first, int(t[-1]) + 1):
-                index = int(round((second - t[0]) * self._sample_rate))
+                index = round((second - t[0]) * self._sample_rate)
                 if 0 <= index < out.shape[0]:
                     out[index] += 0.9
             return out

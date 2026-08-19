@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 
@@ -60,7 +60,9 @@ class AudibleResampler:
         self.ratio = Fraction(target_rate, source_rate)
         self._in_frames = 0
         self._out_frames = 0
-        self._stream: object | None = None
+        # `Any`, not `object`: this holds a `soxr.ResampleStream` whose module is
+        # an optional import, so it cannot be named in an annotation here.
+        self._stream: Any = None
         self._tail = np.zeros(0, dtype=np.float32)
         self.backend: Backend
         self.backend_detail = ""
@@ -114,13 +116,13 @@ class AudibleResampler:
 
     def native_frame_for_output(self, output_frame: int) -> int:
         """Map a derived-stream frame back to the authoritative native frame."""
-        return int(round(output_frame * self.source_rate / self.target_rate))
+        return round(output_frame * self.source_rate / self.target_rate)
 
     def output_frame_for_native(self, native_frame: int) -> int:
-        return int(round(native_frame * self.target_rate / self.source_rate))
+        return round(native_frame * self.target_rate / self.source_rate)
 
     def expected_output_frames(self, input_frames: int) -> int:
-        return int(round(input_frames * self.target_rate / self.source_rate))
+        return round(input_frames * self.target_rate / self.source_rate)
 
     # ------------------------------------------------------------------
 
@@ -163,7 +165,7 @@ class AudibleResampler:
         converted = resample_poly(padded, self._up, self._down).astype(np.float32, copy=False)
 
         # Discard the output that corresponds to the prepended history.
-        skip = int(round(self._tail.size * self._up / self._down))
+        skip = round(self._tail.size * self._up / self._down)
         out = converted[skip:]
 
         # Keep the exact overall ratio: total output must track total input.

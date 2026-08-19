@@ -26,7 +26,7 @@ from open_observatory.db.session import ensure_schema_at_head, init_engine, sess
 # defect -- `oo refine status --json` printed through rich and nobody saw,
 # because the logger used to hold the pre-redirect stderr and its output
 # never reached the captured stdout at all.
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 BASE = datetime(2026, 8, 4, 21, 0, tzinfo=UTC)
 LABELS = [

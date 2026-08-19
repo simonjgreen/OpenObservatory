@@ -22,6 +22,17 @@ NS_PER_S = 1_000_000_000
 
 StreamKind = Literal["native", "audible48"]
 
+#: Lifecycle state of one detector worker, as published by `DetectorHealth`.
+#:
+#: ``"starting"`` and ``"stopped"`` were missing from this list until 2026-08-19
+#: while `DetectorWorker` set both of them -- so the API could publish a state
+#: its own contract said was impossible, and did, on every startup. Nothing
+#: enforces a `Literal` at runtime, which is exactly why it went unnoticed;
+#: numpy 2.5's stricter stubs made mypy look at this line again and it fell out.
+#: Widened to match reality rather than narrowed to hide it: a detector that is
+#: starting or stopped is a real thing an operator should be able to see.
+DetectorState = Literal["starting", "ok", "degraded", "unavailable", "error", "stopped"]
+
 
 class SourceKind(StrEnum):
     ALSA = "alsa"
@@ -165,7 +176,7 @@ class AudioFormat:
         return width * self.channels
 
     def frames_for_ms(self, milliseconds: float) -> int:
-        return max(1, int(round(self.sample_rate * milliseconds / 1000.0)))
+        return max(1, round(self.sample_rate * milliseconds / 1000.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,11 +271,11 @@ class WindowSpec:
 
     @property
     def frame_count(self) -> int:
-        return int(round(self.duration_s * self.sample_rate))
+        return round(self.duration_s * self.sample_rate)
 
     @property
     def stride_frames(self) -> int:
-        return max(1, int(round(self.stride_s * self.sample_rate)))
+        return max(1, round(self.stride_s * self.sample_rate))
 
     @property
     def overlap_s(self) -> float:
@@ -345,7 +356,7 @@ class DetectorMetadata:
 @dataclass(frozen=True, slots=True)
 class DetectorHealth:
     available: bool
-    state: Literal["ok", "degraded", "unavailable", "error"]
+    state: DetectorState
     detail: str = ""
     windows_analysed: int = 0
     windows_dropped: int = 0

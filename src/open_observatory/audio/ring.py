@@ -70,7 +70,7 @@ class RingBuffer:
         # stored evidence would then change if the caller reused its buffer. At
         # 384 kHz this copy is ~150 kB per 100 ms block, which is not worth the risk
         # of getting wrong.
-        block = np.array(pcm, dtype=self.dtype, copy=True, order="C")
+        block: np.ndarray = np.array(pcm, dtype=self.dtype, copy=True, order="C")
         block.flags.writeable = False
         with self._lock:
             self._chunks.append(Chunk(first_frame, block, monotonic_start_ns))

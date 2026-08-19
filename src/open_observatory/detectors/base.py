@@ -28,6 +28,7 @@ from ..audio.contracts import (
     AudioWindow,
     DetectorHealth,
     DetectorMetadata,
+    DetectorState,
     NativeDetection,
     WindowSpec,
 )
@@ -114,7 +115,7 @@ class DetectorWorker:
         self._recovery_delay_s = recovery_delay_s
         self._analysis_executor = analysis_executor
 
-        self.state: str = "starting"
+        self.state: DetectorState = "starting"
         self.detail: str = ""
         self.windows_analysed = 0
         self.windows_dropped_queue_full = 0
@@ -136,7 +137,7 @@ class DetectorWorker:
     def available(self) -> bool:
         return self.state in ("ok", "degraded")
 
-    def _set_state(self, state: str, detail: str = "") -> None:
+    def _set_state(self, state: DetectorState, detail: str = "") -> None:
         if (state, detail) != (self.state, self.detail):
             self.state = state
             self.detail = detail

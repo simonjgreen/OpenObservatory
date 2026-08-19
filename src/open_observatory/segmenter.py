@@ -80,7 +80,7 @@ class StreamSegmenter:
     def _native_frame(self, frame: int) -> int:
         if self.sample_rate == self.native_rate:
             return frame
-        return int(round(frame * self.native_rate / self.sample_rate))
+        return round(frame * self.native_rate / self.sample_rate)
 
     def push(
         self,

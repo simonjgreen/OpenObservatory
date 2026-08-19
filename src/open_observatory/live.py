@@ -73,7 +73,7 @@ class LiveAudioBroadcaster:
     def __init__(self, *, sample_rate: int = 48000, chunk_ms: float = 40.0) -> None:
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
-        self.chunk_frames = max(1, int(round(sample_rate * chunk_ms / 1000.0)))
+        self.chunk_frames = max(1, round(sample_rate * chunk_ms / 1000.0))
         self._listeners: dict[int, Listener] = {}
         self._next_id = 1
         self._pending = np.zeros(0, dtype=np.float32)
@@ -108,7 +108,7 @@ class LiveAudioBroadcaster:
         if sample_rate == self.sample_rate:
             return
         self.sample_rate = sample_rate
-        self.chunk_frames = max(1, int(round(sample_rate * self.chunk_ms / 1000.0)))
+        self.chunk_frames = max(1, round(sample_rate * self.chunk_ms / 1000.0))
         self._pending = np.zeros(0, dtype=np.float32)
         log.info("live_audio.reconfigured", sample_rate=sample_rate)
 

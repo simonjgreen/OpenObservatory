@@ -369,7 +369,9 @@ def resolve_named_range(
     )
 
 
-def bucket_expression(dialect: Dialect, column: ColumnElement, seconds: int) -> ColumnElement:
+def bucket_expression(
+    dialect: Dialect, column: SourceKindColumn, seconds: int
+) -> ColumnElement[Any]:
     """Truncate a timestamp column to a bucket, in whichever SQL dialect is in use.
 
     ADR-007 keeps SQLite for the developer profile and PostgreSQL for production, so

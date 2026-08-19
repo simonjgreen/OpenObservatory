@@ -26,7 +26,7 @@ from open_observatory.db import models as orm
 from open_observatory.db.session import ensure_schema_at_head, init_engine, session_scope
 from open_observatory.media_repair import DETAIL_KEY, MISSING_REASON
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 BASE = datetime(2026, 8, 5, 18, 44, tzinfo=UTC)
 

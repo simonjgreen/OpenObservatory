@@ -77,7 +77,7 @@ class SpectrogramEncoder:
         if self.min_hz >= self.max_hz:
             self.min_hz = self.max_hz / 100.0
         self.fft_size = fft_size
-        self.hop_frames = max(1, int(round(sample_rate * hop_ms / 1000.0)))
+        self.hop_frames = max(1, round(sample_rate * hop_ms / 1000.0))
         self.hop_s = self.hop_frames / sample_rate
         self.bins = bins
         self.floor_db = floor_db

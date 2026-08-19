@@ -297,7 +297,7 @@ def test_an_injected_gap_of_known_size_is_reported_at_its_true_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exactly 40,000 frames removed; exactly 40,000 frames reported."""
-    source, device, clock = _ringed(monkeypatch)
+    source, device, _clock = _ringed(monkeypatch)
     _drain(source, 5)
 
     device.drop(40_000)
@@ -314,7 +314,7 @@ def test_an_unreported_deficit_is_not_labelled_an_overrun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Audio can go missing without EPIPE. It must not borrow ALSA's word for it."""
-    source, device, clock = _ringed(monkeypatch)
+    source, device, _clock = _ringed(monkeypatch)
     _drain(source, 5)
 
     # Frames vanish and the device says nothing at all.
@@ -331,7 +331,7 @@ def test_an_unreported_deficit_is_not_labelled_an_overrun(
 def test_the_gap_is_reported_at_the_frame_it_happened_not_where_it_settled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source, device, clock = _ringed(monkeypatch)
+    source, device, _clock = _ringed(monkeypatch)
     _drain(source, 5)
     device.drop(40_000)
     blocks = _drain(source, 20)

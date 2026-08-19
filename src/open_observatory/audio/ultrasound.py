@@ -148,7 +148,7 @@ def time_expand(
         return None
 
     filtered = highpass(pcm, sample_rate, highpass_hz)
-    output_rate = int(round(sample_rate / factor))
+    output_rate = round(sample_rate / factor)
     if output_rate < 8000:
         # Below this a browser may refuse the file outright; back the factor off.
         factor = sample_rate / 8000.0

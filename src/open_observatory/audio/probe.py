@@ -14,6 +14,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 PROC_ASOUND = Path("/proc/asound")
 SND_BY_ID = Path("/dev/snd/by-id")
@@ -132,7 +133,7 @@ def _parse_stream_file(text: str) -> tuple[list[PcmProfile], str]:
             profiles.append(
                 PcmProfile(
                     sample_format=str(current["sample_format"]),
-                    channels=int(current.get("channels", 1) or 1),
+                    channels=int(cast(int, current.get("channels", 1) or 1)),
                     sample_rates=tuple(current["sample_rates"]),  # type: ignore[arg-type]
                     bits=current.get("bits"),  # type: ignore[arg-type]
                     channel_map=current.get("channel_map"),  # type: ignore[arg-type]

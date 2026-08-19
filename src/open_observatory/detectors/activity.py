@@ -208,6 +208,7 @@ class ActivityDetector:
             alpha = np.where(rising, 0.05, 0.25)
             self._noise_floor_db = (1 - alpha) * self._noise_floor_db + alpha * observed
         self._frames_seen += band_db.shape[1]
+        assert self._noise_floor_db is not None  # set by the branch above
         return self._noise_floor_db
 
     def _make(

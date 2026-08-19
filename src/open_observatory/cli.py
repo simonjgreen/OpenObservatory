@@ -267,12 +267,14 @@ def audio_test_capture(
         discontinuities = 0
         began = info.started_monotonic_ns
         first_block_ns: int | None = None
+        last_block_ns = 0
         while frames < target:
             block = await source.read()
             if block is None:
                 break
             if first_block_ns is None:
                 first_block_ns = block.monotonic_start_ns
+            last_block_ns = block.monotonic_end_ns
             frames += block.frame_count
             if block.discontinuity is not None and block.sequence > 0:
                 discontinuities += 1
@@ -281,7 +283,7 @@ def audio_test_capture(
 
         audio = np.concatenate(collected) if collected else np.zeros(0, dtype="float32")
         elapsed_s = (
-            (block.monotonic_end_ns - (first_block_ns or began)) / NS_PER_S if collected else 0.0
+            (last_block_ns - (first_block_ns or began)) / NS_PER_S if collected else 0.0
         )
         levels = measure(audio, rate)
 
@@ -316,7 +318,14 @@ def audio_test_capture(
 
             out.parent.mkdir(parents=True, exist_ok=True)
             sf.write(str(out), audio, rate, subtype="PCM_16")
-            console.print(f"[dim]wrote {out} ({out.stat().st_size:,} bytes)[/dim]")
+            # ASYNC240 flags this `stat()` as blocking, and it is -- as are the
+            # `mkdir` and `sf.write` immediately above it, which the rule does
+            # not see. Deliberate: this is the one-shot `oo audio` CLI, not
+            # `oo serve`, so there is no capture loop in this process for a
+            # blocking call to starve. The rule is written for trio/anyio.
+            console.print(
+                f"[dim]wrote {out} ({out.stat().st_size:,} bytes)[/dim]"  # noqa: ASYNC240
+            )
         return 0
 
     raise typer.Exit(asyncio.run(run()))

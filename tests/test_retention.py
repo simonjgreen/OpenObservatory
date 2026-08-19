@@ -1031,7 +1031,7 @@ class TestWatermarkReclaim:
                 common_name="Fresh",
                 kinds=("evidence_native",),
             )
-            _, newer = _seed_detection(
+            _, _newer = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
@@ -1932,7 +1932,7 @@ class TestTierAgeIsMeasuredOnTheAsset:
         """
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            detection_id, assets = _seed_detection(
+            _detection_id, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
