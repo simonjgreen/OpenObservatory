@@ -12,7 +12,15 @@ dependencies = [
   "pydantic-settings==2.15.0",
   "SQLAlchemy==2.0.52",
   "alembic==1.19.1",
-  "numpy==2.5.2",
+  # Capped below 2.5 by numba, which librosa needs and the refinement runner
+  # (`oo refine run`, charter item 5) therefore needs. numpy 2.5.2 makes
+  # `import numba` raise "Numba needs NumPy 2.4 or less", which would have
+  # taken out the 02:01 refinement timer silently -- the same failure shape
+  # as the NUMBA_CACHE_DIR incident recorded in
+  # `deploy/open-observatory-refine.service`. Dependabot proposed 2.5.2
+  # because nothing declares that constraint at the top level; this comment
+  # and the pin are the constraint.
+  "numpy==2.4.6",
   "soundfile==0.14.0",
   "typer==0.27.1",
   # Pinned, not left to typer's own `click>=8.0.0` range. click 8.2 changed
