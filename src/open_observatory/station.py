@@ -190,6 +190,14 @@ class Station:
         self.started_monotonic_ns = time.monotonic_ns()
 
         self.station_id: uuid.UUID | None = None
+        #: Whether the *previous* run of this process ended without a graceful
+        #: close, as evidenced by `audio_stream` rows left open (ADR-065). Set
+        #: by `_close_orphaned_streams` at startup, reported by
+        #: `/api/v1/health` as a note, and the reason a soak in progress at
+        #: that moment must be treated as void.
+        self.unclean_restart: bool = False
+        self.recovered_stream_count: int = 0
+        self.recovered_stream_end_utc: datetime | None = None
         self.stream: StreamInfo | None = None
         self.clock: StreamClock | None = None
         self.source: Any = None
@@ -1659,7 +1667,37 @@ class Station:
                 row.end_utc = recovered_end
                 row.end_reason = "process_exited"
             if open_streams:
-                log.info("station.closed_orphaned_streams", count=len(open_streams))
+                # ADR-065. This is the station's own evidence that its previous
+                # run ended without a graceful close -- a crash, a kill, or the
+                # power going out. It was already being computed and logged at
+                # `info`, and then dropped on the floor.
+                #
+                # On 2026-08-17 the Raspberry Pi restarted at 09:07 UTC, 8.9
+                # hours short of a 72-hour acceptance soak that was passing at
+                # 99.9935% continuity. Nothing reported it. The run appeared to
+                # continue -- capture reopened, health returned `ok`, the
+                # continuity ratio reset and climbed again -- and the restart
+                # was found two days later only because somebody ran `uptime`.
+                # A soak whose invalidating event is invisible is not a soak.
+                self.unclean_restart = True
+                self.recovered_stream_count = len(open_streams)
+                self.recovered_stream_end_utc = max(
+                    (row.end_utc for row in open_streams if row.end_utc is not None),
+                    default=None,
+                )
+                log.warning(
+                    "station.previous_run_ended_uncleanly",
+                    count=len(open_streams),
+                    last_audio_utc=(
+                        self.recovered_stream_end_utc.isoformat()
+                        if self.recovered_stream_end_utc is not None
+                        else None
+                    ),
+                    note=(
+                        "no graceful shutdown was recorded; any soak or "
+                        "measurement in progress at that moment is void"
+                    ),
+                )
 
     def _close_stream_row(
         self,
@@ -2126,6 +2164,16 @@ class Station:
                 # ones from the right ones.
                 "clock_reanchors": self.counters.clock_reanchors,
                 "clock_last_step_s": self.counters.clock_last_step_s,
+                # ADR-065. About the *previous* process, not this one: the
+                # restart that voided the 2026-08-17 soak was invisible because
+                # every counter beside it had reset to zero and looked healthy.
+                "unclean_restart": self.unclean_restart,
+                "recovered_streams": self.recovered_stream_count,
+                "last_audio_before_restart_utc": (
+                    self.recovered_stream_end_utc.isoformat()
+                    if self.recovered_stream_end_utc is not None
+                    else None
+                ),
                 "block_age_s": lag_s,
                 "hot_path_cpu_ratio": hot_path_ratio,
                 # A USB audio device runs on its own crystal. Reporting the

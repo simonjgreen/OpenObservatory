@@ -200,6 +200,68 @@ class TestStationEndpoints:
             body["problems"]
         )
 
+    def test_health_says_when_the_previous_run_died(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A restart that voids a measurement must not be silent (ADR-065).
+
+        On 2026-08-17 the Pi restarted 8.9 hours short of a 72-hour acceptance
+        soak that was passing at 99.9935% continuity. Capture reopened, health
+        returned `ok`, every counter reset and climbed again looking healthy,
+        and the restart was found two days later by running `uptime`.
+
+        A note rather than a problem: the station really is fine now. What is
+        not fine is any measurement that was running across the gap, and this
+        is the only place that can say so.
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def restarted() -> dict:
+            snapshot = real_snapshot()
+            snapshot["capture"] = {
+                **snapshot["capture"],
+                "unclean_restart": True,
+                "recovered_streams": 1,
+                "last_audio_before_restart_utc": "2026-08-17T09:07:32Z",
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", restarted)
+        body = client.get("/api/v1/health").json()
+
+        assert any(
+            "without a graceful shutdown" in note and "void" in note
+            for note in body["notes"]
+        ), body["notes"]
+        # Historical, not a current fault -- it must not make the station
+        # report itself unhealthy on every restart after a power cut.
+        assert not any("graceful shutdown" in problem for problem in body["problems"])
+
+    def test_health_says_when_the_clock_was_corrected(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ADR-063's correction is forward-only, so it has to be disclosed."""
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def reanchored() -> dict:
+            snapshot = real_snapshot()
+            snapshot["capture"] = {
+                **snapshot["capture"],
+                "clock_reanchors": 1,
+                "clock_last_step_s": 106.0,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", reanchored)
+        body = client.get("/api/v1/health").json()
+
+        assert any(
+            "106.0 s" in note and "not repaired retroactively" in note
+            for note in body["notes"]
+        ), body["notes"]
+
     def test_health_reports_synthetic_source_honestly(self, client) -> None:
         payload = client.get("/api/v1/health").json()
         assert payload["capture"]["state"] == "capturing"

@@ -1064,6 +1064,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # night scheduling) is exactly the kind of omission the charter's
         # honesty constraint forbids.
         notes: list[str] = []
+        # ADR-065. A note, not a problem: the station is healthy *now*, and
+        # what this reports is a fact about the previous run. It has to be said
+        # anyway, because the one thing it invalidates -- a measurement in
+        # progress -- has no other way of finding out. The 2026-08-17 restart
+        # voided a 72-hour acceptance soak 8.9 hours from completing, at
+        # 99.9935% continuity, and was discovered two days later by running
+        # `uptime`.
+        if capture.get("unclean_restart"):
+            last_audio = capture.get("last_audio_before_restart_utc")
+            notes.append(
+                "the previous run of this process ended without a graceful "
+                f"shutdown{f' (last audio {last_audio})' if last_audio else ''}: "
+                f"{capture.get('recovered_streams', 0)} stream row(s) had to be "
+                "closed at startup. Any soak or continuous measurement running "
+                "at that moment is void and must be restarted from now."
+            )
+        if capture.get("clock_reanchors"):
+            notes.append(
+                "the system wall clock was stepped by "
+                f"{capture.get('clock_last_step_s')} s after capture anchored its "
+                "frame-to-UTC mapping, and the mapping has been corrected "
+                "(ADR-063). Timestamps written before the correction -- see "
+                "`station.clock_reanchored` in the journal -- are wrong by "
+                "approximately that amount and are not repaired retroactively."
+            )
         if settings.latitude is None or settings.longitude is None:
             notes.append(
                 "no station location configured: BirdNET runs without range-based "

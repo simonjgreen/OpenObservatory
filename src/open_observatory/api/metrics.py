@@ -112,6 +112,13 @@ class PrometheusExporter:
         # anchored has been writing wrong timestamps, and the only reason the
         # 2026-08-17 instance was ever noticed is that a human looked at a
         # playhead banner in the browser.
+        # ADR-065. 1 means this process started after its predecessor died
+        # without closing down, which is what voids a soak in progress.
+        self._set(
+            "oo_station_unclean_restart",
+            "1 if the previous run of this process ended without a graceful shutdown",
+            1 if capture.get("unclean_restart") else 0,
+        )
         self._set(
             "oo_capture_clock_reanchors_total",
             "Times the stream clock was re-anchored onto a stepped wall clock",
