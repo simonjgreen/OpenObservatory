@@ -25,7 +25,7 @@ dependencies = [
   "rich==15.0.0",
   "structlog==26.1.0",
   "prometheus-client==0.21.1",
-  "psutil==6.1.1",
+  "psutil==7.2.2",
   # Async MQTT client for the Milestone 6 publisher (config.py: mqtt_enabled,
   # off by default). Pure-Python wheel, no native build step, so unlike the
   # `alsa`/`birdnet` extras there is no reason to make it opt-in.
@@ -34,14 +34,14 @@ dependencies = [
   # winner of the 2015 Password Hashing Competition and OWASP's current
   # recommendation; cost parameters are pinned separately in config.py so a
   # future library upgrade cannot silently change station security posture.
-  "argon2-cffi==23.1.0",
+  "argon2-cffi==25.1.0",
 ]
 
 [project.optional-dependencies]
 # ALSA capture on the target device.
 alsa = ["pyalsaaudio==0.11.0"]
 # Preferred high-quality polyphase resampler. Falls back to scipy when absent.
-resample = ["soxr==0.5.0.post1", "scipy==1.15.0"]
+resample = ["soxr==1.1.0", "scipy==1.15.0"]
 # TFLite inference for the BirdNET adapter. `tflite-runtime` has no cp312
 # aarch64 wheel; ai-edge-litert is its maintained successor and does.
 birdnet = ["ai-edge-litert==2.1.6"]
