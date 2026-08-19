@@ -303,9 +303,13 @@ class TestRetentionInteraction:
         from open_observatory.db.session import init_engine, session_scope
         from open_observatory.retention import RetentionSweeper
 
+        aged = datetime.now(UTC) - timedelta(days=200)
         with Session(station["engine"]) as session:
             for detection in session.execute(sa.select(orm.Detection)).scalars().all():
-                detection.event_start_utc = datetime.now(UTC) - timedelta(days=200)
+                detection.event_start_utc = aged
+            # Assets too: the tiers measure clip age, not event age (ADR-062).
+            for asset in session.execute(sa.select(orm.MediaAsset)).scalars().all():
+                asset.created_at = aged
             session.commit()
 
         init_engine(Settings(data_dir=station["data_dir"], database_dsn=station["dsn"]))

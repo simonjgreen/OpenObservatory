@@ -135,6 +135,71 @@ class TestStationEndpoints:
         ), body["problems"]
         assert body["status"] != "ok"
 
+    def test_health_escalates_a_run_of_sweeps_that_reclaim_nothing(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two-day silent failure of 2026-08-17 must not repeat (ADR-062).
+
+        The station spent two days aborting inside the retention sweep's own
+        candidate query every five minutes -- no tier ran, nothing was
+        reclaimed, disk climbed 3.8 GB/hour -- and `/api/v1/health` returned
+        `status: "ok"` with an empty `problems` list throughout. The fact was
+        in the payload the whole time, as `retention_sweep_keeping_up: false`,
+        with nothing escalating it.
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def barren_snapshot() -> dict:
+            snapshot = real_snapshot()
+            snapshot["storage"] = {**snapshot["storage"], "disk_used_ratio": 0.78}
+            snapshot["retention"] = {
+                **snapshot["retention"],
+                "last_sweep_complete": False,
+                "consecutive_barren_sweeps": 3,
+                "last_interrupted_tier": "native",
+                "last_interrupted_after_s": 1.5109,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", barren_snapshot)
+        body = client.get("/api/v1/health").json()
+
+        assert any(
+            "reclaimed nothing for 3 consecutive sweeps" in problem
+            and "native" in problem
+            for problem in body["problems"]
+        ), body["problems"]
+        assert body["status"] != "ok"
+        assert body["storage"]["consecutive_barren_sweeps"] == 3
+
+    def test_health_tolerates_a_single_incomplete_sweep(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One budget-bounded sweep is the mechanism working, not a fault.
+
+        The counterpart to the test above: if a single incomplete sweep raised
+        a problem, the endpoint would cry wolf on every busy tick and the
+        signal that matters would be lost in it.
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def one_incomplete() -> dict:
+            snapshot = real_snapshot()
+            snapshot["retention"] = {
+                **snapshot["retention"],
+                "last_sweep_complete": False,
+                "consecutive_barren_sweeps": 1,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", one_incomplete)
+        body = client.get("/api/v1/health").json()
+        assert not any("consecutive sweeps" in problem for problem in body["problems"]), (
+            body["problems"]
+        )
+
     def test_health_reports_synthetic_source_honestly(self, client) -> None:
         payload = client.get("/api/v1/health").json()
         assert payload["capture"]["state"] == "capturing"

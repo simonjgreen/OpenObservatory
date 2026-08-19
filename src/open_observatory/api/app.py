@@ -90,6 +90,13 @@ log = structlog.get_logger(__name__)
 
 API_PREFIX = "/api/v1"
 
+#: How many consecutive sweeps may reclaim nothing before `/api/v1/health`
+#: calls it a problem (ADR-062). Three, at the default five-minute interval,
+#: is fifteen minutes of a retention system that is running and achieving
+#: nothing -- long enough not to fire on one budget-bounded sweep, short
+#: enough to be seen the same day rather than the day the disk fills.
+_BARREN_SWEEPS_BEFORE_PROBLEM = 3
+
 #: Reachable with no credential regardless of `auth_enabled` or the
 #: configurable `auth_public_read_paths` allow-list -- these are not operator
 #: choices. `/metrics` is excluded from the auth gate separately, below,
@@ -1002,6 +1009,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "the retention sweep will not delete: free space by hand or the disk "
                 "will fill and clip writes will start failing"
             )
+        # ADR-062. The watermark check above only fires once disk is already
+        # over the line *and* kept bytes are what is holding it there. It said
+        # nothing at all about the case that actually happened: the sweep
+        # aborting inside its own candidate query every five minutes, so no
+        # tier ran, nothing was reclaimed, and the disk climbed 3.8 GB/hour
+        # toward that watermark with `status: "ok"` on the endpoint the whole
+        # time. `retention_sweep_keeping_up: false` was in the payload and
+        # nothing escalated it.
+        #
+        # The threshold is a *run* of barren sweeps, not one: a single
+        # incomplete sweep means the budget ran out with work still queued,
+        # which is the mechanism working. Three in a row (15 minutes at the
+        # default interval) means it is not.
+        barren = int(retention.get("consecutive_barren_sweeps") or 0)
+        if settings.retention_enabled and barren >= _BARREN_SWEEPS_BEFORE_PROBLEM:
+            interrupted = retention.get("last_interrupted_tier")
+            detail = (
+                f"aborted in the {interrupted!r} tier after "
+                f"{retention.get('last_interrupted_after_s')}s"
+                if interrupted
+                else f"skipped {retention.get('last_tiers_skipped') or 'every tier'}"
+            )
+            problems.append(
+                f"retention has reclaimed nothing for {barren} consecutive sweeps "
+                f"({detail}); disk is at "
+                f"{(storage['disk_used_ratio'] or 0):.0%} of the "
+                f"{settings.retention_watermark_ratio:.0%} watermark and the "
+                "watermark tier is inside the sweep that is failing, so it "
+                "cannot act as the safety valve"
+            )
         # ADR-034: visible rather than silent. `auth_enabled: false` is the
         # shipped default and is never itself a `problems` entry -- an
         # operator who has not opted in should see a status of exactly what
@@ -1115,6 +1152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "disk_used_ratio": storage["disk_used_ratio"],
                 "watermark_ratio": settings.retention_watermark_ratio,
                 "retention_sweep_keeping_up": retention["last_sweep_complete"],
+                "consecutive_barren_sweeps": retention.get("consecutive_barren_sweeps", 0),
                 "retention_last_sweep_at": retention["last_sweep_at"],
                 # ADR-057. Reported next to the disk figures because that is
                 # what it corrects: rows counted as stored evidence that are

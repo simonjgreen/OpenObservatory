@@ -166,12 +166,19 @@ def test_stamping_existing_database_is_a_data_preserving_noop(
 def test_stamp_0001_then_upgrade_head_repairs_the_missing_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reproduces the actual gap found on the live station while building this
-    environment: ``media_asset.reclaimed_at`` was added by the old
-    ``ALTER TABLE ... ADD COLUMN`` patcher, which cannot create an index, so
-    its index never existed there. Revision 0002 exists to close exactly this
-    gap, and the adoption sequence (stamp at the schema-matching baseline,
-    then upgrade normally) must reach it and preserve data while doing so.
+    """The adoption sequence -- stamp at the schema-matching baseline, then
+    upgrade normally -- must reach head and preserve data while doing so.
+
+    Originally this asserted that revision 0002 *created*
+    ``ix_media_asset_reclaimed_at``, closing a real gap on the live station
+    where the old ``ALTER TABLE ... ADD COLUMN`` patcher had added the column
+    without its index. Revision 0011 (ADR-062) then deliberately dropped that
+    index -- it was displacing the partial indexes retention actually needs --
+    so head no longer has it and the original assertion would now be asserting
+    a bug. What still matters, and is what this test kept, is that a database
+    adopted at the baseline arrives at head with its rows intact and with the
+    indexes head is supposed to have. 0002 still runs on the way through; 0011
+    undoes it, on purpose, in that order.
     """
     db_path = tmp_path / "patched.sqlite"
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
@@ -190,19 +197,17 @@ def test_stamp_0001_then_upgrade_head_repairs_the_missing_index(
         )
         session.commit()
 
-    # Simulate "column exists, index never got created" -- what ADD COLUMN
-    # alone produces.
-    with engine.begin() as connection:
-        connection.exec_driver_sql("DROP INDEX ix_media_asset_reclaimed_at")
-    assert "ix_media_asset_reclaimed_at" not in _index_names(engine, "media_asset")
-
     cfg = _alembic_config(monkeypatch, db_path)
     command.stamp(cfg, "0001_initial")
     command.upgrade(cfg, "head")
 
     engine.dispose()
     engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
-    assert "ix_media_asset_reclaimed_at" in _index_names(engine, "media_asset")
+    asset_indexes = _index_names(engine, "media_asset")
+    assert "ix_media_asset_reclaimed_at" not in asset_indexes
+    assert "ix_media_asset_live_kind_created" in asset_indexes
+    with Session(engine) as session:
+        assert session.get(MediaAsset, asset_id) is not None
     command.check(cfg)
 
     with Session(engine) as session:
@@ -504,3 +509,74 @@ def test_kept_at_has_a_partial_index_that_cannot_steal_the_ordered_plan(
     ).scalar_one_or_none()
     assert sql is not None, "the partial index is missing"
     assert "WHERE kept_at IS NOT NULL" in sql.replace("\n", " "), sql
+
+
+def test_live_asset_indexes_are_partial_and_the_plain_one_is_gone(
+    migrated_session: Session,
+) -> None:
+    """Revision 0011 (ADR-062): the third index incident on this project.
+
+    Both new indexes must be *partial* on `reclaimed_at IS NULL`. That clause
+    is the mechanism, not a detail: it is what makes a reclaimed row leave the
+    index, so a sweep never walks past work it has already done. Without it the
+    native tier re-examined ~210,000 already-reclaimed detections every pass to
+    find the ~1,699 outstanding, taking 2.2 s against a 1.5 s budget -- so it
+    reclaimed nothing at all, for two days, while the disk climbed.
+
+    `ix_media_asset_reclaimed_at` (added by revision 0001) must be gone, and
+    that is load-bearing too. `reclaimed_at` is NULL on 176,231 of 214,499
+    rows, so SQLite treated a plain index on it as a cheap way in and took it
+    over the partial ones, losing the `ORDER BY` and adding a temp B-tree:
+    0.0004 s -> 0.1215 s. A name check alone would not catch a plain index
+    being reintroduced under the new names, so the `WHERE` clauses are
+    asserted directly.
+    """
+    rows = dict(
+        migrated_session.execute(
+            sa.text(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name IN ('media_asset', 'detection_media')"
+            )
+        ).all()
+    )
+
+    assert "ix_media_asset_reclaimed_at" not in rows, (
+        "the plain reclaimed_at index is back; it displaces the partial indexes"
+    )
+
+    for name in ("ix_media_asset_live_kind_created", "ix_media_asset_live_created"):
+        assert name in rows, f"{name} is missing"
+        assert "WHERE reclaimed_at IS NULL" in (rows[name] or "").replace("\n", " "), rows[name]
+
+    assert "ix_detection_media_asset" in rows, (
+        "the asset -> detection join has no index; retention scans the link table"
+    )
+
+
+def test_revision_0011_downgrade_restores_the_previous_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollback note in `docs/delivery/MILESTONE_STATUS.md` has to be true.
+
+    A downgrade that left the new indexes in place would silently keep the new
+    query plans, so a rollback would not actually roll the behaviour back.
+    """
+    db_path = tmp_path / "rev0011.sqlite"
+    cfg = _alembic_config(monkeypatch, db_path)
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+
+    assert "ix_media_asset_live_kind_created" in _index_names(engine, "media_asset")
+
+    command.downgrade(cfg, "0010_kept_at_partial_index")
+    asset_indexes = _index_names(engine, "media_asset")
+    assert "ix_media_asset_reclaimed_at" in asset_indexes
+    assert "ix_media_asset_live_kind_created" not in asset_indexes
+    assert "ix_media_asset_live_created" not in asset_indexes
+    assert "ix_detection_media_asset" not in _index_names(engine, "detection_media")
+
+    command.upgrade(cfg, "head")
+    asset_indexes = _index_names(engine, "media_asset")
+    assert "ix_media_asset_reclaimed_at" not in asset_indexes
+    assert "ix_media_asset_live_kind_created" in asset_indexes
+    engine.dispose()

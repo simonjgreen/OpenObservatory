@@ -1004,7 +1004,15 @@ class TestRetentionGap:
 
         with session_factory() as session:
             detection = _seed(session, tmp_path, count=1)[0]
-            detection.event_start_utc = datetime.now(UTC) - timedelta(days=200)
+            aged = datetime.now(UTC) - timedelta(days=200)
+            detection.event_start_utc = aged
+            # The tiers measure the *asset's* age, not the detection's
+            # (ADR-062), so ageing only the detection would leave a
+            # freshly-created clip that no tier is due to touch -- and this
+            # test would then pass or fail for a reason unrelated to what it
+            # is about.
+            for asset in session.execute(select(orm.MediaAsset)).scalars().all():
+                asset.created_at = aged
             assert detection.refined_at is None
 
         sweeper = RetentionSweeper(

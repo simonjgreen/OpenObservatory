@@ -287,10 +287,48 @@ class MediaAsset(Base):
     #: sweep, which never marked them. Keeping that distinct from a tier is
     #: the point: a clip aged out on purpose and a clip that vanished are
     #: different facts about this system, and only one of them was a decision.
+    #: Deliberately **not** plainly indexed (revision 0011). A plain index here
+    #: is the third instance on this project of the same mistake: a
+    #: low-selectivity index the planner prefers over the one that actually
+    #: serves the query. `reclaimed_at` is NULL on 176,231 of 214,499 live
+    #: rows, so `ix_media_asset_reclaimed_at` looked to SQLite like a cheap
+    #: way in, and it took it -- losing the `ORDER BY created_at` and adding a
+    #: `USE TEMP B-TREE`. Measured on the station's own database: the native
+    #: tier's candidate query took 2.20 s with it and 0.0049 s without.
+    #: See ADR-062, and ADR-061's addenda for the two earlier instances
+    #: (`ix_detection_kept_at`, revision 0009; and the composite it displaced).
     reclaimed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
+        DateTime(timezone=True), nullable=True
     )
     reclaim_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (
+        # The two indexes every retention tier walks (ADR-062). Both are
+        # partial on `reclaimed_at IS NULL`, and that is the entire point:
+        # a reclaimed row *leaves* the index, so the work a sweep has already
+        # done never has to be walked past again. Without them the native
+        # tier re-examined ~210,000 already-reclaimed detections on every
+        # pass to find the ~1,699 outstanding ones, which is why the sweep
+        # got slower every time it succeeded until it could no longer finish
+        # inside `retention_batch_budget_s` at all.
+        #
+        # `(kind, created_at)` serves the native tier (`kind='evidence_native'`
+        # plus an age range, ordered by age); `(created_at)` serves the unkept
+        # and watermark tiers, which are kind-agnostic. Both put `created_at`
+        # last so the range predicate and the `ORDER BY` are satisfied by the
+        # same index and the scan terminates at `LIMIT` instead of sorting.
+        Index(
+            "ix_media_asset_live_kind_created",
+            "kind",
+            "created_at",
+            sqlite_where=text("reclaimed_at IS NULL"),
+        ),
+        Index(
+            "ix_media_asset_live_created",
+            "created_at",
+            sqlite_where=text("reclaimed_at IS NULL"),
+        ),
+    )
 
 
 class DetectionMedia(Base):
@@ -303,6 +341,15 @@ class DetectionMedia(Base):
         ForeignKey("media_asset.id"), primary_key=True
     )
     role: Mapped[str] = mapped_column(String(32), default="evidence")
+
+    __table_args__ = (
+        # The composite primary key indexes `(detection_id, media_asset_id)`,
+        # which serves detection -> asset. Retention walks the other way --
+        # it picks assets by age and needs their detection -- and without this
+        # that join was a full scan of the primary key's covering index
+        # (measured: 0.114 s per 250 candidates, against 0.0046 s with it).
+        Index("ix_detection_media_asset", "media_asset_id"),
+    )
 
     detection: Mapped[Detection] = relationship(back_populates="media")
     asset: Mapped[MediaAsset] = relationship(lazy="joined")

@@ -43,6 +43,25 @@ Deleting a clip never deletes its ``media_asset`` row: the row is marked
 answering (with 410, already handled) and a history view can keep showing
 that the detection happened, just without audio.
 
+**Tier age is measured on the asset, not the detection** (ADR-062). Each
+age-based tier bounds and orders by ``media_asset.created_at`` rather than
+``detection.event_start_utc``. That is not the same number, and the difference
+is deliberate:
+
+* ``created_at`` is when the clip file was written, which is always *after* the
+  event it contains -- verified across all 86,377 native assets on the station:
+  minimum lag 0.45 s, mean 823 s, maximum 29 h, and **zero** rows where the
+  asset predates its detection. So ``created_at <= cutoff`` implies
+  ``event_start_utc <= cutoff``. The substitution can only ever make a tier
+  *later* to act, never earlier -- it cannot delete a clip before its policy
+  age, which is the direction that would matter.
+* What it costs is that a clip written unusually long after its event (a
+  refinement backfill, say) survives its tier by up to that lag. Bounded, and
+  it resolves itself on a subsequent sweep as the cutoff advances.
+* What it buys is that the walk can use a partial index keyed on the asset,
+  which is the only way this sweep stops re-examining work it has already
+  done. See ADR-062 for the measurements.
+
 Every deletion is bounded and yields to the caller: this runs in the
 capture-isolated single-thread executor (see `station.py`), and disk I/O
 sustained long enough to matter is exactly the class of bug that has twice
@@ -269,6 +288,9 @@ class RetentionSweeper:
         self.last_sweep_at: datetime | None = None
         self.last_sweep_duration_s: float = 0.0
         self.last_sweep_complete: bool = True
+        #: Consecutive sweeps that neither completed nor deleted anything.
+        #: Zero whenever the last sweep did either. See `sweep`.
+        self.consecutive_barren_sweeps: int = 0
         self.last_preamble_s: float = 0.0
         self.last_tiers_skipped: list[str] = []
         self.last_interrupted_tier: str | None = None
@@ -517,6 +539,17 @@ class RetentionSweeper:
         self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
         self.last_watermark_blocked_by_kept = report.watermark_blocked_by_kept
+        # ADR-062. A single incomplete sweep is ordinary -- it means the budget
+        # ran out with work still queued, and the next one continues. A *run*
+        # of sweeps that each reclaim nothing is the failure this counter
+        # exists to make visible: it is what the station did for two days
+        # while `/api/v1/health` reported `ok`, because the only thing said
+        # out loud was a `retention_sweep_keeping_up: false` buried in the
+        # storage block with nothing escalating it.
+        if report.complete or report.total_deleted:
+            self.consecutive_barren_sweeps = 0
+        else:
+            self.consecutive_barren_sweeps += 1
         if not dry_run:
             for tier, count in report.tier_counts.items():
                 self.totals[f"{tier}_deleted"] = self.totals.get(f"{tier}_deleted", 0) + count
@@ -643,12 +676,19 @@ class RetentionSweeper:
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.MediaAsset.kind.in_(NATIVE_KINDS))
-            .where(orm.Detection.event_start_utc <= cutoff)
+            # Bounded and ordered on the *asset's* age, not the detection's
+            # (ADR-062). This is what lets `ix_media_asset_live_kind_created`
+            # serve the range predicate and the `ORDER BY` together, so the
+            # scan stops at `LIMIT` and -- because the index is partial on
+            # `reclaimed_at IS NULL` -- never walks a row this sweeper has
+            # already reclaimed. See this module's docstring ("Tier age is
+            # measured on the asset") for why that substitution is safe.
+            .where(orm.MediaAsset.created_at <= cutoff)
             .where(orm.Detection.kept_at.is_(None))
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
-        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
+        query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
             report,
@@ -680,12 +720,15 @@ class RetentionSweeper:
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
-            .where(orm.Detection.event_start_utc <= cutoff)
+            # Asset age, not detection age -- see `_strip_native` and ADR-062.
+            # Served by `ix_media_asset_live_created` (kind-agnostic, so the
+            # narrower `(kind, created_at)` index does not apply here).
+            .where(orm.MediaAsset.created_at <= cutoff)
             .where(orm.Detection.kept_at.is_(None))
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
-        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
+        query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
             report,
@@ -720,6 +763,14 @@ class RetentionSweeper:
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
+            # An upper bound of "now" excludes nothing -- an asset stamped in
+            # the future is not something this tier should be reclaiming
+            # anyway -- but it is not decoration. Without a range predicate on
+            # `created_at` the planner has no reason to enter
+            # `ix_media_asset_live_created` and instead scanned
+            # `detection_media` whole and sorted the result: 1.8048 s against
+            # 0.0032 s with this line. ADR-062.
+            .where(orm.MediaAsset.created_at <= self._clock())
             .where(orm.Detection.kept_at.is_(None))
             .order_by(orm.MediaAsset.created_at.asc())
             .limit(budget)
@@ -1147,6 +1198,7 @@ class RetentionSweeper:
             "last_sweep_at": self.last_sweep_at.isoformat() if self.last_sweep_at else None,
             "last_sweep_duration_s": self.last_sweep_duration_s,
             "last_sweep_complete": self.last_sweep_complete,
+            "consecutive_barren_sweeps": self.consecutive_barren_sweeps,
             "last_preamble_s": self.last_preamble_s,
             "last_tiers_skipped": list(self.last_tiers_skipped),
             "last_interrupted_tier": self.last_interrupted_tier,

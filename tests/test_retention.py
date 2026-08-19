@@ -78,12 +78,20 @@ def _seed_detection(
     byte_length: int = 1024,
     kept: bool = False,
     held: bool = False,
+    asset_lag: timedelta = timedelta(seconds=6),
 ) -> tuple[uuid.UUID, dict[str, uuid.UUID]]:
     """Insert one detection plus one media asset per `kind`, with real files.
 
     `kept` stamps `kept_at`/`kept_by` directly on the row (ADR-061); `held`
     adds an ADR-043 `Review` with status `"held"` -- the two are deliberately
     independent so a test can set either, both, or neither.
+
+    `asset_lag` is how long after the event the clip file was written, and it
+    is what the age-based tiers actually measure (ADR-062). It defaults to 6 s,
+    a realistic post-roll, rather than to zero: leaving `created_at` at its
+    column default would stamp every asset with real wall-clock `utcnow()`
+    while the detection is aged against `FIXED_NOW`, and no age-based tier
+    would ever select anything.
     """
     detection_id = uuid.uuid4()
     event_start = FIXED_NOW - timedelta(days=age_days)
@@ -128,6 +136,7 @@ def _seed_detection(
                 mime_type="audio/wav",
                 byte_length=byte_length,
                 sha256="0" * 64,
+                created_at=event_start + asset_lag,
             )
         )
         session.add(
@@ -192,6 +201,7 @@ def _bulk_seed_native_candidates(
                 mime_type="audio/wav",
                 byte_length=1024,
                 sha256="0" * 64,
+                created_at=event_start - timedelta(seconds=i) + timedelta(seconds=6),
             )
         )
         links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
@@ -253,6 +263,7 @@ def _bulk_seed_real_native_candidates(
                 mime_type="audio/wav",
                 byte_length=64,
                 sha256="0" * 64,
+                created_at=event_start - timedelta(seconds=i) + timedelta(seconds=6),
             )
         )
         links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
@@ -312,6 +323,7 @@ def _bulk_seed_unkept_candidates(
                 mime_type="audio/wav",
                 byte_length=1024,
                 sha256="0" * 64,
+                created_at=event_start - timedelta(seconds=i) + timedelta(seconds=6),
             )
         )
         links.append(dict(detection_id=detection_id, media_asset_id=asset_id, role="evidence"))
@@ -359,6 +371,14 @@ class TestTierBoundaries:
         assert Path(db.clip_dir).exists()
 
     def test_native_deleted_exactly_at_boundary(self, db, station_and_detector) -> None:
+        """The boundary is inclusive, and it is measured on the *asset*.
+
+        `asset_lag=0` here so the clip file is exactly `native_days` old, which
+        is what the tier compares (ADR-062). With the helper's default 6 s
+        post-roll the boundary row's file is 6 s younger than the cutoff and is
+        correctly left alone -- covered by
+        `TestTierAgeIsMeasuredOnTheAsset`, not smuggled in here.
+        """
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             _, just_under = _seed_detection(
@@ -368,6 +388,7 @@ class TestTierBoundaries:
                 clip_dir=db.clip_dir,
                 age_days=6.99,
                 common_name="Just Under",
+                asset_lag=timedelta(0),
             )
             _, at_boundary = _seed_detection(
                 session,
@@ -376,6 +397,7 @@ class TestTierBoundaries:
                 clip_dir=db.clip_dir,
                 age_days=7.0,
                 common_name="At Boundary",
+                asset_lag=timedelta(0),
             )
         sweeper = _sweeper(db)
         sweeper.sweep()
@@ -1767,3 +1789,213 @@ class TestAbortedTierTalliesNeverReachTheReport:
             ).scalar_one()
         assert native_reclaimed == native_n
         assert unkept_still_live == 50
+
+
+class TestCandidateQueryPlans:
+    """Every tier's candidate query must be served by an index, with no sort.
+
+    This is the test that did not exist for the three index incidents this
+    project has now had, and it is written against `EXPLAIN QUERY PLAN` rather
+    than against wall-clock time on purpose. All three incidents were the same
+    shape -- a plan silently changing to a scan or a temp B-tree -- and all
+    three were invisible to every functional test in this file, because the
+    answers stayed correct. They just took 2.2 s instead of 0.005 s, on a
+    statement with a 1.5 s budget.
+
+    * revision 0009: `ix_detection_kept_at` displaced
+      `ix_detection_event_start_utc` and wedged a sweep past five minutes.
+    * revision 0010: dropping it plainly turned the kept-count into a full
+      `SCAN detection`, eating the whole budget in the preamble.
+    * revision 0011 (ADR-062): `ix_media_asset_reclaimed_at` displaced the new
+      partial indexes and reintroduced `USE TEMP B-TREE FOR ORDER BY`.
+
+    A wall-clock assertion would be flaky on a loaded Pi and silent on a fast
+    dev box. The plan is the thing that actually regressed, so the plan is what
+    is asserted.
+    """
+
+    @staticmethod
+    def _plan(session, query) -> list[str]:
+        compiled = query.compile(
+            session.get_bind(), compile_kwargs={"literal_binds": True}
+        )
+        rows = session.execute(sa.text(f"EXPLAIN QUERY PLAN {compiled}")).all()
+        return [row[3] for row in rows]
+
+    def _sweeper(self, db, tmp_path):
+        return RetentionSweeper(
+            session_factory=session_scope,
+            clip_dir=tmp_path / "clips",
+            native_days=7,
+            audible_only_days=30,
+            clock=lambda: FIXED_NOW,
+        )
+
+    def test_native_tier_uses_the_partial_index_and_never_sorts(
+        self, db, station_and_detector, tmp_path
+    ):
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=8,
+            )
+        sweeper = self._sweeper(db, tmp_path)
+        cutoff = FIXED_NOW - timedelta(days=7)
+        query = (
+            sa.select(orm.MediaAsset, orm.Detection.id)
+            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.MediaAsset.kind.in_(retention_module.NATIVE_KINDS))
+            .where(orm.MediaAsset.created_at <= cutoff)
+            .where(orm.Detection.kept_at.is_(None))
+            .order_by(orm.MediaAsset.created_at.asc())
+            .limit(250)
+        )
+        with session_scope() as session:
+            plan = self._plan(session, query)
+        assert any("ix_media_asset_live_kind_created" in step for step in plan), plan
+        assert not any("TEMP B-TREE" in step for step in plan), plan
+        assert any("ix_detection_media_asset" in step for step in plan), plan
+        assert sweeper.native_days == 7
+
+    def test_watermark_tier_uses_the_partial_index_and_never_sorts(
+        self, db, station_and_detector, tmp_path
+    ):
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=1,
+            )
+        query = (
+            sa.select(orm.MediaAsset, orm.Detection.id)
+            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.MediaAsset.created_at <= FIXED_NOW)
+            .where(orm.Detection.kept_at.is_(None))
+            .order_by(orm.MediaAsset.created_at.asc())
+            .limit(250)
+        )
+        with session_scope() as session:
+            plan = self._plan(session, query)
+        assert any("ix_media_asset_live_created" in step for step in plan), plan
+        assert not any("TEMP B-TREE" in step for step in plan), plan
+
+    def test_the_displaced_plain_index_is_gone(self, db):
+        """`ix_media_asset_reclaimed_at` must not come back (ADR-062).
+
+        Asserted on the schema rather than only in the migration, so
+        re-adding `index=True` to the model is caught too -- that is exactly
+        how revision 0008 reintroduced the problem 0009 had to undo.
+        """
+        with session_scope() as session:
+            names = {
+                row[1]
+                for row in session.execute(
+                    sa.text("PRAGMA index_list('media_asset')")
+                ).all()
+            }
+        assert "ix_media_asset_reclaimed_at" not in names, names
+        assert "ix_media_asset_live_kind_created" in names, names
+        assert "ix_media_asset_live_created" in names, names
+
+
+class TestTierAgeIsMeasuredOnTheAsset:
+    """ADR-062's deliberate semantic change, pinned in both directions."""
+
+    def _sweeper(self, tmp_path):
+        return RetentionSweeper(
+            session_factory=session_scope,
+            clip_dir=tmp_path / "clips",
+            native_days=7,
+            audible_only_days=30,
+            clock=lambda: FIXED_NOW,
+        )
+
+    def test_a_clip_written_late_survives_until_the_cutoff_catches_its_file(
+        self, db, station_and_detector, tmp_path
+    ):
+        """A 7.5-day-old *detection* whose clip was written 24 h afterwards is
+        not yet 7 days old *as a file*, so the native tier leaves it.
+
+        This is the cost of measuring on the asset, and it is the safe
+        direction: the tier can only ever be late, never early.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=7.5,
+                asset_lag=timedelta(hours=24),
+            )
+        report = self._sweeper(tmp_path).sweep()
+        assert report.tier_counts.get("native", 0) == 0
+        with session_scope() as session:
+            asset = session.get(orm.MediaAsset, assets["evidence_native"])
+            assert asset.reclaimed_at is None
+
+    def test_a_clip_written_promptly_is_reclaimed_at_its_tier_age(
+        self, db, station_and_detector, tmp_path
+    ):
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=7.5,
+                asset_lag=timedelta(seconds=6),
+            )
+        report = self._sweeper(tmp_path).sweep()
+        assert report.tier_counts.get("native", 0) == 1
+        with session_scope() as session:
+            asset = session.get(orm.MediaAsset, assets["evidence_native"])
+            assert asset.reclaimed_at is not None
+            assert asset.reclaim_reason == "native"
+
+    def test_a_reclaimed_asset_leaves_the_index_the_next_sweep_walks(
+        self, db, station_and_detector, tmp_path
+    ):
+        """The actual mechanism of the fix: work already done is not re-walked.
+
+        Asserted structurally -- the partial index's row count must fall as
+        assets are reclaimed -- because that, not the elapsed time, is what
+        stops the sweep degrading as the archive grows.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for _ in range(20):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=tmp_path / "clips",
+                    age_days=8,
+                    kinds=("evidence_native",),
+                )
+
+        def indexed_rows() -> int:
+            with session_scope() as session:
+                return session.execute(
+                    sa.text(
+                        "SELECT count(*) FROM media_asset "
+                        "WHERE reclaimed_at IS NULL AND kind = 'evidence_native'"
+                    )
+                ).scalar_one()
+
+        assert indexed_rows() == 20
+        self._sweeper(tmp_path).sweep()
+        assert indexed_rows() == 0
