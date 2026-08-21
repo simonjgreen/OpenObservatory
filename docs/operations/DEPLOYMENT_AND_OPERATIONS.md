@@ -1004,6 +1004,51 @@ to lock themselves out while auth is on (lost password, no working session),
 the same rollback restores access; `oo config` on the target confirms the
 setting took effect.
 
+## Keeping the host's own scheduled work out of the way (ADR-067)
+
+Ubuntu's `apt-daily.timer` and `apt-daily-upgrade.timer` default to
+`OnCalendar=6:00` with an hour of jitter, which on this station lands package
+downloads and installs at a random point inside the **dawn chorus** — 06:00 and
+07:00 local carry 10.0% and 11.3% of all detections, four times the afternoon
+trough. ADR-067 moves both to 15:00 with 15 minutes of jitter and
+`Persistent=false`.
+
+Install the drop-in (it is deliberately **not** applied by `deploy.sh`, which
+should not reconfigure the operating system's package schedule underneath you):
+
+```bash
+scp deploy/apt-daily-quiet-hours.conf <user>@<station-host>:/tmp/
+ssh <user>@<station-host> '
+  sudo mkdir -p /etc/systemd/system/apt-daily.timer.d \
+                /etc/systemd/system/apt-daily-upgrade.timer.d
+  sudo cp /tmp/apt-daily-quiet-hours.conf \
+          /etc/systemd/system/apt-daily.timer.d/quiet-hours.conf
+  sudo cp /tmp/apt-daily-quiet-hours.conf \
+          /etc/systemd/system/apt-daily-upgrade.timer.d/quiet-hours.conf
+  sudo systemctl daemon-reload
+  sudo systemctl stop  apt-daily.timer apt-daily-upgrade.timer
+  sudo systemctl start apt-daily.timer apt-daily-upgrade.timer'
+```
+
+**`stop` then `start`, not `restart`.** Restarting `apt-daily-upgrade.timer`
+triggered one immediate run of the service when this was first applied
+(2026-08-21 19:14; harmless — 727 ms, exit 0, nothing installed, because that
+day's upgrade had already run at 07:02). Do not find that out during a soak.
+
+Verify with:
+
+```bash
+systemctl cat apt-daily-upgrade.timer | grep -E 'OnCalendar|Randomized|Persistent'
+systemctl list-timers 'apt-daily*'
+```
+
+Nothing reboots this station automatically —
+`Unattended-Upgrade::Automatic-Reboot` is unset. Confirm that with
+`apt-config dump | grep -i automatic-reboot` rather than by grepping
+`/etc/apt/apt.conf.d/`, which is full of commented-out examples that read as
+though they are settings. A staged kernel therefore waits for a manual reboot,
+which `/var/run/reboot-required` will tell you about.
+
 ## Soak testing
 
 The acceptance criteria require a continuous 72-hour soak test on the target
@@ -1023,7 +1068,13 @@ ADR-061 are deployed and verified. Capture the following over the run:
   explicitly counted);
 - evidence extraction misses;
 - database growth (`data/openobservatory.sqlite` size);
-- false health-check failures.
+- false health-check failures;
+- **that nothing else scheduled ran inside the window** — the host's
+  `apt-daily*` timers (ADR-067), `open-observatory-refine.timer` at 02:02,
+  and any deploy. A restart voids the run, and until ADR-065 nothing said
+  so: the 2026-08-17 attempt was killed 8.9 hours from completing and was
+  not noticed for two days. Check `oo_station_unclean_restart` and
+  `oo_capture_clock_reanchors_total` are both 0 for the whole window.
 
 ## Commissioning output
 
