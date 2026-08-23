@@ -7,7 +7,7 @@ license = { text = "Apache-2.0" }
 
 dependencies = [
   "fastapi==0.141.1",
-  "uvicorn[standard]==0.52.1",
+  "uvicorn[standard]==0.52.4",
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "SQLAlchemy==2.0.52",
@@ -20,7 +20,7 @@ dependencies = [
   # `deploy/open-observatory-refine.service`. Dependabot proposed 2.5.2
   # because nothing declares that constraint at the top level; this comment
   # and the pin are the constraint.
-  "numpy==2.4.6",
+  "numpy==2.5.2",
   "soundfile==0.14.0",
   "typer==0.27.1",
   # Pinned, not left to typer's own `click>=8.0.0` range. click 8.2 changed
@@ -59,12 +59,12 @@ dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "httpx==0.28.1",
-  "ruff==0.16.2",
-  "mypy==2.3.0",
+  "ruff==0.16.3",
+  "mypy==2.3.1",
   # Validates real emitted events against schemas/detection-event.schema.json
   # (tests/test_mqtt_schema.py) so the envelope cannot drift unnoticed again.
   "jsonschema==4.26.0",
-  "hypothesis==6.165.5",
+  "hypothesis==6.165.10",
   # Client for scripts/probe_display_channel.py, which measures what
   # /api/v1/display actually costs on the wire against a real station (ADR-038).
   # Not a runtime dependency: the server side is Starlette's own WebSocket.
