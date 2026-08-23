@@ -337,6 +337,7 @@ def audio_resample_check(
     target_rate: int = typer.Option(48000, help="Derived audible rate"),
     seconds: float = typer.Option(60.0, help="Synthetic audio duration"),
     block_ms: int = typer.Option(100, help="Capture block size"),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable result"),
 ) -> None:
     """Verify the resampler's timing properties against the audio pipeline spec.
 
@@ -351,121 +352,73 @@ def audio_resample_check(
     bounded band. Bounded is correct; trending is cumulative drift and a failure.
 
     **Seam continuity** — does a block boundary introduce a click?
+
+    The measurement itself is in `audio/resample_check.py` and runs in constant
+    memory, so ``--seconds 3600`` — the duration the audio pipeline spec actually
+    asks for — costs about as much resident memory as ``--seconds 60``. See
+    ADR-069 for why an hour is the duration that matters and what each threshold
+    below is derived from.
     """
-    import numpy as np
+    from .audio.resample_check import measure_resampler
 
-    from .audio.resample import AudibleResampler
+    result = measure_resampler(
+        source_rate=source_rate,
+        target_rate=target_rate,
+        seconds=seconds,
+        block_ms=block_ms,
+    )
 
-    block_frames = int(source_rate * block_ms / 1000)
-    blocks = int(seconds * source_rate / block_frames)
-
-    # --- group delay, by impulse ------------------------------------------
-    delay_converter = AudibleResampler(source_rate, target_rate)
-    impulse_at = block_frames * 5 + block_frames // 3
-    impulse_out: list[Any] = []
-    for index in range(blocks if blocks < 20 else 20):
-        chunk = np.zeros(block_frames, dtype=np.float32)
-        local = impulse_at - index * block_frames
-        if 0 <= local < block_frames:
-            chunk[local] = 1.0
-        impulse_out.append(delay_converter.process(chunk).pcm)
-    impulse_signal = np.concatenate(impulse_out)
-    ideal_position = impulse_at * target_rate / source_rate
-    if impulse_signal.size and float(np.abs(impulse_signal).max()) > 0:
-        actual_position = float(np.argmax(np.abs(impulse_signal)))
-        group_delay = actual_position - ideal_position
+    if json_out:
+        emit_json(result.as_dict())
     else:
-        actual_position = float("nan")
-        group_delay = float("nan")
-
-    # --- deficit band and seam continuity over a tone ---------------------
-    converter = AudibleResampler(source_rate, target_rate)
-    tone_hz = 1000.0
-    outputs: list[Any] = []
-    deficits: list[int] = []
-    phase = 0
-    for _ in range(blocks):
-        t = (phase + np.arange(block_frames)) / source_rate
-        outputs.append(converter.process(0.5 * np.sin(2 * np.pi * tone_hz * t)).pcm)
-        phase += block_frames
-        deficits.append(
-            converter.expected_output_frames(converter.input_frames) - converter.output_frames
+        table = Table(title="Resampler check")
+        table.add_column("measurement")
+        table.add_column("value")
+        table.add_row("backend", f"{result.backend} ({result.backend_detail})")
+        table.add_row("ratio", result.ratio)
+        table.add_row("audio duration", f"{result.audio_seconds:.1f} s")
+        table.add_row("input frames", f"{result.input_frames:,}")
+        table.add_row("output frames", f"{result.output_frames:,}")
+        table.add_row("expected by exact ratio", f"{result.expected_output_frames:,}")
+        table.add_row(
+            "group delay",
+            f"{result.group_delay_frames:+.2f} output frames "
+            f"({result.group_delay_ms:+.4f} ms)",
         )
-
-    derived = np.concatenate(outputs)
-    deficit_min, deficit_max = min(deficits), max(deficits)
-    # Trend test: compare the mean deficit of the first and last tenth of the run.
-    tenth = max(1, len(deficits) // 10)
-    trend = float(np.mean(deficits[-tenth:]) - np.mean(deficits[:tenth]))
-
-    diffs = np.abs(np.diff(derived))
-    median_step = float(np.median(diffs))
-    worst_step = float(diffs.max())
-
-    size = min(1 << 16, derived.shape[0])
-    spectrum = np.abs(np.fft.rfft(derived[:size] * np.hanning(size)))
-    peak_hz = float(np.fft.rfftfreq(size, 1.0 / target_rate)[int(np.argmax(spectrum))])
-
-    table = Table(title="Resampler check")
-    table.add_column("measurement")
-    table.add_column("value")
-    table.add_row("backend", f"{converter.backend} ({converter.backend_detail})")
-    table.add_row("ratio", f"{converter.ratio.numerator}/{converter.ratio.denominator}")
-    table.add_row("audio duration", f"{converter.input_frames / source_rate:.1f} s")
-    table.add_row("input frames", f"{converter.input_frames:,}")
-    table.add_row("output frames", f"{derived.shape[0]:,}")
-    table.add_row("expected by exact ratio", f"{converter.expected_output_frames(converter.input_frames):,}")
-    table.add_row(
-        "group delay",
-        f"{group_delay:+.2f} output frames ({group_delay / target_rate * 1000:+.4f} ms)",
-    )
-    table.add_row(
-        "delivery deficit band",
-        f"{deficit_min} to {deficit_max} frames "
-        f"({deficit_min / target_rate * 1000:.2f}-{deficit_max / target_rate * 1000:.2f} ms)",
-    )
-    table.add_row(
-        "deficit trend (last-first decile)",
-        f"{trend:+.1f} frames — "
-        + (
-            "[green]bounded[/green]"
-            if abs(trend) < (deficit_max - deficit_min) + 8
-            else "[red]TRENDING[/red]"
-        ),
-    )
-    table.add_row("tone in", f"{tone_hz:.1f} Hz")
-    table.add_row("tone out (peak bin)", f"{peak_hz:.1f} Hz")
-    table.add_row("worst / median sample step", f"{worst_step / max(median_step, 1e-9):.2f}x")
-    table.add_row(
-        "seam continuity",
-        "[green]no discontinuity[/green]"
-        if worst_step < median_step * 25
-        else f"[red]suspicious jump: {worst_step:.4f}[/red]",
-    )
-    console.print(table)
-
-    failures: list[str] = []
-    if not (abs(group_delay) <= 1.0):
-        failures.append(
-            f"group delay of {group_delay:+.2f} output frames would bias every "
-            "audible detection timestamp"
+        table.add_row(
+            "delivery deficit band",
+            f"{result.deficit_min} to {result.deficit_max} frames "
+            f"({result.deficit_min / target_rate * 1000:.2f}-"
+            f"{result.deficit_max / target_rate * 1000:.2f} ms)",
         )
-    if abs(trend) >= (deficit_max - deficit_min) + 8:
-        failures.append(
-            f"delivery deficit is trending by {trend:+.1f} frames, which is cumulative drift"
+        table.add_row(
+            "deficit trend (last-first decile)",
+            f"{result.deficit_trend:+.1f} frames — "
+            + (
+                "[green]bounded[/green]"
+                if abs(result.deficit_trend) < result.deficit_trend_limit
+                else "[red]TRENDING[/red]"
+            ),
         )
-    if worst_step >= median_step * 25:
-        failures.append("a block seam introduced a discontinuity")
-    if abs(peak_hz - tone_hz) > target_rate / size * 2:
-        failures.append(f"tone moved from {tone_hz} Hz to {peak_hz:.1f} Hz")
+        table.add_row("tone in", f"{result.tone_hz:.1f} Hz")
+        table.add_row("tone out (peak bin)", f"{result.peak_hz:.1f} Hz")
+        table.add_row("worst / median sample step", f"{result.worst_step_ratio:.2f}x")
+        table.add_row(
+            "seam continuity",
+            "[green]no discontinuity[/green]"
+            if result.worst_step < result.median_step * result.seam_limit_ratio
+            else f"[red]suspicious jump: {result.worst_step:.4f}[/red]",
+        )
+        console.print(table)
 
-    if failures:
-        for failure in failures:
-            console.print(f"[bold red]FAIL:[/bold red] {failure}")
+    if result.failures:
+        for failure in result.failures:
+            notice(f"[bold red]FAIL:[/bold red] {failure}", json_out=json_out)
         raise typer.Exit(1)
-    console.print(
+    notice(
         "[green]Timing is sound: zero group delay, bounded delivery latency, "
-        "continuous across seams.[/green]"
+        "continuous across seams.[/green]",
+        json_out=json_out,
     )
 
 
@@ -1052,6 +1005,14 @@ def detections_reconcile_plausibility(
     and shown by neither the MQTT publisher nor the ESP32 counter-top display. Read the
     dry-run output, and preferably `--json` it to a file, before applying.
 
+    It judges rows against *this station's configured* floor, priors and band
+    thresholds, and (ADR-070) never withdraws a row merely because a band's
+    score bar was retuned after the row was written: a row that is still in the
+    same band and cleared its own recorded `native_result.threshold_applied` is
+    left alone. A finding whose `admitting_threshold` is null is one whose
+    original bar is not on the record and so was judged against today's
+    configuration; read those before applying.
+
     Requires station coordinates (`latitude`/`longitude`) and the BirdNET model
     assets (`oo models fetch`) to be present, since the range model itself has to
     be re-run to recompute an occurrence probability for each stored detection.
@@ -1086,6 +1047,23 @@ def detections_reconcile_plausibility(
                 latitude=settings.latitude,
                 longitude=settings.longitude,
                 plausibility_floor=settings.birdnet_plausibility_floor,
+                # ADR-070. Every band threshold, not just the floor. These are
+                # `Settings` fields with environment surface, and until ADR-070
+                # this call passed none of them: the repair pass silently used
+                # `find_implausible_detections`'s own defaults (0.55/0.75/0.90)
+                # while the detector admitted rows at whatever the station was
+                # actually configured with. On the live station, running
+                # `OO_BIRDNET_THRESHOLD_IN_RANGE=0.35` since 2026-08-09, that
+                # gap made a full-depth dry run return 32,660 findings -- 9,168
+                # Common Woodpigeon, 7,434 European Robin, 2,477 Collared Dove,
+                # highest flagged score 0.549992 -- and not one of them was a
+                # genuinely implausible species. Roughly a third of the bird
+                # record, one `--apply` away from being withdrawn.
+                common_prior=settings.birdnet_common_prior,
+                range_threshold=settings.birdnet_range_threshold,
+                threshold_in_range=settings.birdnet_threshold_in_range,
+                threshold_uncommon=settings.birdnet_threshold_uncommon,
+                threshold_out_of_range=settings.birdnet_threshold_out_of_range,
                 limit=limit,
             )
         except DetectorUnavailable as exc:

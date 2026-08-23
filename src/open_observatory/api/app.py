@@ -49,14 +49,14 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -89,6 +89,40 @@ from .metrics import PrometheusExporter
 log = structlog.get_logger(__name__)
 
 API_PREFIX = "/api/v1"
+
+
+def _query_utc(value: datetime | None) -> datetime | None:
+    """Coerce a `since`/`until` query parameter to an aware UTC instant.
+
+    A bare `datetime` query parameter accepts `2026-08-04` and
+    `2026-08-04T00:00:00` as readily as `2026-08-04T00:00:00Z`, and the first
+    two parse to *naive* datetimes. Everything downstream is aware -- the
+    charter's "UTC internally" rule, `history.Range`, and every timestamp
+    SQLAlchemy hands back from a `timestamptz` column -- so a naive value
+    reached `history.coverage`, which does `max(_aware(row.start_utc),
+    window.start)` and raises `TypeError: can't compare offset-naive and
+    offset-aware datetimes`. That surfaced as a 500:
+    `GET /api/v1/history?since=2026-08-04&until=2026-08-09` failed while the
+    same window written as `2026-08-04T00:00:00Z` succeeded. Malformed or
+    under-specified input must be a 422 or a coercion, never a 500.
+
+    Naive input is read as UTC rather than rejected. It is the only reading
+    consistent with the rest of the system -- these endpoints have always
+    documented their windows in UTC, the `Z`-suffixed form the UI sends means
+    exactly that, and rejecting the shorter form would break a date-only
+    `since` that reads perfectly clearly. An *aware* value in another offset
+    is still honoured and converted, so a caller who does say what they mean
+    is never second-guessed.
+    """
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+#: `since`/`until` query parameters, always aware and always UTC by the time a
+#: route body sees them. A genuinely unparseable value (`since=banana`) still
+#: fails in pydantic before this runs, which is a 422 and correct.
+UtcQueryDatetime = Annotated[datetime | None, AfterValidator(_query_utc)]
 
 #: How many consecutive sweeps may reclaim nothing before `/api/v1/health`
 #: calls it a problem (ADR-062). Three, at the default five-minute interval,
@@ -1496,8 +1530,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{API_PREFIX}/detections")
     def list_detections(
         limit: int = Query(100, ge=1, le=500),
-        since: datetime | None = None,
-        until: datetime | None = None,
+        since: UtcQueryDatetime = None,
+        until: UtcQueryDatetime = None,
         #: A named window such as `last-night`, resolved in the station's timezone.
         #: Ignored when `since` is given explicitly.
         window: str | None = None,
@@ -1575,8 +1609,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def export_detections(
         format: str = Query("csv", pattern="^(csv|json)$"),
         limit: int = Query(5000, ge=1, le=20000),
-        since: datetime | None = None,
-        until: datetime | None = None,
+        since: UtcQueryDatetime = None,
+        until: UtcQueryDatetime = None,
         window: str | None = None,
         group: str | None = None,
         plugin_id: str | None = None,
@@ -1972,8 +2006,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{API_PREFIX}/history")
     def get_history(
         window: str = "last-night",
-        since: datetime | None = None,
-        until: datetime | None = None,
+        since: UtcQueryDatetime = None,
+        until: UtcQueryDatetime = None,
         bucket_seconds: int | None = Query(None, ge=10, le=86400),
         min_score: float = Query(0.0, ge=0.0, le=1.0),
         include_unidentified: bool = True,

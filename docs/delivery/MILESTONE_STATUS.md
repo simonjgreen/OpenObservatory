@@ -288,7 +288,7 @@ BatDetect2 at 0.52x realtime, below the threshold, and ADR-017 records that.
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
 | Deferred mode | **`DeferredDetectorWorker` exists and is still unused** (`detectors/deferred.py`); it remains the right mechanism for a *live* detector too slow to run inline, and the wrong one for stored clips, since it drops anything older than `max_delivery_latency_s`. **Decided 2026-08-09 (ADR-045):** the cascade ships instead as a **separate process** on a systemd timer — `oo refine run`, `src/open_observatory/refinement/` — at 01:00 UTC, fenced to `AllowedCPUs=2-3` / `Nice=19` / `MemoryMax=1G` (all three verified on the target under systemd 255). Cost basis unchanged: 2.1 s of inference per pass, ~36 minutes for the 1015 passes of a full night (ADR-017's 2026-08-05 update) |
-| Species refinement of stored bat passes | **done as *proposals only*, deliberately** (ADR-045). The runner writes append-only `refinement` rows and stamps each event with `refined_at` / `refinement_version` / `refinement_outcome`; it never edits a detection's species, score or `native_result`, and the writer raises if any claim column moves. It may not apply a change automatically, because BatDetect2 returned **0.77 for *Pipistrellus pygmaeus* on a call this station measured at 34 kHz** (soprano pipistrelle peaks near 55 kHz) and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing it writes reaches the API, MQTT, the web UI or the counter-top display. **Not yet run against the live station** |
+| Species refinement of stored bat passes | **done as *proposals only*, deliberately** (ADR-045). The runner writes append-only `refinement` rows and stamps each event with `refined_at` / `refinement_version` / `refinement_outcome`; it never edits a detection's species, score or `native_result`, and the writer raises if any claim column moves. It may not apply a change automatically, because BatDetect2 returned **0.77 for *Pipistrellus pygmaeus* on a call this station measured at 34 kHz** (soprano pipistrelle peaks near 55 kHz) and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing it writes reaches the API, MQTT, the web UI or the counter-top display. ~~Not yet run against the live station~~ — **it has been running there for some time: 16,586 `refinement` rows on 2026-08-23, the last pass exiting 0 at 2026-08-23 02:28 having used 41 minutes of CPU inside its `AllowedCPUs=2-3` fence.** The proposals-only rule is unchanged; nothing it wrote has reached a consumer |
 | Feeding-buzz flagging | **done** — a run of short inter-pulse intervals that is also well below the train's own median, which is what distinguishes a terminal collapse from a bat calling fast throughout. `min_interval_ms` is emitted on every pass so a wrong threshold can be re-judged from stored data |
 | Frequency-band candidate titles | **done** — presentational only; the stored record keeps `label = "bat pass"` and no species name, and the normaliser's guard is asserted by test |
 | Sub-bin peak frequency | **done** — the pulse FFT has 3 kHz bins at 384 kHz and the candidate band edges fall between bin centres, so peaks were being assigned to a species group by quantisation. Parabolic interpolation fixes it; live, the station's 35–36 kHz cluster survives as a genuine 35.3–36.2 kHz signal |
@@ -474,11 +474,22 @@ deleted, so the record of what was outstanding when survives:
   against the crystal (ADR-046).** What is still open there is narrower: no clean
   window longer than 22 minutes, hypothesis 4 never isolated, the missing gap row
   of 2026-08-08 10:55:24Z, and `late_read_max_frames` trending upward;
-- **the historical BirdNET rows written under the pre-ADR-032 plausibility
-  logic.** The consumer side is now done (ADR-044) and the sound-category
-  exemption is in (ADR-049), but **none of the three repair commands has been run
-  with `--apply` against the live station**, so those rows are still presented —
-  see `HANDOVER.md` §6.3 item 0;
+- ~~**the historical BirdNET rows written under the pre-ADR-032 plausibility
+  logic.**~~ **Applied 2026-08-09T15:32:03Z: 61 rows carry
+  `native_result.plausibility_review` and are withdrawn end to end** — detection
+  `a233415f3f72406f9e67769e972c5e62` (*Flammulated Owl*, 0.8756) comes back from
+  the live API with `withdrawn: true` and a populated `withdrawal` object. This
+  file and `HANDOVER.md` both said it had never been run; both were wrong for a
+  fortnight. What *is* outstanding is the reverse: **`oo detections
+  reconcile-plausibility --apply` must not be run again until ADR-070 is
+  deployed** — as it stands it would withdraw about a third of the bird record
+  (32,660 findings on 2026-08-23, led by Common Woodpigeon ×9,168 and European
+  Robin ×7,434), irreversibly. Note also that `GET /api/v1/taxa/activity` caps
+  `hours` at 168, so it **cannot** be used to verify anything older than seven
+  days; that check is unfulfillable, not passed. See `HANDOVER.md` §6.3 item 0.
+  The other two repair commands (`purge-human-audio`, `reconcile-taxonomy`) are
+  believed un-applied, but that belief has not been re-verified and is the same
+  kind of claim that was wrong here;
 - ~~a committed fixture test proving a known species from a known recording~~ —
   done 2026-08-08, `tests/test_birdnet_fixture.py`, passing on the target;
 - ~~authentication~~ — done 2026-08-08, ADR-034, **off by default**;

@@ -441,8 +441,11 @@ What bounds the work is that UTC window plus the item and time budgets and the C
 peaks near 55 kHz, and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing the runner
 writes reaches the API, MQTT, the web UI or the counter-top display.
 
-**Not yet run against the live station:** as of 2026-08-09 the station's `refinement` table
-holds **0 rows**. Two further gaps ADR-045 records and does not close: nothing connects a
+~~**Not yet run against the live station:** as of 2026-08-09 the station's `refinement` table
+holds **0 rows**.~~ **It has been running there for some time: 16,586 `refinement` rows on
+2026-08-23, the last pass exiting 0 at 2026-08-23 02:28 having used 41 minutes of CPU inside
+its `AllowedCPUs=2-3` fence.** The proposals-only rule is unchanged and nothing it wrote has
+reached a consumer. Two further gaps ADR-045 records and does not close: nothing connects a
 proposal to the review workflow (`refinement.resolved_at` stays NULL; `oo refine status` is
 the only way to see one), and `retention.py` still deletes clips on age alone, so a clip no
 refiner has examined can still be reclaimed at 7/30/90 days.
@@ -523,10 +526,13 @@ not: `/api/v1/history`'s species list and `/api/v1/taxa/activity` drop it and re
 `excluded_withdrawn_count`, and the MQTT publisher and the ESP32 counter-top display do not
 present it at all. Charter item 5 ("withdraw, not delete; the prior verdict stays visible
 and attributable") is why the row survives; item 6 and the honesty constraint are why the
-two surfaces that cannot render a caveat show nothing instead. What remains is an operator
-action, not a code change: the repair command has still never been run against the live
-station, so its historical owls are still unflagged and therefore still presented. Tracked
-in `HANDOVER.md` §6.3 item 0.
+two surfaces that cannot render a caveat show nothing instead. The repair command **was** run with `--apply`
+against the live station on 2026-08-09T15:32:03Z: 61 rows carry
+`native_result.plausibility_review`, and detection `a233415f3f72406f9e67769e972c5e62`
+(*Flammulated Owl*, 0.8756) comes back from the live API `withdrawn: true`. What remains is
+the opposite of an operator action: **do not run it again until ADR-070 is deployed** — the
+CLI did not pass the station's configured band thresholds through, so a 2026-08-23 dry run
+proposed 32,660 withdrawals of ordinary garden birds. Tracked in `HANDOVER.md` §6.3 item 0.
 
 **The week index feeding all of this was audited and is correct (ADR-044):** 48 weeks,
 four per calendar month, range exactly [1, 48] for every day of a common and a leap year,

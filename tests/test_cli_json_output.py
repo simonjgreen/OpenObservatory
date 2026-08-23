@@ -45,6 +45,10 @@ def _run(*args: str) -> str:
             ["audio", "window-dump", "--seconds", "4", "--scene", "tone", "--json"],
             id="window-dump",
         ),
+        pytest.param(
+            ["audio", "resample-check", "--seconds", "3", "--json"],
+            id="resample-check",
+        ),
     ],
 )
 def test_json_output_is_machine_readable(args: list[str]) -> None:

@@ -218,7 +218,7 @@ version of this list omitted the three repair/maintenance commands.
 |---|---|
 | `oo audio probe` | enumerate capture devices; record formats, stable identity and native rate support. `--json`, `--write PATH`, `--test-rates` |
 | `oo audio test-capture` | capture briefly and report frames delivered vs elapsed, levels and clipping. `--seconds`, `--out` |
-| `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms` |
+| `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. Runs in constant memory, so `--seconds 3600` — the duration the audio pipeline spec asks for, and ADR-069 gate (a) — costs about as much resident memory as `--seconds 60`. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms`, `--json` |
 | `oo audio window-dump` | inspect a specific segmenter window with ground truth: actual frame bounds, actual sample count cross-checked against an independent `RingBuffer` read, UTC and local-time rendering, and `--gap-at-s`/`--gap-frames` to show a capture gap's real effect on the segmenter. Runs against a replayed WAV (`--source`) or a synthetic scene, never the live station — see its own `--help` for why. `--stream-kind native\|audible48`, `--duration-s`, `--stride-s`, `--index`, `--write-wav PATH`, `--timezone`, `--json` |
 | `oo models status` | what model assets are installed |
 | `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |

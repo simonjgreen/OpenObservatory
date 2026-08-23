@@ -752,11 +752,13 @@ useful addition and is not currently planned.
 
 0. **North American owls are being reported by the station, and they now reach a
    screen in the operator's house.** — **Fixed in code by ADR-032 (detector) and
-   ADR-044 (consumers, plus the week audit). One operator action remains:
-   `oo detections reconcile-plausibility` has still never been run against the
-   live database, so the historical rows are still unflagged and therefore still
-   presented.** Read "What is still open" at the end of this item before doing
-   anything.
+   ADR-044 (consumers, plus the week audit), and **applied to the live database
+   on 2026-08-09T15:32:03Z: 61 rows carry `native_result.plausibility_review`
+   and are withdrawn.** No operator action remains here, and there is now a
+   reason *not* to act: **do not run `oo detections reconcile-plausibility
+   --apply` again until the ADR-070 fix is deployed to the station.** Read
+   "What actually happened, and the trap left behind" at the end of this item
+   before doing anything.
 
    Measured 2026-08-08 on the live station: *Western Screech-Owl* at score **0.96**,
    and *Flammulated Owl* separately, both above threshold. Neither occurs in the UK.
@@ -811,15 +813,14 @@ useful addition and is not currently planned.
    `oo_birdnet_suppressed_total{plugin_id, reason}` in `api/metrics.py`.
 
    **What is still open:**
-   - **The ~5833 historical rows are not retroactively corrected by the code
-     change.** `oo detections reconcile-plausibility` (`cli.py`, logic in
-     `plausibility_repair.py`) re-evaluates them against the current range model
-     and floor, dry-run by default, and on `--apply` writes a
-     `native_result.plausibility_review` block — never deletes a row or
-     overwrites the original `native_result`. **Not yet run against the live
-     station's actual database** (only against synthetic fixtures and a stubbed
-     range model); do that read-only/dry-run first (`--json` piped to a file) and
-     review the output before ever passing `--apply` there.
+   - ~~**The ~5833 historical rows are not retroactively corrected by the code
+     change.**~~ **Done, 2026-08-09.** `oo detections reconcile-plausibility`
+     (`cli.py`, logic in `plausibility_repair.py`) re-evaluates them against the
+     current range model and floor, dry-run by default, and on `--apply` writes
+     a `native_result.plausibility_review` block — never deletes a row or
+     overwrites the original `native_result`. It was run with `--apply` against
+     the live database; see the closing subsection of this item for the evidence
+     and for why it must not be run again as it stands.
    - ~~**No consumer hides a flagged historical row.**~~ **Done (ADR-044,
      2026-08-09.)** `plausibility.py` is now the single definition of "withdrawn"
      and five surfaces read it: `GET /api/v1/detections` (and the detail view and
@@ -851,12 +852,10 @@ useful addition and is not currently planned.
      would have disabled seasonality silently rather than failing.
 
    **What is still open, and it is an operator decision, not a code one:**
-   `oo detections reconcile-plausibility` has **never been run against the live
-   station's database**, so no row there is flagged yet — which means the
-   ~202+ historical rows, including the measured Western Screech-Owl and
-   Flammulated Owl, are still presented everywhere. The consumer side is now
-   ready and takes effect immediately on `--apply`, with no restart. Do the
-   dry run first (`--json` piped to a file), read it, and only then decide.
+   ~~`oo detections reconcile-plausibility` has **never been run against the
+   live station's database**~~ — **superseded; it was run on 2026-08-09. See
+   "What actually happened, and the trap left behind" below.** The consumer
+   side takes effect immediately on `--apply`, with no restart.
 
    **Update, 2026-08-09: the dry run was done, read-only, and it changed the
    answer (ADR-049).** Against the live database — 67,679 rows at the time — it
@@ -885,13 +884,52 @@ useful addition and is not currently planned.
      `oo clips purge-human-audio` removes the existing ones and keeps the
      detection rows.
 
-   **None of the three commands has been run with `--apply` on the live
-   station** — re-confirmed 2026-08-09. The order to run them in is privacy,
-   taxonomy, then plausibility. Until then the historical rows, including the
-   measured *Western Screech-Owl* and *Flammulated Owl*, are still presented
-   everywhere. This is the largest remaining item in §6.3 and it is an operator
-   decision, not a code one: the code side is finished and takes effect
-   immediately on `--apply`, with no restart.
+   **What actually happened, and the trap left behind (recorded 2026-08-23).**
+
+   The sentence that stood here until 2026-08-23 — "none of the three commands
+   has been run with `--apply` on the live station" — was **wrong**, and it had
+   been wrong for a fortnight. `reconcile-plausibility` *was* applied.
+
+   * **When:** 2026-08-09T15:32:03Z, the `reviewed_utc` stamped by
+     `apply_plausibility_flag` on every row it wrote.
+   * **What:** **61 rows** carry `native_result.plausibility_review`. They are
+     genuinely withdrawn end to end, not merely annotated.
+   * **Evidence:** detection `a233415f3f72406f9e67769e972c5e62` — *Flammulated
+     Owl*, score 0.8756 — is returned by the live `GET /api/v1/detections/{id}`
+     with `withdrawn: true` and a populated `withdrawal` object. That is
+     ADR-044's consumer path reading ADR-032's flag on real data, which is the
+     thing this item existed to achieve. It worked.
+   * **Not verified, and cannot be:** the obvious cross-check —
+     `GET /api/v1/taxa/activity` — **caps `hours` at 168**, so it cannot be
+     asked about anything older than seven days and cannot see August 9th at
+     all. That verification step is **unfulfillable as written, not passed**.
+     Anyone wanting an independent count of the withdrawn rows must query the
+     database directly or add a bounded historical endpoint; do not record it
+     as verified via `taxa/activity`, because that endpoint will simply refuse
+     the question.
+
+   **Do not run this command with `--apply` again until ADR-070 is deployed to
+   the station.** A dry run on 2026-08-23 returned **32,660 findings** — led by
+   *Common Woodpigeon* ×9,168, *European Robin* ×7,434 and *Collared Dove*
+   ×2,477, highest flagged score **0.549992** — and not one of them was a
+   genuinely implausible species. The station has run
+   `OO_BIRDNET_THRESHOLD_IN_RANGE=0.35` since 2026-08-09 (an operator tuning
+   experiment, set in its untracked `config/runtime.env`), while the CLI passed
+   none of the band thresholds through and the repair pass silently re-judged
+   every row at its own hardcoded default of 0.55. Every row in the 0.35–0.55
+   gap was therefore reported implausible: roughly a third of the bird record,
+   one `--apply` away from being withdrawn, and **not undoable by re-running**
+   — `plausibility_repair` skips any row that already carries a
+   `plausibility_review`, so a second pass cannot lift a flag the first pass
+   set. ADR-070 fixes the plumbing and stops a threshold *retune* being treated
+   as a discovery that the past was wrong; until the station is running that
+   code, the dry-run figure above is what `--apply` would do.
+
+   The other two commands (`oo clips purge-human-audio`,
+   `oo detections reconcile-taxonomy`) are believed still un-applied on the
+   station, but that belief is now known to be the same kind of claim that was
+   wrong about this one, and it has not been re-verified. The order to run them
+   in, if they are run, remains privacy, taxonomy, then plausibility.
 
 4. **Reduce the AudioMoth gain.** The input still clips on loud nearby events. This
    needs the AudioMoth USB Microphone app with the switch in `USB/OFF`; the HID

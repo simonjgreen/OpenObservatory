@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
+from sqlalchemy import select
 from typer.testing import CliRunner
 
 from open_observatory import plausibility_repair as repair
@@ -245,3 +246,92 @@ class TestKeep:
 
         assert result.exit_code != 0
         assert result.stdout == ""  # a refusal must never land in a --json document
+
+
+def _seed_jackdaw_admitted_at_035(settings, *, name: str, record_threshold: bool) -> uuid.UUID:
+    """One ordinary garden bird, stored exactly as the live station stores them.
+
+    Score 0.42, band `in_range`, admitted while the station was running
+    `OO_BIRDNET_THRESHOLD_IN_RANGE=0.35` (since 2026-08-09). Nothing about this
+    row is wrong.
+
+    `record_threshold` controls whether the row carries the bar it was admitted
+    under. With it, the row-level exemption in `plausibility_repair` protects
+    the row on its own. Without it, nothing protects the row except the CLI
+    passing the station's configured threshold through -- which is exactly the
+    defect ADR-070 fixes, so both rows are seeded and the second is the one
+    that fails against the pre-ADR-070 CLI.
+    """
+    detection_id = uuid.uuid4()
+    with session_scope() as session:
+        template = session.execute(select(orm.Detection).limit(1)).scalar_one()
+        session.add(
+            orm.Detection(
+                id=detection_id,
+                station_id=template.station_id,
+                detector_id=template.detector_id,
+                stream_id=template.stream_id,
+                window_id=uuid.uuid4(),
+                event_start_utc=BASE,
+                event_end_utc=BASE + timedelta(seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label=LABELS[1],
+                common_name=name,
+                scientific_name="Coloeus monedula",
+                rank="species",
+                taxonomic_group="bird",
+                score=0.42,
+                native_result={
+                    "detector": "birdnet-v2.4",
+                    "week": 20,
+                    "occurrence_probability": 0.772293,
+                    "plausibility_band": "in_range",
+                    **({"threshold_applied": 0.35} if record_threshold else {}),
+                },
+            )
+        )
+    return detection_id
+
+
+def test_the_configured_band_thresholds_reach_the_repair_pass(settings) -> None:
+    """ADR-070. The CLI must judge stored rows by the bar the detector admitted
+    them under, not by `find_implausible_detections`'s own defaults.
+
+    Before ADR-070 this command passed only `plausibility_floor` and `limit`,
+    so the five band thresholds silently fell back to 0.55/0.75/0.90 however
+    the station was configured. Measured on the live station on 2026-08-23,
+    running `OO_BIRDNET_THRESHOLD_IN_RANGE=0.35`: a full-depth dry run returned
+    32,660 findings -- Common Woodpigeon 9,168, European Robin 7,434, Collared
+    Dove 2,477, highest flagged score 0.549992 -- every one of them a row sitting
+    in the 0.35-0.55 gap, and not one a genuinely implausible species. Applying
+    it would have withdrawn about a third of the bird record, irreversibly:
+    `plausibility_repair` skips rows that already carry a `plausibility_review`,
+    so a second run cannot undo the first.
+    """
+    settings = _with_coordinates(settings).model_copy(update={"birdnet_threshold_in_range": 0.35})
+    set_settings(settings)
+    _seed(settings)
+    jackdaw_id = _seed_jackdaw_admitted_at_035(settings, name="Eurasian Jackdaw", record_threshold=True)
+    bare_jackdaw_id = _seed_jackdaw_admitted_at_035(
+        settings, name="Jackdaw with no recorded bar", record_threshold=False
+    )
+
+    result = runner.invoke(app, ["detections", "reconcile-plausibility", "--json"])
+
+    assert result.exit_code == 0, result.output
+    findings = json.loads(result.stdout)
+    names = {item["common_name"] for item in findings}
+    # The plausible garden bird is left alone -- both the row that records the
+    # bar it was admitted under, and the row that does not and so depends
+    # entirely on the CLI passing the station's configured 0.35 through.
+    assert "Eurasian Jackdaw" not in names
+    assert "Jackdaw with no recorded bar" not in names
+    # ...and the genuinely implausible species is still caught by the same run,
+    # so this is not simply a quieter command.
+    assert names == {"Flammulated Owl"}
+
+    with session_scope() as session:
+        for row_id in (jackdaw_id, bare_jackdaw_id):
+            row = session.get(orm.Detection, row_id)
+            assert "plausibility_review" not in (row.native_result or {})

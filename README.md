@@ -219,7 +219,7 @@ would hide (ADR-011).
 |---|---|
 | `oo audio probe` | Enumerate capture devices; record formats, stable identity and native rate support |
 | `oo audio test-capture` | Capture briefly and report frames delivered vs elapsed, levels and clipping |
-| `oo audio resample-check` | Verify group delay, delivery-latency bounds and seam continuity |
+| `oo audio resample-check` | Verify group delay, delivery-latency bounds and seam continuity (`--json` for a machine-readable result) |
 | `oo audio window-dump` | Inspect one segmenter window against ground-truth frame numbers, with optional injected gaps |
 | `oo audiomoth info` | Firmware identity over USB HID (switch in `USB/OFF`) |
 | `oo models status` / `fetch` | Model asset state and checksummed acquisition |
