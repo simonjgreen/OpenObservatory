@@ -48,6 +48,16 @@ struct StationSnapshot {
   // reads it every second, whichever one is currently connected.
   StationClock clock;
 
+  // Reconnect state, for the footer indicator (ADR-071). Set by the main loop
+  // from the one WifiPolicy that also drives the radio, deliberately: an
+  // indicator keeping its own copy of the schedule would eventually disagree
+  // with what the radio is doing, and a countdown that lies about when
+  // something will happen is worse than no countdown.
+  bool wifiLinkDown = false;
+  // Seconds until the next attempt. 0 while an attempt is in flight, which the
+  // footer renders as "now" rather than as a zero.
+  int wifiRetrySeconds = 0;
+
   // Which transport last delivered. Logged, and shown on the settings page, so
   // "it is running on the fallback" is a visible fact rather than a guess.
   const char* transport = "none";

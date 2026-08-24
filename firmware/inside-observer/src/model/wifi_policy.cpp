@@ -32,6 +32,13 @@ uint32_t WifiPolicy::backoffFor(uint32_t attempt) const {
   return backoff > timing_.maxBackoffMs ? timing_.maxBackoffMs : backoff;
 }
 
+uint32_t WifiPolicy::msUntilNextAttempt(uint32_t nowMs) const {
+  if (!down_ || reached(nowMs, nextAttemptMs_)) {
+    return 0;
+  }
+  return nextAttemptMs_ - nowMs;
+}
+
 WifiAction WifiPolicy::evaluate(bool linkUp, uint32_t nowMs) {
   if (linkUp) {
     // Recovery is the only thing that clears the backoff. Deliberately not

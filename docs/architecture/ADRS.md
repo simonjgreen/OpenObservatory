@@ -8374,6 +8374,46 @@ the background while the portal is up, and leave the portal by itself if the
 link comes back. Only once that holds is an outage-triggered reboot worth
 revisiting.
 
+### What the display shows while it is trying
+
+Requested by the operator after the fix landed: the screen should say that
+something is being done about it, without becoming a status readout.
+
+A struck-out WiFi glyph and a countdown to the next attempt, in a reserved
+52 px column in the footer, immediately left of the settings dots. Absent
+entirely while the link is up — there is no "WiFi OK" state, because a working
+network is the normal condition of this object and does not need announcing.
+
+Three details that are not arbitrary:
+
+- **The countdown is read from the same `WifiPolicy` that drives the radio**,
+  published onto `StationSnapshot` once per pass. An indicator keeping its own
+  copy of the schedule would drift out of step, and a countdown that lies about
+  when something will happen is worse than no countdown.
+- **It has its own column and its own 52x18 sprite**, and the footer key
+  deliberately excludes the seconds. The whole feed screen repaints only when a
+  region's *content* changes; folding a ticking number into the footer key
+  would repaint the species count and the settings dots once a second, which is
+  precisely the flicker that mechanism exists to prevent. Same bargain
+  `tickRelativeTimes` makes for the row ages.
+- **Zero renders as "now", not "0s".** Zero means an attempt is in flight. A
+  countdown sitting at "0s" reads as one that has stalled.
+
+The footer is a 30 px strip that also carries the species count and the
+settings affordance, so two things give way while the indicator is up. The
+`(stale)` suffix is dropped — it and the struck-out glyph say the same thing,
+and the glyph says it better. And `waiting for the station` is suppressed: when
+the missing thing is the network the station may be perfectly happy, and
+blaming it sends whoever reads it to the wrong end of the house. With no count
+yet to show, the left side stays empty and the indicator carries the whole
+message. The remaining text is truncated against a measured width rather than
+an assumed one, so no future string can overprint the glyph.
+
+`logRenderedScreen()` prints the indicator in words. Without a camera on the
+glass that log is the only record of what the footer actually showed, and "was
+the display telling anyone it was still trying" is the question the indicator
+exists to answer.
+
 ### Consequences
 
 - A drop now costs at most 3 s plus one association, instead of forever.

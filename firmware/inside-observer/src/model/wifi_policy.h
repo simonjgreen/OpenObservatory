@@ -71,6 +71,13 @@ class WifiPolicy {
   // The gap that will be left after the next attempt.
   uint32_t currentBackoffMs() const { return backoffFor(attempts_ + 1); }
 
+  // Milliseconds until the next attempt is due: 0 when the link is up, and 0
+  // while an attempt is due or in flight. Exists so the display can say "trying
+  // again in 12s" without keeping a second, drifting copy of this schedule --
+  // an indicator that disagrees with what the radio is doing is worse than no
+  // indicator at all.
+  uint32_t msUntilNextAttempt(uint32_t nowMs) const;
+
  private:
   uint32_t backoffFor(uint32_t attempt) const;
 

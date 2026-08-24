@@ -216,7 +216,7 @@ void panelReadbackSelfTest() {
 // successor should diff against when a layout or filtering change lands.
 void logRenderedScreen() {
   Serial.println("[screen] +--------------------------------------+");
-  Serial.println("[screen] |          LIVE IN THE GARDEN          |");
+  Serial.println("[screen] |             LIVE OUTSIDE             |");
   if (snapshot.health.state != StationState::kListening) {
     Serial.printf("[screen] | ! %-34s |\n",
                   snapshot.health.detail.empty()
@@ -241,14 +241,28 @@ void logRenderedScreen() {
   }
   std::string footer;
   if (snapshot.speciesToday < 0) {
-    footer = (snapshot.health.state == StationState::kOffline)
-                 ? "waiting for the station"
-                 : "counting...";
+    if (snapshot.wifiLinkDown) {
+      footer.clear();
+    } else {
+      footer = (snapshot.health.state == StationState::kOffline)
+                   ? "waiting for the station"
+                   : "counting...";
+    }
   } else {
     footer = std::to_string(snapshot.speciesToday) + " species today";
   }
-  if (snapshot.health.state == StationState::kOffline && snapshot.everSucceeded) {
+  if (snapshot.health.state == StationState::kOffline &&
+      snapshot.everSucceeded && !snapshot.wifiLinkDown) {
     footer += " (stale)";
+  }
+  // The reconnect indicator, rendered in words. Without a camera on the glass
+  // this log is the only record of what the footer actually showed, and "was
+  // the display telling anyone it was still trying" is the question this whole
+  // indicator exists to answer.
+  if (snapshot.wifiLinkDown) {
+    footer += snapshot.wifiRetrySeconds <= 0
+                  ? "   (wifi) now"
+                  : "   (wifi) " + std::to_string(snapshot.wifiRetrySeconds) + "s";
   }
   Serial.printf("[screen] | %-36s |\n", footer.c_str());
   Serial.println("[screen] +--------------------------------------+");
@@ -712,7 +726,17 @@ void serviceWifi() {
   }
   wifiLinkUp = linkUp;
 
-  if (wifiPolicy.evaluate(linkUp, millis()) != WifiAction::kAttemptReconnect) {
+  const WifiAction action = wifiPolicy.evaluate(linkUp, millis());
+
+  // Publish the schedule the radio is actually on, so the footer indicator
+  // counts down to the real next attempt rather than to a second copy of it.
+  // Rounded up, so the last fraction of a second reads "1s" and not "0s" --
+  // zero means "an attempt is in flight", and must not be shown early.
+  snapshot.wifiLinkDown = !linkUp;
+  snapshot.wifiRetrySeconds = static_cast<int>(
+      (wifiPolicy.msUntilNextAttempt(millis()) + 999) / 1000);
+
+  if (action != WifiAction::kAttemptReconnect) {
     return;
   }
 
@@ -818,6 +842,10 @@ void loop() {
     // newest row is under a minute old, and fall away to nothing once every row
     // is measured in minutes.
     timeRepaints += display.tickRelativeTimes(snapshot);
+    // The reconnect countdown moves on the same one-second tick, and for the
+    // same reason it is a separate call: it has its own reserved column, so a
+    // second in which it does not change costs nothing (ADR-071).
+    display.tickWifiIndicator(snapshot);
 
     // Once a minute, put the rendered screen and the transport's counters in the
     // log. Without a camera this is the only record of what is on the glass, and

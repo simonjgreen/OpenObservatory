@@ -178,6 +178,55 @@ void test_a_millis_wraparound_does_not_strand_the_policy() {
   TEST_ASSERT_TRUE(attemptedAfterWrap);
 }
 
+// The display shows this number. It has to be the schedule the radio is
+// actually on, counted down from the same state, or the screen says "3s" at a
+// moment when nothing is going to happen for another minute.
+void test_the_countdown_matches_the_schedule_it_is_counting_down_to() {
+  WifiPolicy policy;
+
+  // Link up: nothing to count down to.
+  policy.evaluate(true, 0);
+  TEST_ASSERT_EQUAL_UINT32(0, policy.msUntilNextAttempt(0));
+
+  // First pass down starts the grace period.
+  policy.evaluate(false, 1000);
+  TEST_ASSERT_EQUAL_UINT32(WifiPolicy::Timing{}.graceMs,
+                           policy.msUntilNextAttempt(1000));
+  TEST_ASSERT_EQUAL_UINT32(1000, policy.msUntilNextAttempt(3000));
+
+  // Walk to the attempt and confirm the countdown reaches zero exactly as the
+  // action is issued, never showing a stale positive number afterwards.
+  uint32_t t = 1000;
+  bool issued = false;
+  for (; t <= 20000; t += 10) {
+    const uint32_t remaining = policy.msUntilNextAttempt(t);
+    if (policy.evaluate(false, t) == WifiAction::kAttemptReconnect) {
+      TEST_ASSERT_EQUAL_UINT32(0, remaining);
+      issued = true;
+      break;
+    }
+    TEST_ASSERT_GREATER_THAN_UINT32(0, remaining);
+  }
+  TEST_ASSERT_TRUE(issued);
+
+  // And immediately after an attempt it counts the full backoff, not zero.
+  TEST_ASSERT_EQUAL_UINT32(WifiPolicy::Timing{}.firstBackoffMs,
+                           policy.msUntilNextAttempt(t));
+}
+
+// The countdown must survive the wrap for the same reason the schedule does.
+void test_the_countdown_survives_a_millis_wraparound() {
+  WifiPolicy policy;
+  const uint32_t justBeforeWrap = 0xFFFFFFFFu - 1000;
+  policy.evaluate(false, justBeforeWrap);
+  // 0xFFFFFFFF is 2^32 - 1, so `justBeforeWrap + 3000` lands at 1999 rather
+  // than the 2000 the arithmetic invites you to expect. Spelled out because
+  // getting it wrong here is exactly how an off-by-one hides in a wrap test.
+  TEST_ASSERT_EQUAL_UINT32(3000, policy.msUntilNextAttempt(justBeforeWrap));
+  TEST_ASSERT_EQUAL_UINT32(999, policy.msUntilNextAttempt(1000));
+  TEST_ASSERT_EQUAL_UINT32(0, policy.msUntilNextAttempt(2500));
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -189,5 +238,7 @@ int main(int, char**) {
   RUN_TEST(test_it_never_gives_up);
   RUN_TEST(test_recovery_resets_the_backoff);
   RUN_TEST(test_a_millis_wraparound_does_not_strand_the_policy);
+  RUN_TEST(test_the_countdown_matches_the_schedule_it_is_counting_down_to);
+  RUN_TEST(test_the_countdown_survives_a_millis_wraparound);
   return UNITY_END();
 }

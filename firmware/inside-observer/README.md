@@ -311,6 +311,10 @@ ways the display gets onto WiFi, in this order:
    deliberately did not touch it — and because a normal upload does not erase
    NVS, `WiFi.begin()` with no arguments reconnects using those credentials.
 
+   While the link is down the footer shows a struck-out WiFi glyph and the
+   seconds until the next attempt, in its own reserved column beside the
+   settings dots, and shows nothing at all once the link is back.
+
    Once running, reconnection after a drop is rationed by
    `model/wifi_policy.{h,cpp}` — 3 s of grace, then attempts at 5, 10, 20, 40
    and 60 s, capped there and never abandoned. `WiFi.reconnect()` is

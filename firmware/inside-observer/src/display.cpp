@@ -3,6 +3,8 @@
 #include <Arduino.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 #include "board_pins.h"
 #include "model/relative_time.h"
@@ -39,8 +41,71 @@ constexpr int kMargin = 14;
 constexpr int kTimeW = 72;
 constexpr int kTimeH = 18;
 constexpr int kSecondLineY = 24;
+// The reconnect indicator's reserved column in the footer: struck-out WiFi
+// glyph, then the countdown, then a gap, then the settings dots. Fixed width
+// and a fixed right edge so "60s" shrinking to "9s" does not shuffle the glyph
+// sideways once a second.
+constexpr int kWifiIndW = 52;
+constexpr int kWifiIndH = 18;
+// 240 - 14 margin - 26 for the three dots and their breathing room.
+constexpr int kWifiIndX = kScreenW - kMargin - 26 - kWifiIndW;
+
 constexpr int kFeedTop = kHeaderH;
 constexpr int kFeedBottom = kScreenH - kFooterH;
+
+// The reconnect glyph is drawn rather than shipped as a bitmap: three arcs, a
+// dot and a diagonal is a few lines of code, no font dependency and no asset to
+// keep in step with the palette.
+//
+// Templated on the draw target on purpose. TFT_eSprite shadows some of
+// TFT_eSPI's primitives without overriding them, so calling through a
+// `TFT_eSPI&` would silently paint on the panel instead of into the sprite.
+// Binding the exact type at compile time removes the question. Only drawPixel
+// (which *is* virtual) and drawLine are used, so both targets behave the same.
+template <typename Target>
+void arcTop(Target& g, int cx, int cy, int r, uint16_t colour) {
+  // The middle three-quarters of the upper half. WiFi arcs are drawn as a fan,
+  // not as semicircles, and stopping short of vertical is what makes them read
+  // as one at this size.
+  const int span = (r * 3) / 4;
+  int previous = -1;
+  for (int dx = -span; dx <= span; ++dx) {
+    const int dy = static_cast<int>(
+        std::lround(std::sqrt(static_cast<double>(r * r - dx * dx))));
+    if (previous < 0) {
+      g.drawPixel(cx + dx, cy - dy, colour);
+    } else {
+      // Bridge the vertical step between columns, or the arc breaks up into
+      // separate dots where the curve is steepest.
+      const int lo = std::min(previous, dy);
+      const int hi = std::max(previous, dy);
+      for (int f = lo; f <= hi; ++f) {
+        g.drawPixel(cx + dx, cy - f, colour);
+      }
+    }
+    previous = dy;
+  }
+}
+
+// 19 x 15 within the box whose top-left is (x, y).
+template <typename Target>
+void drawStruckWifi(Target& g, int x, int y, uint16_t colour, uint16_t bg) {
+  const int cx = x + 9;
+  const int cy = y + 14;
+  arcTop(g, cx, cy, 9, colour);
+  arcTop(g, cx, cy, 6, colour);
+  arcTop(g, cx, cy, 3, colour);
+  // The emitting dot at the bottom of the fan.
+  g.drawPixel(cx, cy, colour);
+  g.drawPixel(cx - 1, cy, colour);
+  g.drawPixel(cx + 1, cy, colour);
+  g.drawPixel(cx, cy - 1, colour);
+  // The strike. A background-coloured line is laid down first, one pixel below,
+  // so the diagonal stays a diagonal where it crosses the arcs rather than
+  // merging with them into a smudge.
+  g.drawLine(x + 1, y + 4, x + 17, y + 16, bg);
+  g.drawLine(x + 1, y + 3, x + 17, y + 15, colour);
+}
 
 int feedRowsFor(bool hasBanner) {
   const int height = (kFeedBottom - kFeedTop) - (hasBanner ? kBannerH : 0);
@@ -125,6 +190,15 @@ bool Display::begin() {
                    "one-second tick will draw direct (expect flicker)");
   }
 
+  wifiSpriteReady_ = false;
+  wifi_.setColorDepth(16);
+  if (wifi_.createSprite(kWifiIndW, kWifiIndH) != nullptr) {
+    wifiSpriteReady_ = true;
+  } else {
+    Serial.println("[display] WARNING: wifi sprite allocation failed; the "
+                   "reconnect countdown will draw direct (expect flicker)");
+  }
+
   Serial.printf("[display] ILI9341 init ok, %dx%d rotation=%d panel_id=0x%06X "
                 "row_sprite=%d free_heap=%u\n",
                 tft_.width(), tft_.height(), 0,
@@ -196,9 +270,10 @@ void Display::showBoot(const char* line1, const char* line2) {
   rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
+  lastWifiKey_.clear();
 
   tft_.fillScreen(kBg);
-  drawTracked("LIVE IN THE GARDEN", kScreenW / 2, 140, 2, 3, kAccent);
+  drawTracked("LIVE OUTSIDE", kScreenW / 2, 140, 2, 3, kAccent);
   tft_.setTextDatum(TC_DATUM);
   tft_.setTextColor(kInkDim, kBg);
   tft_.drawString(line1, kScreenW / 2, 170, 2);
@@ -248,7 +323,7 @@ void Display::showUpdating(const char* version, int percent, const char* note) {
 
 void Display::drawHeader(const StationSnapshot& snapshot) {
   tft_.fillRect(0, 0, kScreenW, kHeaderH, kBg);
-  drawTracked("LIVE IN THE GARDEN", kScreenW / 2, 14, 2, 4, kAccent);
+  drawTracked("LIVE OUTSIDE", kScreenW / 2, 14, 2, 4, kAccent);
   // Hairline rule. Two pixels of very dark green rather than one of grey:
   // a single bright line reads as a border, two dim ones read as a fold.
   tft_.drawFastHLine(kMargin, kHeaderH - 6, kScreenW - 2 * kMargin, kRule);
@@ -358,6 +433,66 @@ int Display::tickRelativeTimes(const StationSnapshot& snapshot) {
   return repainted;
 }
 
+// The reserved column's top edge, clear of the footer's hairline rule at +2 and
+// aligned with the baseline of the species count beside it.
+static constexpr int kWifiIndYOffset = 7;
+
+void Display::drawWifiIndicator(const StationSnapshot& snapshot) {
+  const int y = kFeedBottom + kWifiIndYOffset;
+
+  if (!snapshot.wifiLinkDown) {
+    // Nothing to say. A working network is the normal condition of this object
+    // and does not get announced -- but the column may have been showing
+    // something a moment ago, so it is cleared rather than merely skipped.
+    tft_.fillRect(kWifiIndX, y, kWifiIndW, kWifiIndH, kBg);
+    return;
+  }
+
+  char label[8];
+  if (snapshot.wifiRetrySeconds <= 0) {
+    // Zero means an attempt is in flight. Showing "0s" would read as a
+    // countdown that has stalled; "now" says the thing that is true.
+    snprintf(label, sizeof(label), "now");
+  } else {
+    snprintf(label, sizeof(label), "%ds", snapshot.wifiRetrySeconds);
+  }
+
+  // The glyph carries the offline colour the banner already uses for this
+  // state; the countdown stays dim. The symbol is the part that should catch
+  // an eye from across the room -- the number is for someone who has already
+  // walked over.
+  if (wifiSpriteReady_) {
+    wifi_.fillSprite(kBg);
+    drawStruckWifi(wifi_, 0, 0, kAlarm, kBg);
+    wifi_.setTextDatum(TR_DATUM);
+    wifi_.setTextColor(kInkDim, kBg);
+    wifi_.drawString(label, kWifiIndW, 1, 2);
+    wifi_.pushSprite(kWifiIndX, y);
+  } else {
+    tft_.fillRect(kWifiIndX, y, kWifiIndW, kWifiIndH, kBg);
+    drawStruckWifi(tft_, kWifiIndX, y, kAlarm, kBg);
+    tft_.setTextDatum(TR_DATUM);
+    tft_.setTextColor(kInkDim, kBg);
+    tft_.drawString(label, kWifiIndX + kWifiIndW, y + 1, 2);
+  }
+}
+
+int Display::tickWifiIndicator(const StationSnapshot& snapshot) {
+  // The key is what the column shows, not what the policy knows: a second in
+  // which the displayed second did not change costs no SPI traffic, which is
+  // the same bargain tickRelativeTimes makes for the row ages.
+  const std::string key =
+      snapshot.wifiLinkDown
+          ? "down|" + std::to_string(snapshot.wifiRetrySeconds)
+          : "up";
+  if (key == lastWifiKey_) {
+    return 0;
+  }
+  drawWifiIndicator(snapshot);
+  lastWifiKey_ = key;
+  return 1;
+}
+
 void Display::drawEmptyState(int top, int height,
                              const StationSnapshot& snapshot,
                              const Settings& settings) {
@@ -413,16 +548,42 @@ void Display::drawFooter(const StationSnapshot& snapshot,
   if (snapshot.speciesToday < 0) {
     // Never "0 species today" before we have actually counted: an unknown
     // count and a genuinely empty day are different facts.
-    left = (snapshot.health.state == StationState::kOffline)
-               ? "waiting for the station"
-               : "counting...";
+    //
+    // And never "waiting for the station" when the missing thing is the
+    // network: the station may be perfectly happy, and blaming it sends
+    // whoever reads this to the wrong end of the house. With no count to show
+    // the left side simply stays empty and the reconnect indicator carries the
+    // whole message.
+    if (snapshot.wifiLinkDown) {
+      left.clear();
+    } else {
+      left = (snapshot.health.state == StationState::kOffline)
+                 ? "waiting for the station"
+                 : "counting...";
+    }
   } else if (snapshot.speciesToday == 1) {
     left = "1 species today";
   } else {
     left = std::to_string(snapshot.speciesToday) + " species today";
   }
-  if (snapshot.health.state == StationState::kOffline && snapshot.everSucceeded) {
+  // "(stale)" is dropped while the reconnect indicator is up. The two say the
+  // same thing -- the count is old because the network is gone -- and the
+  // footer is a 30px strip that also has to hold the settings affordance. The
+  // struck-out glyph is the clearer of the two, so it is the one that stays.
+  if (snapshot.health.state == StationState::kOffline &&
+      snapshot.everSucceeded && !snapshot.wifiLinkDown) {
     left += " (stale)";
+  }
+
+  // Hard bound rather than a trusted estimate. The reconnect column starts at
+  // a fixed x, and a footer string that grows past it would overprint the
+  // glyph -- so the text is truncated to the room it actually has, measured,
+  // the same way the banner truncates rather than wraps.
+  const int leftLimit =
+      (snapshot.wifiLinkDown ? kWifiIndX - 6 : kScreenW - kMargin - 26) -
+      kMargin;
+  while (left.size() > 1 && tft_.textWidth(left.c_str(), 2) > leftLimit) {
+    left.pop_back();
   }
 
   tft_.setTextDatum(TL_DATUM);
@@ -436,6 +597,12 @@ void Display::drawFooter(const StationSnapshot& snapshot,
     tft_.fillCircle(kScreenW - kMargin - 20 + i * 8, dotY, 2, kInkDim);
   }
   addHit(kScreenW - 70, top, 70, kFooterH, kHitOpenSettings);
+
+  // The fillRect above wiped the reconnect column, so whatever was cached about
+  // it no longer describes the glass.
+  lastWifiKey_.clear();
+  tickWifiIndicator(snapshot);
+
   (void)settings;
 }
 
@@ -514,9 +681,15 @@ void Display::showFeed(const StationSnapshot& snapshot,
     tickRelativeTimes(snapshot);
   }
 
+  // Deliberately excludes wifiRetrySeconds. The countdown changes every second
+  // and has its own reserved column and sprite; folding it in here would
+  // repaint the species count and the settings dots once a second, which is
+  // exactly the flicker the key mechanism exists to prevent. The link *state*
+  // does belong, because the left-hand text changes with it.
   const std::string footerKey =
       std::to_string(snapshot.speciesToday) + "|" +
-      std::to_string(static_cast<int>(snapshot.health.state));
+      std::to_string(static_cast<int>(snapshot.health.state)) + "|" +
+      (snapshot.wifiLinkDown ? "nowifi" : "wifi");
   if (force || footerKey != lastFooterKey_) {
     drawFooter(snapshot, settings);
     lastFooterKey_ = footerKey;
@@ -524,6 +697,8 @@ void Display::showFeed(const StationSnapshot& snapshot,
     // The hit box lives with the footer; re-register it even when we skip the
     // repaint, or the settings affordance stops responding after one poll.
     addHit(kScreenW - 70, kFeedBottom, 70, kFooterH, kHitOpenSettings);
+    // And the countdown still moves on a poll that changed nothing else.
+    tickWifiIndicator(snapshot);
   }
 }
 
@@ -571,6 +746,7 @@ void Display::showSettings(const Settings& draft, const char* transportName) {
   rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
+  lastWifiKey_.clear();
 
   tft_.fillScreen(kBg);
   drawTracked("SETTINGS", kScreenW / 2, 12, 2, 4, kAccent);
@@ -736,6 +912,7 @@ void Display::showPortal(const char* ssid, const char* ip) {
   rowTops_.clear();
   lastHeaderKey_.clear();
   lastFooterKey_.clear();
+  lastWifiKey_.clear();
 
   tft_.fillScreen(kBg);
   drawTracked("SET UP", kScreenW / 2, 40, 2, 4, kAccent);

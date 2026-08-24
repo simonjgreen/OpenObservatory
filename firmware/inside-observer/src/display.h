@@ -115,6 +115,17 @@ class Display {
   // traffic. Returns the number of rows actually repainted, for the log.
   int tickRelativeTimes(const StationSnapshot& snapshot);
 
+  // The reconnect indicator in the footer: a struck-out WiFi glyph and the
+  // seconds until the next attempt (ADR-071). Called once a second, alongside
+  // tickRelativeTimes and for the same reason -- it has a reserved column and a
+  // small sprite, so a ticking countdown never repaints the footer underneath
+  // it. Returns 1 if it actually painted.
+  //
+  // Draws nothing at all while the link is up. There is no "WiFi OK" state on
+  // this screen: a working network is the normal condition of the object and
+  // does not need announcing.
+  int tickWifiIndicator(const StationSnapshot& snapshot);
+
   void showSettings(const Settings& draft, const char* transportName);
   void showNumberPad(const char* title, const std::string& value,
                      bool allowDots);
@@ -144,6 +155,7 @@ class Display {
   void drawEmptyState(int top, int height, const StationSnapshot& snapshot,
                       const Settings& settings);
   void drawBanner(int top, const StationSnapshot& snapshot);
+  void drawWifiIndicator(const StationSnapshot& snapshot);
   void drawTracked(const char* text, int centreX, int y, uint8_t font,
                    int trackingPx, uint16_t colour);
   void drawFitted(TFT_eSprite& s, const std::string& text, int x, int y,
@@ -155,8 +167,13 @@ class Display {
   // A second, much smaller sprite for the one thing on this screen that changes
   // every second. 72x18 is 2.6 kB against the row sprite's 19 kB.
   TFT_eSprite time_{&tft_};
+  // Third and smallest sprite, 52x18, for the footer's reconnect countdown.
+  // Separate from time_ because that one is 72 wide and would paint over the
+  // settings dots.
+  TFT_eSprite wifi_{&tft_};
   bool rowSpriteReady_ = false;
   bool timeSpriteReady_ = false;
+  bool wifiSpriteReady_ = false;
   uint32_t panelId_ = 0;
 
   std::vector<HitBox> hits_;
@@ -169,6 +186,9 @@ class Display {
   std::vector<int> rowTops_;
   std::string lastHeaderKey_;
   std::string lastFooterKey_;
+  // What the reconnect indicator currently shows, so a second in which the
+  // countdown does not change costs no SPI traffic.
+  std::string lastWifiKey_;
 };
 
 }  // namespace observer
