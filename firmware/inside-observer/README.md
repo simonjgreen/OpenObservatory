@@ -310,6 +310,12 @@ ways the display gets onto WiFi, in this order:
    offset and size — ADR-050 changed the app partitions around it and
    deliberately did not touch it — and because a normal upload does not erase
    NVS, `WiFi.begin()` with no arguments reconnects using those credentials.
+
+   Once running, reconnection after a drop is rationed by
+   `model/wifi_policy.{h,cpp}` — 3 s of grace, then attempts at 5, 10, 20, 40
+   and 60 s, capped there and never abandoned. `WiFi.reconnect()` is
+   disconnect-then-connect on this core, so attempts closer together than an
+   association destroy each other rather than hurrying it along (ADR-071).
    This firmware never reads, copies, logs or serialises them.
 
 2. **The provisioning portal.** If there are no usable credentials, or the
@@ -358,7 +364,7 @@ in NVS so no stored configuration needs migrating.
 **Directly from the Pi, over a WebSocket the station pushes down** (ADR-038):
 
 ```
-ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6&fw=0.2.4
+ws://<station>:8080/api/v1/display?min_score=0.7500&bats=true&rows=6&fw=0.2.5
 ```
 
 `fw` is the running firmware version, so the station can offer an update to a

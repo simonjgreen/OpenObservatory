@@ -21,6 +21,7 @@
 #include "display.h"
 #include "model/ota_policy.h"
 #include "model/relative_time.h"
+#include "model/wifi_policy.h"
 #include "ota.h"
 #include "portal.h"
 #include "push_station_source.h"
@@ -46,6 +47,15 @@ Settings draft;            // edited on the settings screen, committed on Save
 StationSnapshot snapshot;
 
 Screen screen = Screen::kBoot;
+// Rations reconnect attempts. Not a nicety: `WiFi.reconnect()` is
+// disconnect-then-connect, so asking twice inside one association destroys the
+// association, and the service block below runs every 10 ms. See
+// model/wifi_policy.h for the whole story and ADR-071.
+WifiPolicy wifiPolicy;
+// Last observed link state, so the transitions get one line each instead of
+// one line per pass.
+bool wifiLinkUp = false;
+
 uint32_t nextServiceMs = 0;
 uint32_t nextTickMs = 0;
 uint32_t nextFallbackMs = 0;
@@ -661,6 +671,10 @@ void setup() {
     return;
   }
 
+  // Seed the link tracker from the join we just made, or the first pass through
+  // serviceWifi() reports a "link restored" that never went anywhere.
+  wifiLinkUp = true;
+
   push.begin(settings);
   snapshot.health.state = StationState::kConnecting;
   snapshot.transport = push.transportName();
@@ -668,6 +682,47 @@ void setup() {
   nextServiceMs = 0;
   nextTickMs = millis() + kTickMs;
   pushDownSinceMs = millis();
+}
+
+// Keep the link alive, on every screen.
+//
+// Deliberately *not* inside the feed-service block it used to live in. That
+// block is gated on `screen == Screen::kFeed`, so a display left on the
+// settings screen when the WiFi dropped would never have tried to reconnect at
+// all; and its cadence is 10 ms, which is shorter than an association takes.
+// Both of those were the same bug wearing different hats (ADR-071).
+void serviceWifi() {
+  // While the portal is up the radio is in AP_STA and the operator is typing
+  // credentials into it. Reassociating STA underneath them achieves nothing --
+  // a submit restarts the device anyway -- and a reconnect storm on the shared
+  // radio is what makes the portal page itself feel broken.
+  if (portal.running()) {
+    return;
+  }
+
+  const bool linkUp = WiFi.status() == WL_CONNECTED;
+  if (linkUp && !wifiLinkUp) {
+    Serial.printf("[wifi] link restored after %ums as %s, rssi %d dBm\n",
+                  wifiPolicy.downForMs(millis()),
+                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  } else if (!linkUp && wifiLinkUp) {
+    Serial.printf("[wifi] link lost (status=%d); riding it out before "
+                  "reconnecting\n",
+                  WiFi.status());
+  }
+  wifiLinkUp = linkUp;
+
+  if (wifiPolicy.evaluate(linkUp, millis()) != WifiAction::kAttemptReconnect) {
+    return;
+  }
+
+  // One line per attempt, and attempts are now seconds apart -- the old code
+  // printed this a hundred times a second, which buried every other message on
+  // the serial console during exactly the fault you were trying to read about.
+  Serial.printf("[wifi] reconnect attempt %u after %us down; next in %us\n",
+                wifiPolicy.attempts(), wifiPolicy.downForMs(millis()) / 1000,
+                wifiPolicy.currentBackoffMs() / 1000);
+  WiFi.reconnect();
 }
 
 void loop() {
@@ -690,6 +745,8 @@ void loop() {
     }
   }
 
+  serviceWifi();
+
   serviceProbation();
 
   TouchPoint p;
@@ -706,11 +763,6 @@ void loop() {
 
   if (screen == Screen::kFeed &&
       static_cast<int32_t>(millis() - nextServiceMs) >= 0) {
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[wifi] link lost; reconnecting");
-      WiFi.reconnect();
-    }
-
     const bool ok = push.poll(settings, snapshot);
     nextServiceMs = millis() + push.serviceIntervalMs(settings);
 
