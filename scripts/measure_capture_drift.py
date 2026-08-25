@@ -102,7 +102,40 @@ FIELDS = [
     "hot_path_cpu_ratio",
     "clock_reanchors",
     "stream_restarts",
+    "soc_temp_c",
 ]
+
+
+#: The gauge the station already publishes on /metrics. Added to this sampler
+#: 2026-08-25, after drift gate (b) failed on linearity with a residual shaped
+#: exactly like a warming crystal and *no way to test that* -- nothing recorded
+#: temperature during the window and the Pi keeps no history, so the question
+#: could not be answered afterwards at any price.
+TEMPERATURE_METRIC = "oo_host_cpu_temperature_celsius"
+
+
+def parse_soc_temperature(metrics_text: str) -> float | None:
+    """The SoC temperature out of Prometheus text, or None.
+
+    None rather than an exception, and None rather than a default, because this
+    value informs a reader and is an input to no gate check. A station that
+    stops serving it must not fail a drift run that is otherwise valid.
+
+    HELP and TYPE lines carry the metric name and no value, so they are skipped
+    explicitly; reading one would put the word "SoC" where a temperature goes.
+    """
+    for line in metrics_text.splitlines():
+        if line.startswith("#") or not line.startswith(TEMPERATURE_METRIC):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            return None
+        return None if math.isnan(value) or math.isinf(value) else value
+    return None
 
 
 class Sampler:
@@ -135,13 +168,36 @@ class Sampler:
                 self.reconnects += 1
         raise AssertionError("unreachable")
 
+    def temperature(self) -> float | None:
+        """Best-effort, on the connection already open. Never raises.
+
+        Deliberately not retried and never fatal: a failed temperature read
+        costs one empty cell in the CSV, and must never cost the run or force a
+        reconnect that the drift measurement would then have to account for.
+        """
+        try:
+            conn = self._connect()
+            conn.request("GET", "/metrics", headers={"Connection": "keep-alive"})
+            response = conn.getresponse()
+            body = response.read()
+            if response.status != 200:
+                return None
+            return parse_soc_temperature(body.decode("utf-8", "replace"))
+        except Exception:
+            self._conn = None
+            return None
+
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
 
 
-def derive(snapshot: dict[str, Any], monotonic_s: float) -> dict[str, Any]:
+def derive(
+    snapshot: dict[str, Any],
+    monotonic_s: float,
+    soc_temp_c: float | None = None,
+) -> dict[str, Any]:
     """One CSV row: the raw counters, plus the phase-corrected deficit."""
     capture = snapshot["capture"]
     rate = capture["sample_rate"]
@@ -187,6 +243,7 @@ def derive(snapshot: dict[str, Any], monotonic_s: float) -> dict[str, Any]:
         "hot_path_cpu_ratio": capture.get("hot_path_cpu_ratio"),
         "clock_reanchors": capture.get("clock_reanchors"),
         "stream_restarts": capture.get("stream_restarts"),
+        "soc_temp_c": soc_temp_c,
     }
 
 
@@ -273,6 +330,73 @@ def per_minute_medians(segment: Segment) -> tuple[np.ndarray, np.ndarray, int]:
     return x, y, dropped
 
 
+def per_minute_temperatures(segment: Segment) -> np.ndarray:
+    """SoC temperature per minute, aligned to `per_minute_medians`' minutes.
+
+    Mirrors that function's filtering and bucketing exactly -- same in-band
+    rows, same `t0`, same sorted minutes -- so index *i* here is the same
+    minute as index *i* there. NaN for a minute with no reading.
+    """
+    used = [r for r in segment.rows if int(r["phase_in_band"]) == 1]
+    if not used:
+        return np.zeros(0)
+    t0 = float(used[0]["monotonic_s"])
+    buckets: dict[int, list[float]] = {}
+    for row in used:
+        minute = int((float(row["monotonic_s"]) - t0) // 60)
+        buckets.setdefault(minute, [])
+        raw = row.get("soc_temp_c")
+        if raw is None or raw == "":
+            continue
+        try:
+            buckets[minute].append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return np.array([float(np.median(buckets[m])) if buckets[m] else float("nan") for m in sorted(buckets)])
+
+
+def thermal_correlation(residual: np.ndarray, temps: np.ndarray) -> float | None:
+    """Pearson r between the deficit residual and temperature's own residual.
+
+    **Both** sides have their straight line removed first, and that is the whole
+    point rather than a nicety. A linear temperature ramp and a constant drift
+    are indistinguishable over one window -- both are absorbed into the slope
+    the gate fits -- so correlating against raw temperature would credit the
+    thermal hypothesis for the part of the signal that carries no evidence
+    either way. What is being asked here is narrower and answerable: does the
+    *bend* in the deficit follow the *bend* in temperature?
+
+    None, never a number, when there is nothing to correlate: no readings, too
+    few minutes, or either side flat (a flat input has no bend to match, and
+    Pearson on zero variance is undefined, not zero).
+    """
+    if residual.size < 3 or temps.size != residual.size:
+        return None
+    usable = ~np.isnan(temps)
+    if int(usable.sum()) < 3:
+        return None
+    t = temps[usable]
+    r = residual[usable]
+    x = np.arange(t.size, dtype=float)
+    # Least squares here, not Theil-Sen: this line is being removed, not
+    # reported, and its only job is to strip the linear component.
+    t_detrended = t - np.polyval(np.polyfit(x, t, 1), x)
+    r_detrended = r - np.polyval(np.polyfit(x, r, 1), x)
+    # Not `== 0`. Removing a straight line from a constant leaves floating-point
+    # dust with a non-zero standard deviation, and `corrcoef` will happily
+    # correlate the deficit against that dust and return something that looks
+    # like an answer -- measured at r = 0.03 on a station held at a steady
+    # temperature, which is a meaningless number where None belongs.
+    #
+    # The floor is the sensor's own resolution: `thermal_zone0` reports
+    # millidegrees and the gauge lands on ~0.01 C steps, so a detrended spread
+    # below 0.005 C is not a bend, it is quantisation.
+    if t_detrended.std() < 0.005 or r_detrended.std() == 0:
+        return None
+    value = float(np.corrcoef(t_detrended, r_detrended)[0, 1])
+    return None if math.isnan(value) else value
+
+
 def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
     x, y, dropped = per_minute_medians(segment)
     rate = float(segment.rows[-1]["sample_rate"])
@@ -291,6 +415,14 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
         residual_ms = [float(v / rate * 1000.0) for v in residual]
         step_ms = float(np.max(np.abs(np.diff(residual))) / rate * 1000.0) if x.size > 2 else 0.0
 
+    # Diagnostic only. Feeds no check below, by design (ADR-069 gate (b) is
+    # decided on the deficit; this exists to explain a failure, not to excuse
+    # one).
+    temps = per_minute_temperatures(segment)
+    residual_array = np.array(residual_ms) if residual_ms else np.zeros(0)
+    thermal_r = thermal_correlation(residual_array, temps)
+    finite_temps = temps[~np.isnan(temps)] if temps.size else np.zeros(0)
+
     first, last = segment.rows[0], segment.rows[-1]
     station_ppm = float(last["rate_offset_ppm"] or 0.0)
     agreement = abs(abs(ppm) - abs(station_ppm)) if not math.isnan(ppm) else float("nan")
@@ -304,13 +436,10 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
         # per-minute medians is the floor; ADR-046's shortest quoted window had
         # ten and it was already the weakest of its three.
         "at_least_10_minute_points": int(x.size) >= 10,
-        "slope_agrees_with_rate_offset_ppm_within_2": (
-            not math.isnan(agreement) and agreement <= 2.0
-        ),
+        "slope_agrees_with_rate_offset_ppm_within_2": (not math.isnan(agreement) and agreement <= 2.0),
         "max_residual_within_0.5ms": bool(residual_ms) and max(map(abs, residual_ms)) <= 0.5,
         "no_step_over_0.5ms": step_ms <= 0.5,
-        "no_confirmed_loss": delta("estimated_missing_frames") == 0
-        and delta("gaps_with_loss") == 0,
+        "no_confirmed_loss": delta("estimated_missing_frames") == 0 and delta("gaps_with_loss") == 0,
     }
     return {
         "stream_id": segment.stream_id,
@@ -329,6 +458,12 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
         "ppm_agreement": round(agreement, 3),
         "max_abs_residual_ms": round(max(map(abs, residual_ms)), 4) if residual_ms else None,
         "max_step_ms": round(step_ms, 4),
+        # None, not 0.0: zero degrees is a reading and absent is not.
+        "soc_temp_c_start": float(finite_temps[0]) if finite_temps.size else None,
+        "soc_temp_c_end": float(finite_temps[-1]) if finite_temps.size else None,
+        "soc_temp_c_min": float(finite_temps.min()) if finite_temps.size else None,
+        "soc_temp_c_max": float(finite_temps.max()) if finite_temps.size else None,
+        "residual_vs_temperature_r": round(thermal_r, 4) if thermal_r is not None else None,
         "estimated_missing_seconds_delta": delta("estimated_missing_seconds"),
         "gaps_with_loss_delta": delta("gaps_with_loss"),
         "gaps_without_loss_delta": delta("gaps_without_loss"),
@@ -375,9 +510,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", help="station host (no address is committed, ADR-047)")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument(
-        "--seconds", type=float, default=3900.0, help="sampling duration; 65 min by default"
-    )
+    parser.add_argument("--seconds", type=float, default=3900.0, help="sampling duration; 65 min by default")
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between samples")
     parser.add_argument("--csv", type=Path, help="where to write the raw series")
     parser.add_argument(
@@ -432,7 +565,11 @@ def main() -> None:
         while not stopping and (time.monotonic() - began) < args.seconds:
             tick = time.monotonic()
             try:
-                row = derive(sampler.health(), tick - began)
+                # Health first, then temperature: the drift measurement is what
+                # this run is for, and a slow /metrics must never delay the
+                # sample it belongs to.
+                snapshot = sampler.health()
+                row = derive(snapshot, tick - began, sampler.temperature())
             except Exception as exc:  # a dropped sample is data, not a crash
                 failures += 1
                 print(f"sample failed ({failures}): {exc}", file=sys.stderr)
