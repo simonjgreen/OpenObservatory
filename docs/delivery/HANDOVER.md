@@ -747,15 +747,19 @@ unless noted.
    run**, it is the temperature series and then a decision on whether a 0.5 ms
    threshold calibrated on 22-minute segments transfers to 65-minute ones. See
    `../operations/DRIFT_GATE_B_2026-08-25.md`.
-4. **Re-run the BatDetect2 benchmark and commit its output.** Found 2026-08-09:
-   three documents cited `results/batdetect2-pi5.json` as the retained provenance
-   for Milestone 5's exit gate, and that file does not exist anywhere — not in the
-   working tree, not in git history, not on the Pi, and `results/` is not
-   gitignored. The measured figures are retained and are not in doubt, but they
-   cannot be traced to an artefact, and "provenance retained" is literally what
-   the plan's exit gate asks for. Cheap to close:
-   `python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json`
-   on the Pi, then commit the file. Needs BatDetect2 installed there.
+4. ~~**Re-run the BatDetect2 benchmark and commit its output.**~~ **Done
+   2026-08-25.** `results/batdetect2-pi5.json` exists and is committed; the
+   provenance gap this item opened on 2026-08-09 is closed, and torch
+   `2.13.0+cpu` — the one figure that had been flagged unverifiable — is
+   confirmed from the artefact.
+   **It also turned up something the original gap was hiding.** The re-run is
+   1.6-1.85x faster than the 2026-08-05 figures on the same torch, same threads,
+   same model: p95 522.8 ms against 968 ms. No cause established. Both sets are
+   kept side by side in `../detectors/BATDETECT2_EVALUATION.md` rather than one
+   overwriting the other. The adoption verdict is unchanged — p95 realtime 0.96x
+   is still under 1x with no other detector competing — and the accuracy result
+   reproduced *exactly*: one of three example recordings ranked its labelled
+   species first, the same one both times.
 
 ### 6.2 History browsing, and what it still lacks
 

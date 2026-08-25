@@ -141,31 +141,103 @@ the temperature series to be worth anything. Until then:
   hour-periodic mechanism in the capture clock, and that is a finding worth
   chasing rather than accommodating.
 
-## Attempt 2, same day, with the instrument attached
+## Attempt 2, same day, with the instrument attached — **also did not pass**
 
-Started 2026-08-25T08:00Z, deliberately over the **same morning warming ramp**
+Started 2026-08-25T07:44Z, deliberately over the **same morning warming ramp**
 rather than waiting for a quiet overnight window: the stronger test is to
 reproduce the failing condition with temperature now being recorded, not to
-avoid it.
+avoid it. The sampler now reads `oo_host_cpu_temperature_celsius` from the
+station's `/metrics` on the connection it already holds open.
 
-`measure_capture_drift.py` now samples `oo_host_cpu_temperature_celsius` from
-`/metrics` on the connection it already holds open — no Pi-side change, no
-second deploy, and no ssh-per-sample. It reports `residual_vs_temperature_r`:
-Pearson r between the deficit residual and temperature's *own* residual, both
-detrended, because a linear temperature ramp and a constant drift are
-indistinguishable over one window and are both absorbed into the fitted slope.
+| | attempt 1 | attempt 2 |
+|---|---|---|
+| window (UTC) | 05:57:58 → 07:02:57 | 07:44:26 → 08:49:25 |
+| segment | one, unbroken, 64.98 min | one, unbroken, 64.98 min |
+| samples / failed / reconnects | 1950 / 0 / 0 | 1950 / 0 / 0 |
+| Theil–Sen slope | +46.287 ppm [45.58, 47.27] | **+50.865 ppm [50.28, 51.30]** |
+| station `rate_offset_ppm` | −49.85 | −50.72 |
+| **slope agreement** | 3.563 ppm — **FAIL** | **0.145 ppm — PASS** |
+| **linearity** | 3.156 ms — **FAIL** | **2.743 ms — FAIL** |
+| **step** | 0.663 ms — **FAIL** | **0.664 ms — FAIL** |
+| confirmed loss | none | none |
+| SoC temperature | not recorded | **42.45 → 45.75 °C** (per-minute medians) |
+| `residual_vs_temperature_r` | — | **+0.693** |
 
-Two caveats recorded before the result, not after:
+### The slope-agreement check is confounded by stream age
 
-- A deploy restarted capture at 07:35Z, so the stream is ~25 minutes old when
-  this window opens and the station's cumulative `rate_offset_ppm` is far less
-  settled than attempt 1's 72-hour figure. That bears on the slope-agreement
-  check, not on the linearity question this attempt exists to answer.
-- The gauge quantises to roughly 0.5 °C steps (observed: 42.45, 43.0). Against a
-  multi-degree swing that is workable; against a fraction of a degree it is not.
+It failed at 3.563 ppm in attempt 1 and passed at **0.145 ppm** in attempt 2, on
+the same hardware a few hours apart. The difference is not the clock. It is what
+the check compares against.
 
-**This attempt does not retire attempt 1.** Attempt 1 remains the recorded
-result of gate (b) at the criteria as written.
+`rate_offset_ppm` is a **cumulative average over the whole stream**. In attempt 1
+the stream was 72 hours old, so the check compared one dawn hour's slope against
+a three-day mean — and if the crystal varies diurnally at all, those *should*
+differ. In attempt 2 a deploy had restarted capture 25 minutes earlier, so the
+"cumulative average" covered barely more than the window itself, and the two
+agreed almost trivially.
+
+**So this check is close to vacuous on a young stream and close to guaranteed to
+fail on an old one.** ADR-069 anticipated the direction of this — it notes the
+two have "different anchors, a slope against a cumulative average", and that they
+are "complementary, not corroborating" — but the threshold was still written as
+if they were comparable. On this evidence attempt 1's agreement failure is
+probably an artefact of stream age rather than a real disagreement, and attempt
+2's pass should not be claimed as corroboration.
+
+That is a defect in the gate's design, not in the station. It needs an ADR.
+
+### Linearity failed both times, at the same size and the same shape
+
+2.743 ms and 3.156 ms against a 0.5 ms threshold, with a step of 0.664 ms and
+0.663 ms — the two step figures agree to a thousandth of a millisecond, which is
+either a coincidence or a hint that the same mechanism produced both. **This is
+reproducible, not a one-off.**
+
+### Temperature explains about half of it
+
+Cross-correlating the detrended residual against the detrended temperature at
+increasing lag:
+
+| lag (min) | 0 | 1 | **2** | 4 | 8 | 12 | 16 | 20 |
+|---|---|---|---|---|---|---|---|---|
+| r | +0.693 | +0.706 | **+0.706** | +0.675 | +0.522 | +0.342 | +0.110 | −0.040 |
+
+Peak **r = +0.706 at a 1–2 minute lag**, decaying smoothly and monotonically to
+zero by 20 minutes. The sign is positive, the peak is at essentially zero lag,
+and the decay is the smooth shape a real relationship produces rather than the
+ragged one noise produces.
+
+**r² = 0.50.** Temperature accounts for about half the variance in the bend.
+
+That is a real relationship and it is not the whole story. Two honest readings,
+and the second is more likely:
+
+1. Something else contributes the other half.
+2. **The thermometer is on the wrong device.** The capture clock is the
+   **AudioMoth's** crystal, on a separate USB device with its own thermal mass
+   and its own airflow. `oo_host_cpu_temperature_celsius` is the *Pi's SoC*,
+   which tracks room ambient plus the Pi's own load. It is a proxy for the
+   AudioMoth's crystal temperature, not a measurement of it — and r = 0.7
+   between an indirect proxy and the effect is a fairly strong result, not a
+   weak one.
+
+The AudioMoth's own temperature sensor is not reachable while it is capturing:
+`audiomoth_hid.py` needs the switch in USB/OFF, which stops the microphone. So
+the better thermometer is not available without giving up the thing being
+measured, and that is a genuine constraint rather than an oversight.
+
+### Where this leaves the gate
+
+- **Gate (b) has now failed twice**, on linearity, reproducibly, at the criteria
+  as written. Neither run is re-scored.
+- The thermal hypothesis is **supported, not proven**: right sign, near-zero lag,
+  smooth decay, half the variance, with a plausible reason the other half is
+  missing.
+- The slope-agreement check needs redefining regardless of the thermal question,
+  because it currently measures stream age as much as it measures the clock.
+- What would settle it: a run across a window where the temperature *falls*
+  (evening), predicting the residual hump inverts. That is the cheap
+  falsification and it has not been done.
 
 ## Artefacts
 

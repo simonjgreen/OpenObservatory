@@ -1,0 +1,232 @@
+{
+  "generated_at_unix": 1787648019.4485419,
+  "host": "Linux-6.8.0-1061-raspi-aarch64-with-glibc2.39",
+  "python_version": "3.12.3",
+  "torch_version": "2.13.0+cpu",
+  "batdetect2_model_name": "Net2DFast",
+  "batdetect2_class_count": 17,
+  "threads": 2,
+  "runs_per_clip": 20,
+  "model_load_s": 0.0466,
+  "rss_before_load_mb": 29.39,
+  "rss_after_load_mb": 441.69,
+  "aggregate": {
+    "p50_ms": 474.803,
+    "p95_ms": 522.809,
+    "max_ms": 528.149,
+    "realtime_factor_p50": 1.05,
+    "realtime_factor_p95": 0.96
+  },
+  "comparison_detectors": {
+    "BirdNET": {
+      "p95_ms": [
+        77,
+        109
+      ],
+      "realtime_factor": "~40x"
+    },
+    "ultrasonic pass detector": {
+      "p95_ms": [
+        54,
+        104
+      ],
+      "realtime_factor": "~36-40x"
+    }
+  },
+  "verdict": "NOT SUSTAINABLE",
+  "verdict_reasoning": "p95 realtime factor 1.0x means inference is slower than the audio it analyses, even in isolation.",
+  "clips": [
+    {
+      "path": "/home/simon/open-observatory/models/batdetect2/example_data/audio/20170701_213954-MYOMYS-LR_0_0.5.wav",
+      "expected_species": "Myotis myotis",
+      "native_sample_rate_hz": 500000,
+      "duration_s": 0.5,
+      "resample_backend": "soxr 1.1.0 quality=HQ",
+      "runtimes_ms": [
+        404.878,
+        402.654,
+        431.78,
+        453.559,
+        471.167,
+        501.061,
+        481.415,
+        474.734,
+        469.712,
+        473.753,
+        469.487,
+        480.157,
+        491.913,
+        478.273,
+        489.273,
+        461.208,
+        439.886,
+        486.968,
+        491.745,
+        470.79
+      ],
+      "p50_ms": 472.46,
+      "p95_ms": 492.37,
+      "max_ms": 501.061,
+      "realtime_factor_p50": 1.06,
+      "realtime_factor_p95": 1.02,
+      "top_detections": [
+        {
+          "species": "Pipistrellus pipistrellus",
+          "det_prob": 0.78,
+          "class_prob": 0.728,
+          "start_time_s": 0.4745,
+          "end_time_s": 0.4803,
+          "low_freq_hz": 48671,
+          "high_freq_hz": 58230
+        },
+        {
+          "species": "Myotis mystacinus",
+          "det_prob": 0.744,
+          "class_prob": 0.68,
+          "start_time_s": 0.0525,
+          "end_time_s": 0.0583,
+          "low_freq_hz": 28046,
+          "high_freq_hz": 112914
+        },
+        {
+          "species": "Myotis mystacinus",
+          "det_prob": 0.74,
+          "class_prob": 0.677,
+          "start_time_s": 0.2315,
+          "end_time_s": 0.2375,
+          "low_freq_hz": 27187,
+          "high_freq_hz": 116183
+        }
+      ],
+      "matched_expected_species": false
+    },
+    {
+      "path": "/home/simon/open-observatory/models/batdetect2/example_data/audio/20180530_213516-EPTSER-LR_0_0.5.wav",
+      "expected_species": "Eptesicus serotinus",
+      "native_sample_rate_hz": 384000,
+      "duration_s": 0.5,
+      "resample_backend": "soxr 1.1.0 quality=HQ",
+      "runtimes_ms": [
+        458.712,
+        497.149,
+        462.902,
+        455.922,
+        508.34,
+        483.791,
+        471.104,
+        519.664,
+        467.549,
+        468.508,
+        522.63,
+        513.268,
+        503.519,
+        527.076,
+        473.437,
+        496.075,
+        528.149,
+        494.628,
+        492.259,
+        518.825
+      ],
+      "p50_ms": 495.351,
+      "p95_ms": 527.13,
+      "max_ms": 528.149,
+      "realtime_factor_p50": 1.01,
+      "realtime_factor_p95": 0.95,
+      "top_detections": [
+        {
+          "species": "Pipistrellus pipistrellus",
+          "det_prob": 0.777,
+          "class_prob": 0.746,
+          "start_time_s": 0.2855,
+          "end_time_s": 0.2918,
+          "low_freq_hz": 45234,
+          "high_freq_hz": 60550
+        },
+        {
+          "species": "Eptesicus serotinus",
+          "det_prob": 0.77,
+          "class_prob": 0.744,
+          "start_time_s": 0.0085,
+          "end_time_s": 0.0162,
+          "low_freq_hz": 27187,
+          "high_freq_hz": 65543
+        },
+        {
+          "species": "Eptesicus serotinus",
+          "det_prob": 0.765,
+          "class_prob": 0.718,
+          "start_time_s": 0.4755,
+          "end_time_s": 0.4824,
+          "low_freq_hz": 28046,
+          "high_freq_hz": 65990
+        }
+      ],
+      "matched_expected_species": false
+    },
+    {
+      "path": "/home/simon/open-observatory/models/batdetect2/example_data/audio/20180627_215323-RHIFER-LR_0_0.5.wav",
+      "expected_species": "Rhinolophus ferrumequinum",
+      "native_sample_rate_hz": 384000,
+      "duration_s": 0.5,
+      "resample_backend": "soxr 1.1.0 quality=HQ",
+      "runtimes_ms": [
+        489.093,
+        492.186,
+        526.213,
+        491.046,
+        477.861,
+        478.075,
+        465.064,
+        474.871,
+        455.56,
+        516.928,
+        463.54,
+        447.713,
+        469.702,
+        457.979,
+        453.95,
+        463.296,
+        457.705,
+        454.778,
+        496.482,
+        453.12
+      ],
+      "p50_ms": 467.383,
+      "p95_ms": 517.393,
+      "max_ms": 526.213,
+      "realtime_factor_p50": 1.07,
+      "realtime_factor_p95": 0.97,
+      "top_detections": [
+        {
+          "species": "Rhinolophus ferrumequinum",
+          "det_prob": 0.759,
+          "class_prob": 0.758,
+          "start_time_s": 0.0955,
+          "end_time_s": 0.157,
+          "low_freq_hz": 68437,
+          "high_freq_hz": 84055
+        },
+        {
+          "species": "Rhinolophus ferrumequinum",
+          "det_prob": 0.753,
+          "class_prob": 0.753,
+          "start_time_s": 0.2085,
+          "end_time_s": 0.2715,
+          "low_freq_hz": 68437,
+          "high_freq_hz": 84142
+        },
+        {
+          "species": "Rhinolophus ferrumequinum",
+          "det_prob": 0.722,
+          "class_prob": 0.721,
+          "start_time_s": 0.3055,
+          "end_time_s": 0.3618,
+          "low_freq_hz": 68437,
+          "high_freq_hz": 84226
+        }
+      ],
+      "matched_expected_species": true
+    }
+  ]
+}

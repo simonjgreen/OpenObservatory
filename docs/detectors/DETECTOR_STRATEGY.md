@@ -340,9 +340,12 @@ BatDetect2 has been **evaluated and deliberately not adopted as a live detector*
 left unimplemented by omission. The evaluation harness that this sentence previously
 called "not started" is done: `scripts/benchmark_batdetect2.py`,
 `tests/test_batdetect2.py` and `BATDETECT2_EVALUATION.md`, measured on the Pi on
-2026-08-05 (ADR-017). The `results/batdetect2-pi5.json` this sentence also used to
-cite **does not exist and never has** — see the provenance warning in
-`BATDETECT2_EVALUATION.md`; the figures survive, their raw artefact does not. **Whether to
+2026-08-05 (ADR-017). The `results/batdetect2-pi5.json` this sentence cites
+**did not exist for three weeks and now does** — regenerated on the Pi and
+committed 2026-08-25. Its timings differ from the 2026-08-05 figures by a factor
+of 1.6-1.85 for reasons nobody has established; both are kept in
+`BATDETECT2_EVALUATION.md`, and the not-adopted verdict is unchanged either way
+(p95 realtime 0.96x). **Whether to
 promote the offline cascade was the open question here until 2026-08-09; it is now closed
 by ADR-045** — see "The refinement runner" below.
 

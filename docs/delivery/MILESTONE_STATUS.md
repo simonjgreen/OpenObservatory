@@ -332,18 +332,21 @@ the native stream genuinely useful rather than theoretical. **Exit gate met
 0 overruns). The bat adapter is deliberately *not* built: the benchmark measured
 BatDetect2 at 0.52x realtime, below the threshold, and ADR-017 records that.
 
-> ⚠️ **The provenance half of this gate is not actually satisfied. Checked
-> 2026-08-09.** This entry claimed "provenance is retained in
-> `results/batdetect2-pi5.json`". That file does not exist in the working tree, in
-> git history, or on the live station, and `results/` is not gitignored — it was
-> never committed. The measured figures are retained (see
-> `docs/detectors/BATDETECT2_EVALUATION.md`) but cannot currently be traced to an
-> artefact, and the plan's exit gate for this milestone asks explicitly for
-> "provenance retained". **Re-run
-> `scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json` on the Pi
-> and commit the output** to close it properly. This does not affect the other
-> half of the gate: `tests/test_batdetect2.py` is committed and skips cleanly when
-> the unbundled assets are absent.
+> ✅ **Provenance closed, 2026-08-25.** `results/batdetect2-pi5.json` was
+> re-generated on the Pi by `scripts/benchmark_batdetect2.py --json ...` and is
+> committed (over the `results/` ignore rule, which carries a deliberate
+> exception for this one file). Both halves of the gate are now satisfied:
+> `tests/test_batdetect2.py` is committed and skips cleanly when the unbundled
+> assets are absent, and the provenance artefact exists.
+>
+> **The re-run's timings do not reproduce 2026-08-05's and the gap is
+> unexplained** — p95 522.8 ms against 968 ms, on the same torch 2.13.0+cpu
+> (now verified from the artefact) and the same 2 threads. Both sets are kept in
+> `docs/detectors/BATDETECT2_EVALUATION.md`. **The verdict does not turn on
+> which is right:** p95 realtime 0.96x is still slower than the audio, with no
+> other detector competing, against 36-40x for the detectors that run live. The
+> "0.52x realtime" quoted immediately above this note is the 2026-08-05 figure
+> and should be read as one of two measurements, not as settled.
 
 | Deliverable | State |
 |---|---|

@@ -226,42 +226,61 @@ capability the passing test actually exercised.
 Measured on the Raspberry Pi 5 on **2026-08-05**, by
 `scripts/benchmark_batdetect2.py`.
 
-> ⚠️ **Provenance is missing. Checked 2026-08-09.** Three documents cite
-> `results/batdetect2-pi5.json` as the retained raw output of this run. **That
-> file does not exist**: not in the working tree, not anywhere in git history
-> (`git log --all --diff-filter=A -- results/` returns nothing), not on the live
-> station (`~/open-observatory/results/` does not exist), and `results/` is not
-> gitignored, so it was never committed rather than deliberately excluded. The
-> benchmark script's `--json` flag writes it, so the run was probably done without
-> that flag, or the file was written somewhere transient and lost.
+> ✅ **Provenance closed, 2026-08-25.** `results/batdetect2-pi5.json` now exists
+> and is committed. It was produced by running exactly the command this note used
+> to ask for, on the Pi 5, and it is the raw output of that run rather than
+> anything transcribed by hand.
 >
-> The figures below are **retained as recorded, not deleted** — they are internally
-> consistent, they match the verdict ADR-017 was written against, and inventing a
-> reason to distrust them would be as unfounded as inventing the numbers. But they
-> are currently **unverifiable**: nobody can re-derive them from an artefact.
+> **The re-run does not reproduce the 2026-08-05 timings, and the gap is not
+> explained.** Both sets are kept below. Same BatDetect2 1.3.1, same
+> `Net2DFast`, same 2 threads, same 20 runs per clip, and — now verified from the
+> artefact rather than trusted — the same **torch 2.13.0+cpu**, which was the one
+> figure this document flagged as unverifiable. Kernel moved 6.8.0-1060 →
+> 6.8.0-1061. The 2026-08-25 run is roughly **1.6–1.85× faster**.
 >
-> `results/` is now gitignored (`.gitignore`), with a single deliberate exception
-> for `results/batdetect2-pi5.json` — a small provenance record a milestone gate
-> depends on is worth committing; ad-hoc benchmark output is not, and nothing else
-> under `results/` will be tracked. **Nobody currently owns the live station** to
-> re-run this — it needs BatDetect2 installed on the Pi (see "Install procedure"
-> above) and exclusive access to a station that, at time of writing, another agent
-> owns for an unrelated capture investigation. Whoever next has both, run exactly
-> this from the project root on the Pi and commit what it writes:
+> No cause is offered, because none was established. The obvious candidate is
+> competing load during one run or the other — the station captures continuously
+> in both cases, and "in isolation" below has always meant "no other *detector*",
+> never "an idle machine". That is a hypothesis, not a finding.
 >
-> ```bash
-> python scripts/benchmark_batdetect2.py --json results/batdetect2-pi5.json
-> git add -f results/batdetect2-pi5.json   # -f: the directory is gitignored by default
-> git commit -m "Add BatDetect2 Pi 5 benchmark provenance"
-> ```
->
-> That closes this gap permanently. Do not hand-write or otherwise fabricate this
-> file — if the script cannot run, leave the gap open and say so.
+> **The verdict is unchanged and does not depend on which set is right.** At
+> p95 the 2026-08-25 run measures a realtime factor of **0.96×** — still slower
+> than the audio it analyses, in a run with no other detector competing, against
+> 36–40× for the detectors that do run live. ADR-017's deferred-queue cascade
+> remains the only viable route on this hardware.
 
 **Do not extend this table from expectations, precedent, or extrapolation from
 other detectors.** `CLAUDE.md` forbids claiming detector support without a fixture
 test that has actually passed on the target architecture, and a fabricated number
 here would be worse than a blank one. Re-run the script and paste real figures.
+
+| Metric | 2026-08-05 (as recorded) | **2026-08-25 (from the artefact)** |
+|---|---|---|
+| Device | Raspberry Pi 5, 8 GB, Ubuntu 24.04 aarch64 | same, kernel 6.8.0-1061-raspi |
+| BatDetect2 / model | 1.3.1, `Net2DFast`, 17 classes | same |
+| Torch version | 2.13.0+cpu *(was unverifiable)* | **2.13.0+cpu — verified** |
+| Threads | 2 | 2 |
+| Model load time | 0.10 s | **0.047 s** |
+| RSS before → after load | 28.0 → 487.4 MB | **29.4 → 441.7 MB** (+412.3) |
+| Inference p50 | 755 ms | **474.8 ms** |
+| Inference p95 | 968 ms | **522.8 ms** |
+| Inference max | 1009 ms | **528.1 ms** |
+| Realtime factor (p50) | 0.66× | **1.05×** |
+| Realtime factor (p95) | **0.52×** | **0.96×** |
+| MYOMYS — top detection | *P. pipistrellus* (0.780), expected *M. myotis* | *P. pipistrellus* (0.777) — still no match |
+| EPTSER — top detection | *P. pipistrellus* (0.777), expected *E. serotinus* at 0.770 | same pattern; *E. serotinus* present at 0.770 |
+| RHIFER — top detection | *R. ferrumequinum* (0.759) — matches | *R. ferrumequinum* (0.759) — **matches** |
+| Species matched | 1 of 3 | **1 of 3** |
+| `tests/test_batdetect2.py` on target | passes | not re-run in this pass |
+| Verdict (from the script) | **not sustainable** for real-time | **not sustainable** for real-time |
+
+The accuracy result is **identical across three weeks and two runs**: one of
+three example recordings ranked its labelled species first, and the same one.
+That reproducibility is worth more than either set of timings — it means the
+"not closed: accuracy" caveat below rests on a repeatable observation rather
+than a single run.
+
+<details><summary>The original single-column table, as it stood before the re-run</summary>
 
 | Metric | Value | Notes |
 |---|---|---|
@@ -283,11 +302,12 @@ here would be worse than a blank one. Re-run the script and paste real figures.
 | `tests/test_batdetect2.py` result on target device | passes | asserts the labelled species is found, not that it ranks first — see below |
 | Verdict (from the benchmark script) | **not sustainable** for real-time | p95 0.52× realtime, in isolation |
 
-One figure in the table above could not be re-verified during the 2026-08-09
-documentation pass and is left exactly as recorded: **Torch version `2.13.0+cpu`**.
-BatDetect2 is not installed in the development environment, so it was not
-re-checked; it is retained as measured rather than corrected or removed. Confirm
-it from `results/batdetect2-pi5.json` or a fresh run before quoting it.
+</details>
+
+~~One figure in the table above could not be re-verified...~~ **Resolved
+2026-08-25.** Torch `2.13.0+cpu` is confirmed from
+`results/batdetect2-pi5.json`, which now exists. The figure was recorded
+correctly.
 
 ### What these numbers close, and what they do not
 
