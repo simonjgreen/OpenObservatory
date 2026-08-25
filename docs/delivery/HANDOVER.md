@@ -52,13 +52,22 @@ Milestone 5 (ultrasonic and bat support) is complete: a bat pass detector runs
 live, gated to night by a solar scheduler, and BatDetect2 was benchmarked on the
 target and deliberately *not* adopted as a live detector — see §1a. It is
 **not complete** as a whole system, and `CLAUDE.md` forbids that word until the
-acceptance criteria pass a continuous 72-hour soak on the Pi. **That soak ran
-2026-08-10 to 2026-08-13 and failed** — 99.865% continuity against a ≥ 99.9%
-criterion, 349.3 s lost out of 259,200 s; see `MILESTONE_STATUS.md` §Milestone
-4.5 and §1e below for the wedge that followed it. Also outstanding: the one-hour drift run at full duration, what
-remains of the capture-gap investigation, the three plausibility/taxonomy/privacy
-repair commands never applied to the live database, Milestone 6's alert engine,
-Milestone 7 entirely, and most of Milestone 8.
+acceptance criteria pass a continuous 72-hour soak on the Pi.
+
+**A 72-hour soak has now passed on continuity — 2026-08-22 to 2026-08-25**,
+72.107 restart-free hours at 99.9948% against ≥ 99.9%, 0.597 s of audio lost
+against a 259.2 s budget (`../operations/SOAK_2026-08-22.md`). Attempt 1
+(2026-08-10 to 2026-08-13) failed the same criterion at 99.865%; attempts 2 and
+3 were void on mains power cuts.
+
+**That closes one acceptance box, not the acceptance gate, and the word
+"complete" is still unavailable.** No other criterion in
+`ACCEPTANCE_CRITERIA.md` was exercised during the window.
+
+Also outstanding: drift gate (b) (run 2026-08-25 and failed on linearity — gate
+(a) passed), what remains of the capture-gap investigation, the taxonomy and
+privacy repair commands never applied to the live database, Milestone 6's alert
+engine, Milestone 7 entirely, and most of Milestone 8.
 
 (The review workflow is no longer on that list — ADR-043 closed it on 2026-08-09,
 and the live station's `review` table holds 65 rows.)
@@ -723,11 +732,21 @@ unless noted.
    **Done 2026-08-08** — `tests/test_birdnet_fixture.py`, a committed CC BY-SA
    European Robin recording, passing on the target Pi 5. Struck rather than
    deleted so the record of what was outstanding survives.
-3. **Run the one-hour drift test at full duration.** Still outstanding. ADR-046's
-   42.7-minute restart-free sampling run is the best evidence so far and its
-   longest *clean* segment was 22.2 minutes, which does not reach a mechanism with
-   an hourly or nightly period. The method is written down and takes 15 minutes;
-   what it needs is a window with nobody deploying.
+3. ~~**Run the one-hour drift test at full duration.**~~ **Run 2026-08-25.**
+   ADR-069 had already split it into two different tests. **Gate (a)** (synthetic
+   resampler, `oo audio resample-check --seconds 3600`) **passed** on the Pi:
+   group delay 0.0 frames, deficit trend −0.044 against a limit of 820, seam step
+   ratio 1.527× against 25×, peak RSS 124 MB. **Gate (b)** (live capture clock)
+   **did not pass**: a clean, uninterrupted 64.98-minute segment, but linearity
+   3.156 ms against a 0.5 ms threshold and slope agreement 3.563 ppm against
+   2 ppm.
+   The residual is a single smooth hump — the mechanism with a longer-than-22-minute
+   period that this item existed to look for, and it *was* found. Leading
+   hypothesis is thermal but nothing measured temperature during that run; the
+   sampler now records it. **What this item still needs is not another identical
+   run**, it is the temperature series and then a decision on whether a 0.5 ms
+   threshold calibrated on 22-minute segments transfers to 65-minute ones. See
+   `../operations/DRIFT_GATE_B_2026-08-25.md`.
 4. **Re-run the BatDetect2 benchmark and commit its output.** Found 2026-08-09:
    three documents cited `results/batdetect2-pi5.json` as the retained provenance
    for Milestone 5's exit gate, and that file does not exist anywhere — not in the
@@ -1013,8 +1032,9 @@ useful addition and is not currently planned.
    discontinuity's real effect on the segmenter's frame accounting rather than
    asserting one. See `oo audio window-dump --help`, `tests/test_cli_audio.py`, and
    `docs/operations/DEPLOYMENT_AND_OPERATIONS.md`'s CLI table. This closes the
-   line item but not Milestone 4.5's own exit gate, which still needs the 72-hour
-   soak and the full-hour drift run.
+   line item but not Milestone 4.5's own exit gate. (That gate has since largely
+   closed: the 72-hour soak passed and drift gate (a) passed on 2026-08-25; only
+   drift gate (b) remains open.)
 8. **Cover the history endpoints at the HTTP level.** `tests/test_history.py` tests
    the aggregation functions; nothing exercises `/api/v1/history` or
    `/api/v1/history/windows` through the app, which is where the true-division

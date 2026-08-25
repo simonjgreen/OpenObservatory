@@ -1050,10 +1050,17 @@ one of those twelve gaps is backed by an EPIPE ALSA actually raised. ADR-039's
 
 ## What is still open after this round
 
-- **The 72-hour soak has still never run.** Nothing in this document is a soak.
-  The longest window recorded anywhere in it is the 4.03 h above, and the longest
-  *clean* one is 22.2 minutes.
-- **The one-hour drift run at full duration is still outstanding.**
+- ~~**The 72-hour soak has still never run.**~~ Nothing *in this document* is a
+  soak — the longest window recorded anywhere in it is the 4.03 h above, and the
+  longest *clean* one is 22.2 minutes. **A soak has since run and passed:**
+  2026-08-22 to 2026-08-25, 72.107 restart-free hours at 99.9948% continuity
+  (`../operations/SOAK_2026-08-22.md`).
+- ~~**The one-hour drift run at full duration is still outstanding.**~~ **Run
+  2026-08-25.** Gate (a) passed; gate (b) did not, failing linearity with a
+  residual shaped like a thermal excursion — which is a mechanism with a period
+  longer than this document's 22.2-minute clean window, exactly the class it
+  warned could not be seen from here
+  (`../operations/DRIFT_GATE_B_2026-08-25.md`).
 - ~~**Why the ring overflowed twelve times**, above. Unattributed.~~
   **Attributed 2026-08-10 — see the final section.** The headroom was being eaten
   by a filesystem walk on the event loop, and the overruns themselves land on the

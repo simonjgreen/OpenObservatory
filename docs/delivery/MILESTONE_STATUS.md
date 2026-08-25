@@ -62,8 +62,16 @@ or leak.
 **It is still not the one-hour run, and the distinction is not pedantry.** The longest
 *clean* window in that run was 22.2 minutes; a loss mechanism with a period longer than
 that — an hourly sweep, a nightly rotation, a thermal cycle — would not have appeared.
-ADR-046 says so itself. The full-hour drift run and the 72-hour soak both remain
-outstanding.
+ADR-046 says so itself.
+
+**Both have since been run (2026-08-25).** The 72-hour soak **passed** its
+continuity criterion (`../operations/SOAK_2026-08-22.md`). The full-hour drift
+run was split by ADR-069 into two different tests: gate (a), the synthetic
+resampler run, **passed** on the target device; gate (b), the live capture-clock
+run, **did not pass** — it failed on linearity, with a residual shaped like a
+thermal excursion (`../operations/DRIFT_GATE_B_2026-08-25.md`). So the hour-long
+window did surface something the 22.2-minute one could not, which is the
+argument this paragraph was making.
 
 ## Milestone 2 — Derivation, windows and job transport — **complete**
 
@@ -175,6 +183,12 @@ single surface with two depths.
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
 mutually exclusive, because deploying restarts capture and voids the run.
+
+**State as of 2026-08-25:** species fixture and `oo audio window-dump` done; the
+72-hour soak **passed** on continuity; drift gate (a) **passed** on the target
+device; drift gate (b) **ran and did not pass**, failing on linearity. Only gate
+(b) is still open, and what it needs is instrumentation rather than another
+identical run — see below.
 
 **Committed species fixture test: done, and passing on the target Pi 5**
 (`tests/test_birdnet_fixture.py`; 3 passed in 6.83 s on aarch64, 2026-08-08). See the
@@ -434,6 +448,16 @@ keep — it found that the whole rollback mechanism was unreachable code, becaus
 `arduino-esp32` marks a pending image valid before `setup()` runs. See ADR-050's
 "Verified on hardware" section.
 
+**And it has now carried a real change end to end, unattended (2026-08-25).**
+Firmware **0.2.5** (ADR-071's WiFi reconnect fix and the footer reconnect
+indicator) was published with `POST /api/v1/firmware?version=0.2.5`, offered with
+`POST /api/v1/firmware/rollout`, and the display downloaded it, verified the
+digest, wrote it, rebooted, reconnected and proved itself past the probation
+deadline — **with no cable and nobody touching the shelf**. That is the first
+time the mechanism has been used for its actual purpose rather than exercised as
+a drill, and it is the evidence that the "every firmware change afterwards is
+free" justification in `IMPLEMENTATION_PLAN.md` holds.
+
 Still not started: the prebuilt image, first-boot network provisioning, remote
 update of the *station*, backup and restore of a station's identity and history,
 and the signed release process.
@@ -514,8 +538,12 @@ deleted, so the record of what was outstanding when survives:
   99.9948% over 72.107 restart-free hours). Attempt 1 failed the same criterion
   at 99.865%; attempts 2 and 3 were void on power. See the Milestone 4.5 section
   above for the full account and the re-run condition;
-- **the one-hour drift run at full duration** — best evidence is a 42.7-minute
-  run whose longest clean window was 22.2 minutes (ADR-046);
+- ~~**the one-hour drift run at full duration**~~ — **run 2026-08-25.** ADR-069
+  split it in two: gate (a) (synthetic resampler) **passed** on the Pi; gate (b)
+  (live capture clock) **did not pass**, failing linearity at 3.156 ms against a
+  0.5 ms threshold with a residual shaped like a thermal excursion. What remains
+  open is gate (b), and it needs the temperature series before another run means
+  anything (`../operations/DRIFT_GATE_B_2026-08-25.md`);
 - **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
   webhooks;
 - **Milestone 7 entirely** — MCP tools, export bundles, backup/restore, setup

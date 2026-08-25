@@ -85,12 +85,17 @@ single-humped ~6 ppm excursion is that phenomenon, larger.
 The window ran **06:58–08:03 BST** — through sunrise and into morning warming.
 SoC temperature at the end of the run was 44.4 °C.
 
-**This was not tested.** Nothing recorded temperature during the window, and the
-Pi keeps no temperature history, so the correlation cannot be recovered after the
-fact. `scripts/measure_capture_drift.py` should sample
-`/sys/class/thermal/thermal_zone0/temp` alongside each health poll; then the
-hypothesis becomes a scatter plot instead of a story. That change is not made
-here.
+**This was not tested during attempt 1.** Nothing recorded temperature in that
+window, and the Pi keeps no temperature history, so the correlation cannot be
+recovered after the fact at any price.
+
+It is tested from now on. `scripts/measure_capture_drift.py` samples
+`oo_host_cpu_temperature_celsius` from the station's `/metrics` alongside each
+health poll — the station already published it, so this needed no Pi-side change
+and no second deploy, and notably *not* `/sys/class/thermal/thermal_zone0/temp`
+over ssh, which would have meant an ssh handshake per sample: the documented
+contamination trap that made an earlier investigation unattributable. See
+"Attempt 2" below.
 
 Both failing numeric checks are consistent with it: a rate that swings 6 ppm
 inside an hour cannot be linear to 0.5 ms, and an hour whose mean sits 3.6 ppm
@@ -136,10 +141,37 @@ the temperature series to be worth anything. Until then:
   hour-periodic mechanism in the capture clock, and that is a finding worth
   chasing rather than accommodating.
 
+## Attempt 2, same day, with the instrument attached
+
+Started 2026-08-25T08:00Z, deliberately over the **same morning warming ramp**
+rather than waiting for a quiet overnight window: the stronger test is to
+reproduce the failing condition with temperature now being recorded, not to
+avoid it.
+
+`measure_capture_drift.py` now samples `oo_host_cpu_temperature_celsius` from
+`/metrics` on the connection it already holds open — no Pi-side change, no
+second deploy, and no ssh-per-sample. It reports `residual_vs_temperature_r`:
+Pearson r between the deficit residual and temperature's *own* residual, both
+detrended, because a linear temperature ramp and a constant drift are
+indistinguishable over one window and are both absorbed into the fitted slope.
+
+Two caveats recorded before the result, not after:
+
+- A deploy restarted capture at 07:35Z, so the stream is ~25 minutes old when
+  this window opens and the station's cumulative `rate_offset_ppm` is far less
+  settled than attempt 1's 72-hour figure. That bears on the slope-agreement
+  check, not on the linearity question this attempt exists to answer.
+- The gauge quantises to roughly 0.5 °C steps (observed: 42.45, 43.0). Against a
+  multi-degree swing that is workable; against a fraction of a degree it is not.
+
+**This attempt does not retire attempt 1.** Attempt 1 remains the recorded
+result of gate (b) at the criteria as written.
+
 ## Artefacts
 
 - `results/drift-2026-08-25.csv` — 1950 samples, 26 columns, untracked per `.gitignore`
 - `results/drift-2026-08-25.log` — full JSON verdict including every threshold beside the measurement it judged
+- `results/drift-2026-08-25b.{csv,log}` — attempt 2, with the `soc_temp_c` column
 
 Re-analyse without re-sampling:
 

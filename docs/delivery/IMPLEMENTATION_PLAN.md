@@ -9,9 +9,10 @@
 > **For what is actually delivered, read
 > [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
 > summary as of 2026-08-09: Milestones 0–3 and 5 complete; Milestone 4 delivered,
-> including the review workflow, which ADR-043 closed; Milestone 4.5 outstanding
-> (the 72-hour soak and the full-hour drift run — the species fixture and
-> `oo audio window-dump` are done); Milestone 6's publisher live but its alert
+> including the review workflow, which ADR-043 closed; Milestone 4.5 nearly
+> closed as of 2026-08-25 (species fixture and `oo audio window-dump` done; the
+> 72-hour soak **passed** on continuity; drift gate (a) **passed**; only drift
+> gate (b) is still open, having run and failed on linearity); Milestone 6's publisher live but its alert
 > engine unbuilt; Milestone 7 not started; Milestone 8 has one of its six
 > deliverables done (ADR-050's display OTA, flashed and verified on hardware);
 > Milestone 9 not started, by design.
