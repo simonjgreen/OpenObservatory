@@ -105,6 +105,27 @@ class StreamClock:
     detection, every clip filename, every spectrogram column — was 106 seconds
     early. `stepped_by` and `reanchored` exist to detect and repair exactly that;
     `Station._housekeeping_loop` calls them.
+
+    **Drift-free against the monotonic clock is not drift-free against the
+    world, and the difference is accepted (ADR-072).** `utc_ns` converts frames
+    at the *nominal* rate; the AudioMoth delivers about 383,980.8 Hz against a
+    nominal 384,000, so every timestamp here falls behind real time by roughly
+    **50 ppm - 4.3 seconds per day of unbroken capture**. Nothing corrects it:
+    `AlsaSource.rate_offset_ppm` measures it and feeds no clock and no alarm.
+
+    `stepped_by`/`reanchored` do not cover this and cannot. They compare the
+    system wall clock against the system monotonic clock; the capture clock is a
+    *third* clock, on a separate USB device, compared to neither. Drift is also
+    slew-shaped rather than a step, so it would not trip a step detector even if
+    one were watching.
+
+    The error resets on every stream restart, so it is bounded by stream age and
+    not by calendar time: 15 s on the longest stream this station has ever
+    achieved (83.8 h), ~2 min on a month. Ordering, durations, gap sizes and
+    evidence-clip alignment are keyed to frames or the monotonic clock and are
+    unaffected - only the UTC *name* of an instant drifts. Read ADR-072 before
+    changing any of this: the naive fix, converting at the measured rate, breaks
+    the invariant that frame N always maps to the same UTC.
     """
 
     utc_ns_at_frame_zero: int

@@ -1113,6 +1113,22 @@ useful addition and is not currently planned.
 Minor items that are real but not worth a numbered slot. Recorded so they are
 not rediscovered.
 
+- **Detection timestamps drift ~4.3 s/day, and this is accepted (ADR-072).**
+  The AudioMoth's crystal runs ~50 ppm slow and `StreamClock` converts frames at
+  the nominal rate, so UTC timestamps fall behind real time as a stream ages.
+  Nothing corrects it; `rate_offset_ppm` measures it and feeds no clock.
+  **The error resets on every stream restart**, so it is bounded by stream age,
+  not calendar time — 15 s on the longest stream this station has ever managed
+  (83.8 h), ~2 min on a month. Ordering, durations, gap sizes and evidence-clip
+  alignment are all unaffected. The operator has explicitly accepted this, with a
+  periodic restart as the sanctioned mitigation if a tighter bound is ever
+  wanted. **Do not "fix" this without reading ADR-072** — the obvious fix
+  (convert at the measured rate) breaks the invariant that frame N always maps
+  to the same UTC.
+  Separately and still open: `rate_offset_ppm` has **no alert of any kind**, so
+  a crystal degrading to 500 ppm would report `status: ok`. That gap is proposed
+  in ADR-072, not decided.
+
 - **The web UI favicon — done, 2026-08-09.** Previously there was no
   `web/public/` and no `<link rel="icon">` in `web/index.html`, so every page
   load requested `/favicon.ico` and got the SPA fallback or a 404.

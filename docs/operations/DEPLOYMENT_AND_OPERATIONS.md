@@ -295,6 +295,39 @@ with unpredictable results for which process actually dies. Use
 `sudo systemctl stop open-observatory` / `restart open-observatory` instead;
 systemd tracks the unit's cgroup, not a string match against argv.
 
+### Detection timestamps drift about 4.3 seconds per day (ADR-072, accepted)
+
+Expected, measured, and deliberately not fixed. The microphone's crystal runs
+about **50 ppm slow** (383,980.8 Hz against a nominal 384,000), and the station
+converts frames to UTC at the nominal rate, so its timestamps fall behind real
+time as a stream ages.
+
+**The error resets every time capture restarts**, so it is bounded by the age of
+the current stream rather than by calendar time:
+
+| unbroken stream | error |
+|---|---|
+| 1 day | 4.3 s |
+| 1 week | 30 s |
+| 1 month | 2 min 9 s |
+
+Read `capture.rate_offset_ppm` in `/api/v1/health` for the current figure and
+multiply by the age of `capture.started_utc`.
+
+What this does **not** affect: ordering, durations, gap sizes, and the alignment
+of an evidence clip with its own detection (clips are cut by frame index, so the
+audio always matches the event). Home Assistant's own history is also unaffected
+— its recorder stamps `last_changed` from its own NTP-disciplined clock; only
+the `detected_at` attribute in the payload carries the drift.
+
+**If you want it bounded tighter, restart capture on a schedule.** A monthly
+restart caps the error at ~2 minutes by construction and needs no code change.
+Put it in a quiet window — **not** dawn, dusk or bat hours; ADR-067's 15:00 slot
+exists for exactly this kind of disruption, and a restart costs a real capture
+gap where a package upgrade does not. A graceful `systemctl restart` closes its
+own stream row (ADR-066), so it appears as a clean end rather than an unclean
+one.
+
 ### Health check
 
 `GET /api/v1/health` on port 8080 is what `deploy.sh` polls after a restart.
