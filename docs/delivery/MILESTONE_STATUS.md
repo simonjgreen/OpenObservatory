@@ -170,7 +170,7 @@ single surface with two depths.
 | BirdNET near-miss ledger | done (ADR-052) — `GET /api/v1/detectors/near-misses` records what BirdNET proposed and refused, with per-band score histograms, so a threshold can be tuned on evidence instead of on a bare counter. A bounded in-memory ring at ~2 µs per candidate; **persists nothing**, by design |
 | Every setting web-editable | done (ADR-048) — `GET`/`PUT /api/v1/settings` and `GET /api/v1/setup`, in three declared tiers (live, restart, excluded) with the exclusions named. The service writes its own `config/runtime.env`. Confirmed working on the live station, which now carries an `OO_BIRDNET_THRESHOLD_IN_RANGE` line written by the settings page |
 
-## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture and window-dump gates closed; soak and drift run outstanding**
+## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture, window-dump and 72-hour soak gates closed; drift gate (b) run and failed on linearity**
 
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
@@ -193,9 +193,27 @@ capture gap so the segmenter's real reaction (dropping its buffered tail across 
 discontinuity) is directly observable in the reported frame numbers, not asserted.
 See `tests/test_cli_audio.py` (9 tests) and `docs/development/SETUP.md`.
 
+**The 72-hour soak is no longer outstanding. Attempt 4 passed the continuity
+criterion on 2026-08-25** — 72.107 hours restart-free on one stream, continuity
+**99.9948%** against ≥ 99.9%, **0.597 s** of audio lost against a 259.2 s budget,
+`stream_restarts` 0 and `clock_reanchors` 0. Both gaps are enumerated in
+[`../operations/SOAK_2026-08-22.md`](../operations/SOAK_2026-08-22.md), which is
+the record of the run. The three checks `SOAK_2026-08-14.md` said were not
+checkable during attempt 2 were all checked this time.
+
+Two things about that pass that must travel with it. **It closes one box, not
+the acceptance gate** — no other criterion in `ACCEPTANCE_CRITERIA.md` was
+exercised during the window. And **nobody staged it**: it began as the reboot
+following attempt 3's mains power cut and was recognised as a soak candidate 41
+hours in, so it was neither instrumented in advance nor protected.
+
+The history below is kept because the failures are where the fixes came from.
+
 Still outstanding in this milestone:
 
-* **The 72-hour soak. Run 2026-08-10 to 2026-08-13, and it FAILED its own
+* ~~**The 72-hour soak.**~~ **Closed 2026-08-25 by attempt 4, above.** The
+  history of attempts 1–3 follows.
+  **Attempt 1, run 2026-08-10 to 2026-08-13, FAILED its own
   continuity criterion.** The run was restart-free for the whole window, which is
   itself a first, but continuity over the exact 72 hours was **99.865%** against a
   criterion of ≥ 99.9% — 349.3 s of audio lost out of 259,200 s. Reconstructed
@@ -246,7 +264,41 @@ Still outstanding in this milestone:
   attempt starts from there and should check
   `oo_station_unclean_restart`, `oo_capture_clock_reanchors_total` and the
   disk trend for the whole window, none of which were checkable before.
-* **The one-hour drift run.** Not run at full duration. The best evidence to date is
+  **Third attempt: void, and the cause is now established.** The run that began
+  2026-08-19 died at 2026-08-22T05:48:20Z, 7h43m short. **The operator has
+  confirmed this as a mains power cut** — the first established cause for any of
+  these restarts, and it retrospectively supports the same reading of attempt 2,
+  whose signature is identical (journal ends mid-line, no shutdown sequence, a
+  bare `LINUX RESTART` in `sysstat`, and `sar` showing 94% idle and load 0.13
+  right up to the instant). Software causes were all fixed and had survived.
+  Mains power is out of scope for this project and is not treated as a blocking
+  precondition; a power-caused failure is recorded as the cause and the next run
+  proceeds. Attempt 4 then began as the reboot from this very cut, and passed.
+* **The one-hour drift run (gate (b)). Run at full duration 2026-08-25, and it
+  DID NOT PASS.** One unbroken 64.98-minute segment, 1950 samples, 0 failed and
+  0 HTTP reconnects — a clean run, not a contaminated one. Three of six checks
+  failed: slope vs the station's own figure 3.563 ppm against a ≤ 2 ppm
+  threshold, linearity 3.156 ms against ≤ 0.5 ms, and one 0.663 ms step against
+  ≤ 0.5 ms. Restart-free duration, points fitted and no-confirmed-loss all
+  passed.
+  **The linearity failure is the finding.** The residual is a single smooth
+  hump — −1.65 ms at minute 0, +3.16 ms at minute 42, −2.59 ms at minute 64,
+  about 5.8 ms of excursion — which is not a step, not the retention sweep's
+  300 s beat, and not noise. It implies roughly **6 ppm of rate swing inside the
+  hour** around a mean of 46.3 ppm ± 0.85. The leading hypothesis is thermal
+  (the window ran 06:58–08:03 BST, through sunrise; ADR-069 itself records the
+  crystal moving ~3 ppm on a thermal change inside an hour) but **this was not
+  measured** — nothing logged temperature and the Pi keeps no history.
+  **What it does establish:** ADR-069 built this gate to exclude a continuous
+  mechanism of ~890 ppm, the size needed to explain the failed soak's 175 s of
+  deficit. At 46.3 ppm with zero confirmed loss across the window, that is
+  **excluded by a factor of about nineteen**. The gate still did not pass,
+  because passing requires all six checks — and the criteria were written before
+  the run precisely so that this distinction survives contact with the numbers.
+  Full record, residual series and the proposal (not applied) in
+  [`../operations/DRIFT_GATE_B_2026-08-25.md`](../operations/DRIFT_GATE_B_2026-08-25.md).
+  The previous state of this bullet follows.
+  Not run at full duration before 2026-08-25. The best evidence to date is
   ADR-046's 42.7-minute restart-free sampling run, whose longest *clean* segment was
   22.2 minutes — see the Milestone 1 exit-gate note above for why that is not the same
   thing. The method now takes 15 minutes and about 150 lines and is written down, so
@@ -458,8 +510,9 @@ applies, corrected 2026-08-09 — four items on the earlier version of this list
 `oo audio window-dump`) have since been delivered and are struck rather than
 deleted, so the record of what was outstanding when survives:
 
-- **the 72-hour soak test** — run 2026-08-10 to 2026-08-13 and **failed** its
-  continuity criterion (99.865% against ≥ 99.9%); see the Milestone 4.5 section
+- ~~**the 72-hour soak test**~~ — **passed on continuity 2026-08-25** (attempt 4:
+  99.9948% over 72.107 restart-free hours). Attempt 1 failed the same criterion
+  at 99.865%; attempts 2 and 3 were void on power. See the Milestone 4.5 section
   above for the full account and the re-run condition;
 - **the one-hour drift run at full duration** — best evidence is a 42.7-minute
   run whose longest clean window was 22.2 minutes (ADR-046);

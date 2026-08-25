@@ -4,9 +4,12 @@ The v1 gate. `CLAUDE.md`: *"Do not describe the system as complete until the
 acceptance criteria in this file pass on the Raspberry Pi 5 for a continuous
 72-hour soak test."*
 
-**No box below is ticked, and that is accurate rather than neglectful: no formal
-acceptance run has passed.** One has been attempted — see "Attempts" below —
-and it failed on the capture-continuity criterion, so every other box remains
+**Exactly one box below is ticked: 72-hour capture continuity, passed
+2026-08-25.** Everything else remains unticked, and that is accurate rather than
+neglectful. Four 72-hour runs have been attempted — see "Attempts" below — and
+the fourth produced a valid, restart-free 72-hour window that met the continuity
+criterion with margin. **That closes one criterion, not the acceptance gate.** No
+other box was formally exercised during that window, so all of them remain
 unticked on the same "believed met from ordinary use is not passed an
 acceptance run" basis as before. Several criteria are believed met from
 day-to-day measurement — capture is addressed by stable identity, exactly one
@@ -25,6 +28,29 @@ somebody has to run, alongside a passing 72-hour soak, and record here with date
   criterion below was formally exercised during this attempt. A re-run is
   needed once ADR-060 and ADR-061 are deployed and verified.
 
+- **Attempt 2, 2026-08-14 to 2026-08-17. VOID.** Reached 62.7 hours restart-free
+  at 99.9935% continuity — comfortably passing — and then the Pi restarted at
+  2026-08-17 09:07 UTC, 8.9 hours short. Cause not established at the time;
+  the signature is identical to attempt 3's, which was later confirmed as a
+  mains cut. Nothing reported the restart, which is why ADR-065 exists. The run
+  was also hiding two defects while passing (ADR-062, ADR-063) — see
+  `../operations/SOAK_2026-08-14.md`.
+
+- **Attempt 3, ended 2026-08-22T05:48:20Z. VOID.** Died 7h43m short. **Confirmed
+  by the operator as a mains power cut** — the first *established* cause for any
+  of these restarts.
+
+- **Attempt 4, 2026-08-22T05:50:47Z to 2026-08-25T05:50:47Z. PASSED the
+  continuity criterion.** 72.107 hours restart-free on one stream
+  (`ef29e800-5c03-409d-a769-f4d1719c784c`), `stream_restarts` 0,
+  `clock_reanchors` 0. Continuity **99.9948%** against ≥ 99.9%, with **0.597 s**
+  of audio lost against a 259.2 s budget — 0.23% of the allowance, from two
+  gaps. Full record and both gaps enumerated in
+  [`../operations/SOAK_2026-08-22.md`](../operations/SOAK_2026-08-22.md).
+  This run was not staged: it began as the reboot after attempt 3's power cut
+  and was recognised as a soak 41 hours in. Only the continuity box is ticked
+  on the strength of it; no other criterion was exercised in that window.
+
 For what *is* delivered, with evidence, see
 [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md). For the measured figures the capture
 criteria will be judged against, see
@@ -40,7 +66,7 @@ deploying restarts capture and voids the run.
 - [ ] Exactly one service opens the ALSA hardware source.
 - [ ] Unplug/replug resumes capture with a new stream ID and logged gap.
 - [ ] Overruns and short reads create visible health events.
-- [ ] 72-hour continuity is at least 99.9%, excluding explicit hardware-disconnect windows.
+- [x] 72-hour continuity is at least 99.9%, excluding explicit hardware-disconnect windows. **Passed 2026-08-25: 99.9948% over 72.107 restart-free hours, 0.597 s lost of a 259.2 s budget (attempt 4).**
 - [ ] NTP/timezone changes do not reorder source frames.
 
 ## Audio processing
