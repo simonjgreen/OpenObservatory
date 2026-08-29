@@ -171,3 +171,53 @@ def test_the_measured_steady_state_meets_the_slo() -> None:
     c = slo.coverage(intervals, start=start, end=end)
     assert c.ratio > 0.995  # SLO A
     assert len(c.outages) == 3
+
+
+SURREY = {"latitude": 51.24, "longitude": -0.59}
+
+
+def test_prime_intervals_bracket_dawn_and_dusk() -> None:
+    ivs = slo.prime_intervals(_dt(15), _dt(16), **SURREY)
+    assert ivs, "August in Surrey has both a dawn and a dusk"
+    for s, e in ivs:
+        assert e > s
+        assert (e - s).total_seconds() <= 4 * 3600 + 1  # 2 h either side
+
+
+def test_prime_intervals_do_not_overlap_and_are_ordered() -> None:
+    ivs = slo.prime_intervals(_dt(15), _dt(20), **SURREY)
+    for a, b in zip(ivs, ivs[1:], strict=False):  # noqa: RUF007
+        assert a[1] <= b[0], "intervals must be merged and ordered"
+
+
+def test_prime_coverage_is_perfect_when_capture_never_stops() -> None:
+    ivs = slo.prime_intervals(_dt(15), _dt(18), **SURREY)
+    c = slo.coverage([(_dt(14), _dt(19))], start=_dt(15), end=_dt(18))
+    assert c.ratio == 1.0
+    total_prime = sum((e - s).total_seconds() for s, e in ivs)
+    assert total_prime > 0
+
+
+def test_an_outage_at_noon_does_not_touch_prime_coverage() -> None:
+    """The whole point of A2. Down for four hours in the middle of the day."""
+    ivs = slo.prime_intervals(_dt(15), _dt(16), **SURREY)
+    running = [(_dt(15), _dt(15, 11)), (_dt(15, 15), _dt(16))]
+    prime_covered = 0.0
+    prime_total = 0.0
+    for ps, pe in ivs:
+        c = slo.coverage(running, start=ps, end=pe)
+        prime_covered += c.covered_seconds
+        prime_total += c.span_seconds
+    assert prime_total > 0
+    assert prime_covered / prime_total == 1.0, "a midday outage must not count against A2"
+
+
+def test_polar_latitudes_yield_no_prime_window_rather_than_crashing() -> None:
+    """June above the Arctic circle has no civil twilight at all."""
+    ivs = slo.prime_intervals(
+        datetime(2026, 6, 20, tzinfo=UTC),
+        datetime(2026, 6, 22, tzinfo=UTC),
+        latitude=78.9,
+        longitude=11.9,
+    )
+    assert ivs == []

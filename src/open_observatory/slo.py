@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 __all__ = ["DeficitSplit", "split_deficit"]
 
@@ -140,3 +140,56 @@ def coverage(
         ratio=round(covered / span, 6),
         outages=[(w, round(d, 3)) for w, d in outages],
     )
+
+
+__all__ += ["prime_intervals"]
+
+
+def prime_intervals(
+    start: datetime,
+    end: datetime,
+    *,
+    latitude: float,
+    longitude: float,
+    margin_hours: float = 2.0,
+) -> list[tuple[datetime, datetime]]:
+    """The hours worth measuring separately: civil twilight, plus a margin.
+
+    SLO A2 exists because wall-clock seconds are the wrong unit for a bird
+    monitor. Two minutes lost at dawn costs a chorus; two hours lost at 14:00
+    in December costs almost nothing. Both are the same number to SLO A, which
+    is why A2 is measured apart from it rather than instead of it.
+
+    Imported lazily so this module stays free of the scheduler's own imports
+    and can be reasoned about (and tested) on its own.
+
+    Returns merged, ordered, half-open intervals clipped to ``[start, end]``.
+    Empty at polar latitudes where the sun does not cross -6 degrees, which is
+    honest: there is no twilight to measure, not zero coverage of it.
+    """
+    from .schedule import _dawn_dusk_for_date
+
+    margin = timedelta(hours=margin_hours)
+    raw: list[tuple[datetime, datetime]] = []
+
+    day = (start - timedelta(days=1)).date()
+    last = (end + timedelta(days=1)).date()
+    while day <= last:
+        dawn, dusk = _dawn_dusk_for_date(day, latitude, longitude)
+        for moment in (dawn, dusk):
+            if moment is None:
+                continue
+            s = max(moment - margin, start)
+            e = min(moment + margin, end)
+            if e > s:
+                raw.append((s, e))
+        day += timedelta(days=1)
+
+    raw.sort()
+    merged: list[tuple[datetime, datetime]] = []
+    for s, e in raw:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
