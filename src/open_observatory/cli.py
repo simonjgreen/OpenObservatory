@@ -32,6 +32,10 @@ history_app = typer.Typer(help="Capture history and coverage diagnostics")
 clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 detections_app = typer.Typer(help="Detection review and repair")
 refine_app = typer.Typer(help="The refinement runner (charter item 5, ADR-045)")
+# `oo clips retention` (below) predates ADR-076 and stays where it is -- this
+# group is for the evidence-bank commands the ADR adds, starting with the
+# one-off archive walk `sweep()` cannot afford to run itself.
+retention_app = typer.Typer(help="Evidence bank retention (ADR-076)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
@@ -39,6 +43,7 @@ app.add_typer(history_app, name="history")
 app.add_typer(clips_app, name="clips")
 app.add_typer(detections_app, name="detections")
 app.add_typer(refine_app, name="refine")
+app.add_typer(retention_app, name="retention")
 
 console = Console()
 console_err = Console(stderr=True)
@@ -1514,6 +1519,36 @@ def clips_reconcile_missing(
         )
 
 
+def _build_retention_sweeper(settings: Settings) -> Any:
+    """The one `RetentionSweeper(...)` call site both retention commands share.
+
+    `oo clips retention` (`sweep()`) and `oo retention bank-backfill` need
+    the identical set of evidence-bank settings -- a second, separately
+    typed-out call site is exactly how `evidence_bank_size=
+    settings.evidence_sample_permille` would slip in unnoticed, the copy-paste
+    a repo-hygiene test (`test_the_cli_call_site_passes_the_same_four_settings`)
+    exists to catch by asserting there is only one call site to check.
+    """
+    from .db.session import session_scope
+    from .retention import RetentionSweeper
+
+    return RetentionSweeper(
+        clip_dir=settings.clip_dir,
+        session_factory=session_scope,
+        native_days=settings.retention_native_days,
+        audible_only_days=settings.retention_audible_only_days,
+        watermark_ratio=settings.retention_watermark_ratio,
+        batch_size=settings.retention_batch_size,
+        batch_budget_s=settings.retention_batch_budget_s,
+        evidence_value_enabled=settings.evidence_value_enabled,
+        evidence_common_species=settings.evidence_common_species,
+        evidence_bank_size=settings.evidence_bank_size,
+        evidence_sample_permille=settings.evidence_sample_permille,
+        evidence_implausible_species=settings.evidence_implausible_species,
+        evidence_implausible_cap=settings.evidence_implausible_cap,
+    )
+
+
 @clips_app.command("retention")
 def clips_retention(
     dry_run: bool = typer.Option(
@@ -1530,29 +1565,14 @@ def clips_retention(
     runs in (ADR-026). Always run ``--dry-run`` first against a station you
     care about.
     """
-    from .db.session import ensure_schema_at_head, init_engine, session_scope
-    from .retention import RetentionSweeper
+    from .db.session import ensure_schema_at_head, init_engine
 
     settings = get_settings()
     configure_logging(settings)
     init_engine(settings)
     ensure_schema_at_head()
 
-    sweeper = RetentionSweeper(
-        clip_dir=settings.clip_dir,
-        session_factory=session_scope,
-        native_days=settings.retention_native_days,
-        audible_only_days=settings.retention_audible_only_days,
-        watermark_ratio=settings.retention_watermark_ratio,
-        batch_size=settings.retention_batch_size,
-        batch_budget_s=settings.retention_batch_budget_s,
-        evidence_value_enabled=settings.evidence_value_enabled,
-        evidence_common_species=settings.evidence_common_species,
-        evidence_bank_size=settings.evidence_bank_size,
-        evidence_sample_permille=settings.evidence_sample_permille,
-        evidence_implausible_species=settings.evidence_implausible_species,
-        evidence_implausible_cap=settings.evidence_implausible_cap,
-    )
+    sweeper = _build_retention_sweeper(settings)
     report = sweeper.sweep(dry_run=dry_run)
 
     if dry_run:
@@ -1630,6 +1650,71 @@ def clips_retention(
                 decision.reason,
             )
         console.print(detail)
+
+
+@retention_app.command("bank-backfill")
+def retention_bank_backfill(
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Report what would be banked; write nothing (default: on)",
+    ),
+) -> None:
+    """Fill the evidence bank from the whole archive, once, with no time budget.
+
+    This writes only ``detection.banked_at`` -- never a file, never any other
+    column. It is idempotent (a banked row is not a candidate the next time
+    this runs), so re-running it costs one archive walk and bank nothing that
+    is already banked.
+
+    The sweep's own promotion step only looks back 24 hours, on purpose: the
+    query this command runs -- the oldest unbanked detection across the whole
+    archive -- was measured at 5.9754 s, and still 2.6672 s bounded to a
+    two-hour window, because SQLite scans ``detection_media`` whole regardless
+    of a time bound on the far side of the join. There is no 1.5 s budget to
+    protect here, so this command asks the expensive question directly: on the
+    station's archive, 8.9753 s to bank 7,302 detections across 135 species.
+
+    ``--dry-run`` is the default. This policy decides what a disk holding a
+    live archive keeps, and ADR-074 rule 3 requires its first run to be a
+    dry run a human reads before anything is written -- so this command
+    rolls back rather than commits whenever ``--dry-run`` is in effect,
+    rather than merely reporting what it did.
+    """
+    from .db.session import ensure_schema_at_head, init_engine
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+
+    sweeper = _build_retention_sweeper(settings)
+    result = sweeper.bank_backfill(dry_run=dry_run)
+
+    if dry_run:
+        console.print("[bold yellow]DRY RUN[/bold yellow] — nothing was written\n")
+
+    by_species: dict[str, int] = result.get("by_species", {})  # type: ignore[assignment]
+    table = Table(title="Bank backfill, by species")
+    table.add_column("species")
+    table.add_column("banked", justify="right")
+    for species in sorted(by_species):
+        table.add_row(species, str(by_species[species]))
+    if result["bands"]:
+        table.add_row("[dim](bat bands, no species)[/dim]", str(result["bands"]))
+    console.print(table)
+
+    verb = "would bank" if dry_run else "banked"
+    console.print(
+        f"{verb} {result['promoted']} detection(s) across {result['species']} species"
+        + (f" and {result['bands']} bat band(s)" if result["bands"] else "")
+        + "."
+    )
+    if dry_run:
+        console.print(
+            "[bold yellow]Nothing above has been written[/bold yellow] -- re-run with "
+            "--no-dry-run to bank these for real."
+        )
 
 
 # ----------------------------------------------------------------------

@@ -163,6 +163,14 @@ _BAND_SPARSE_PERMILLE = 10
 #: buys tolerance of a sweep that got interrupted or a budget that ran out.
 _PROMOTION_LOOKBACK = timedelta(hours=24)
 
+#: `bank_backfill`'s window and batch size: wide/large enough that "the whole
+#: archive" and "everything `_promotion_candidates` can return in one call"
+#: are the same set. 100 years comfortably predates any station's install
+#: date; a `LIMIT` of a million rows is comfortably above the 7,302 detections
+#: the station's archive actually banked (`EVIDENCE_BANK_MEASUREMENTS_2026-08-29`).
+_BACKFILL_LOOKBACK = timedelta(days=365 * 100)
+_BACKFILL_LIMIT = 1_000_000
+
 
 def _band_expression() -> Any:
     """``detection.peak_frequency_hz`` bucketed into 5 kHz bands, in SQL.
@@ -825,6 +833,91 @@ class RetentionSweeper:
             )
         return report
 
+    def bank_backfill(self, *, dry_run: bool = True) -> dict[str, int]:
+        """Fill the bank from the existing archive, once, with no time budget.
+
+        The expensive part of ADR-074 does not disappear under ADR-076; it
+        moves here, where there is no budget to break. Measured at **8.9753 s**
+        for the station's whole archive, banking 7,302 detections across 135
+        species (`EVIDENCE_BANK_MEASUREMENTS_2026-08-29`). The same shape as
+        `oo detections reconcile-plausibility` (ADR-032): a command that walks
+        the archive under no time budget precisely so the sweep never has to.
+
+        Reuses `_promote_to_bank` rather than a second copy of the promotion
+        logic -- the only difference from what `sweep()` calls is `deadline`
+        (`time.monotonic()` plus a year, i.e. never), `limit`
+        (`_BACKFILL_LIMIT`) and `lookback` (`_BACKFILL_LOOKBACK`, the whole
+        archive rather than the trailing 24h `_promotion_candidates` is
+        normally confined to).
+
+        `dry_run` defaults to **True** and rolls back rather than commits.
+        This is new policy deciding what survives on a disk holding a live
+        archive, and ADR-074 rule 3 requires the first run of any such policy
+        to be a dry run a human reads -- so the safe default has to be the one
+        that cannot write, not the one that happens to match `sweep()`'s.
+
+        Runs even when `evidence_value_enabled` is off, for one reason: this
+        command only ever sets `detection.banked_at`, a column nothing reads
+        while the flag is off (`_evidence_bank`, `_watermark_reclaim` and the
+        age tiers all gate on the flag before consulting it). Refusing to run
+        would block an operator from pre-filling the bank the night before
+        they flip the flag on -- exactly the sequencing ADR-074 rule 3 asks
+        for -- for a reason that cannot bite anyone: there is nothing downstream
+        to corrupt.
+        """
+        now = self._clock()
+        # A deadline a year out is "never" for a call measured at 8.9753 s --
+        # not `_BACKFILL_LOOKBACK` reused as a duration, which would conflate
+        # "how far back to look" with "how long this may run".
+        deadline = time.monotonic() + timedelta(days=365).total_seconds()
+        by_species: dict[str, int] = {}
+        bands = 0
+        with self._session_factory() as session:
+            # `_evidence_bank` returns `None` when the flag is off (its own
+            # early return), which would make every species read as capless
+            # below rather than "as banked as the archive already has it" --
+            # so an empty bank is built by hand instead of skipping the read.
+            bank = self._evidence_bank(session) or _EvidenceBank(banked={}, bands={})
+            promoted = self._promote_to_bank(
+                session,
+                bank,
+                now=now,
+                deadline=deadline,
+                limit=_BACKFILL_LIMIT,
+                lookback=_BACKFILL_LOOKBACK,
+            )
+            if promoted:
+                # Reads back the rows this call just staged, by the one thing
+                # that uniquely marks them: `banked_at == now`, the single
+                # timestamp every promotion above used. Cheap and exact
+                # whether or not the transaction is about to be rolled back --
+                # the rows are visible to this session either way.
+                rows = session.execute(
+                    select(orm.Detection.common_name, orm.Detection.taxonomic_group)
+                    .where(orm.Detection.banked_at == now)
+                ).all()
+                for common_name, group in rows:
+                    if common_name is not None:
+                        by_species[common_name] = by_species.get(common_name, 0) + 1
+                    elif group == _BAT_GROUP:
+                        bands += 1
+            if dry_run:
+                session.rollback()
+            else:
+                session.commit()
+        log.info(
+            "retention.bank_backfill" if not dry_run else "retention.bank_backfill_dry_run",
+            promoted=promoted,
+            species=len(by_species),
+            bands=bands,
+        )
+        return {
+            "promoted": promoted,
+            "species": len(by_species),
+            "bands": bands,
+            "by_species": by_species,
+        }
+
     # -- tiers ------------------------------------------------------------
 
     def _run_tier(
@@ -1102,6 +1195,7 @@ class RetentionSweeper:
         now: datetime,
         deadline: float,
         limit: int = _PROMOTE_PER_SWEEP,
+        lookback: timedelta | None = None,
     ) -> int:
         """Bank the oldest live, unbanked detections of every under-cap species.
 
@@ -1122,6 +1216,13 @@ class RetentionSweeper:
         the budget (see `_promotion_candidates`). It promotes from a trailing
         window; `oo retention bank-backfill` does the archive, oldest-first,
         with no budget at all.
+
+        `lookback` overrides `self.promotion_lookback` for this call only,
+        rather than being read from the instance. `bank_backfill` is the only
+        caller that passes it: it needs a window wide enough to reach the
+        whole archive without changing what every *sweep* on this same
+        object considers recent, which is what mutating `self.promotion_lookback`
+        for the duration of the call would risk under any concurrent access.
         """
         promoted = 0
         common = {n.casefold() for n in self.evidence_common_species}
@@ -1149,7 +1250,11 @@ class RetentionSweeper:
 
         room_by_species: dict[str, int] = {}
         for detection_id, species in self._promotion_candidates(
-            session, now=now, skip=skip, limit=limit * 2
+            session,
+            now=now,
+            skip=skip,
+            limit=limit * 2,
+            lookback=lookback if lookback is not None else self.promotion_lookback,
         ):
             if promoted >= limit or time.monotonic() >= deadline:
                 break
@@ -1190,7 +1295,13 @@ class RetentionSweeper:
         return promoted
 
     def _promotion_candidates(
-        self, session: Session, *, now: datetime, skip: set[str], limit: int
+        self,
+        session: Session,
+        *,
+        now: datetime,
+        skip: set[str],
+        limit: int,
+        lookback: timedelta,
     ) -> list[tuple[uuid.UUID, str]]:
         """Recent unbanked detections whose species could still take one.
 
@@ -1227,7 +1338,7 @@ class RetentionSweeper:
         """
         query = (
             select(orm.Detection.id, orm.Detection.common_name)
-            .where(orm.Detection.event_start_utc >= now - self.promotion_lookback)
+            .where(orm.Detection.event_start_utc >= now - lookback)
             .where(orm.Detection.banked_at.is_(None))
             .where(orm.Detection.common_name.is_not(None))
             .order_by(orm.Detection.event_start_utc.asc())
