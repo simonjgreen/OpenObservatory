@@ -172,6 +172,58 @@ deletes clips that survive today, on a code path that unlinks files, and it
 wants its own ADR, its own dry-run and its own measurement. [[ADR-074 - Evidence kept by value|ADR-074]]'s
 "Expected effect" table remains unmet until it exists, and is marked as such.
 
+### What shipped, 2026-08-29
+
+Implemented across nine tasks; the plan is [[2026-08-29-evidence-bank-redesign]].
+Full suite **1,096 passed, 12 skipped, exit 0**, ruff clean, mypy clean.
+
+| defect | state |
+|---|---|
+| 1. the per-species cliff | **fixed** — `banked_at` is monotone; `TestTheCliffIsGone` fails against any boolean-per-species bank |
+| 2. the 18.32 s census | **deleted**, not mitigated. Replaced by one index-only pass over the banked rows |
+| 3. bat bank in the wrong unit | **fixed** — banded detections compared against the cap on both sides |
+| 4. the policy cannot save a byte | **not fixed, by design** — see below |
+| 5. the watermark eats the archive first | **fixed** — two passes, unbanked first, and the second still takes banked evidence when it must |
+
+Four things are worth recording because they were not obvious going in.
+
+**The promotion query was nearly the census again.** The first draft grouped
+live assets by species — measured at **5.9754 s**, and still **2.6672 s**
+bounded to a two-hour window, because SQLite scans `detection_media` whole
+regardless of a time bound on the far side of the join. Bounding the window is
+not the fix; not joining is. The shipped query touches no media table and runs
+in 0.0149 s, and liveness is checked only on the handful about to be promoted,
+at 0.46 ms each.
+
+**The ADR-061 plan check needed neither the station nor its data.** The station
+carries no `ANALYZE` statistics, so SQLite's planner is schema-driven; a
+zero-row database built from the ORM metadata reproduces its plan line for
+line. It does, and `banked_at IS NULL` changes nothing.
+
+**The watermark's `bank is None` path had to be made genuinely identical.** An
+early version still cleared `banked_at` when the flag was off, so an operator
+disabling the policy after evidence was banked would have had it silently
+nulled on the next reclaim.
+
+**`_PROMOTION_LOOKBACK` is 24 hours, and that is a real limit.** The sweep
+promotes only from a trailing window; everything older is
+`oo clips bank-backfill`'s job. A station that was down for a week catches up by
+running that command, not by widening the window.
+
+### Still outstanding
+
+- **The backfill dry-run has not been run on the station.** ADR-074 rule 3
+  requires it before the flag is enabled, and it is the only prediction here
+  still untested against real data — the expected shape is ~7,302 detections
+  across ~135 species, from a lab copy of the archive. Not run because a
+  concurrent session was measuring the station's clock and a deploy restarts
+  capture. **This is a precondition on rollout, not a nicety.**
+- **The quota is still not built**, so ADR-074's "Expected effect" table is
+  still unmet. Enabling the flag after the backfill will *raise* disk usage by
+  the size of the bank — bounded, one-off, roughly 28 GB — and save nothing.
+  That is the honest trade: a permanent archive of the rare material, paid for
+  in disk, until the quota exists.
+
 ### Rules that must not be broken
 
 1. **`banked_at` is monotone.** Nothing clears it except `_watermark_reclaim`
