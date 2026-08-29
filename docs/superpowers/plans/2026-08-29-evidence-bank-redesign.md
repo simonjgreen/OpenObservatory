@@ -589,37 +589,55 @@ class _EvidenceBank:
 
 ```python
     def _evidence_bank(self, session: Session) -> _EvidenceBank | None:
-        """Per-species and per-band banked counts: one index-only scan each.
+        """Per-species and per-band banked counts: **one** pass over the bank.
 
         No TTL, no cached census, no abort handling -- all three existed to
-        survive an 18.32 s query that no longer exists. Measured at **0.0023 s**
-        against the station's own 903,240 detections
-        (`EVIDENCE_BANK_MEASUREMENTS_2026-08-29`), because
-        `ix_detection_banked_partial` contains only the ~7,300 banked rows and
-        covers both columns this reads.
+        survive an 18.32 s query that no longer exists.
+
+        One query rather than two aggregates, and the reason is which number
+        the cost scales with. The obvious band aggregate --
+        ``WHERE banked_at IS NOT NULL AND taxonomic_group = 'bat'`` -- looks
+        cheaper and is not: ``ix_detection_group_start`` makes
+        ``taxonomic_group`` an equality SQLite can seek, so the planner takes
+        that index and then needs a row lookup per **bat detection** to test
+        ``banked_at``. Measured: it touches all 66,902 bat rows whether the
+        bank holds seven thousand or seven, and it would grow with the archive
+        for ever. That is the exact property this ADR exists to remove from the
+        sweep.
+
+        Selecting only on ``banked_at IS NOT NULL`` puts the planner on
+        ``ix_detection_banked_partial`` (confirmed: ``SCAN detection USING
+        INDEX ix_detection_banked_partial``), so the work is bounded by the
+        **bank** -- 7,302 rows, itself bounded by ``bank_size`` times the
+        species count -- and aggregating two dicts from those rows in Python
+        costs nothing worth measuring.
         """
         if not self.evidence_value_enabled:
             return None
-        species_rows = session.execute(
-            select(orm.Detection.common_name, func.count())
-            .where(orm.Detection.banked_at.is_not(None))
-            .where(orm.Detection.common_name.is_not(None))
-            .group_by(orm.Detection.common_name)
+        banked: dict[str, int] = {}
+        bands: dict[int, int] = {}
+        rows = session.execute(
+            select(
+                orm.Detection.common_name,
+                orm.Detection.taxonomic_group,
+                orm.Detection.peak_frequency_hz,
+            ).where(orm.Detection.banked_at.is_not(None))
         ).all()
-        band = _band_expression().label("band")
-        band_rows = session.execute(
-            select(band, func.count())
-            .where(orm.Detection.banked_at.is_not(None))
-            .where(orm.Detection.taxonomic_group == _BAT_GROUP)
-            .where(orm.Detection.peak_frequency_hz.is_not(None))
-            .where(orm.Detection.peak_frequency_hz > 0)
-            .group_by(band)
-        ).all()
-        return _EvidenceBank(
-            banked={n: c for n, c in species_rows if n is not None},
-            bands={int(e): c for e, c in band_rows if e is not None},
-        )
+        for common_name, group, peak_hz in rows:
+            if common_name is not None:
+                banked[common_name] = banked.get(common_name, 0) + 1
+            if group == _BAT_GROUP:
+                # Same bucketing as the SQL `_band_expression`, and the same
+                # `None` for a missing or non-positive frequency.
+                edge = evidence_value.frequency_band(peak_hz)
+                if edge is not None:
+                    bands[edge] = bands.get(edge, 0) + 1
+        return _EvidenceBank(banked=banked, bands=bands)
 ```
+
+`_band_expression()` keeps its other caller (`_band_counts`, which measures
+which bands are *sparse* over the trailing window and is index-served), so it
+is not deleted.
 
 Delete `_banked_counts`, `_derive_bank`, `_EVIDENCE_CENSUS_TTL_S`, `_ASSUMED_BAND`, and every `self._census*` / `self.census_aborts` / `self.last_census_duration_s` attribute and its `snapshot()` keys. In `sweep()`, replace the `bank = (self._evidence_bank(session, now=now, deadline=deadline) if ... else None)` call with `bank = self._evidence_bank(session)`.
 
