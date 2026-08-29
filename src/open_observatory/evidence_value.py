@@ -20,6 +20,7 @@ plausibility band ADR-049 already computes.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -98,3 +99,31 @@ def classify(
         return Verdict.SAMPLE
 
     return Verdict.QUOTA
+
+
+__all__ += ["BAND_WIDTH_HZ", "frequency_band", "sparse_bands"]
+
+#: Bat passes are never given a species, by design, so rarity cannot come from a
+#: name. It comes from peak frequency, and the distribution is as skewed as the
+#: birds': measured over 66,485 passes on 2026-08-29, 20-25 kHz held 36,180 and
+#: 60-65 kHz held four.
+BAND_WIDTH_HZ = 5000
+
+
+def frequency_band(peak_hz: float | None) -> int | None:
+    """The 5 kHz band a pass falls in, named by its lower edge in kHz."""
+    if peak_hz is None or peak_hz <= 0:
+        return None
+    return int(peak_hz // BAND_WIDTH_HZ) * (BAND_WIDTH_HZ // 1000)
+
+
+def sparse_bands(counts: Mapping[int, int], *, permille: int = 10) -> frozenset[int]:
+    """Bands holding less than ``permille``/1000 of the passes: keep every one.
+
+    Self-limiting in the same way the species bank is -- a band that stops being
+    sparse stops being kept whole -- so this cannot grow without bound.
+    """
+    total = sum(counts.values())
+    if total <= 0:
+        return frozenset()
+    return frozenset(b for b, n in counts.items() if n * 1000 < total * permille)

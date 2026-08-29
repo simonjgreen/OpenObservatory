@@ -134,3 +134,45 @@ def test_a_zero_permille_sample_disables_sampling_entirely() -> None:
             policy=ev.Policy(sample_permille=0),
         )
         assert v is not ev.Verdict.SAMPLE
+
+
+def test_frequency_bands_are_five_kilohertz_wide() -> None:
+    assert ev.frequency_band(22_000) == 20
+    assert ev.frequency_band(63_400) == 60
+    assert ev.frequency_band(None) is None
+
+
+def test_the_stations_own_bat_distribution_marks_the_right_bands_sparse() -> None:
+    """Measured 2026-08-29 over 66,485 passes.
+
+    20-25 kHz holds 36,180; 60-65 kHz holds four. That band is the bat
+    equivalent of the heron and a flat 1% sample would leave it an expected
+    0.04 passes -- discarding the rarest signal the station has.
+    """
+    counts = {
+        15: 7040,
+        20: 36180,
+        25: 768,
+        30: 8655,
+        35: 7603,
+        40: 1336,
+        45: 3328,
+        50: 1464,
+        55: 107,
+        60: 4,
+    }
+    sparse = ev.sparse_bands(counts, permille=10)
+    assert 60 in sparse
+    assert 55 in sparse
+    assert 20 not in sparse
+    assert 30 not in sparse
+
+
+def test_a_band_that_stops_being_sparse_stops_being_kept_whole() -> None:
+    """Self-limiting, like the species bank."""
+    counts = {20: 1000, 55: 900}
+    assert 55 not in ev.sparse_bands(counts, permille=10)
+
+
+def test_no_passes_at_all_yields_no_sparse_bands_rather_than_all_of_them() -> None:
+    assert ev.sparse_bands({}, permille=10) == frozenset()
