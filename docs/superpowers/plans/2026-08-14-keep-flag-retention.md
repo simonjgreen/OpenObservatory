@@ -14,7 +14,7 @@
 
 - `kept` means keep forever, until a human removes the flag. Age, the 90-day expiry and disk pressure must never clear it.
 - All four tiers (`_strip_native`, `_strip_unkept`, `_strip_expired`, `_watermark_reclaim`) must exempt `kept_at IS NOT NULL`.
-- `held` ([[ADR-043]]) keeps its own distinct meaning and existing behaviour. Do not merge the two concepts. A detection may be both.
+- `held` ([[ADR-043 - Taxon correction|ADR-043]]) keeps its own distinct meaning and existing behaviour. Do not merge the two concepts. A detection may be both.
 - No CLI command may call `console.print_json` — `tests/test_cli_json_output.py` asserts this by scanning `cli.py`. Use `emit_json`.
 - Everything test-first. Watch each test fail before implementing.
 - Run `.venv/bin/python -m pytest` — the system `python3` is 3.14 and is not the project interpreter.
@@ -490,24 +490,24 @@ git commit -m "Keep a recording from the drawer, the API or the CLI (ADR-061)"
 ### Task 6: ADR-061, docs, and verification on the station
 
 **Files:**
-- Modify: [[ADRS]] — **body and index row**; the index stopping short is the failure mode its own header names, and [[ADR-060]] has already hit it
+- Modify: [[ADRS]] — **body and index row**; the index stopping short is the failure mode its own header names, and [[ADR-060 - A stalled read is a dead stream|ADR-060]] has already hit it
 - Modify: `config/example.env`
 - Modify: [[MILESTONE_STATUS]], [[HANDOVER]]
 
-- [ ] **Step 1: Write [[ADR-061]]**
+- [ ] **Step 1: Write [[ADR-061 - Operator keep flag|ADR-061]]**
 
 Cover: the 2.978 s measurement against the 1.5 s budget; the three symptoms it
 caused; why a human flag beats a computed one; why first-of-species is backfilled
 and best is not; why kept survives the watermark. Include the **rollback note**
-and **target smoke test** `CLAUDE.md` requires — [[ADR-060]] shipped without either
+and **target smoke test** `CLAUDE.md` requires — [[ADR-060 - A stalled read is a dead stream|ADR-060]] shipped without either
 and that is recorded as a defect.
 
 Rollback: `alembic downgrade 0007_capture_pause`, and note that every operator
 keep is lost and unrecoverable, so export the kept ids first.
 
-- [ ] **Step 2: Add the index row, and fix [[ADR-060]]'s missing one while you are here**
+- [ ] **Step 2: Add the index row, and fix [[ADR-060 - A stalled read is a dead stream|ADR-060]]'s missing one while you are here**
 
-- [ ] **Step 3: Add the settings [[ADR-060]] introduced to `config/example.env`**
+- [ ] **Step 3: Add the settings [[ADR-060 - A stalled read is a dead stream|ADR-060]] introduced to `config/example.env`**
 
 `capture_silence_critical_s`, `capture_read_timeout_s`. (`stall_timeout_s` is a
 constructor default, not a setting — do not add it.)
@@ -515,14 +515,14 @@ constructor default, not a setting — do not add it.)
 - [ ] **Step 4: Deploy and verify on the station**
 
 ```bash
-HOST=simon@192.168.1.195 ./deploy/deploy.sh --no-web   # runs alembic upgrade head
+HOST=<user>@<station-host> ./deploy/deploy.sh --no-web   # runs alembic upgrade head
 ```
 
 Then verify, and record actual figures:
 
 ```bash
-curl -s http://192.168.1.195:8080/metrics | grep -E "oo_retention_(files_deleted|bytes_reclaimed|preamble)"
-curl -s http://192.168.1.195:8080/api/v1/health | python3 -m json.tool | grep -A3 retention
+curl -s http://<station-host>:8080/metrics | grep -E "oo_retention_(files_deleted|bytes_reclaimed|preamble)"
+curl -s http://<station-host>:8080/api/v1/health | python3 -m json.tool | grep -A3 retention
 ```
 
 Three things must be true, and none may be assumed:
@@ -546,6 +546,6 @@ git commit -m "ADR-061: an operator-set keep flag replaces the computed exemplar
 
 **Spec coverage:** data model → Task 1; backfill → Task 1; retention change → Task 2; keep-forever across all four tiers → Task 2; watermark refusal → Task 3; observability → Task 4; API/CLI/UI → Task 5; ADR, rollback, smoke test → Task 6. No spec section is unimplemented.
 
-**Known gaps, deliberate:** the doc-audit backlog (11 documents saying the soak never ran, 11 ADRs hidden in unterminated code fences, [[ADR-059]]'s false status, the pre-[[ADR-046]] guidance in two files) is **not** in this plan. It is mechanical, unrelated to this change, and belongs in its own pass.
+**Known gaps, deliberate:** the doc-audit backlog (11 documents saying the soak never ran, 11 ADRs hidden in unterminated code fences, [[ADR-059 - Clip archive measured off-loop|ADR-059]]'s false status, the pre-[[ADR-046 - Deficit is mostly drift|ADR-046]] guidance in two files) is **not** in this plan. It is mechanical, unrelated to this change, and belongs in its own pass.
 
-**Asymmetry worth knowing:** `_watermark_reclaim` currently ignores `held_ids` — at the watermark it will delete a held recording today. This plan makes `kept` exempt there but deliberately leaves `held` as it is, since changing [[ADR-043]]'s behaviour is out of scope. Flag it for a later decision rather than fixing it silently.
+**Asymmetry worth knowing:** `_watermark_reclaim` currently ignores `held_ids` — at the watermark it will delete a held recording today. This plan makes `kept` exempt there but deliberately leaves `held` as it is, since changing [[ADR-043 - Taxon correction|ADR-043]]'s behaviour is out of scope. Flag it for a later decision rather than fixing it silently.

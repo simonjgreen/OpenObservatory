@@ -29,7 +29,7 @@ mark it unverified instead.
 
 ## Evidence storage: USB SSD, mounted over `data/clips`
 
-Added 2026-08-08 ([[ADR-021]]). A SanDisk Extreme Portable SSD, 465.8 GB, connected over
+Added 2026-08-08 ([[ADR-021 - Clips on their own device|ADR-021]]). A SanDisk Extreme Portable SSD, 465.8 GB, connected over
 UAS as `/dev/sda`, replaces the SD card as the destination for evidence clips. The SD
 card could not sustain a busy bat night's write load (roughly 15 MB per pass across
 four clips, 15 GB in one night against a 20 GB budget already exceeded) while also
@@ -48,7 +48,7 @@ serving ALSA reads through the same shared thread pool.
 The disk previously held an unrelated Ubuntu amd64 installer and was wiped before
 use. 21 GB of existing clips were migrated across; the old directory, retained at
 `data/clips.sdcard-backup`, was **deleted 2026-08-10**, freeing 21 GB on the SD
-card. Before removal, [[ADR-057]] confirmed no live `media_asset` row pointed into
+card. Before removal, [[ADR-057 - Evidence rows must be checkable|ADR-057]] confirmed no live `media_asset` row pointed into
 it and that none of the 8,067 missing clips were recoverable from it. A clip recorded the day
 before the migration was verified afterwards to still download as a valid 384 kHz WAV
 through `GET /api/v1/media/{id}` — `media_asset.storage_uri` holds absolute paths, so
@@ -62,7 +62,7 @@ host *after* the service has started is not visible inside it — the service mu
 restarted, not just have the mount appear, for the SSD to take effect.
 `OO_CLIPS_REQUIRE_MOUNT=true` (`clips_require_mount` in `Settings`) makes
 `/api/v1/health` report the problem by name when `data/clips` is not a mount point,
-rather than silently falling back to writing evidence onto the SD card. See [[ADR-021]]
+rather than silently falling back to writing evidence onto the SD card. See [[ADR-021 - Clips on their own device|ADR-021]]
 for the full reasoning, including why the database was deliberately left off the SSD.
 
 With the SSD in place the throttles imposed to protect the SD card were lifted in
@@ -111,22 +111,22 @@ itself degraded in `/api/v1/health`, but it **never recovered on its own**:
 `SyntheticSource` never ends, and the capture supervisor only rebuilds a source once
 the current one ends, so a reattached or corrected microphone went unnoticed until
 someone restarted the service by hand. Roughly a day of recording was lost. Detectors
-kept running against the synthetic scene throughout and persisted detections — 5 bird
-detections labelled *Grey-winged Inca-Finch* and 515 acoustic events — into the live
-database, indistinguishable from genuine ones until [[ADR-020]]'s view-level filter.
+kept running against the synthetic scene throughout and persisted detections — **6 bird
+detections labelled *Grey-winged Inca-Finch* and 562 acoustic events, 568 in all** — into
+the live database, indistinguishable from genuine ones until [[ADR-020 - Non-live sources excluded|ADR-020]]'s view-level filter.
 
 **Fix:** `hardware_recheck_s` (default 30 s, `src/open_observatory/config.py`) makes
 the station periodically re-probe for the real device while running on the *fallback*
 synthetic source specifically — never when synthetic was chosen deliberately (e.g.
 `OO_SOURCE=synthetic` for a demo) — so a corrected switch position or reattached cable
 is picked up without a manual restart. This recovery behaviour is not itself recorded
-as an ADR (it is a bugfix, not an architectural deviation); [[ADR-020]] covers the
+as an ADR (it is a bugfix, not an architectural deviation); [[ADR-020 - Non-live sources excluded|ADR-020]] covers the
 separate, related decision to exclude synthetic-source detections from browsing
 views by default (`source_kind`/`is_live_source` on every detection).
 
 `hardware_recheck_s` only covers this fallback-synthetic path — it did nothing for
 the 2026-08-14 wedge, where the real device was still open but stopped answering
-reads. See [[ADR-060]].
+reads. See [[ADR-060 - A stalled read is a dead stream|ADR-060]].
 
 ### Negotiated capture profile
 
@@ -184,18 +184,19 @@ Sustained running as a systemd service:
 |---|---|
 | Capture continuity | 0.9990–0.9997 (frames captured ÷ frames elapsed time implies, from frame zero); **0.999945** over 44 min after the ring was deepened, 2026-08-08 |
 | Gaps / overruns | 0 |
-| ALSA ring | 192,000 frames = 500 ms (50 periods of 3840), negotiated. Was 30,720 = 80 ms behind a 100 ms block until 2026-08-08; see [[ADR-030]] |
-| Device clock offset from nominal | **−43 ppm** |
+| ALSA ring | 192,000 frames = 500 ms (50 periods of 3840), negotiated. Was 30,720 = 80 ms behind a 100 ms block until 2026-08-08; see [[ADR-030 - ALSA ring and capture thread\|ADR-030]] |
+| Device clock offset from nominal | **−50 ppm** (accepted value, [[ADR-072 - Accepted crystal drift\|ADR-072]]). The −43 ppm first read on 2026-08-08 was taken before the estimator fix below; the corrected reading is −52 ppm, [[ADR-046 - Deficit is mostly drift\|ADR-046]] measured −50.43 ppm over an hour, and the live station reported −50.52 ppm on 2026-08-29 |
 | Per-block hot-path CPU | **10.9 %** of one core, for capture + resample + both spectrograms + level telemetry. Was 9.5 % before the ultrasonic channel began max-combining four sub-windows per column; that 1.4 % buys full coverage of the audio instead of 45 %. |
 | Whole-process CPU | ~29 % of the 4-core machine with all three detectors running |
 | Native ring memory | 120 s at 384 kHz float32 ≈ 184 MB resident |
 
 ### The device runs on its own crystal
 
-The measured −43 ppm offset is a real property of the hardware, not an error. It
+The measured offset — −50 ppm, the value [[ADR-072 - Accepted crystal drift|ADR-072]] accepts; −43 ppm was the
+first, pre-fix reading — is a real property of the hardware, not an error. It
 means the AudioMoth presents frames slightly slower than 384000 Hz nominal, so
-"frames captured" and "wall-clock elapsed" diverge steadily by about 0.15 s per
-hour. This is why frame indices — not timestamps — are authoritative for
+"frames captured" and "wall-clock elapsed" diverge steadily by about 0.18 s per
+hour, roughly 4.3 s a day. This is why frame indices — not timestamps — are authoritative for
 addressing audio, and why gap detection looks for a *step* in the
 frames-behind-wall-clock figure rather than an absolute value. An earlier version
 did not separate the two and reported a single overrun as a permanent −1439 ppm
@@ -346,12 +347,12 @@ interpolates scroll position between bursts and clamps that interpolation to abo
 one burst, so a stall parks the display rather than letting it drift out of step.
 
 **Live audio playback moved off this WebSocket path by default, 2026-08-08
-([[ADR-019]]).** The figures above are for the WebSocket channel, `/api/v1/live/audio`,
+([[ADR-019 - Chunked-WAV live playback|ADR-019]]).** The figures above are for the WebSocket channel, `/api/v1/live/audio`,
 which is unchanged and still used by other clients (a phone, without issue). The
 debug UI's GO LIVE button now instead points a plain `<audio>` element at
 `GET /api/v1/live/audio.wav`, a chunked-WAV HTTP stream, because Web Audio produced
 no audible output on the operator's laptop by any route tried, while a plain
-`<audio>` element and YouTube in the same browser both worked. See [[ADR-019]] for the
+`<audio>` element and YouTube in the same browser both worked. See [[ADR-019 - Chunked-WAV live playback|ADR-019]] for the
 full diagnosis. One consequence: the +24 dB monitor make-up gain the old client
 applied has no replacement on this path, and a calm garden sits near −45 dBFS (see
 "Input level and gain" above) — if this proves too quiet in practice, the fix is
@@ -379,7 +380,7 @@ server-side gain on the stream, not a client-side audio node.
   constraint has been relaxed.
 - **Whether this station's 33-36 kHz cluster is genuinely Myotis is unresolved.**
   Offline BatDetect2 classification of the station's own clips (see
-  `scripts/classify_clips_batdetect2.py`, [[ADR-017]]) leaned Myotis on 6 of 8 clips, but
+  `scripts/classify_clips_batdetect2.py`, [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]) leaned Myotis on 6 of 8 clips, but
   at low confidence (0.20-0.30), and produced one confident contradiction: 0.77 for
   *Pipistrellus pygmaeus* on a 34 kHz call, when soprano pipistrelle actually peaks
   near 55 kHz. The AudioMoth's hot gain (see above) is a plausible confound. This
@@ -388,7 +389,7 @@ server-side gain on the stream, not a client-side audio node.
   dated section below for the measured figures. The system may not be
   described as complete until a soak passes.
 - **`estimated_missing_seconds` is the figure to read for lost audio, and
-  `expected_frames - frames` is not** — settled by [[ADR-046]] on 2026-08-09, which
+  `expected_frames - frames` is not** — settled by [[ADR-046 - Deficit is mostly drift|ADR-046]] on 2026-08-09, which
   reverses the guidance an earlier version of this file gave. The raw deficit is
   four terms added together: block-sampling phase (±50 ms of pure artefact on a
   single reading), the crystal's ~50.4 ppm slow rate (0.18 s/hour, 4.4 s/day,
@@ -402,16 +403,16 @@ server-side gain on the stream, not a client-side audio node.
   rather than a second opinion. The debug UI now shows the deficit as
   **`behind clock`**, separately from `audio lost`. Longest clean window: 22.2
   minutes — enough to rule out a continuous leak, not a rare one. See
-  [[OPEN_INVESTIGATION_CAPTURE_GAPS]] and [[ADR-046]].
+  [[OPEN_INVESTIGATION_CAPTURE_GAPS]] and [[ADR-046 - Deficit is mostly drift|ADR-046]].
 - **The ultrasonic detector now has a night scheduler** (`src/open_observatory/schedule.py`),
   gating it to civil dusk through civil dawn plus configurable margins, computed from the
   station's coordinates. It is off by default (`ultrasonic_schedule = "always"`); the
   development station's `runtime.env` sets `OO_ULTRASONIC_SCHEDULE=night`. If coordinates are unset the
   detector runs continuously rather than gating to nothing, by design — see
   [[DETECTOR_STRATEGY]].
-- **Authentication exists but is off by default.** [[ADR-034]] shipped Argon2id
+- **Authentication exists but is off by default.** [[ADR-034 - Authentication foundation|ADR-034]] shipped Argon2id
   passwords, session cookies and revocable API tokens on 2026-08-08, closing
-  [[ADR-015]]. `auth_enabled` defaults to `false`, and **it is not enabled on this
+  [[ADR-015 - Anonymous read, auth deferred|ADR-015]]. `auth_enabled` defaults to `false`, and **it is not enabled on this
   station**, so the API here still binds LAN-only with anonymous read. Even with
   it enabled, `GET /api/v1/detections`, `GET /api/v1/health` and `/metrics` stay
   reachable with no credential by design (the ESP32 display cannot carry one, and
@@ -437,8 +438,8 @@ an artefact of either one. Other figures from the same window:
 The run was restart-free for the whole 72 hours, which is itself a first, but
 the loss rate stepped up mid-run; see [[HANDOVER]] §1e and
 [[MILESTONE_STATUS]] §Milestone 4.5 for the full account, including why
-`late_read_max_frames` at 98.4% is worse than the 81% [[ADR-059]] was written to
-fix — [[ADR-059]]'s own verification, below, failed.
+`late_read_max_frames` at 98.4% is worse than the 81% [[ADR-059 - Clip archive measured off-loop|ADR-059]] was written to
+fix — [[ADR-059 - Clip archive measured off-loop|ADR-059]]'s own verification, below, failed.
 
 ## 2026-08-14 02:18:22 UTC: the capture wedge
 
@@ -447,13 +448,13 @@ roughly 0.576 s apart, until a manual service restart. Root cause:
 `alsa_source.py` swallowed the error as a transient xrun inside the
 block-assembly loop, so `_read_blocking` never returned or raised, and
 `_capture_supervisor` — which exists to reopen the device and would have fixed
-this in seconds — was never reached. Fixed by [[ADR-060]]. The device itself was
+this in seconds — was never reached. Fixed by [[ADR-060 - A stalled read is a dead stream|ADR-060]]. The device itself was
 never at fault: no USB event since 8 August, autosuspend off, and a plain
 restart recovered it instantly.
 
 ## 2026-08-14: retention sweep fix, verified on the station
 
-[[ADR-061]] replaces the retention sweep's unbounded exemplar query — the deeper
+[[ADR-061 - Operator keep flag|ADR-061]] replaces the retention sweep's unbounded exemplar query — the deeper
 cause of both the soak's continuity failure and the wedge above, which was
 starving the capture event loop and forcing roughly 12 device restarts an
 hour. Verified on the station today:

@@ -5,10 +5,10 @@ spectrogram and a live listen button need more than that, so this document
 records what was added and why, rather than leaving it implicit in the code.
 
 Four channels now: two WebSockets for the debug UI, deliberately separate
-([[ADR-012]]); a chunked-WAV HTTP stream added by [[ADR-019]] as the default playback
+([[ADR-012 - One writer per WebSocket|ADR-012]]); a chunked-WAV HTTP stream added by [[ADR-019 - Chunked-WAV live playback|ADR-019]] as the default playback
 path after Web Audio proved silent on a real laptop; and a fourth, much smaller
-WebSocket added by [[ADR-038]] for the ESP32 counter-top display, which needs detections and
-nothing else. [[ADR-012]]'s single-writer rule governs every WebSocket here — the WAV
+WebSocket added by [[ADR-038 - Display push channel|ADR-038]] for the ESP32 counter-top display, which needs detections and
+nothing else. [[ADR-012 - One writer per WebSocket|ADR-012]]'s single-writer rule governs every WebSocket here — the WAV
 addition has no socket and so no writer to serialise.
 
 If you only want the counter-top display's channel, skip to
@@ -92,7 +92,7 @@ full 2400-column history for both channels in one burst (~770 kB) delayed the
 audio consumer on the same event loop enough to produce ~1.9 s of backlog and
 around 900 dropped audio chunks on the listen channel.
 
-**There is often nothing to back-fill, and that is not a fault ([[ADR-040]]).** The
+**There is often nothing to back-fill, and that is not a fault ([[ADR-040 - Spectrograms only when watched|ADR-040]]).** The
 server only runs the spectrogram encoders while at least
 `spectrogram_encode_min_viewers` clients are connected (default 1), and discards
 the retained history when the last one leaves — stale columns cannot be dated
@@ -117,7 +117,7 @@ pipeline, which is the confusion backfill was introduced to prevent.
 
 For the UI's **GO LIVE** button. Carries two channels, selected once at
 connect time by a query parameter — `?channel=audible` (the default) or
-`?channel=ultrasonic`. Switching channel reconnects; [[ADR-012]]'s single-writer
+`?channel=ultrasonic`. Switching channel reconnects; [[ADR-012 - One writer per WebSocket|ADR-012]]'s single-writer
 rule is per-*socket*, and a socket's channel is fixed for its lifetime.
 
 ### Audible (default)
@@ -161,7 +161,7 @@ on the same socket —
 ```
 
 — read by a small concurrent reader task that only ever calls
-`socket.receive_json()`; it never writes to the socket, so [[ADR-012]]'s
+`socket.receive_json()`; it never writes to the socket, so [[ADR-012 - One writer per WebSocket|ADR-012]]'s
 single-writer invariant holds. Anything that isn't a `tune` frame, or fails
 to parse, is ignored.
 
@@ -245,7 +245,7 @@ capture loop.
 ### Client playback, and why not an AudioWorklet
 
 **This section describes the WebSocket path's client, which this UI no longer uses
-by default — see [[ADR-019]] and the chunked-WAV section below.** It is retained
+by default — see [[ADR-019 - Chunked-WAV live playback|ADR-019]] and the chunked-WAV section below.** It is retained
 because the WebSocket channel itself is retained (a phone client still uses it),
 and because the reasoning about why an `AudioWorklet` was never an option here still
 applies to anything built against this channel in future.
@@ -284,7 +284,7 @@ stored or measured.
 
 ## `GET /api/v1/live/audio.wav` — chunked-WAV listen channel
 
-Added by [[ADR-019]] after Web Audio playback proved completely silent on a real
+Added by [[ADR-019 - Chunked-WAV live playback|ADR-019]] after Web Audio playback proved completely silent on a real
 laptop (Chrome 150, Ubuntu, 44.1 kHz hardware output) despite every
 transport- and decoder-level signal reporting healthy — the WebSocket
 delivered chunks, the client's Web Audio telemetry showed `out -18 dBFS`,
@@ -314,7 +314,7 @@ never plays anything.
 
 Retuning while connected **is** supported, but not over this response — there
 is no channel to carry a `tune` frame back to the server over a one-way HTTP
-body. See `POST /api/v1/live/tune` below instead ([[ADR-022]]): the stream this
+body. See `POST /api/v1/live/tune` below instead ([[ADR-022 - HTTP retune control|ADR-022]]): the stream this
 endpoint opens is never reconnected by a retune, so sweeping the tuning dial
 does not restart playback.
 
@@ -327,7 +327,7 @@ POST /api/v1/live/tune?tune_hz=42000
 Retunes the shared heterodyne oscillator exactly as the WebSocket's
 `{"type": "tune", "tune_hz": 42000}` frame does — because it calls the same
 `Station.set_ultrasonic_tune_hz` — but as a plain, stateless HTTP POST that
-needs no open control channel of its own. Since [[ADR-018]] there is exactly one
+needs no open control channel of its own. Since [[ADR-018 - Live heterodyne, one oscillator|ADR-018]] there is exactly one
 oscillator per station shared by every ultrasonic listener regardless of
 transport, so this call has no listener/session identifier: the last request
 wins for everyone, same as the WebSocket path.
@@ -411,7 +411,7 @@ and records the instant it wrote every chunk. That is the gap the operator hears
 between the scrolling spectrogram and his speakers, and it is the browser's, not
 the station's.
 
-The spectrogram now marks it ([[ADR-051]]). `AudioTelemetry` gained four more
+The spectrogram now marks it ([[ADR-051 - Playhead as an interval|ADR-051]]). `AudioTelemetry` gained four more
 genuine readings for the purpose — `currentTimeS`, `streamOpenedEpochS`,
 `sampledEpochS`/`sampledPerfMs` and `advancing` — and `web/src/components/playhead.ts`
 turns those, plus the live socket's `clockSkewS`, into a station-UTC position
@@ -424,7 +424,7 @@ the same spirit as the section above.
 
 ## `GET /api/v1/display` — the inside observer's push channel
 
-A fourth channel, added by [[ADR-038]] for one client: the ESP32 counter-top display
+A fourth channel, added by [[ADR-038 - Display push channel|ADR-038]] for one client: the ESP32 counter-top display
 (`firmware/inside-observer`). Detections only, in compact JSON, sized so that
 every frame this channel can produce fits inside a single Ethernet MTU with room
 to spare.
@@ -433,10 +433,10 @@ Deliberately **not** a mode of `/api/v1/live`. That socket carries binary
 spectrogram columns, a `hello` with forty full detection records and sixty
 events, a full station snapshot every two seconds and a 30 s spectrogram
 backfill — none of which an ESP32 can use, so filtering it would have meant
-replacing every frame it sends while still paying [[ADR-012]]'s warning that any
-change to that channel must be re-measured over real Wi-Fi. See [[ADR-038]].
+replacing every frame it sends while still paying [[ADR-012 - One writer per WebSocket|ADR-012]]'s warning that any
+change to that channel must be re-measured over real Wi-Fi. See [[ADR-038 - Display push channel|ADR-038]].
 
-[[ADR-012]]'s single-writer rule holds here exactly as it does on the other two
+[[ADR-012 - One writer per WebSocket|ADR-012]]'s single-writer rule holds here exactly as it does on the other two
 sockets: `DisplayClient.run()` is the only code in the process that writes a
 display socket. The pump and the receive loop only ever queue and receive.
 
@@ -447,11 +447,11 @@ display socket. The pump and the receive loop only ever queue and receive.
 | `min_score` | `0.75` | Named detections below this are **not sent**. Never appears in any frame. |
 | `bats` | `true` | Whether bat passes are sent at all. They are never score-filtered. |
 | `rows` | server config (6) | Rows in the connect snapshot. **0–12**, where `0` is the accepted sentinel meaning "use the station's `display_channel_snapshot_rows`" — it is not an error. |
-| `fw` | absent | The firmware version running on the display, e.g. `0.2.0` ([[ADR-050]]). The only thing this client ever tells the station about itself. Absent from builds before [[ADR-050]]; reported as unknown, never assumed to be old. |
+| `fw` | absent | The firmware version running on the display, e.g. `0.2.0` ([[ADR-050 - Display OTA slots\|ADR-050]]). The only thing this client ever tells the station about itself. Absent from builds before [[ADR-050 - Display OTA slots\|ADR-050]]; reported as unknown, never assumed to be old. |
 
 **Authentication.** With `auth_enabled` on, this socket closes with **4401**
 unless `/api/v1/display` is in `auth_public_read_paths` — where it is by default,
-because the display cannot carry a credential ([[ADR-034]], [[ADR-050]]).
+because the display cannot carry a credential ([[ADR-034 - Authentication foundation|ADR-034]], [[ADR-050 - Display OTA slots|ADR-050]]).
 
 Filtering is server-side so the device never receives-and-discards, which is the
 whole point of the change. The filter lives in the URL, so changing it means
@@ -476,7 +476,7 @@ Frame keys:
 | `v` | `h` | Wire version, currently `1`. A client that does not know it must refuse the frame rather than half-parse it. |
 | `now` | `h`, `s` | The station's Unix epoch seconds. The display has no RTC and no NTP; this is its only clock. |
 | `hb` | `h` | Heartbeat period in seconds. The display treats three missed beats as a stale feed. |
-| `st` | `h`, `s` | `L` listening, `D` degraded. **Never offline** — that is a fact only the client can know. An operator pause ([[ADR-055]]) is also sent as `D`, with the pause wording in `d`: the firmware in the field maps any letter that is not `D` to "listening", so a new letter would make a paused station read as recording on every display not yet updated. |
+| `st` | `h`, `s` | `L` listening, `D` degraded. **Never offline** — that is a fact only the client can know. An operator pause ([[ADR-055 - Timed recording pause\|ADR-055]]) is also sent as `D`, with the pause wording in `d`: the firmware in the field maps any letter that is not `D` to "listening", so a new letter would make a paused station read as recording on every display not yet updated. |
 | `d` | `h`, `s` | The station's own words for a degraded state. Absent when listening. |
 | `sp` | any | Distinct species today. On a `d` frame only when the count moved. |
 | `f` | `h` | The connect snapshot: `rows` rows, already run-collapsed. |
@@ -503,14 +503,14 @@ bounds, `stream_id`, `title_hint` — and **`score`**.
 
 There is no score field and no way to add one without editing both
 `src/open_observatory/display_channel.py` and
-`firmware/inside-observer/src/model/push_frame.h`. [[ADR-023]]'s rule that no number
+`firmware/inside-observer/src/model/push_frame.h`. [[ADR-023 - The ESP32 inside observer|ADR-023]]'s rule that no number
 readable as a confidence figure reaches the glass is structural here rather than
 behavioural: the threshold is applied on the station and the number never leaves
 it.
 
 A bat pass carries no name — only `b` and `k`. The words "Bat pass" are supplied
 by the firmware, so no server change can put a species on a pass
-(`ultrasonic-pass-v1` detects passes, not species; [[ADR-013]]). The frequency-band
+(`ultrasonic-pass-v1` detects passes, not species; [[ADR-013 - ultrasonic-pass-v1|ADR-013]]). The frequency-band
 candidate that `title_hint` carries elsewhere ("45 kHz · common pipistrelle?") is
 deliberately not forwarded: it is a legitimate hint in a UI that can print the
 sentence explaining it, and a species claim on a counter top.
@@ -525,7 +525,7 @@ species counts exactly when one of its detections cleared the threshold, which i
 exactly when a frame was sent.
 
 While the station is not capturing from the real microphone, **no detections are
-sent at all** ([[ADR-020]]). The `st`/`d` fields say why, and the display shows the
+sent at all** ([[ADR-020 - Non-live sources excluded|ADR-020]]). The `st`/`d` fields say why, and the display shows the
 banner. A test scene is not an observation of the garden.
 
 ### Back-pressure
@@ -547,7 +547,7 @@ capture loop.
 | `display_channel_heartbeat_s` | `10.0` | Heartbeat period. Also sets how long a dead station takes to look dead (3 beats). |
 | `display_channel_snapshot_rows` | `6` | Connect snapshot size when `rows` is not given. |
 | `display_channel_queue_max` | `64` | Frames a display may fall behind by. |
-| `display_ota_offer_on_connect` | `true` | Offer a published firmware image to a display whose `fw` is older ([[ADR-050]]). Costs nothing when the versions agree — no frame is sent. |
+| `display_ota_offer_on_connect` | `true` | Offer a published firmware image to a display whose `fw` is older ([[ADR-050 - Display OTA slots\|ADR-050]]). Costs nothing when the versions agree — no frame is sent. |
 
 ### Measuring it
 

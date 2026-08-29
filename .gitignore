@@ -40,3 +40,6 @@ tsbuildinfo
 .venv/
 venv/
 .claude/worktrees/
+
+# Obsidian keeps deleted notes here; it is local scratch, not repository content.
+docs/.trash/

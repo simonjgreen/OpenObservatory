@@ -4,17 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "7c08ac45f50c40a9",
+        "id": "5e15a50098e3511e",
         "type": "tabs",
         "children": [
           {
-            "id": "a3bf705cfd513f15",
+            "id": "272ee5976502d4dc",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "type": "markdown",
+              "state": {
+                "file": "operations/HOME_ASSISTANT.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "HOME_ASSISTANT"
             }
           }
         ]
@@ -181,9 +185,22 @@
       "bases:Create new base": false
     }
   },
-  "active": "a3bf705cfd513f15",
+  "active": "272ee5976502d4dc",
   "lastOpenFiles": [
+    "operations/DRIFT_GATE_B_2026-08-25.md",
+    "operations/DRIFT_GATE_A_2026-08-25.md",
+    "operations/DEPLOYMENT_AND_OPERATIONS.md",
+    "operations/AUDIOMOTH_FIRMWARE.md",
+    "audio/AUDIO_PIPELINE.md",
+    "architecture/adr/ADR-001 - Single capture owner.md",
     "architecture/ADRS.md",
+    "architecture/adr/ADR-044 - A withdrawn detection is marked in the record and suppressed on the claim surfaces; and the BirdNET week index is correct.md",
+    "2026-08-29.md",
+    "README.md",
+    "ADR-018.md",
+    "superpowers/specs/2026-08-14-keep-flag-retention-design.md",
+    "adr/ADR-035 - A real Alembic migration environment%2C written before the PostgreSQL move.md",
+    "adr",
     "architecture/adr/ADR-074 - Evidence is retained by value, not by age.md",
     "architecture/adr/ADR-073 - What missing audio means, and five SLOs instead of one continuity number.md"
   ]

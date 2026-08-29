@@ -6,11 +6,11 @@ Design, 2026-08-05. Approved in conversation before writing.
 > documentation.** Everything below was implemented; see
 > [`../detectors/DETECTOR_STRATEGY.md`](../detectors/DETECTOR_STRATEGY.md)
 > ("Feeding-buzz flagging", "Candidate naming") for what the shipped system
-> actually does and its real configuration keys, and [[ADR-013]] for the decision.
+> actually does and its real configuration keys, and [[ADR-013 - ultrasonic-pass-v1|ADR-013]] for the decision.
 >
 > Two constraints this design worked around have since been removed, and the
 > design is kept unedited rather than corrected because how it was constrained is
-> the interesting part: **the Alembic migration environment now exists** ([[ADR-035]],
+> the interesting part: **the Alembic migration environment now exists** ([[ADR-035 - Alembic environment|ADR-035]],
 > so "the design must add no columns" is no longer forced), and **the ultrasonic
 > detector is now fully configurable** from `Settings` — this design is what added
 > that. The test-suite sizes named under "Testing" (161 Python, 38 frontend) were
@@ -44,7 +44,7 @@ UI has simply never displayed it.
 
 These shaped the design and are recorded because they are not obvious:
 
-- **No Alembic migration environment exists** ([[ADR-007]]). `create_all()` will not add a
+- **No Alembic migration environment exists** ([[ADR-007 - SQLite in developer mode|ADR-007]]). `create_all()` will not add a
   column to the existing SQLite database on the Pi. **The design must add no columns.**
 - **`display_name` is computed in four places** with different fallbacks:
   `normaliser.py:162` (live WebSocket), `api/app.py:706` (`_detection_payload`),
@@ -186,7 +186,7 @@ current constructor defaults exactly, so behaviour is unchanged until someone se
 
 ## Documentation
 
-- [[ADR-013]] gains a note that the UI names candidate species presentationally while the
+- [[ADR-013 - ultrasonic-pass-v1|ADR-013]] gains a note that the UI names candidate species presentationally while the
   record does not, with the reasoning.
 - [[DETECTOR_STRATEGY]] and [[TARGET_DIAGNOSTICS]] currently say the detector offers a
   coarse group hint only; both need the same clarification.

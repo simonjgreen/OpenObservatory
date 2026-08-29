@@ -12,7 +12,7 @@
 > here should be read as a claim that a requirement is met.
 >
 > Requirements known **not** to be met as of 2026-08-09, so this file is not
-> mistaken for one: FR-007's bat detector identifies no species ([[ADR-013]]);
+> mistaken for one: FR-007's bat detector identifies no species ([[ADR-013 - ultrasonic-pass-v1|ADR-013]]);
 > FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-015's
 > MCP interface does not exist; FR-017's upgrade preflight and backup guidance do
 > not exist; §10's configurable location precision does not exist; and §11's

@@ -154,10 +154,10 @@ has already settled, with the evidence that settled them.
 
 | Conflict | Resolution |
 |---|---|
-| Retention sweep every 10 s vs capture | **Capture.** The sweep starved the event loop 55–150 ms and cost ~1.9 gaps/min; paced to 300 s ([[ADR-033]]). |
+| Retention sweep every 10 s vs capture | **Capture.** The sweep starved the event loop 55–150 ms and cost ~1.9 gaps/min; paced to 300 s ([[ADR-033 - Retention is paced\|ADR-033]]). |
 | Evidence writing vs capture | **Capture.** Evidence got a bounded queue and its own executor after clip I/O overran the ALSA ring. |
-| Display latency vs network cost | **Both.** 127 kB per 20 s poll became 49 B per event ([[ADR-038]]) — the display got faster *and* cheaper. Efficiency and item 7 were not actually opposed. |
-| Confident species claim vs plausibility | **Plausibility.** A 0.96 score on a species absent from the continent is evidence the score is meaningless for that species, not evidence of the bird ([[ADR-032]]). |
+| Display latency vs network cost | **Both.** 127 kB per 20 s poll became 49 B per event ([[ADR-038 - Display push channel\|ADR-038]]) — the display got faster *and* cheaper. Efficiency and item 7 were not actually opposed. |
+| Confident species claim vs plausibility | **Plausibility.** A 0.96 score on a species absent from the continent is evidence the score is meaningless for that species, not evidence of the bird ([[ADR-032 - Plausibility bands\|ADR-032]]). |
 | Spectrogram history-on-connect vs idle CPU | Item 8 loses to items 1–2: the station does not compute spectrograms for nobody. |
 
 ### Failures this ordering would have caught earlier
@@ -190,7 +190,7 @@ worthless to us after a refinement pass has happened."*
 **That intention is not yet the measured reality.** The refinement timer's
 first real timed pass completed only on 2026-08-12 ([[HANDOVER]], "The
 refinement runner's first real pass completed"), and as of that pass
-**15,704 bat detections have never been examined by a refiner** ([[ADR-045]]).
+**15,704 bat detections have never been examined by a refiner** ([[ADR-045 - Refinement runner|ADR-045]]).
 The daily-cadence argument above governs steady state, once the timer has
 been running long enough to have caught up; it does not yet describe this
 station's backlog.
@@ -206,7 +206,7 @@ Two safeguards keep that rule honest rather than weakening it:
   refinement ran, at what version, with what outcome, and deletion should
   require it.
 - **An explicit human hold exempts an item.** The `review` table exists and,
-  as of [[ADR-043]] (2026-08-09), is written to: the live station's `review` table
+  as of [[ADR-043 - Taxon correction|ADR-043]] (2026-08-09), is written to: the live station's `review` table
   holds 65+ rows. Someone marking something as needing their ear is a
   positive act, and is not the same thing as passive uncertainty.
 

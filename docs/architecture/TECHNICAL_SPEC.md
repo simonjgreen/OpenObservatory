@@ -11,18 +11,18 @@
 > [`GAP_REPORT.md`](GAP_REPORT.md) records what was uncertain before hardware
 > existed and how each item resolved.
 >
-> The largest divergences, as of 2026-08-09:
+> The largest divergences, as of 2026-08-29:
 >
 > | This spec says | What actually runs | Why |
 > |---|---|---|
-> | §3 Docker Compose, eleven services | one `systemd` unit, one process, one venv | [[ADR-008]] |
-> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | [[ADR-007]] |
-> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | [[ADR-009]], and an explicit permission in `CLAUDE.md` |
-> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime and not adopted | [[ADR-013]], [[ADR-017]] |
-> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | [[ADR-012]], [[ADR-019]] |
+> | §3 Docker Compose, eleven services | **two** `systemd` units, two processes, one venv — the station, plus the nightly timer-driven refinement runner | [[ADR-008 - systemd, not Compose|ADR-008]], [[ADR-045 - Refinement runner|ADR-045]] |
+> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | [[ADR-007 - SQLite in developer mode|ADR-007]] |
+> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | [[ADR-009 - In-process event bus|ADR-009]], and an explicit permission in `CLAUDE.md` |
+> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime and not adopted | [[ADR-013 - ultrasonic-pass-v1|ADR-013]], [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] |
+> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | [[ADR-012 - One writer per WebSocket|ADR-012]], [[ADR-019 - Chunked-WAV live playback|ADR-019]] |
 > | §2 MCP server | not implemented; no MCP code exists in this repository | Milestone 7, not started |
-> | §9 anonymous read disabled by default | authentication exists but is **off by default**, with three deliberately credential-free paths | [[ADR-015]] → [[ADR-034]] |
-> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | [[ADR-008]] |
+> | §9 anonymous read disabled by default | authentication exists but is **off by default**, with three deliberately credential-free paths | [[ADR-015 - Anonymous read, auth deferred|ADR-015]] → [[ADR-034 - Authentication foundation|ADR-034]] |
+> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | [[ADR-008 - systemd, not Compose|ADR-008]] |
 >
 > §14's performance budgets are engineering targets, not measurements. The
 > measurements are in

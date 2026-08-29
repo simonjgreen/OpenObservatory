@@ -114,19 +114,19 @@ own counters (`display_channel.per_client`) cover the display.
 continuity against a ≥ 99.9% criterion (349.3 s lost out of 259,200 s; see
 [[MILESTONE_STATUS]] §Milestone 4.5). `CLAUDE.md` forbids the
 word "complete" until it passes, and it has not passed yet. A re-run is needed
-once [[ADR-060]] and [[ADR-061]] are deployed and verified; a deploy voids a soak in
+once [[ADR-060 - A stalled read is a dead stream|ADR-060]] and [[ADR-061 - Operator keep flag|ADR-061]] are deployed and verified; a deploy voids a soak in
 progress, so it needs a deliberate quiet period.
 
 Watch: `oo_capture_continuity_ratio`, real deficit as judged by
 `estimated_missing_seconds` (**not** the raw `expected_frames - frames`,
-which also carries crystal drift and sampling-phase artefact — see [[ADR-046]]),
+which also carries crystal drift and sampling-phase artefact — see [[ADR-046 - Deficit is mostly drift|ADR-046]]),
 `loop_lag_max_s`, `late_reads`, RSS, disk growth, clip budget, MQTT drops,
 display reconnects.
 
 Also outstanding: the **one-hour drift run** (verified at 5 minutes only).
 
 Longer-horizon endurance the soak will not cover: SD-card write amplification,
-and detection-table growth ([[ADR-037]]'s triggers are the tripwires).
+and detection-table growth ([[ADR-037 - Prune the dead indexes|ADR-037]]'s triggers are the tripwires).
 
 ### L8 — Data integrity and irreversible operations
 

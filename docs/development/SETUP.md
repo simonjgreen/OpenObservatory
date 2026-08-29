@@ -40,7 +40,7 @@ need them:
 On the Pi, `deploy/deploy.sh` installs `.[alsa,resample,birdnet,dev]`.
 
 **BatDetect2 is deliberately not an extra.** The overnight refinement runner
-([[ADR-045]]) uses it if it is there and reports itself unavailable if it is not,
+([[ADR-045 - Refinement runner|ADR-045]]) uses it if it is there and reports itself unavailable if it is not,
 because its repository is CC-BY-NC-4.0 and that is the operator's licence
 decision to make, not a transitive install. `pip install batdetect2==1.3.1` plus
 a CPU build of torch, on the machine that will run it. Three tests skip without
@@ -87,7 +87,7 @@ OO_REPLAY_PATH=recording.wav ./.venv/bin/oo serve --source replay
 Then open <http://127.0.0.1:8080>. The UI shows a loud red **NOT LIVE AUDIO**
 banner whenever the stream is not a real microphone, because a synthetic stream
 looks entirely normal in a spectrogram. Synthetic and replay detections are also
-excluded from browsing views by default ([[ADR-020]]).
+excluded from browsing views by default ([[ADR-020 - Non-live sources excluded|ADR-020]]).
 
 Useful during development:
 
@@ -99,7 +99,7 @@ Useful during development:
 ./.venv/bin/oo refine status         # what the overnight refiner has and has not examined
 ```
 
-The near-miss ledger ([[ADR-052]]) has no CLI — the `oo` command line has no HTTP
+The near-miss ledger ([[ADR-052 - Near-miss ledger|ADR-052]]) has no CLI — the `oo` command line has no HTTP
 client — so read it from the running station:
 
 ```bash
@@ -128,22 +128,22 @@ result either way.
 
 ### What used to need a text editor and no longer does
 
-Before [[ADR-048]], exactly five things were web-editable — station name, timezone,
+Before [[ADR-048 - Web-configurable settings|ADR-048]], exactly five things were web-editable — station name, timezone,
 latitude, longitude and the MQTT block — and *everything else* meant an SSH
 session, `nano config/runtime.env`, and a service restart. That included every
 knob an operator actually reaches for after the station is running:
 
 | Was `runtime.env` only, now in the browser | Why it matters |
 |---|---|
-| `spectrogram_floor_db` / `ceiling_db`, and the ultrasonic pair ([[ADR-041]]) | contrast is what makes a noisy site readable; takes effect live |
+| `spectrogram_floor_db` / `ceiling_db`, and the ultrasonic pair ([[ADR-041 - Ultrasonic spectrogram range\|ADR-041]]) | contrast is what makes a noisy site readable; takes effect live |
 | `ultrasonic_min_snr_db`, `ultrasonic_min_pulses_per_pass`, `ultrasonic_band_hz`, the pulse and buzz bounds | tuning out false bat passes from a noisy mounting; live |
 | `activity_min_snr_db`, `activity_min_duration_ms`, `activity_band_hz` | the same for the audible detector; live |
-| `birdnet_min_confidence`, `birdnet_plausibility_floor` | rejecting implausible species ([[ADR-032]]); live |
+| `birdnet_min_confidence`, `birdnet_plausibility_floor` | rejecting implausible species ([[ADR-032 - Plausibility bands\|ADR-032]]); live |
 | `birdnet_common_prior`, `birdnet_range_threshold`, and the three band thresholds | **new fields** — these existed only as Python constructor defaults and had no environment surface at all |
 | the whole clip block: pre/post-roll, maximum length, minimum score, rate limit, size budget, free-space floor, which detectors clip | live |
-| the whole retention ladder and its sweep pacing ([[ADR-026]]/033) | live |
+| the whole retention ladder and its sweep pacing ([[ADR-026 - Tiered clip retention\|ADR-026]]/033) | live |
 | the ultrasonic rendering block: method, expansion factor, target, high-pass, heterodyne bandwidth | live |
-| every refinement setting ([[ADR-045]]) | read by the next `oo refine run`, so in force tonight without restarting the station |
+| every refinement setting ([[ADR-045 - Refinement runner\|ADR-045]]) | read by the next `oo refine run`, so in force tonight without restarting the station |
 | capture: source, device key, preferred rates and formats, block size, ring depth, ring seconds | saved now, applied at the next restart — a form submission never tears down capture |
 | logging, metrics, queue depths, the counter-top display channel | restart-pinned |
 
@@ -283,13 +283,13 @@ These are the ones that waste time. None of them is a bug in your setup.
     slow crystal (4.4 s a day, forever, with nothing lost), anchor bias, and only
     then real loss. Read `estimated_missing_seconds` for loss; the UI shows the
     deficit separately as `behind clock`. An earlier version of this trap said
-    the exact opposite — [[ADR-046]] measured it and settled it. See
+    the exact opposite — [[ADR-046 - Deficit is mostly drift|ADR-046]] measured it and settled it. See
     [`../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](../delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md).
 
 11. **Loopback is not a test of a network path.** The concurrent-WebSocket-writer
     bug was flawless on loopback and near-total failure over Wi-Fi. Anything
     touching the live channels must be measured from a real client over the real
-    link ([[ADR-012]]).
+    link ([[ADR-012 - One writer per WebSocket|ADR-012]]).
 
 12. **Model assets are never committed**, and never will be. BirdNET's weights
     are CC BY-NC-SA 4.0 and BatDetect2's whole repository is CC-BY-NC-4.0.

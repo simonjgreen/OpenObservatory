@@ -1,9 +1,9 @@
 # Drift gate (a), 2026-08-25 — **PASSED** on the target device
 
-The synthetic resampler run defined in [[ADR-069]], at full duration on the Pi 5 for
+The synthetic resampler run defined in [[ADR-069 - Two drift gates|ADR-069]], at full duration on the Pi 5 for
 the first time.
 
-Kept separate from [[DRIFT_GATE_B_2026-08-25]] deliberately. [[ADR-069]] exists
+Kept separate from [[DRIFT_GATE_B_2026-08-25]] deliberately. [[ADR-069 - Two drift gates|ADR-069]] exists
 because "the one-hour drift run" had been used to mean two different tests, and
 recording their results in one file is how they would be conflated again.
 
@@ -27,7 +27,7 @@ Run over ssh on the station, `/usr/bin/time -v` around it. Exit status **0**.
 
 Backend `soxr 1.1.0 quality=HQ`, ratio 1/8, 36,000 blocks of 38,400 frames,
 1,382,400,000 input frames → 172,799,176 output against 172,800,000 expected.
-Deficit band 112–924 frames, exactly the range [[ADR-069]]'s threshold was derived
+Deficit band 112–924 frames, exactly the range [[ADR-069 - Two drift gates|ADR-069]]'s threshold was derived
 from, so the adaptive limit did not move under this run.
 
 ## Why this could not be run until today
@@ -52,7 +52,7 @@ in slightly under.
 
 ## What this result is not
 
-[[ADR-069]] says it plainly and it is repeated here because the two gates are easy
+[[ADR-069 - Two drift gates|ADR-069]] says it plainly and it is repeated here because the two gates are easy
 to confuse:
 
 > `AudibleResampler` drives conversion from an exact `Fraction(48000, 384000)`,
@@ -63,10 +63,10 @@ to confuse:
 
 The station's clock is gate (b)'s subject, and gate (b) did not pass.
 
-One honest weakness, restated from [[ADR-069]] rather than left to be rediscovered:
+One honest weakness, restated from [[ADR-069 - Two drift gates|ADR-069]] rather than left to be rediscovered:
 the trend threshold is **adaptive** — derived from the run's own deficit band —
 so a backend whose band widened would widen its own limit too. A future libsoxr
-or backend change must re-derive [[ADR-069]]'s detectability table rather than
+or backend change must re-derive [[ADR-069 - Two drift gates|ADR-069]]'s detectability table rather than
 assume 820 still holds.
 
 ## Reproduce

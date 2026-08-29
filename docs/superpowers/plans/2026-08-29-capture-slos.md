@@ -13,7 +13,7 @@ this plan adds measurement, not behaviour.
 
 **Tech Stack:** Python 3.12, pytest, FastAPI, Prometheus text format.
 
-**Spec:** [[ADR-073]]
+**Spec:** [[ADR-073 - Five capture SLOs|ADR-073]]
 
 ## Global Constraints
 
@@ -603,7 +603,7 @@ never been computed or surfaced.
 
 **Files:**
 - Modify: `src/open_observatory/slo.py`
-- Modify: [[ADR-073]]
+- Modify: [[ADR-073 - Five capture SLOs|ADR-073]]
 - Test: `tests/test_slo.py`
 
 **Interfaces:**
@@ -693,7 +693,7 @@ Expected: 23 passed.
 
 - [ ] **Step 5: Correct ADR-073, which says this is unmeasurable**
 
-In [[ADR-073]],
+In [[ADR-073 - Five capture SLOs|ADR-073]],
 replace the SLO D row's `measured` cell `not yet measured` with
 `worst detector, from counters that already exist`, and replace this bullet:
 
@@ -721,7 +721,7 @@ with:
 .venv/bin/python -m ruff check src/open_observatory/slo.py tests/test_slo.py
 .venv/bin/python -m ruff format src/open_observatory/slo.py tests/test_slo.py
 .venv/bin/python -m mypy src/open_observatory/slo.py
-git add src/open_observatory/slo.py tests/test_slo.py "docs/architecture/adr/ADR-073 - What missing audio means, and five SLOs instead of one continuity number.md"
+git add src/open_observatory/slo.py tests/test_slo.py "docs/architecture/adr/ADR-073 - Five capture SLOs.md"
 git commit -m "ADR-073: detection coverage was measurable all along; report the worst detector"
 ```
 

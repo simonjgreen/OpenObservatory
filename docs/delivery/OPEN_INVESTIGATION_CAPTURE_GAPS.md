@@ -18,7 +18,7 @@
 > `main` and deployed at 17:13Z. They were caused by the retention sweep moving to
 > a 10 s cadence, and they were **not** losing any audio. Both statements are
 > measured; see "The regression of 2026-08-08 evening" at the end of this document,
-> and [[ADR-033]]. The ALSA-ring fix described below was not implicated and is not in
+> and [[ADR-033 - Retention is paced|ADR-033]]. The ALSA-ring fix described below was not implicated and is not in
 > question.
 
 Rewritten 2026-08-08 (afternoon session) from the handover of the same day. The
@@ -39,7 +39,7 @@ rather than reasoning about it.
    EPIPE skipped the estimate and was published with `missing_frames=0`. The single
    event most likely to have lost audio was the one event whose cost was not measured.
 
-Both are fixed ([[ADR-030]]). The ring is now sized from `capture_buffer_ms` (500 ms
+Both are fixed ([[ADR-030 - ALSA ring and capture thread|ADR-030]]). The ring is now sized from `capture_buffer_ms` (500 ms
 default) and the estimate runs either way, with gaps reported split into
 `gaps_with_loss` and `gaps_without_loss`.
 
@@ -280,7 +280,7 @@ occurrence will say so instead of vanishing.
   writing, three detectors and clip rendering all peak together. The measurement above
   is a daytime one. If gaps return, the ring is the first thing to widen
   (`OO_CAPTURE_BUFFER_MS`), and the next structural step — a free-running reader thread
-  feeding an internal queue — is described and deliberately deferred in [[ADR-030]].
+  feeding an internal queue — is described and deliberately deferred in [[ADR-030 - ALSA ring and capture thread|ADR-030]].
 - **The missing gap row of 2026-08-08 10:55:24Z**, above. Inference only.
 - **Hypothesis 4 was never isolated.** The restored rendering settings were left in
   place on purpose so the code was the only variable. They may still cost something at
@@ -345,7 +345,7 @@ between the two windows, same code, same `config/runtime.env` otherwise:
 | 18:01–18:06 (5 min) | every 10 s | **8** (1.6/min) | 252,495 | 0 | **+2,680** | ~25 (5/min) |
 | 18:06–18:14 (7 min) | disabled | **0** | **0** | 0 | **−51.75** | 11 (1.6/min) |
 
-The fix is [[ADR-033]]: a `retention_interval_s` setting, default 300 s, rounded to the
+The fix is [[ADR-033 - Retention is paced|ADR-033]]: a `retention_interval_s` setting, default 300 s, rounded to the
 nearest tick. The pre-merge behaviour, restored behind a knob.
 
 ### The fix, verified on the station
@@ -375,7 +375,7 @@ else's territory and neither is needed to close the regression:
   under seven days old, the disk is 6.3% full — and still costs 0.40 s of ORM
   queries. A cheap precondition (oldest clip younger than `retention_native_days`
   *and* disk below the watermark ⇒ return immediately) would make the common case
-  free. That is a change to `retention.py`, [[ADR-026]]'s author's code.
+  free. That is a change to `retention.py`, [[ADR-026 - Tiered clip retention|ADR-026]]'s author's code.
 - **The estimator should not be firing at all**, since no audio is being lost — see
   finding 2 below. Fixing that removes the visible symptom without touching
   retention, but it is the wrong order: the loop stall is real whether or not it is
@@ -401,7 +401,7 @@ each elimination is worth as much as the finding:
    cached for 30 s.
 3. **The whole synchronous part of the tick was innocent — 1.2 ms total**, and the
    housekeeping loop's own sleep woke on time (`loop_lag_s` ≈ −0.0002). That is what
-   pointed at the *second half* of the tick, after the `bus.emit`: the [[ADR-024]]
+   pointed at the *second half* of the tick, after the `bus.emit`: the [[ADR-024 - Coverage bounded by frames|ADR-024]]
    heartbeat and the retention sweep, both awaited, both invisible to a metric that
    only watches the sleep. The dedicated `loop.lag` watchdog — a task that sleeps
    0.1 s in a loop and reports its overshoot — covers the whole tick and is what
@@ -410,8 +410,8 @@ each elimination is worth as much as the finding:
 ## Why a dedicated thread did not protect capture
 
 This is the part that matters for the next person, because the architecture already
-looked correct. Retention has had its own executor since [[ADR-021]] precisely so it
-could not queue in front of the ALSA read, and [[ADR-030]] gave the read its own
+looked correct. Retention has had its own executor since [[ADR-021 - Clips on their own device|ADR-021]] precisely so it
+could not queue in front of the ALSA read, and [[ADR-030 - ALSA ring and capture thread|ADR-030]] gave the read its own
 executor too. Neither helps here.
 
 The sweep is SQLAlchemy ORM work in Python, so it **holds the GIL**, and CPython
@@ -424,7 +424,7 @@ sufficient; the test is whether the work is CPU-bound in Python.
 
 ## Finding 2: `capture.gap lost_audio=True` was lying — no audio was lost
 
-> **FIXED 2026-08-09, [[ADR-039]]. Since deployed and confirmed on target** — see
+> **FIXED 2026-08-09, [[ADR-039 - Confirmed loss, not deficit|ADR-039]]. Since deployed and confirmed on target** — see
 > "Confirmed on the target" and the 2026-08-09 late section at the end of this
 > document; the "not yet deployed" wording below is preserved as written.
 > The estimator now confirms a
@@ -451,7 +451,7 @@ Measured mid-regression, from one `/api/v1/station` reading:
 
 The station claimed to have lost twelve times more audio than it was actually
 behind, and ALSA never reported a ring overflow at all. It could not have: the
-500 ms ring from [[ADR-030]] absorbs a 130 ms stall and then catches up, which is
+500 ms ring from [[ADR-030 - ALSA ring and capture thread|ADR-030]] absorbs a 130 ms stall and then catches up, which is
 exactly what it was widened to do.
 
 The cause is in `_read_blocking`. The deficit-step estimator credits any step of
@@ -495,7 +495,7 @@ deficit step against the following few blocks before crediting it, and to reserv
 ## What is still open after this round
 
 - ~~**The deficit-step estimator over-credits**, finding 2 above. Not fixed.~~
-  **Fixed 2026-08-09 ([[ADR-039]]); not yet deployed.** See "Closing finding 2" below.
+  **Fixed 2026-08-09 ([[ADR-039 - Confirmed loss, not deficit|ADR-039]]); not yet deployed.** See "Closing finding 2" below.
 - **A residual ~1.6 event/min of 60–120 ms event-loop lag on a 30 s beat**, present
   with retention disabled, producing no gaps. Unattributed. `clips.disk_usage()`
   caches its clip-tree walk for exactly 30 s and is the obvious candidate, but that
@@ -538,7 +538,7 @@ curl -s localhost:8080/api/v1/station | python3 -c \
 
 # Closing finding 2: the estimator now measures loss instead of lateness
 
-2026-08-09. [[ADR-039]]. **Written but not deployed** *at the time this section was
+2026-08-09. [[ADR-039 - Confirmed loss, not deficit|ADR-039]]. **Written but not deployed** *at the time this section was
 written* — the station was owned by another agent that session, so everything in
 this section is either an off-target measurement or a read-only reading of the
 *unfixed* station. It has since been deployed and confirmed twice; see the two
@@ -662,22 +662,22 @@ setting that restores a known-wrong measurement is not worth its own failure mod
   is contaminated**, on top of the earlier contamination noted above. Only
   `expected_frames - frames` was trustworthy across the whole history of this file.
 
-  > **Corrected by [[ADR-046]], later the same day, and this is the trap the file
+  > **Corrected by [[ADR-046 - Deficit is mostly drift|ADR-046]], later the same day, and this is the trap the file
   > itself fell into.** `expected_frames - frames` is not a loss figure either. It
   > is loss *plus* crystal drift (~0.18 s per hour at this device's −50 ppm, 4.4 s
   > per day, with nothing lost) *plus* a block-sampling phase artefact worth about
   > **±50 ms on any single reading**. Every deficit quoted in this document —
   > 0.055 s, 0.066 s, 0.104 s, 0.114 s — is one draw from that distribution and
-  > none should be read as a point measurement. **After [[ADR-039]],
+  > none should be read as a point measurement. **After [[ADR-039 - Confirmed loss, not deficit|ADR-039]],
   > `estimated_missing_seconds` is the figure to judge lost audio by**; it is a
   > decomposition of the deficit rather than a rival number. Do not tell anyone to
   > prefer the raw deficit.
 
 ## Confirmed on the target, 2026-08-09 (ADR-039's pass criteria)
 
-[[ADR-039]] shipped stating "this change has **not** been deployed to the Pi and no
+[[ADR-039 - Confirmed loss, not deficit|ADR-039]] shipped stating "this change has **not** been deployed to the Pi and no
 on-target before/after exists". It has now been deployed, incidentally to the
-[[ADR-040]] work, and the pass criteria above hold. Read from `/api/v1/station` on
+[[ADR-040 - Spectrograms only when watched|ADR-040]] work, and the pass criteria above hold. Read from `/api/v1/station` on
 the live station with the AudioMoth at 384 kHz, across several windows of an hour
 of running:
 
@@ -690,14 +690,14 @@ of running:
 | `late_reads` may be non-zero | — | **12** `capture.late_read` lines in 40 minutes | pass |
 | `late_read_max_frames` ≪ `alsa_buffer_frames` | — | **57,952** of 192,000 (30% of the ring) | pass |
 
-Against the pre-fix reading in [[ADR-039]] — 348,786 phantom frames on a real deficit
+Against the pre-fix reading in [[ADR-039 - Confirmed loss, not deficit|ADR-039]] — 348,786 phantom frames on a real deficit
 of 43,772 (**8.0x**), every gap labelled as having lost audio, `rate_offset_ppm`
 **+878** — the estimator now reports nothing lost when nothing was lost, and the
 observed rate lands on the device's true crystal offset. The stalls did not go
 away and were never supposed to: they are now `late_reads` with their headroom
 recorded, which is what the ring was widened for.
 
-The one thing still not verified is the case [[ADR-039]]'s off-target tests cover but
+The one thing still not verified is the case [[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s off-target tests cover but
 the station has not produced: a stall the 500 ms ring genuinely fails to absorb.
 No overrun occurred here, so the "estimate what a real loss cost" path remains
 proven only against `RingedDevice`. **(Superseded: it fired on the target later
@@ -706,7 +706,7 @@ the same day — see the final section.)**
 
 ## Follow-up, 2026-08-09: the deficit has a bias of its own
 
-[[ADR-039]]'s fix is confirmed in production — `rate_offset_ppm` reads −49.88
+[[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s fix is confirmed in production — `rate_offset_ppm` reads −49.88
 against +878 before, and `estimated_missing_seconds` no longer over-reports.
 
 But a first post-deploy reading raises a question worth resolving rather than
@@ -741,7 +741,7 @@ deficit grows at the rate the measured ppm predicts. If it does, the estimator
 and the deficit agree and the deficit simply needs drift-correcting before it
 is displayed — `web/src/components/Pipeline.tsx` currently shows it raw as
 "audio lost". If it grows faster, there is a real loss the estimator is now
-missing, and [[ADR-039]]'s confirmation window is too permissive.
+missing, and [[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s confirmation window is too permissive.
 
 ---
 
@@ -750,8 +750,8 @@ missing, and [[ADR-039]]'s confirmation window is too permissive.
 **Answer to the resolving check above: yes — and under artificial CPU load it
 grows *slower*, not faster, which is the opposite of the failure mode being
 tested for.** The deficit is crystal drift. The estimator's `0.0` is right.
-**[[ADR-039]]'s confirmation window is not too permissive**; there is no real loss it
-is missing. The display was the only thing wrong, and that is fixed in [[ADR-046]].
+**[[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s confirmation window is not too permissive**; there is no real loss it
+is missing. The display was the only thing wrong, and that is fixed in [[ADR-046 - Deficit is mostly drift|ADR-046]].
 
 | | ppm |
 |---|---|
@@ -845,7 +845,7 @@ was descheduled.
 Rather than discard the run, it was split at the probe's own boundaries. That
 turns the contamination into a control experiment — a stronger test than the one
 originally planned, because the failure mode under suspicion (losses too small
-for [[ADR-039]]'s window to credit) is precisely the one that should get *worse*
+for [[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s window to credit) is precisely the one that should get *worse*
 under scheduling pressure.
 
 ## The measurement
@@ -942,7 +942,7 @@ not return nothing — it returns a confident, wrong answer.
 `late_read_max_frames` reached **114,362 of 192,000** — 60% of the ring, a 298 ms
 stall — during this run, against 57,952 (30%) recorded in the previous round. The
 ring still absorbed everything and no audio was lost, but the headroom counter
-[[ADR-039]] added is doing its job and the trend is the wrong way.
+[[ADR-039 - Confirmed loss, not deficit|ADR-039]] added is doing its job and the trend is the wrong way.
 `OO_CAPTURE_BUFFER_MS` is the lever if it keeps climbing. Note that part of this
 run was under deliberate two-core load, so it is not a clean baseline.
 
@@ -968,9 +968,9 @@ run was under deliberate two-core load, so it is not a clean baseline.
   measurement of lost audio, not two that can corroborate each other.** The plan
   recorded in the previous section, to "drift-correct the deficit and display
   that", would have produced a rename of the estimator's own figure presented as
-  a second opinion. That is why [[ADR-046]] separates the terms instead.
+  a second opinion. That is why [[ADR-046 - Deficit is mostly drift|ADR-046]] separates the terms instead.
 - **The unabsorbed-stall path is still unproven on target.** No overrun has
-  occurred on this station since [[ADR-039]] shipped, so "estimate what a real loss
+  occurred on this station since [[ADR-039 - Confirmed loss, not deficit|ADR-039]] shipped, so "estimate what a real loss
   cost" remains proven only against `RingedDevice` in
   `tests/test_alsa_source.py`. Unchanged from the previous round, and the load
   probe did not produce one either.
@@ -978,7 +978,7 @@ run was under deliberate two-core load, so it is not a clean baseline.
 ## What was changed as a result
 
 Nothing on the station — no capture code, schema, setting or dependency, so this
-work cannot have affected the measurement it reports. `web/` only ([[ADR-046]]):
+work cannot have affected the measurement it reports. `web/` only ([[ADR-046 - Deficit is mostly drift|ADR-046]]):
 `audio lost` now shows `estimated_missing_seconds`; the deficit is shown
 separately as `behind clock` with its drift term named and its ±50 ms phase
 uncertainty stated; `late_reads` is shown beside `overruns`. `describeDeficit` is
@@ -1001,7 +1001,7 @@ rather than hiding it in the meantime.
 
 Every round above ended with the same caveat — *"the 'estimate what a real loss
 cost' path remains proven only against `RingedDevice`"*, because no ALSA overrun
-had occurred on this station since [[ADR-039]] shipped. **One has now.** Twelve, in
+had occurred on this station since [[ADR-039 - Confirmed loss, not deficit|ADR-039]] shipped. **One has now.** Twelve, in
 fact, and they agree with the estimator.
 
 Read from `/api/v1/health` on the live station, **read-only, 2026-08-09 21:46:05Z**,
@@ -1023,9 +1023,9 @@ recorded anywhere in this document:
 
 **The estimator and the drift-corrected deficit agree to 0.08 s over four hours.**
 Set that against the behaviour this whole document was written to chase: the
-pre-[[ADR-039]] estimator over-reported by **8–13×** *while nothing at all was being
+pre-[[ADR-039 - Confirmed loss, not deficit|ADR-039]] estimator over-reported by **8–13×** *while nothing at all was being
 lost*. It now reports roughly 6.9 s lost when roughly 6.9 s was lost, and every
-one of those twelve gaps is backed by an EPIPE ALSA actually raised. [[ADR-039]]'s
+one of those twelve gaps is backed by an EPIPE ALSA actually raised. [[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s
 `RingedDevice` result has a real-hardware counterpart.
 
 **Four cautions, because one snapshot is not a study:**
@@ -1044,7 +1044,7 @@ one of those twelve gaps is backed by an EPIPE ALSA actually raised. [[ADR-039]]
 - **`late_read_max_frames` reached 155,243 of the 192,000-frame ring — 81%.**
   Against 57,952 (30%) two rounds ago and 114,362 (60%) one round ago, that is the
   third consecutive reading in the wrong direction, and this time the ring did
-  overflow twelve times. `OO_CAPTURE_BUFFER_MS` is the lever, and [[ADR-030]]'s next
+  overflow twelve times. `OO_CAPTURE_BUFFER_MS` is the lever, and [[ADR-030 - ALSA ring and capture thread|ADR-030]]'s next
   structural step — a free-running reader thread feeding an internal queue —
   deserves re-reading before the 72-hour soak rather than after it.
 
@@ -1076,7 +1076,7 @@ The previous section ended with `late_read_max_frames` at **155,243 of 192,000
 (81%)** — the third consecutive reading in the wrong direction — twelve real ALSA
 overruns, and the sentence *"Why the ring overflowed twelve times. Unattributed."*
 
-**It is now attributed.** The 30 s beat that [[ADR-033]] noticed and could not name
+**It is now attributed.** The 30 s beat that [[ADR-033 - Retention is paced|ADR-033]] noticed and could not name
 ("the lag events fell to ~1.6/min on an unrelated 30 s beat"), and that the round
 before this one guessed at ("`clips.disk_usage()` caches its clip-tree walk for
 exactly 30 s and is the obvious candidate, but that is inference — it measured
@@ -1122,7 +1122,7 @@ line at 13:42:46Z, which reports the same totals:
 | `loop_lag_max_s` / `loop_lag_events` | **0.4625** / 275 |
 | `continuity_ratio` | 0.999566 |
 
-[[ADR-039]]'s estimator agrees with the drift-corrected deficit to **0.099 s over two
+[[ADR-039 - Confirmed loss, not deficit|ADR-039]]'s estimator agrees with the drift-corrected deficit to **0.099 s over two
 hours**, a second hardware corroboration on top of the 0.08 s one in the previous
 section. The estimator is not in question here and was not re-derived.
 
@@ -1137,7 +1137,7 @@ price of one of these events is about **0.54 s**, not 0.13 s.
 **262 of 262.** They arrive on a **30.4 s** beat — 223 of the 261 inter-arrival
 intervals within 2.5 s of 30 s — with stalls of **254–370 ms** (median 300).
 
-No inference is required, because `snapshot_phase_s` ([[ADR-033]]) names the phase in
+No inference is required, because `snapshot_phase_s` ([[ADR-033 - Retention is paced|ADR-033]]) names the phase in
 the same millisecond. Three consecutive log lines, UTC:
 
 ```
@@ -1228,9 +1228,9 @@ lag reports about 0.45 s apart — a small one, then a large one:
 500 ms ring. None of the five coincides with a storage walk; the nearest walk to
 the 13:38:59 event ran 21 s earlier.
 
-This is [[ADR-033]]'s mechanism exactly, un-fixed and grown: the sweep is SQLAlchemy
+This is [[ADR-033 - Retention is paced|ADR-033]]'s mechanism exactly, un-fixed and grown: the sweep is SQLAlchemy
 ORM work in Python holding the GIL, in the evidence thread, and the loop still has
-to issue and consume each capture read. [[ADR-033]] measured it at ~0.30 s costing
+to issue and consume each capture read. [[ADR-033 - Retention is paced|ADR-033]] measured it at ~0.30 s costing
 55–150 ms of lag. It is now large enough to empty the ring. The likely reason it
 has grown is in the sweep's own prologue — `_exemplar_detection_ids(session)` and
 `held_detection_ids(session)` run unconditionally, before any budget or deadline
@@ -1238,7 +1238,7 @@ check, over a `detection` table now at **107,808 rows**.
 
 **This is correlation with n=5, not causation.** It has not been isolated and it
 is not fixed here. The single-variable experiment that would settle it is the one
-[[ADR-033]] already used, and it costs no code: set `OO_RETENTION_ENABLED=false` in
+[[ADR-033 - Retention is paced|ADR-033]] already used, and it costs no code: set `OO_RETENTION_ENABLED=false` in
 `config/runtime.env`, restart, and see whether the ~302 s overruns stop.
 
 ## Ruled out, by measurement
@@ -1255,27 +1255,27 @@ is not fixed here. The single-variable experiment that would settle it is the on
 - **Thermal or frequency scaling.** ARM clock pegged at 1,600,013,696 Hz; 60.4 °C,
   warm against the 39 °C in the brief but nowhere near the ~80 °C throttle point,
   and `get_throttled` says so.
-- **The refinement runner ([[ADR-045]]).** `open-observatory-refine.timer` last ran at
+- **The refinement runner ([[ADR-045 - Refinement runner|ADR-045]]).** `open-observatory-refine.timer` last ran at
   **02:01 BST** and next runs at 02:03. It is not running in any window here.
-- **The near-miss ledger ([[ADR-052]]), withdrawn-detection filtering, the pause gate
+- **The near-miss ledger ([[ADR-052 - Near-miss ledger|ADR-052]]), withdrawn-detection filtering, the pause gate
   and the spectrogram encoder.** None appears in either beat, and both beats are
   accounted for to the millisecond by work that names itself.
 
 ## What was changed, and what was not
 
-**[[ADR-059]]** fixes finding 1 only. `disk_usage()` now reports instead of measuring;
+**[[ADR-059 - Clip archive measured off-loop|ADR-059]]** fixes finding 1 only. `disk_usage()` now reports instead of measuring;
 the walk becomes `refresh_disk_usage()`, an `async` method that yields to the loop
 every 512 files and is driven from housekeeping on the **same 30 s cadence**, so
 exactly one thing moved. It also switches to `os.scandir` (2.3× cheaper).
-Chunking rather than a thread is deliberate, and is [[ADR-033]]'s own lesson: an
+Chunking rather than a thread is deliberate, and is [[ADR-033 - Retention is paced|ADR-033]]'s own lesson: an
 executor partitions queueing, not scheduling, and nothing partitions the GIL.
 
 **It is not deployed and not verified on target**, under the standing instruction
 not to deploy or restart while the operator was using the station. Every figure in
-this section is a read-only measurement of the *unfixed* station. [[ADR-059]] carries
+this section is a read-only measurement of the *unfixed* station. [[ADR-059 - Clip archive measured off-loop|ADR-059]] carries
 the verification block to run afterwards.
 
-Finding 2 is left alone on purpose. It is [[ADR-033]]'s code, it has n=5, and the
+Finding 2 is left alone on purpose. It is [[ADR-033 - Retention is paced|ADR-033]]'s code, it has n=5, and the
 operator asked to start the soak knowing rather than with a speculative change in
 place.
 
@@ -1298,7 +1298,7 @@ place.
   `ExecMainStartTimestamp` before believing any counter on this station today — it
   was restarted at 11:37:51Z, 13:42:46Z and 13:55:59Z.
 - **`ClipManager.enforce_retention()` and `sweep_retention` are unreachable in the
-  station.** Nothing calls them; `RetentionSweeper` ([[ADR-026]]) superseded them and
+  station.** Nothing calls them; `RetentionSweeper` ([[ADR-026 - Tiered clip retention|ADR-026]]) superseded them and
   only `tests/test_pipeline.py` exercises them. They look like a live second
   retention path and are not.
 - **`late_read_max_frames` is a maximum over a run, not a level.** It resets on
@@ -1312,7 +1312,7 @@ place.
 
 - ~~**Finding 2 is unfixed and unisolated.** The `OO_RETENTION_ENABLED=false`
   experiment above is cheap and has not been run.~~ **CLOSED 2026-08-14 by
-  [[ADR-061]], and the experiment was never needed.** The cause was identified
+  [[ADR-061 - Operator keep flag|ADR-061]], and the experiment was never needed.** The cause was identified
   directly rather than by ablation: `RetentionSweeper.sweep()` ran an unbounded
   2.978 s query *before* any deadline check, and the coupling to capture was
   proven to the millisecond from the station's own log — a sweep beginning
@@ -1321,18 +1321,18 @@ place.
   minutes following deployment**, against 22-24 per hour beforehand, while
   retention deleted 800 files / 3.5 GB with a sweep duration of 0.696 s inside
   its 1.5 s budget and a preamble of 0.0027 s.
-- ~~**[[ADR-059]] is unverified on target.** No post-fix reading exists.~~ **A
-  post-fix reading exists and it FAILED.** [[ADR-059]] predicted
+- ~~**[[ADR-059 - Clip archive measured off-loop|ADR-059]] is unverified on target.** No post-fix reading exists.~~ **A
+  post-fix reading exists and it FAILED.** [[ADR-059 - Clip archive measured off-loop|ADR-059]] predicted
   `late_read_max_frames` "well under 100,000"; the reading at 54.7 h into the
   soak was **188,982 of 192,000 (98.4%)** — worse than the 81% it was written
-  to fix. Recorded on [[ADR-059]] itself. Its diagnosis (a filesystem walk on the
+  to fix. Recorded on [[ADR-059 - Clip archive measured off-loop|ADR-059]] itself. Its diagnosis (a filesystem walk on the
   event loop) was correct but incomplete: the walk's *successor* cost, the
-  retention sweep, was the larger term and is what [[ADR-061]] removed.
+  retention sweep, was the larger term and is what [[ADR-061 - Operator keep flag|ADR-061]] removed.
 - **The 72-hour soak was run anyway, 2026-08-10 to 2026-08-13, before finding 1
   was deployed and confirmed — and it failed**, at 99.865% continuity against
   a ≥ 99.9% criterion. This document's own prediction held: the walk starved
   the capture loop and forced device restarts through most of the window. See
-  [[MILESTONE_STATUS]] §Milestone 4.5 and [[ADR-061]], which removes the walk's
+  [[MILESTONE_STATUS]] §Milestone 4.5 and [[ADR-061 - Operator keep flag|ADR-061]], which removes the walk's
   successor cost (the retention sweep's unbounded exemplar query).
 - **`OO_CAPTURE_BUFFER_MS` was not touched.** Widening the ring was the lever the
   previous round nominated, and it would buy time — but the walk grows without

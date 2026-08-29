@@ -7,7 +7,7 @@ exists.
 Recorded 2026-08-04, revised 2026-08-05 to cover the waterfall spectrogram view, the
 event-stream filtering default and history browsing, and **re-verified against the
 code and the live station on 2026-08-09, after the whole of that day's 87 commits
-were merged to `main`** ([[ADR-041]] through [[ADR-053]], Milestones 8 and 9). See
+were merged to `main`** ([[ADR-041 - Ultrasonic spectrogram range|ADR-041]] through [[ADR-053 - Grouping above species|ADR-053]], Milestones 8 and 9). See
 [[HANDOVER]] for operational context, the bugs found by measurement, and a
 prioritised list of what to do next.
 
@@ -29,7 +29,7 @@ delivery state, this one is meant to win — tell whoever wrote the other one.
 | `oo` CLI skeleton | done |
 | `oo audio probe` | done, and used to produce [[TARGET_DIAGNOSTICS]] |
 | `oo system report` | done as `oo system-report` |
-| Docker Compose baseline | **deferred** — see [[ADR-008]]; native systemd used instead |
+| Docker Compose baseline | **deferred** — see [[ADR-008 - systemd, not Compose\|ADR-008]]; native systemd used instead |
 | Target diagnostic report | done |
 
 **Exit gate — AudioMoth formats and stable device identity recorded from the actual
@@ -52,7 +52,7 @@ Pi: met.** Single profile, 384 kHz mono S16_LE, stable key
 **Exit gate — no timestamp drift or unexplained gaps over an hour: still NOT met at
 full duration, but much better evidenced than it was.** Resampler timing was verified
 over 5 minutes of generated audio (zero group delay, bounded delivery deficit, no
-trend). Since then, [[ADR-046]]'s work sampled the live station every 2 s across a
+trend). Since then, [[ADR-046 - Deficit is mostly drift|ADR-046]]'s work sampled the live station every 2 s across a
 **42.7-minute restart-free run**, and showed the frame deficit growing as a straight
 line at the crystal's own rate (+51.17 and +51.00 ppm in two clean windows 32 minutes
 apart, against an independently fitted `rate_offset_ppm` asymptote of −50.43) with no
@@ -62,12 +62,12 @@ or leak.
 **It is still not the one-hour run, and the distinction is not pedantry.** The longest
 *clean* window in that run was 22.2 minutes; a loss mechanism with a period longer than
 that — an hourly sweep, a nightly rotation, a thermal cycle — would not have appeared.
-[[ADR-046]] says so itself.
+[[ADR-046 - Deficit is mostly drift|ADR-046]] says so itself.
 
 **Both have since been run (2026-08-25).** The 72-hour soak **passed** its
 continuity criterion ([[SOAK_2026-08-22]]). The full-hour drift
-run was split by [[ADR-069]] into two different tests: gate (a), the synthetic
-resampler run, **passed** on the target device; gate (b), the live capture-clock
+run was split by [[ADR-069 - Two drift gates|ADR-069]] into two different tests: gate (a), the synthetic
+resampler run, **passed** on the target device ([[DRIFT_GATE_A_2026-08-25]]); gate (b), the live capture-clock
 run, **did not pass** — it failed on linearity, with a residual shaped like a
 thermal excursion ([[DRIFT_GATE_B_2026-08-25]]). So the hour-long
 window did surface something the 22.2-minute one could not, which is the
@@ -81,10 +81,10 @@ argument this paragraph was making.
 | Source-frame mapping | done and tested — output frame *n* ↔ native frame *8n* |
 | Window specification and segmenter | done; one segmenter per distinct `WindowSpec`, shared between detectors |
 | Transient asset lease manager | done, with sweep and leak accounting |
-| Redis Streams job contract | **deferred** — in-process `EventBus` behind the same protocol, per [[ADR-009]] and the explicit permission in `CLAUDE.md` |
+| Redis Streams job contract | **deferred** — in-process `EventBus` behind the same protocol, per [[ADR-009 - In-process event bus\|ADR-009]] and the explicit permission in `CLAUDE.md` |
 | Bounded queue policies | done; per-detector bounded queues, delivery deadline, circuit breaker |
 | Window inspection CLI | done — `oo audio resample-check` inspects resampler timing and `oo audio window-dump` (added 2026-08-09) dumps a specific segmenter window: actual frame bounds, actual sample count (cross-checked against an independent `RingBuffer` read, not just restated `WindowSpec` arithmetic), UTC and local-time rendering, and gap-injection to show how a discontinuity shows up in the segmenter's own frame accounting |
-| Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps. Recorded as [[ADR-012]] |
+| Live spectrogram transport | done, beyond plan — two channels, binary framing, verified from a real browser at 1246 columns / 29.9 s of audio per 30 s wall with zero gaps or overlaps. Recorded as [[ADR-012 - One writer per WebSocket\|ADR-012]] |
 | Spectrogram presentation | done, beyond plan — scrolling and waterfall orientations, with the shared coordinate mapping in `web/src/components/geometry.ts` tested against both |
 | Event stream filtering | done — unidentified events are hidden by default, so the stream shows what was identified rather than everything the activity detector fired on |
 
@@ -106,8 +106,8 @@ within one frame (20 µs), verified by test.
 | History browsing | done, beyond plan — named windows resolved in the station's timezone, SQL-aggregated timeline and species summary, shown against capture coverage so an empty stretch is distinguishable from a quiet one. No historical spectrogram: the ring buffer is memory-only by design |
 | Audible rendering of ultrasound | done, beyond plan — time-expansion and heterodyne derivatives, verified on live bats at 18-54 kHz |
 | Low-latency live listening | done, beyond plan — ~180 ms end to end |
-| BirdNET's sound categories are not species | done ([[ADR-049]]) — the eleven non-biological labels (Engine, Human vocal, Dog…) no longer get a species rank, a fabricated `sci:engine` taxon id, or a plausibility floor the range model cannot speak to. A dry run against the live database found [[ADR-032]]'s floor was about to withdraw 91 *correct* detections; the exemption took the findings from 114 to 23 at the default limit. `oo detections reconcile-taxonomy` repairs the 247 stored rows without deleting any |
-| Human speech is not stored as evidence | done ([[ADR-049]]) — `clip_human_audio` defaults **off**, so no new clip is written for a human-sound detection; `oo clips purge-human-audio` removes the 48 existing assets (125 MB, 24 detections) and keeps the detection rows. This is the charter's privacy constraint made operational rather than promised. Neither command has been run with `--apply` on the live station |
+| BirdNET's sound categories are not species | done ([[ADR-049 - Sound categories are not species\|ADR-049]]) — the eleven non-biological labels (Engine, Human vocal, Dog…) no longer get a species rank, a fabricated `sci:engine` taxon id, or a plausibility floor the range model cannot speak to. A dry run against the live database found [[ADR-032 - Plausibility bands\|ADR-032]]'s floor was about to withdraw 91 *correct* detections; the exemption took the findings from 114 to 23 at the default limit. `oo detections reconcile-taxonomy` repairs the 247 stored rows without deleting any |
+| Human speech is not stored as evidence | done ([[ADR-049 - Sound categories are not species\|ADR-049]]) — `clip_human_audio` defaults **off**, so no new clip is written for a human-sound detection; `oo clips purge-human-audio` removes the 48 existing assets (125 MB, 24 detections) and keeps the detection rows. This is the charter's privacy constraint made operational rather than promised. Neither command has been run with `--apply` on the live station |
 
 **Exit gate — known bird fixture produces expected candidate label and an aligned
 playable clip: MET, on the target Pi 5 (aarch64), 2026-08-08.** `tests/test_birdnet_fixture.py`, added 2026-08-08, is
@@ -116,13 +116,13 @@ the repeatable test the gate asks for. It uses a committed reference recording �
 Xeno-canto (XC441752, recordist Jan Cibulka), individually licence-checked (CC BY-SA
 4.0, not the NC-SA terms many Xeno-canto recordings carry) and committed with its
 required attribution in `tests/fixtures/audio/ATTRIBUTION.md` and a checksummed
-`manifest.tsv` in the same shape as `models/manifest.tsv` ([[ADR-006]]). Unlike the
+`manifest.tsv` in the same shape as `models/manifest.tsv` ([[ADR-006 - Model install and licensing|ADR-006]]). Unlike the
 BirdNET model assets, this is a short third-party recording whose own licence
 explicitly permits redistribution, so it is committed directly rather than fetched
 on demand.
 
 The test asserts both halves of the gate against the real, shipped model and range
-model, with the plausibility filtering from [[ADR-032]] switched on and the neutral
+model, with the plausibility filtering from [[ADR-032 - Plausibility bands|ADR-032]] switched on and the neutral
 Greenwich reference coordinates (see the test module docstring): (1) "European Robin" / *Erithacus rubecula* appears among the
 candidates, with a real, in-range plausibility band, not a suppressed or
 strictly-gated one; (2) an evidence clip is written, is readable as 48 kHz audio, has
@@ -154,7 +154,7 @@ wrong.
 
 ## Milestone 4 — Product dashboard and review — **delivered; review workflow closed 2026-08-09 (ADR-043)**
 
-Reassessed 2026-08-05. [[ADR-016]] supersedes the part of [[ADR-011]] that treated the debug
+Reassessed 2026-08-05. [[ADR-016 - Debug UI is the dashboard's foundation|ADR-016]] supersedes the part of [[ADR-011 - Debug UI is not the dashboard|ADR-011]] that treated the debug
 UI as a surface to be replaced: this milestone **promotes** it instead. The plan's own
 exit gate asks that a user can operate *and diagnose* through one local UI, which is a
 single surface with two depths.
@@ -162,21 +162,21 @@ single surface with two depths.
 | Deliverable | State |
 |---|---|
 | React dashboard | foundation done — application shell and component set; surface-agnostic WebSocket and audio clients |
-| Styling | done ([[ADR-027]]) — spacing and type scales applied to new surfaces; ~700 lines of pre-existing component CSS deliberately not migrated, recorded as scoped-out |
+| Styling | done ([[ADR-027 - Spacing and type scale\|ADR-027]]) — spacing and type scales applied to new surfaces; ~700 lines of pre-existing component CSS deliberately not migrated, recorded as scoped-out |
 | Frontend test harness | done — `@testing-library/react` + `jest-dom` + `user-event`, all exact-pinned. **235 frontend tests in 22 files**, measured on merged `main` 2026-08-09, up from 1 file with only pure functions testable |
 | Timeline, filters, detail | foundation done — HISTORY mode: named windows, stacked timeline, species summary, click-to-focus, coverage bar |
 | Spectrogram and playback | done — two orientations, live listening, per-detection clips including audible ultrasound |
-| Health/system page | done ([[ADR-028]]) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
-| Operator/diagnostic disclosure | done ([[ADR-028]]) — one depth toggle via `?view=operate\|diagnose`, not a second route |
-| `App.tsx` state extraction | done — decomposed into `web/src/hooks/*` and `web/src/state/*`; `useLiveAudio.test.tsx` guards the [[ADR-022]] retune fix from regressing |
-| Review workflow | done ([[ADR-043]]) — confirm, reject, **correct** and hold. A correction is a new `Review` row, never an edit: the detection's own claim columns are untouched, so the original stays visible and attributable. Human review outranks machine refinement in code (`plausibility_repair` skips any human-reviewed detection at both find and apply time), and a held review exempts evidence from the age tiers though **not** from the disk watermark. Two stated limits: a correction can only name a taxon the station has itself identified before, and `/api/v1/history` still aggregates on the original taxonomy. **In real use, not merely built** — the live station's `review` table held 65 rows on 2026-08-09 |
-| Retention job and UI | done — tiered age-out backend ([[ADR-026]]) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions. **The first/best-of-species exemption is replaced by an operator-set `kept` flag ([[ADR-061]])** — `PUT`/`DELETE /api/v1/detections/{id}/keep`, `oo detections keep`, and a drawer toggle. Not yet deployed; see the Milestone 4.5 §1e note below |
+| Health/system page | done ([[ADR-028 - One depth toggle\|ADR-028]]) — `OperatorSummary` gives plain-language listening/storage/detection cards; the diagnostic depth is still there behind the toggle |
+| Operator/diagnostic disclosure | done ([[ADR-028 - One depth toggle\|ADR-028]]) — one depth toggle via `?view=operate\|diagnose`, not a second route |
+| `App.tsx` state extraction | done — decomposed into `web/src/hooks/*` and `web/src/state/*`; `useLiveAudio.test.tsx` guards the [[ADR-022 - HTTP retune control\|ADR-022]] retune fix from regressing |
+| Review workflow | done ([[ADR-043 - Taxon correction\|ADR-043]]) — confirm, reject, **correct** and hold. A correction is a new `Review` row, never an edit: the detection's own claim columns are untouched, so the original stays visible and attributable. Human review outranks machine refinement in code (`plausibility_repair` skips any human-reviewed detection at both find and apply time), and a held review exempts evidence from the age tiers though **not** from the disk watermark. Two stated limits: a correction can only name a taxon the station has itself identified before, and `/api/v1/history` still aggregates on the original taxonomy. **In real use, not merely built** — the live station's `review` table held 65 rows on 2026-08-09 |
+| Retention job and UI | done — tiered age-out backend ([[ADR-026 - Tiered clip retention\|ADR-026]]) and `RetentionPanel`, reconciled against the real `GET /api/v1/retention/status` after the two were built in parallel against different assumptions. **The first/best-of-species exemption is replaced by an operator-set `kept` flag ([[ADR-061 - Operator keep flag\|ADR-061]])** — `PUT`/`DELETE /api/v1/detections/{id}/keep`, `oo detections keep`, and a drawer toggle. Not yet deployed; see the Milestone 4.5 §1e note below |
 | CSV/JSON export | done — `GET /api/v1/detections/export`, registered before `/detections/{id}` so it is not swallowed by the path parameter |
-| Authentication foundation | done ([[ADR-034]]) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 counter-top display keeps working |
-| Inside-observer push channel | done ([[ADR-038]]) — `GET /api/v1/display`, a detections-only WebSocket. 49 B a detection against the polled transport's ~127 kB/20 s; deployed to the Pi and flashed to the board on 2026-08-09. Elapsed times ("4s ago") ticking once a second, partial repaints only. HTTP polling retained and exercised as the fallback. Verified live 2026-08-09 21:46Z: one client connected, 2,784 frames sent, 0 dropped, mean 42.5 B a frame |
-| Spectrogram playhead marker | done ([[ADR-051]]) — the spectrogram says *where* the sound being played back is, as a measured interval rather than a line. Frontend only; the offset was measured against a ground-truth rig rather than assumed |
-| BirdNET near-miss ledger | done ([[ADR-052]]) — `GET /api/v1/detectors/near-misses` records what BirdNET proposed and refused, with per-band score histograms, so a threshold can be tuned on evidence instead of on a bare counter. A bounded in-memory ring at ~2 µs per candidate; **persists nothing**, by design |
-| Every setting web-editable | done ([[ADR-048]]) — `GET`/`PUT /api/v1/settings` and `GET /api/v1/setup`, in three declared tiers (live, restart, excluded) with the exclusions named. The service writes its own `config/runtime.env`. Confirmed working on the live station, which now carries an `OO_BIRDNET_THRESHOLD_IN_RANGE` line written by the settings page |
+| Authentication foundation | done ([[ADR-034 - Authentication foundation\|ADR-034]]) — Argon2id, sessions, revocable API tokens, rate-limited login. **Off by default**, with a configurable public-read allow-list so the ESP32 counter-top display keeps working |
+| Inside-observer push channel | done ([[ADR-038 - Display push channel\|ADR-038]]) — `GET /api/v1/display`, a detections-only WebSocket. 49 B a detection against the polled transport's ~127 kB/20 s; deployed to the Pi and flashed to the board on 2026-08-09. Elapsed times ("4s ago") ticking once a second, partial repaints only. HTTP polling retained and exercised as the fallback. Verified live 2026-08-09 21:46Z: one client connected, 2,784 frames sent, 0 dropped, mean 42.5 B a frame |
+| Spectrogram playhead marker | done ([[ADR-051 - Playhead as an interval\|ADR-051]]) — the spectrogram says *where* the sound being played back is, as a measured interval rather than a line. Frontend only; the offset was measured against a ground-truth rig rather than assumed |
+| BirdNET near-miss ledger | done ([[ADR-052 - Near-miss ledger\|ADR-052]]) — `GET /api/v1/detectors/near-misses` records what BirdNET proposed and refused, with per-band score histograms, so a threshold can be tuned on evidence instead of on a bare counter. A bounded in-memory ring at ~2 µs per candidate; **persists nothing**, by design |
+| Every setting web-editable | done ([[ADR-048 - Web-configurable settings\|ADR-048]]) — `GET`/`PUT /api/v1/settings` and `GET /api/v1/setup`, in three declared tiers (live, restart, excluded) with the exclusions named. The service writes its own `config/runtime.env`. Confirmed working on the live station, which now carries an `OO_BIRDNET_THRESHOLD_IN_RANGE` line written by the settings page |
 
 ## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture, window-dump and 72-hour soak gates closed; drift gate (b) run and failed on linearity**
 
@@ -239,19 +239,19 @@ Still outstanding in this milestone:
   after the §1e defect is fixed**, and it is still true that a soak and a deploy
   are mutually exclusive.
   **The §1e defect now has two fixes, neither yet deployed or re-verified on the
-  station.** [[ADR-060]] bounds the ALSA read/error loop, adds an `asyncio.wait_for`
+  station.** [[ADR-060 - A stalled read is a dead stream|ADR-060]] bounds the ALSA read/error loop, adds an `asyncio.wait_for`
   backstop and stops `capture.state` capping health severity at "degraded" — a
   wedged device now costs seconds and a `critical` health event instead of
-  3 h 35 min of silence. [[ADR-061]] removes the query that was forcing the device
+  3 h 35 min of silence. [[ADR-061 - Operator keep flag|ADR-061]] removes the query that was forcing the device
   restarts in the first place: the retention sweep's unbounded exemplar
   computation, measured at 2.978 s against a 1.5 s budget, is replaced with an
   operator-set `kept` flag and one indexed query per tier. Both are documented
   only as of this entry; `deploy/deploy.sh` has not been run against them and
-  none of [[ADR-060]]'s or [[ADR-061]]'s target smoke tests have been executed on the
+  none of [[ADR-060 - A stalled read is a dead stream|ADR-060]]'s or [[ADR-061 - Operator keep flag|ADR-061]]'s target smoke tests have been executed on the
   Pi. The re-run this bullet calls for should follow that deploy, not precede
   it.
   **Second attempt, 2026-08-14 to 2026-08-17: also did not complete, and for a
-  reason nothing detected.** [[ADR-060]] and [[ADR-061]] were deployed and worked
+  reason nothing detected.** [[ADR-060 - A stalled read is a dead stream|ADR-060]] and [[ADR-061 - Operator keep flag|ADR-061]] were deployed and worked
   emphatically — the run reached 62.7 hours restart-free at **0.999935**
   continuity with 2.85 s of audio lost (against 349.3 s), 5 overruns (against
   23,135) and 3 `capture_gap` rows in 62.7 hours (against 22–24 per hour). It
@@ -261,14 +261,14 @@ Still outstanding in this milestone:
   points to external power loss with nothing in software to fix (see
   [[SOAK_2026-08-14]]). **Nothing reported the restart** —
   every counter that would have shown it is process-scoped and reset with the
-  process — and it was found two days later by running `uptime`. [[ADR-065]] now
+  process — and it was found two days later by running `uptime`. [[ADR-065 - Unclean restart is reported|ADR-065]] now
   makes an unclean restart a health note for exactly this reason.
 
   **And the run was hiding two defects while passing.** Retention had stopped
-  reclaiming entirely for two days ([[ADR-062]]) while the disk climbed
+  reclaiming entirely for two days ([[ADR-062 - Retention walks live assets|ADR-062]]) while the disk climbed
   3.8 GB/hour, and every UTC timestamp the station wrote across those 49 hours
   was **106 seconds early**, because capture anchored its frame-to-UTC mapping
-  before NTP first synchronised after the boot ([[ADR-063]]). Continuity was
+  before NTP first synchronised after the boot ([[ADR-063 - Clock re-anchor|ADR-063]]). Continuity was
   0.999949 throughout and correctly so — continuity is a monotonic-clock
   property and was genuinely fine. **A run can pass every criterion in
   [[ACCEPTANCE_CRITERIA]] and still be producing systematically wrong
@@ -300,10 +300,10 @@ Still outstanding in this milestone:
   about 5.8 ms of excursion — which is not a step, not the retention sweep's
   300 s beat, and not noise. It implies roughly **6 ppm of rate swing inside the
   hour** around a mean of 46.3 ppm ± 0.85. The leading hypothesis is thermal
-  (the window ran 06:58–08:03 BST, through sunrise; [[ADR-069]] itself records the
+  (the window ran 06:58–08:03 BST, through sunrise; [[ADR-069 - Two drift gates|ADR-069]] itself records the
   crystal moving ~3 ppm on a thermal change inside an hour) but **this was not
   measured** — nothing logged temperature and the Pi keeps no history.
-  **What it does establish:** [[ADR-069]] built this gate to exclude a continuous
+  **What it does establish:** [[ADR-069 - Two drift gates|ADR-069]] built this gate to exclude a continuous
   mechanism of ~890 ppm, the size needed to explain the failed soak's 175 s of
   deficit. At 46.3 ppm with zero confirmed loss across the window, that is
   **excluded by a factor of about nineteen**. The gate still did not pass,
@@ -313,7 +313,7 @@ Still outstanding in this milestone:
   [`../operations/DRIFT_GATE_B_2026-08-25.md`](../operations/DRIFT_GATE_B_2026-08-25.md).
   The previous state of this bullet follows.
   Not run at full duration before 2026-08-25. The best evidence to date is
-  [[ADR-046]]'s 42.7-minute restart-free sampling run, whose longest *clean* segment was
+  [[ADR-046 - Deficit is mostly drift|ADR-046]]'s 42.7-minute restart-free sampling run, whose longest *clean* segment was
   22.2 minutes — see the Milestone 1 exit-gate note above for why that is not the same
   thing. The method now takes 15 minutes and about 150 lines and is written down, so
   this is cheap; what it needs is a stretch with nobody deploying.
@@ -330,7 +330,7 @@ the native stream genuinely useful rather than theoretical. **Exit gate met
 2026-08-05**: a known bat fixture is processed on the target device
 (`tests/test_batdetect2.py`) and capture continuity was unaffected (0.999318,
 0 overruns). The bat adapter is deliberately *not* built: the benchmark measured
-BatDetect2 at 0.52x realtime, below the threshold, and [[ADR-017]] records that.
+BatDetect2 at 0.52x realtime, below the threshold, and [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] records that.
 
 > ✅ **Provenance closed, 2026-08-25.** `results/batdetect2-pi5.json` was
 > re-generated on the Pi by `scripts/benchmark_batdetect2.py --json ...` and is
@@ -356,8 +356,8 @@ BatDetect2 at 0.52x realtime, below the threshold, and [[ADR-017]] records that.
 | Pi 5 benchmark report | **done** — BatDetect2 measured on the target: p95 968 ms per 0.5 s clip, **0.52× realtime in isolation**, +459 MB RSS. Against BirdNET at ~40× and the pass detector at ~36–40×. Verdict: not sustainable for real-time inference |
 | Detector configuration | **done** — every ultrasonic threshold, the band, the buzz parameters and the schedule are wired to `Settings`, with defaults equal to the previous constructor defaults so behaviour was unchanged until set |
 | Night scheduler | **done** — civil dusk to civil dawn plus configurable margins, from the NOAA solar formulas with no new dependency. Verified on the Pi 2026-08-05: dusk 20:27Z, dawn 03:55Z, active at 21:45 local, inactive at noon. The gate returns before any FFT work, so the CPU saving is real. With coordinates unset it runs continuously and reports why, rather than silently detecting nothing |
-| Deferred mode | **`DeferredDetectorWorker` exists and is still unused** (`detectors/deferred.py`); it remains the right mechanism for a *live* detector too slow to run inline, and the wrong one for stored clips, since it drops anything older than `max_delivery_latency_s`. **Decided 2026-08-09 ([[ADR-045]]):** the cascade ships instead as a **separate process** on a systemd timer — `oo refine run`, `src/open_observatory/refinement/` — at 01:00 UTC, fenced to `AllowedCPUs=2-3` / `Nice=19` / `MemoryMax=1G` (all three verified on the target under systemd 255). Cost basis unchanged: 2.1 s of inference per pass, ~36 minutes for the 1015 passes of a full night ([[ADR-017]]'s 2026-08-05 update) |
-| Species refinement of stored bat passes | **done as *proposals only*, deliberately** ([[ADR-045]]). The runner writes append-only `refinement` rows and stamps each event with `refined_at` / `refinement_version` / `refinement_outcome`; it never edits a detection's species, score or `native_result`, and the writer raises if any claim column moves. It may not apply a change automatically, because BatDetect2 returned **0.77 for *Pipistrellus pygmaeus* on a call this station measured at 34 kHz** (soprano pipistrelle peaks near 55 kHz) and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing it writes reaches the API, MQTT, the web UI or the counter-top display. ~~Not yet run against the live station~~ — **it has been running there for some time: 16,586 `refinement` rows on 2026-08-23, the last pass exiting 0 at 2026-08-23 02:28 having used 41 minutes of CPU inside its `AllowedCPUs=2-3` fence.** The proposals-only rule is unchanged; nothing it wrote has reached a consumer |
+| Deferred mode | **`DeferredDetectorWorker` exists and is still unused** (`detectors/deferred.py`); it remains the right mechanism for a *live* detector too slow to run inline, and the wrong one for stored clips, since it drops anything older than `max_delivery_latency_s`. **Decided 2026-08-09 ([[ADR-045 - Refinement runner\|ADR-045]]):** the cascade ships instead as a **separate process** on a systemd timer — `oo refine run`, `src/open_observatory/refinement/` — at 01:00 UTC, fenced to `AllowedCPUs=2-3` / `Nice=19` / `MemoryMax=1G` (all three verified on the target under systemd 255). Cost basis unchanged: 2.1 s of inference per pass, ~36 minutes for the 1015 passes of a full night ([[ADR-017 - BatDetect2 as an optional adapter\|ADR-017]]'s 2026-08-05 update) |
+| Species refinement of stored bat passes | **done as *proposals only*, deliberately** ([[ADR-045 - Refinement runner\|ADR-045]]). The runner writes append-only `refinement` rows and stamps each event with `refined_at` / `refinement_version` / `refinement_outcome`; it never edits a detection's species, score or `native_result`, and the writer raises if any claim column moves. It may not apply a change automatically, because BatDetect2 returned **0.77 for *Pipistrellus pygmaeus* on a call this station measured at 34 kHz** (soprano pipistrelle peaks near 55 kHz) and leaned *Myotis* on 6 of 8 clips at only 0.20–0.30. Nothing it writes reaches the API, MQTT, the web UI or the counter-top display. ~~Not yet run against the live station~~ — **it has been running there for some time: 16,586 `refinement` rows on 2026-08-23, the last pass exiting 0 at 2026-08-23 02:28 having used 41 minutes of CPU inside its `AllowedCPUs=2-3` fence.** The proposals-only rule is unchanged; nothing it wrote has reached a consumer |
 | Feeding-buzz flagging | **done** — a run of short inter-pulse intervals that is also well below the train's own median, which is what distinguishes a terminal collapse from a bat calling fast throughout. `min_interval_ms` is emitted on every pass so a wrong threshold can be re-judged from stored data |
 | Frequency-band candidate titles | **done** — presentational only; the stored record keeps `label = "bat pass"` and no species name, and the normaliser's guard is asserted by test |
 | Sub-bin peak frequency | **done** — the pulse FFT has 3 kHz bins at 384 kHz and the candidate band edges fall between bin centres, so peaks were being assigned to a species group by quantisation. Parabolic interpolation fixes it; live, the station's 35–36 kHz cluster survives as a genuine 35.3–36.2 kHz signal |
@@ -408,7 +408,7 @@ The original off-target assessment follows, for the record.
 Built and unit/integration tested off-target (see below): the MQTT publisher
 (`src/open_observatory/mqtt/`), Home Assistant MQTT Discovery, and the
 `schema_version` 1.1 fix to `schemas/detection-event.schema.json` that closes
-HANDOVER.md section 6.3 item 9 (see [[ADR-025]]). Off by default
+HANDOVER.md section 6.3 item 9 (see [[ADR-025 - MQTT and Home Assistant|ADR-025]]). Off by default
 (`mqtt_enabled=false`); no operator credentials exist anywhere in this
 repository. Verified against a locally-run mosquitto container
 (`tests/test_mqtt_integration.py`) and 51 other unit tests with fake/mocked
@@ -442,17 +442,17 @@ remote update of the station after deployment, and over-the-air update of the
 counter-top display triggered from the Pi so it never has to be unplugged. Full
 scope and exit gate in [[IMPLEMENTATION_PLAN]].
 
-**Done: over-the-air update of the counter-top display ([[ADR-050]]).** Two OTA app
+**Done: over-the-air update of the counter-top display ([[ADR-050 - Display OTA slots|ADR-050]]).** Two OTA app
 slots, an image served by the station, SHA-256 verified before anything becomes
 bootable, and a rollback the display owns. **Flashed and verified on real
 hardware on 2026-08-09**, including a deliberate rollback drill; the station
 reported the display at firmware `0.2.4` and up to date. The drill earned its
 keep — it found that the whole rollback mechanism was unreachable code, because
-`arduino-esp32` marks a pending image valid before `setup()` runs. See [[ADR-050]]'s
+`arduino-esp32` marks a pending image valid before `setup()` runs. See [[ADR-050 - Display OTA slots|ADR-050]]'s
 "Verified on hardware" section.
 
 **And it has now carried a real change end to end, unattended (2026-08-25).**
-Firmware **0.2.5** ([[ADR-071]]'s WiFi reconnect fix and the footer reconnect
+Firmware **0.2.5** ([[ADR-071 - WiFi reconnect backoff|ADR-071]]'s WiFi reconnect fix and the footer reconnect
 indicator) was published with `POST /api/v1/firmware?version=0.2.5`, offered with
 `POST /api/v1/firmware/rollout`, and the display downloaded it, verified the
 digest, wrote it, rebooted, reconnected and proved itself past the probation
@@ -467,12 +467,12 @@ and the signed release process.
 
 Two pieces of groundwork already exist and were not built for this:
 
-- **[[ADR-047]]** made site parameters runtime state rather than committed defaults,
-  which is the precondition for one image serving every site. **[[ADR-048]]
+- **[[ADR-047 - The repository ships no site|ADR-047]]** made site parameters runtime state rather than committed defaults,
+  which is the precondition for one image serving every site. **[[ADR-048 - Web-configurable settings|ADR-048]]
   completed it** by putting the whole of `Settings` in the browser, in three
   declared tiers.
-- **[[ADR-038]]'s push channel** means the station already knows the display's
-  address and already talks to it. That is the transport [[ADR-050]]'s OTA trigger
+- **[[ADR-038 - Display push channel|ADR-038]]'s push channel** means the station already knows the display's
+  address and already talks to it. That is the transport [[ADR-050 - Display OTA slots|ADR-050]]'s OTA trigger
   actually used.
 
 What makes this genuinely hard, and why it must not be started early: **an
@@ -501,22 +501,22 @@ Milestone 6's environmental telemetry. The last is cheapest but least
 self-contained, and the charter requires the station to work without Home
 Assistant present.
 
-**Taxonomic grouping above species ([[ADR-053]])**, raised
+**Taxonomic grouping above species ([[ADR-053 - Grouping above species|ADR-053]])**, raised
 2026-08-09. The detector exposes nothing between a species binomial and
 "bird" — the label file has no hierarchy and `taxonomic_group` is a claim-kind
 marker, not a rank. Genus grouping is free and exact; family is a real data
 dependency and the honest version needs a licensed, checksummed taxonomy.
-[[ADR-053]] records why the hardcoded corvid list is refused.
+[[ADR-053 - Grouping above species|ADR-053]] records why the hardcoded corvid list is refused.
 
 ## Quality gates
 
 | Gate | State |
 |---|---|
 | Unit tests | **895 passing, 8 skipped** with `--deselect tests/test_api.py::TestLiveChannels`, plus **296 frontend tests**, measured on merged `main` 2026-08-10. This number moves as work lands; SETUP.md carries the current expectation and this row is a snapshot of one run |
-| Lint / types | `ruff check .` clean, re-run 2026-08-09 on merged `main`. **`mypy src` is not clean and never has been** — **22 errors in 11 files** across 59 source files, re-measured on merged `main` 2026-08-09 (an earlier figure of "29 in 12" is stale). All pre-existing; the [[ADR-041]]–053 work added none. Judge a change by whether it adds errors |
-| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. The history-endpoint gap recorded here is **closed**: `tests/test_history.py::TestHistoryHTTP` now exercises `/api/v1/history` and `/api/v1/history/windows` through a real app ([[ADR-024]]) |
+| Lint / types | `ruff check .` clean, re-run 2026-08-09 on merged `main`. **`mypy src` is not clean and never has been** — **22 errors in 11 files** across 59 source files, re-measured on merged `main` 2026-08-09 (an earlier figure of "29 in 12" is stale). All pre-existing; the [[ADR-041 - Ultrasonic spectrogram range\|ADR-041]]–053 work added none. Judge a change by whether it adds errors |
+| Integration tests | done — `tests/test_api.py` drives the real app and real pipeline end to end. The history-endpoint gap recorded here is **closed**: `tests/test_history.py::TestHistoryHTTP` now exercises `/api/v1/history` and `/api/v1/history/windows` through a real app ([[ADR-024 - Coverage bounded by frames\|ADR-024]]) |
 | Target-device smoke test | `oo audio probe`, `oo audio test-capture`, `oo audio resample-check`, `./deploy/deploy.sh` health wait |
-| Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. [[ADR-007]] records how to move to PostgreSQL and back |
+| Rollback note | `deploy/deploy.sh` is idempotent; `sudo systemctl stop open-observatory` halts cleanly. [[ADR-007 - SQLite in developer mode\|ADR-007]] records how to move to PostgreSQL and back |
 | Updated docs | done |
 | Measured CPU, memory, dropped audio | done — [[TARGET_DIAGNOSTICS]] |
 
@@ -541,12 +541,17 @@ deleted, so the record of what was outstanding when survives:
   99.9948% over 72.107 restart-free hours). Attempt 1 failed the same criterion
   at 99.865%; attempts 2 and 3 were void on power. See the Milestone 4.5 section
   above for the full account and the re-run condition;
-- ~~**the one-hour drift run at full duration**~~ — **run 2026-08-25.** [[ADR-069]]
+- ~~**the one-hour drift run at full duration**~~ — **run 2026-08-25.** [[ADR-069 - Two drift gates|ADR-069]]
   split it in two: gate (a) (synthetic resampler) **passed** on the Pi; gate (b)
   (live capture clock) **did not pass**, failing linearity at 3.156 ms against a
-  0.5 ms threshold with a residual shaped like a thermal excursion. What remains
-  open is gate (b), and it needs the temperature series before another run means
-  anything ([[DRIFT_GATE_B_2026-08-25]]);
+  0.5 ms threshold with a residual shaped like a thermal excursion. **Attempt 2
+  the same day carried the temperature series and also failed**, at 2.743 ms,
+  with `residual_vs_temperature_r` +0.693 — so the instrument the previous version
+  of this bullet asked for exists, and the thermal reading survived it. What is
+  still open is a run over a *falling* temperature, and the defect attempt 2
+  exposed in the gate's own slope-agreement check, which compares an hour's slope
+  against a whole-stream cumulative average and so measures stream age
+  ([[DRIFT_GATE_B_2026-08-25]], [[ADR-069 - Two drift gates|ADR-069]]);
 - **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
   webhooks;
 - **Milestone 7 entirely** — MCP tools, export bundles, backup/restore, setup
@@ -554,19 +559,21 @@ deleted, so the record of what was outstanding when survives:
 - **what remains of the capture-gap investigation** — see
   [[OPEN_INVESTIGATION_CAPTURE_GAPS]]. ~~The deficit-step estimator over-credits,
   so `capture.gap lost_audio=True` means "the read was late".~~ **That is fixed,
-  deployed and confirmed on target ([[ADR-039]]), and the residual deficit was settled
-  against the crystal ([[ADR-046]]).** What is still open there is narrower: no clean
+  deployed and confirmed on target ([[ADR-039 - Confirmed loss, not deficit|ADR-039]]), and the residual deficit was settled
+  against the crystal ([[ADR-046 - Deficit is mostly drift|ADR-046]]).** What is still open there is narrower: no clean
   window longer than 22 minutes, hypothesis 4 never isolated, the missing gap row
   of 2026-08-08 10:55:24Z, and `late_read_max_frames` trending upward;
-- ~~**the historical BirdNET rows written under the pre-[[ADR-032]] plausibility
+- ~~**the historical BirdNET rows written under the pre-[[ADR-032 - Plausibility bands|ADR-032]] plausibility
   logic.**~~ **Applied 2026-08-09T15:32:03Z: 61 rows carry
   `native_result.plausibility_review` and are withdrawn end to end** — detection
   `a233415f3f72406f9e67769e972c5e62` (*Flammulated Owl*, 0.8756) comes back from
   the live API with `withdrawn: true` and a populated `withdrawal` object. This
   file and [[HANDOVER]] both said it had never been run; both were wrong for a
   fortnight. What *is* outstanding is the reverse: **`oo detections
-  reconcile-plausibility --apply` must not be run again until [[ADR-070]] is
-  deployed** — as it stands it would withdraw about a third of the bird record
+  reconcile-plausibility --apply` must not be run again until [[ADR-070 - Threshold retune is not a defect|ADR-070]] is
+  deployed** (**2026-08-29: the deployed build is at or after `debba2d`, which
+  carried that fix — indirect evidence, so confirm the revision on the station
+  first; see [[HANDOVER]] §6.3 item 0**) — as it stands it would withdraw about a third of the bird record
   (32,660 findings on 2026-08-23, led by Common Woodpigeon ×9,168 and European
   Robin ×7,434), irreversibly. Note also that `GET /api/v1/taxa/activity` caps
   `hours` at 168, so it **cannot** be used to verify anything older than seven
@@ -576,7 +583,7 @@ deleted, so the record of what was outstanding when survives:
   kind of claim that was wrong here;
 - ~~a committed fixture test proving a known species from a known recording~~ —
   done 2026-08-08, `tests/test_birdnet_fixture.py`, passing on the target;
-- ~~authentication~~ — done 2026-08-08, [[ADR-034]], **off by default**;
+- ~~authentication~~ — done 2026-08-08, [[ADR-034 - Authentication foundation|ADR-034]], **off by default**;
 - ~~`oo audio window-dump`~~ — done 2026-08-09, see the Milestone 2 and
   Milestone 4.5 sections above;
 - ~~the Milestone 4 product dashboard~~ — largely delivered 2026-08-08; the

@@ -14,14 +14,14 @@ three example clips. See "What these numbers close, and what they do not".
 So: real-time inference on this hardware is **closed — not viable**. Accuracy is
 **not closed**. There is no `open_observatory.detectors.batdetect2` *detector*
 adapter and `oo models fetch` does not know about BatDetect2's assets. The only
-viable route, per [[ADR-017]], is the cascade: `ultrasonic-pass-v1` decides *when*
+viable route, per [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]], is the cascade: `ultrasonic-pass-v1` decides *when*
 something happened at 36–40× realtime, and the expensive classifier only ever
 sees the few seconds already flagged. Measured on this station's own clips
 trimmed to 1.5 s, that costs 2.1 s per pass — about 36 minutes of classifier work
 for the 1015 passes of a whole night.
 
 **Updated 2026-08-09: the cascade was promoted, and not in the way this document
-originally anticipated.** [[ADR-045]] rules the deferred queue out explicitly — it
+originally anticipated.** [[ADR-045 - Refinement runner|ADR-045]] rules the deferred queue out explicitly — it
 drops anything older than `max_delivery_latency_s`, which is precisely what a
 six-hour-old stored clip is. The cascade ships instead as a separate CPU-fenced
 process, `oo refine run` / `src/open_observatory/refinement/`, on a systemd timer
@@ -29,14 +29,14 @@ at 01:00 UTC, at **propose-only** authority: it writes append-only `refinement`
 rows and never edits a detection's claim. `scripts/classify_clips_batdetect2.py`
 still exists and still writes nothing to the database, but it is now the
 experiment, not the implementation. See [[DETECTOR_STRATEGY]], "The refinement
-runner", and [[ADR-045]].
+runner", and [[ADR-045 - Refinement runner|ADR-045]].
 
 **This header previously said the fixture test "has not yet been run to a pass on
 the Pi" and that this document held an "(currently empty) table". Both were false:
 the table below has carried real 2026-08-05 figures for some time.** Corrected
 2026-08-09.
 
-See [[ADR-017]] in [[ADRS]] for the decision this evaluation is
+See [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] in [[ADRS]] for the decision this evaluation is
 answering.
 
 ## What it is
@@ -63,7 +63,7 @@ attribution, **for non-commercial purposes only**. It does not define
 toward commercial advantage or monetary compensation" — the authors state
 plainly that commercial use is not permitted.
 
-Consequences for this repository ([[ADR-006]], [[ADR-017]]):
+Consequences for this repository ([[ADR-006 - Model install and licensing|ADR-006]], [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]):
 
 - No BatDetect2 code, weights, or example audio is committed to this
   repository, under any circumstances, regardless of how permissive that
@@ -124,7 +124,7 @@ decimation the way 384 kHz → 48 kHz for the audible/ultrasonic detectors is
 close to.
 
 BatDetect2 ships its own resampling inside `batdetect2.api.load_audio`
-(via `librosa`), but this project does not use it. Per [[ADR-017]], resampling
+(via `librosa`), but this project does not use it. Per [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]], resampling
 for BatDetect2 goes through the project's existing soxr-backed path —
 `open_observatory.audio.resample.AudibleResampler` — the same stateful,
 frame-mapped resampler the audible 48 kHz stream is derived through. This
@@ -197,10 +197,10 @@ capability the passing test actually exercised.
 ## Known gaps in this evaluation
 
 - There is no `open_observatory.detectors.batdetect2` *detector* adapter, and
-  this work does not add one. [[ADR-017]] reserves that for once a measured
+  this work does not add one. [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] reserves that for once a measured
   benchmark shows real-time inference is viable. Since 2026-08-09 BatDetect2
   does ship as a **refiner** — `src/open_observatory/refinement/batdetect2.py`,
-  [[ADR-045]] — which is a different thing in a different process, at propose-only
+  [[ADR-045 - Refinement runner|ADR-045]] — which is a different thing in a different process, at propose-only
   authority, and does not make it a supported live detector.
 - BatDetect2 asset acquisition is not yet wired into `oo models fetch` /
   `models/manifest.tsv` the way BirdNET's is. This evaluation deliberately
@@ -218,7 +218,7 @@ capability the passing test actually exercised.
   BatDetect2 leaned *Myotis* on 6 of 8 clips at only 0.20–0.30, and returned
   **0.77 for *Pipistrellus pygmaeus* on a call measured at 34 kHz** — soprano
   pipistrelle peaks near 55 kHz. One confident contradiction on this station's
-  own audio is why [[ADR-045]]'s runner may only propose. It is still not an
+  own audio is why [[ADR-045 - Refinement runner|ADR-045]]'s runner may only propose. It is still not an
   accuracy benchmark; eight clips with no ground truth is not one.
 
 ## Measured results
@@ -246,7 +246,7 @@ Measured on the Raspberry Pi 5 on **2026-08-05**, by
 > **The verdict is unchanged and does not depend on which set is right.** At
 > p95 the 2026-08-25 run measures a realtime factor of **0.96×** — still slower
 > than the audio it analyses, in a run with no other detector competing, against
-> 36–40× for the detectors that do run live. [[ADR-017]]'s deferred-queue cascade
+> 36–40× for the detectors that do run live. [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]'s deferred-queue cascade
 > remains the only viable route on this hardware.
 
 **Do not extend this table from expectations, precedent, or extrapolation from
@@ -314,9 +314,9 @@ correctly.
 **Closed: real-time inference is not viable on this hardware.** At 0.52× realtime
 *in isolation* — with no capture, no BirdNET and no ultrasonic detector competing —
 BatDetect2 cannot keep up with the audio it is given, and the existing detectors run
-at 36–40× realtime for comparison. This is not a tuning problem. Per [[ADR-017]] the cascade
+at 36–40× realtime for comparison. This is not a tuning problem. Per [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] the cascade
 is the only viable route. **What bounds the work is not the ultrasonic night scheduler**
-— that bounds live detection — but [[ADR-045]]'s UTC window
+— that bounds live detection — but [[ADR-045 - Refinement runner|ADR-045]]'s UTC window
 (`refinement_window_start_hour_utc` 1 to `refinement_window_end_hour_utc` 3), its item and
 time budgets (`refinement_max_items` 1200, `refinement_max_seconds` 5400) and its systemd
 CPU fence.
@@ -326,7 +326,7 @@ of three example recordings. That is a real observation and is recorded as such,
 it is *not* a fair verdict on the model, for three reasons:
 
 1. This path resamples to 256 kHz through the project's own soxr stage rather than the
-   library's internal preprocessing, per [[ADR-017]]. That is a genuine confound and would
+   library's internal preprocessing, per [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]. That is a genuine confound and would
    have to be eliminated before drawing any conclusion about accuracy.
 2. The example clips are 0.5-second excerpts shipped for the library's own tests. They
    were not published as an accuracy benchmark.
@@ -339,9 +339,9 @@ The fixture test therefore asserts that the labelled species appears among the
 detections, not that it ranks first. Asserting top-1 would either fail permanently or
 force the choice of a fixture that makes the test pass, and neither would be evidence.
 
-[[ADR-017]]'s question — "is real-time BatDetect2 inference viable on this hardware" —
+[[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]'s question — "is real-time BatDetect2 inference viable on this hardware" —
 is therefore **closed: no.** The question that replaced it, whether to promote the
-offline cascade, is **also now closed** ([[ADR-045]], 2026-08-09): promoted, as a
+offline cascade, is **also now closed** ([[ADR-045 - Refinement runner|ADR-045]], 2026-08-09): promoted, as a
 separate CPU-fenced process at propose-only authority, not as a queued plugin. What
-remains open is accuracy, and only a human ear closes that. See [[ADR-017]]'s
-2026-08-05 update, [[ADR-045]], and [[DETECTOR_STRATEGY]]'s "The refinement runner".
+remains open is accuracy, and only a human ear closes that. See [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]'s
+2026-08-05 update, [[ADR-045 - Refinement runner|ADR-045]], and [[DETECTOR_STRATEGY]]'s "The refinement runner".

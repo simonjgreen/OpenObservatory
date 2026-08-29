@@ -155,7 +155,7 @@ went from 9.5% to 10.9% of one core when full-hop coverage replaced single-windo
 derivative for human review, by time-expansion (replay slowed by a factor, preserving call
 shape) or heterodyne (mixed against a tuned local oscillator, real-time duration, narrowband).
 This is not part of the stage list above; it exists because an ultrasonic clip is not
-checkable by ear as recorded. See [[ADR-014]] in [[ADRS]]. The rendering is
+checkable by ear as recorded. See [[ADR-014 - Ultrasonic rendered audible|ADR-014]] in [[ADRS]]. The rendering is
 peak-normalised and high-pass filtered and is explicitly not amplitude-comparable to the
 native recording — levels throughout this system are uncalibrated dBFS, never SPL.
 
@@ -180,17 +180,17 @@ records and 3 ALSA overruns over 12.4 hours on 2026-08-09, at continuity 0.99990
 none of that was lost audio at the time — the real frame deficit over the same period was
 4.15 s (0.0095%) against an `estimated_missing_seconds` of 54.5 — because the pre-fix
 deficit-step estimator credited a *late* read as lost audio. See
-[[OPEN_INVESTIGATION_CAPTURE_GAPS]] and [[ADR-033]].
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]] and [[ADR-033 - Retention is paced|ADR-033]].
 
-That estimator was corrected on 2026-08-09 (**[[ADR-039]]**): a deficit step is now
+That estimator was corrected on 2026-08-09 (**[[ADR-039 - Confirmed loss, not deficit|ADR-039]]**): a deficit step is now
 credited only once it fails to come back, `reason=overrun` is reserved for an event
 ALSA actually reported, and a late read that cost nothing increments `late_reads`
 instead of minting a gap. The fix was deployed and confirmed on target 2026-08-09.
 Since then, **judge real loss by `estimated_missing_seconds`, never by the raw
 `expected_frames - frames` deficit** — the raw deficit also carries crystal drift
 and a ±50 ms block-sampling phase artefact, and conflating the two is exactly the
-mistake [[ADR-039]] fixed. If an earlier reading of this document told you to prefer
-the raw deficit, it predates [[ADR-046]], which is the record of this reversal.
+mistake [[ADR-039 - Confirmed loss, not deficit|ADR-039]] fixed. If an earlier reading of this document told you to prefer
+the raw deficit, it predates [[ADR-046 - Deficit is mostly drift|ADR-046]], which is the record of this reversal.
 
 Note also that the one-hour no-drift test this document's "Resampling correctness" list
 asks for has been run at **five minutes**, not one hour, and the 72-hour soak ran
