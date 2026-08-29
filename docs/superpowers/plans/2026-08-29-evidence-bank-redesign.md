@@ -1641,9 +1641,39 @@ Expected: `exit=0` and a `FAILED` count of **0**. Do not report a result from a 
 ./.venv/bin/ruff check src tests && ./.venv/bin/mypy src
 ```
 
-- [ ] **Step 3: Confirm the station's own query plan**
+- [ ] **Step 3: Confirm the query plan (already done — just re-run it)**
 
-`EVIDENCE_BANK_MEASUREMENTS_2026-08-29.md` records that the lab copy did not reproduce the station's plan for `_strip_native` (no `ANALYZE`, untyped copies), and owes a confirmation on the real database. Deploy, then read the plan on the station read-only and check it still names `ix_media_asset_live_kind_created` with the `banked_at IS NULL` predicate present. Record the result in the measurements file. **If the plan regressed, stop and revert the migration** — this is the ADR-061 failure mode.
+This is the ADR-061 check and it must not be skipped, but it needs neither the
+station nor a deploy. The station carries no `ANALYZE` statistics, so SQLite's
+planner is schema-driven and a zero-row database built from the ORM metadata
+reproduces its plan exactly. Verified on 2026-08-29; re-run to confirm nothing
+has drifted:
+
+```bash
+./.venv/bin/python - <<'PY'
+import sqlite3, tempfile, os
+from sqlalchemy import create_engine
+from open_observatory.db import models as orm
+path = os.path.join(tempfile.mkdtemp(), "schema.sqlite")
+eng = create_engine(f"sqlite:///{path}"); orm.Base.metadata.create_all(eng); eng.dispose()
+c = sqlite3.connect(path)
+BASE = ("select media_asset.id from media_asset "
+        "join detection_media on detection_media.media_asset_id = media_asset.id "
+        "join detection on detection.id = detection_media.detection_id "
+        "where media_asset.reclaimed_at is null and media_asset.kind in (?, ?) "
+        "and media_asset.created_at <= ? and detection.kept_at is null {extra} "
+        "order by media_asset.created_at asc limit 200")
+for label, extra in (("WITHOUT", ""), ("WITH", "and detection.banked_at is null")):
+    print(label)
+    for r in c.execute("explain query plan " + BASE.format(extra=extra),
+                       ("evidence_native", "audible_ultrasonic", "2026-08-22")):
+        print("   ", r[-1])
+PY
+```
+
+Expected: the two plans are identical, and both name
+`ix_media_asset_live_kind_created`. **If they differ, stop and revert the
+migration** — that is the ADR-061 failure mode.
 
 - [ ] **Step 4: Run the backfill dry-run on the station and read it**
 

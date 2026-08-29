@@ -103,19 +103,37 @@ without `AND detection.banked_at IS NULL`:
 
 **Identical plan, and 5.5533 s versus 6.0093 s** — the predicate is free.
 
-Two honest caveats. The lab copy has no `ANALYZE` statistics and its tables are
-untyped copies, so it did not reproduce the station's own plan for this query
-(the station uses `ix_media_asset_live_kind_created`; the lab fell back to a
-scan). That makes the *absolute* seconds here meaningless. It does not weaken
-the finding, which is a comparison of two plans against the same tables: adding
-the predicate changed neither the plan nor the cost. The station's own plan for
-this query must still be confirmed after the migration lands, and ADR-075's
-plan carries that as a step.
+**Settled properly, and more cheaply than expected.** The lab copy above did
+not reproduce the station's plan for this query — it has untyped columns and
+was missing `ix_detection_media_asset` — which made its absolute seconds
+meaningless. That looked like it would need a deploy to settle. It did not.
+
+**The station carries no `ANALYZE` statistics at all** (verified read-only: no
+`sqlite_stat*` table exists). SQLite's planner is therefore driven by the
+schema alone — which indexes exist, over which columns — and *not* by row
+counts. So a schema-only database built from the ORM metadata, holding **zero
+rows**, reproduces the station's plan exactly. Built one, and it does:
+
+| | plan |
+|---|---|
+| **station, live database** | `SEARCH media_asset USING INDEX ix_media_asset_live_kind_created (kind=? AND created_at<?)` → `SEARCH detection_media USING INDEX ix_detection_media_asset (media_asset_id=?)` → `SEARCH detection USING INDEX sqlite_autoindex_detection_1 (id=?)` → `USE TEMP B-TREE FOR ORDER BY` |
+| **local schema-only, no rows** | *identical, line for line* |
+| **local schema-only, `AND detection.banked_at IS NULL` added** | *identical, line for line* |
+
+So the ADR-061 failure mode is ruled out: the new predicate costs the planner
+nothing, and the check needs neither the station nor a copy of its data. It
+reproduces in seconds from `orm.Base.metadata.create_all()` and should be
+re-run that way whenever an index on `detection` changes.
 
 The index is partial on `banked_at IS NOT NULL`, following
 `ix_detection_kept_at_partial` exactly, so it is not available to the
 `IS NULL` filter and cannot be preferred over the index serving the range and
 the `ORDER BY` — which is the mechanism of the ADR-061 failure.
+
+(The `USE TEMP B-TREE FOR ORDER BY` in every row above is pre-existing and not
+introduced here: `kind IN (a, b)` is two index seeks, each already ordered by
+`created_at`, and merging them needs a sort. It is the plan the station has
+been running.)
 
 ## Reproduce
 
