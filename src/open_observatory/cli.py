@@ -32,10 +32,6 @@ history_app = typer.Typer(help="Capture history and coverage diagnostics")
 clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 detections_app = typer.Typer(help="Detection review and repair")
 refine_app = typer.Typer(help="The refinement runner (charter item 5, ADR-045)")
-# `oo clips retention` (below) predates ADR-076 and stays where it is -- this
-# group is for the evidence-bank commands the ADR adds, starting with the
-# one-off archive walk `sweep()` cannot afford to run itself.
-retention_app = typer.Typer(help="Evidence bank retention (ADR-076)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
@@ -43,7 +39,6 @@ app.add_typer(history_app, name="history")
 app.add_typer(clips_app, name="clips")
 app.add_typer(detections_app, name="detections")
 app.add_typer(refine_app, name="refine")
-app.add_typer(retention_app, name="retention")
 
 console = Console()
 console_err = Console(stderr=True)
@@ -1522,7 +1517,7 @@ def clips_reconcile_missing(
 def _build_retention_sweeper(settings: Settings) -> Any:
     """The one `RetentionSweeper(...)` call site both retention commands share.
 
-    `oo clips retention` (`sweep()`) and `oo retention bank-backfill` need
+    `oo clips retention` (`sweep()`) and `oo clips bank-backfill` need
     the identical set of evidence-bank settings -- a second, separately
     typed-out call site is exactly how `evidence_bank_size=
     settings.evidence_sample_permille` would slip in unnoticed, the copy-paste
@@ -1652,8 +1647,8 @@ def clips_retention(
         console.print(detail)
 
 
-@retention_app.command("bank-backfill")
-def retention_bank_backfill(
+@clips_app.command("bank-backfill")
+def clips_bank_backfill(
     dry_run: bool = typer.Option(
         True,
         "--dry-run/--no-dry-run",

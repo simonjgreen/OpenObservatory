@@ -1,4 +1,4 @@
-"""``oo retention bank-backfill`` (ADR-076 Task 9).
+"""``oo clips bank-backfill`` (ADR-076 Task 9).
 
 The one-off, unbudgeted counterpart to the sweep's own promotion step, which
 only looks back 24 hours because the archive-wide version of this query was
@@ -94,7 +94,7 @@ def test_bank_backfill_dry_run_promotes_nothing(settings) -> None:
     detection_id = _seed(settings)
     set_settings(settings)
 
-    result = runner.invoke(app, ["retention", "bank-backfill", "--dry-run"])
+    result = runner.invoke(app, ["clips", "bank-backfill", "--dry-run"])
 
     assert result.exit_code == 0
     assert "would bank" in result.stdout.lower()
@@ -107,7 +107,7 @@ def test_bank_backfill_dry_run_is_the_default(settings) -> None:
     detection_id = _seed(settings)
     set_settings(settings)
 
-    result = runner.invoke(app, ["retention", "bank-backfill"])
+    result = runner.invoke(app, ["clips", "bank-backfill"])
 
     assert result.exit_code == 0
     assert "dry run" in result.stdout.lower()
@@ -119,7 +119,7 @@ def test_bank_backfill_no_dry_run_writes_banked_at(settings) -> None:
     detection_id = _seed(settings)
     set_settings(settings)
 
-    result = runner.invoke(app, ["retention", "bank-backfill", "--no-dry-run"])
+    result = runner.invoke(app, ["clips", "bank-backfill", "--no-dry-run"])
 
     assert result.exit_code == 0
     assert "eurasian wren" in result.stdout.lower()
@@ -132,8 +132,8 @@ def test_bank_backfill_is_idempotent(settings) -> None:
     _seed(settings)
     set_settings(settings)
 
-    first = runner.invoke(app, ["retention", "bank-backfill", "--no-dry-run"])
-    second = runner.invoke(app, ["retention", "bank-backfill", "--no-dry-run"])
+    first = runner.invoke(app, ["clips", "bank-backfill", "--no-dry-run"])
+    second = runner.invoke(app, ["clips", "bank-backfill", "--no-dry-run"])
 
     assert first.exit_code == 0
     assert second.exit_code == 0
