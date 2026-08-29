@@ -165,22 +165,34 @@ figures re-run read-only in seconds:
 
 Nothing above writes to the station database.
 
-## What the measuring cost
+## What the measuring cost — **corrected: not what I first wrote**
 
-**It cost about 2.2 seconds of audio.** At `2026-08-29T20:32:37Z` capture
-recorded `reason=overrun`, `alsa_overrun=True`, `missing_frames=851919`,
-`seconds=2.2185` — one confirmed gap, during the window in which a paced copy
-of the 1.35 GB database was competing for the same SD card the database and
-the journal live on. It is not proven to be the cause and no other load
-changed; the honest statement is that it is very probably the cause.
+An earlier version of this section claimed the 2.2 s of audio lost at
+`2026-08-29T20:32:37Z` was "very probably" caused by the paced database copy
+taken for these measurements. **That attribution was wrong**, and it is left
+here rather than quietly deleted because getting a cause wrong is the thing
+this project's own lesson is about.
 
-Recorded rather than quietly dropped, for two reasons. Read-only is not the
-same as free: every figure above was taken from a device that is also holding
-a 384 kHz capture ring, and the ADR-062 budget exists because that ring is
-what everything else is subordinate to. And ADR-073 is the ADR that says a
-consumer bird monitor should not be fixated on gaps measured in seconds over a
-week — this is one such gap, it is within every SLO ADR-073 sets, and the
-right response is to say so rather than to hide it.
+The gap belongs to [[DRIFT_GATE_C_2026-08-29]] — a concurrent session's
+one-hour replay running on the live station, which was ten minutes in at that
+timestamp and was **stopped because of it**. Their evidence is much better than
+my inference was: they polled `gaps_with_loss` either side of the event and
+watched it go 0 → 1 across 20:32, against a run that was pushing an hour of
+audio through the resampler on the same box.
+
+What I actually had was a coincidence in time and a plausible mechanism. Both
+loads were on the machine, and a paced 1.35 GB copy competing for the same SD
+card cannot be ruled out as a contributor. But "my load was running and a gap
+happened" is not a cause, and stating it as one was exactly the error of
+reasoning that this repository has a memory about. The honest position: gate
+(c) accounts for it, my copy is at most a contributor, and I should have looked
+for other load before claiming it.
+
+**The point that survives the correction** is the one worth keeping: read-only
+is not free. Every figure above was taken from a device that is also holding a
+384 kHz capture ring, and the ADR-062 budget exists because that ring outranks
+everything else. Prefer the narrow one-pass copy below to a full one, and
+prefer running nothing at all while somebody else is measuring the clock.
 
 Two practical consequences for anyone repeating this:
 
