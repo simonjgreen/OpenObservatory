@@ -176,3 +176,33 @@ def test_a_band_that_stops_being_sparse_stops_being_kept_whole() -> None:
 
 def test_no_passes_at_all_yields_no_sparse_bands_rather_than_all_of_them() -> None:
     assert ev.sparse_bands({}, permille=10) == frozenset()
+
+
+class TestCapFor:
+    """ADR-076: the cap is decided once, at promotion, not re-litigated."""
+
+    def test_uncommon_species_gets_the_full_bank(self) -> None:
+        assert ev.cap_for("Grey Heron", is_common=False, is_implausible=False,
+                          policy=ev.Policy()) == 200
+
+    def test_common_species_banks_nothing_new(self) -> None:
+        assert ev.cap_for("European Robin", is_common=True, is_implausible=False,
+                          policy=ev.Policy()) == 0
+
+    def test_implausible_species_is_capped_at_three_examples(self) -> None:
+        assert ev.cap_for("California Quail", is_common=False, is_implausible=True,
+                          policy=ev.Policy()) == 3
+
+    def test_implausible_beats_common(self) -> None:
+        """A species on both lists is a misidentification, not a boring bird.
+
+        Three examples are what makes a systematic misidentification judgeable.
+        Reading `common` first would silence it instead, which is exactly the
+        failure ADR-074's suggestion rule guards against for the same reason.
+        """
+        assert ev.cap_for("Ambiguous", is_common=True, is_implausible=True,
+                          policy=ev.Policy()) == 3
+
+    def test_a_zero_bank_size_disables_the_bank_without_disabling_the_policy(self) -> None:
+        assert ev.cap_for("Grey Heron", is_common=False, is_implausible=False,
+                          policy=ev.Policy(bank_size=0)) == 0

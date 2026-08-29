@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-__all__ = ["Policy", "Verdict", "classify", "sampled"]
+__all__ = ["Policy", "Verdict", "cap_for", "classify", "sampled"]
 
 
 class Verdict(StrEnum):
@@ -99,6 +99,33 @@ def classify(
         return Verdict.SAMPLE
 
     return Verdict.QUOTA
+
+
+def cap_for(
+    species: str,
+    *,
+    is_common: bool,
+    is_implausible: bool,
+    policy: Policy,
+) -> int:
+    """How many detections of ``species`` may be banked, ever.
+
+    ADR-076 replaces ADR-074's per-sweep ``classify()`` verdict with a cap
+    applied **once, at promotion**. That is the whole fix for the cliff: a
+    verdict recomputed every sweep can flip from BANK to EXPIRE for a whole
+    back-catalogue at once, and a cap cannot -- reaching it stops promotion and
+    unbanks nothing.
+
+    ``is_implausible`` is read before ``is_common`` deliberately. A species on
+    both lists is a systematic misidentification, and three examples are what
+    make one judgeable; treating it as merely boring would silence the very
+    thing worth investigating.
+    """
+    if is_implausible:
+        return max(0, policy.implausible_cap)
+    if is_common:
+        return 0
+    return max(0, policy.bank_size)
 
 
 __all__ += ["BAND_WIDTH_HZ", "frequency_band", "sparse_bands"]
