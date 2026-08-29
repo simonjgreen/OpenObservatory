@@ -689,7 +689,8 @@ class TestPromotion:
                 ids.append(det)
             session.commit()
 
-        _sweeper(db, evidence_value_enabled=True, evidence_bank_size=2).sweep()
+        _sweeper(db, evidence_value_enabled=True, evidence_bank_size=2,
+         promotion_lookback=timedelta(days=3650)).sweep()
 
         with session_scope() as session:
             banked = [
@@ -712,7 +713,8 @@ class TestPromotion:
             )
             session.commit()
         _sweeper(db, evidence_value_enabled=True,
-                 evidence_common_species=("European Robin",)).sweep()
+                 evidence_common_species=("European Robin",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is None
 
@@ -730,7 +732,8 @@ class TestPromotion:
                 )
             session.commit()
         _sweeper(db, evidence_value_enabled=True,
-                 evidence_implausible_species=("California Quail",)).sweep()
+                 evidence_implausible_species=("California Quail",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
         with session_scope() as session:
             n = session.execute(
                 sa.select(sa.func.count()).select_from(orm.Detection)
@@ -930,6 +933,21 @@ Expected: FAIL — nothing sets `banked_at`.
 _PROMOTION_LOOKBACK = timedelta(hours=24)
 ```
 
+**It is also a constructor parameter, and that is not only for tests.**
+`RetentionSweeper.__init__` takes `promotion_lookback: timedelta =
+_PROMOTION_LOOKBACK` and `_promotion_candidates` reads `self.promotion_lookback`.
+
+A test that proves the bank protects evidence from the age tiers has to seed
+evidence **old enough for those tiers to want it** — over 7 days for the native
+tier, over 30 for the unkept one. That is far outside a 24-hour promotion
+window, so with a hard-coded constant every such test would seed material the
+sweep can never promote and would be asserting on an empty bank. The tests
+below therefore pass `promotion_lookback=timedelta(days=3650)`.
+
+Not exposed as a setting: it is not a knob an operator needs, and
+`oo retention bank-backfill` is the supported way to reach back further.
+```
+
 and `_promote_to_bank`'s loop becomes:
 
 ```python
@@ -1057,7 +1075,8 @@ class TestTheCliffIsGone:
                     first, assets_of_first = det, assets
             session.commit()
 
-        sweeper = _sweeper(db, evidence_value_enabled=True, evidence_bank_size=cap)
+        sweeper = _sweeper(db, evidence_value_enabled=True, evidence_bank_size=cap,
+                           promotion_lookback=timedelta(days=3650))
         sweeper.sweep()
 
         # The species is now exactly at its cap -- the ADR-074 cliff edge.
@@ -1116,13 +1135,15 @@ class TestTheCliffIsGone:
             )
             session.commit()
 
-        _sweeper(db, evidence_value_enabled=True).sweep()
+        _sweeper(db, evidence_value_enabled=True,
+                 promotion_lookback=timedelta(days=3650)).sweep()
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is not None
 
         # The operator decides greenfinches are boring.
         _sweeper(db, evidence_value_enabled=True,
-                 evidence_common_species=("European Greenfinch",)).sweep()
+                 evidence_common_species=("European Greenfinch",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
 
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is not None
