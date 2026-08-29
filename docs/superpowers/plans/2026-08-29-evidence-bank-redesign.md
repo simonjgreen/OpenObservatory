@@ -906,7 +906,7 @@ Expected: FAIL — nothing sets `banked_at`.
         """
         query = (
             select(orm.Detection.id, orm.Detection.common_name)
-            .where(orm.Detection.event_start_utc >= now - _PROMOTION_LOOKBACK)
+            .where(orm.Detection.event_start_utc >= now - self.promotion_lookback)
             .where(orm.Detection.banked_at.is_(None))
             .where(orm.Detection.common_name.is_not(None))
             .order_by(orm.Detection.event_start_utc.asc())
