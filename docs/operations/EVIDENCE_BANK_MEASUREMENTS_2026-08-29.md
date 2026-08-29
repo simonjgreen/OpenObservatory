@@ -135,6 +135,22 @@ introduced here: `kind IN (a, b)` is two index seeks, each already ordered by
 `created_at`, and merging them needs a sort. It is the plan the station has
 been running.)
 
+## Every query ADR-076 adds, planned against the production schema
+
+Same zero-row schema-only database, same reasoning: no `ANALYZE` statistics
+anywhere, so these are the plans the station will use.
+
+| query | plan | bounded by |
+|---|---|---|
+| `_evidence_bank` — one pass over the bank | `SCAN detection USING INDEX ix_detection_banked_partial` | the **bank** (~7,300 rows), not the archive |
+| `_promotion_candidates` — no media join | `SEARCH detection USING INDEX ix_detection_event_start_utc (event_start_utc>?)` | the lookback window |
+| `_has_live_evidence` — one detection | `SEARCH detection_media USING COVERING INDEX ... (detection_id=?)` → `SEARCH media_asset USING INDEX ... (id=?)` | two seeks, 0.46 ms |
+| `_band_counts` — sparse bands | `SEARCH detection USING INDEX ix_detection_group_start (taxonomic_group=? AND event_start_utc>?)` | the trailing window |
+
+Not one of them scans a table, and not one of them is bounded by the size of
+the archive. That is the property ADR-074's census did not have and the whole
+reason this redesign exists.
+
 ## Reproduce
 
 `scripts/` holds nothing for this; the lab was built ad hoc. The live-database
