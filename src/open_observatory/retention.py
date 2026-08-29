@@ -84,11 +84,12 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import Integer, cast, func, select, tuple_
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from . import evidence_value
 from . import review as review_queries
 from .db import models as orm
 
@@ -117,6 +118,36 @@ _TIER_ORDER = ("native", "unkept", "watermark")
 #: policy, and `batch_budget_s`/`batch_size` remain the only two knobs an
 #: operator needs.
 _PROGRESS_HANDLER_INSTRUCTIONS = 1000
+
+#: ``detection.taxonomic_group`` for an ultrasonic pass (``detectors/
+#: ultrasonic.py``). Spelled out here rather than imported because the modules
+#: that already name it (``display.py``, ``mqtt/discovery.py``) are not ones
+#: the retention sweep should be dragging in.
+_BAT_GROUP = "bat"
+
+#: Trailing window over which a bat band's share of passes is measured
+#: (ADR-074: "a band holding < 1% of the trailing-90-day passes is sparse").
+#: A window rather than all history because sparseness is a claim about what
+#: is flying now, and because it is what lets the count be an indexed range
+#: scan on `ix_detection_group_start` instead of a table scan.
+_BAND_WINDOW_DAYS = 90
+
+
+def _band_expression() -> Any:
+    """``detection.peak_frequency_hz`` bucketed into 5 kHz bands, in SQL.
+
+    Deliberately the same arithmetic as `evidence_value.frequency_band`, done
+    in the database rather than in Python: bucketing in Python would mean
+    either grouping by raw frequency (thousands of distinct values, one row
+    each) or reading every row out, and this sweep reads rows out only in
+    `LIMIT`-bounded batches. ``CAST(x AS INTEGER)`` truncates toward zero,
+    which equals ``//`` for the positive frequencies this is applied to --
+    every caller pairs it with ``peak_frequency_hz > 0``, exactly as
+    `frequency_band` returns ``None`` for anything else.
+    """
+    return cast(orm.Detection.peak_frequency_hz / evidence_value.BAND_WIDTH_HZ, Integer) * (
+        evidence_value.BAND_WIDTH_HZ // 1000
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -760,6 +791,96 @@ class RetentionSweeper:
             budget=budget,
             dry_run=dry_run,
         )
+
+    # -- what has been banked (ADR-074) -----------------------------------
+
+    def _banked_counts(self, session: Session) -> dict[str, int]:
+        """Live clips per species: one aggregate, no loop, no correlated scan.
+
+        The unit is the **detection**, not the asset: a detection is one
+        banked example of a species and carries two or three assets (native,
+        playback, audible rendering) that are all the same example.
+
+        A detection counts only while *none* of its assets has been
+        reclaimed. That is what makes the bank forget: a species that banked
+        its 200, had them reclaimed by the watermark tier (which outranks
+        value, ADR-074 rule 1) and then reappeared must be able to bank
+        again, and a count that remembered clips no longer on disk would
+        keep it locked out forever. It also means a clip whose full-rate
+        evidence an earlier age tier already took is not held to be banked
+        on the strength of the derivative that survived it.
+
+        **This is the one query in the sweep that no index can narrow**, and
+        that is inherent rather than an oversight: "how many live clips does
+        each species have" is a census of the whole archive, and neither
+        `detection.common_name` nor `media_asset.reclaimed_at` is indexed --
+        both deliberately, and both after measured incidents (ADR-037,
+        ADR-062). So the cost is managed instead of avoided:
+
+        * it is **one** statement -- `detection_media` grouped by its own
+          primary-key prefix (so no temp b-tree for that grouping) with a
+          single ``COUNT(reclaimed_at) = 0`` test per detection, then one
+          primary-key lookup per surviving detection. Not a per-species
+          query, not a per-row loop, not a correlated subquery;
+        * the caller takes it **rarely** and reuses the answer
+          (`_evidence_exclusions`), rather than paying for it every sweep;
+        * the caller runs it **after** the watermark tier and inside
+          `_bounded_statements`, so if it ever does outgrow the budget it is
+          aborted, this sweep degrades to "no age-tier deletions" -- and the
+          one tier that keeps the disk from filling has already run.
+        """
+        intact = (
+            select(orm.DetectionMedia.detection_id.label("detection_id"))
+            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
+            .group_by(orm.DetectionMedia.detection_id)
+            # COUNT(<column>) counts non-NULLs, so zero means "nothing about
+            # this detection has been reclaimed".
+            .having(func.count(orm.MediaAsset.reclaimed_at) == 0)
+            .subquery()
+        )
+        rows = session.execute(
+            select(orm.Detection.common_name, func.count())
+            .join(intact, intact.c.detection_id == orm.Detection.id)
+            .where(orm.Detection.common_name.is_not(None))
+            .group_by(orm.Detection.common_name)
+        ).all()
+        return {name: count for name, count in rows if name is not None}
+
+    def _band_counts(self, session: Session, *, since: datetime) -> dict[int, int]:
+        """Bat passes per 5 kHz band since `since`: one indexed aggregate.
+
+        Bat passes are never given a species, by design, so rarity cannot
+        come from a name; it comes from peak frequency (ADR-074). The
+        distribution is as skewed as the birds' -- 20-25 kHz held 36,180 of
+        66,485 passes on 2026-08-29 and 60-65 kHz held four -- so a band's
+        share of the trailing window is what decides whether it is kept
+        whole.
+
+        Unlike `_banked_counts` this one *is* index-served end to end:
+        ``ix_detection_group_start`` is exactly
+        ``(taxonomic_group, event_start_utc)``, so the equality and the range
+        are one seek plus a walk of the window, and nothing outside it is
+        touched however long the station has been running. The grouping is a
+        computed expression, but only over the rows the window already
+        narrowed to, into at most a dozen or so buckets.
+
+        Counted on detections rather than on clips on purpose: this measures
+        what flew, and detection metadata is kept forever (ADR-026), so the
+        answer does not move when a clip is reclaimed. It is the *shape* of
+        the distribution, not an inventory of disk.
+        """
+        band = _band_expression().label("band")
+        rows = session.execute(
+            select(band, func.count())
+            .where(orm.Detection.taxonomic_group == _BAT_GROUP)
+            .where(orm.Detection.event_start_utc >= since)
+            # Matches `frequency_band`, which is None for a missing or
+            # non-positive frequency: no band, so no bank.
+            .where(orm.Detection.peak_frequency_hz.is_not(None))
+            .where(orm.Detection.peak_frequency_hz > 0)
+            .group_by(band)
+        ).all()
+        return {int(edge): count for edge, count in rows if edge is not None}
 
     def _disk_over_watermark(self) -> bool:
         """Whether the clip filesystem is already past the watermark.

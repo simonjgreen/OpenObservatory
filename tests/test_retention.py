@@ -24,6 +24,7 @@ from alembic import command
 from alembic.config import Config
 from hypothesis import given
 from hypothesis import strategies as st
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,7 @@ def _seed_detection(
     common_name: str | None = "European Robin",
     canonical_taxon_id: str | None = None,
     score: float = 0.5,
+    peak_frequency_hz: float | None = None,
     native_result: dict | None = None,
     write_files: bool = True,
     byte_length: int = 1024,
@@ -113,6 +115,7 @@ def _seed_detection(
             rank="species" if canonical_taxon_id else None,
             taxonomic_group=taxonomic_group,
             score=score,
+            peak_frequency_hz=peak_frequency_hz,
             native_result=native_result or {},
             kept_at=FIXED_NOW if kept else None,
             kept_by="test-operator" if kept else None,
@@ -1908,6 +1911,43 @@ class TestCandidateQueryPlans:
         assert "ix_media_asset_live_kind_created" in names, names
         assert "ix_media_asset_live_created" in names, names
 
+    def test_the_bat_band_census_is_an_indexed_range_not_a_table_scan(
+        self, db, station_and_detector, tmp_path
+    ):
+        """ADR-074's band counts run inside the same 1.5 s budget (ADR-062).
+
+        `ix_detection_group_start` is `(taxonomic_group, event_start_utc)`,
+        so "bat passes in the last 90 days" is one seek and a walk of that
+        window. A plan that said `SCAN detection` would mean the census got
+        slower every day the station ran, which is the exact shape of all
+        three earlier incidents this class exists to catch.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=1,
+                taxonomic_group="bat",
+                common_name=None,
+                peak_frequency_hz=21_000,
+            )
+        band = retention_module._band_expression().label("band")
+        query = (
+            sa.select(band, sa.func.count())
+            .where(orm.Detection.taxonomic_group == "bat")
+            .where(orm.Detection.event_start_utc >= FIXED_NOW - timedelta(days=90))
+            .where(orm.Detection.peak_frequency_hz.is_not(None))
+            .where(orm.Detection.peak_frequency_hz > 0)
+            .group_by(band)
+        )
+        with session_scope() as session:
+            plan = self._plan(session, query)
+        assert any("ix_detection_group_start" in step for step in plan), plan
+        assert not any("SCAN detection" in step for step in plan), plan
+
 
 class TestTierAgeIsMeasuredOnTheAsset:
     """ADR-062's deliberate semantic change, pinned in both directions."""
@@ -2086,3 +2126,75 @@ class TestWatermarkTierIsNotShadowedByTheAgeTiers:
         report = sweeper.sweep()
         assert calls == 1
         assert report.tiers_skipped.count("watermark") == 0
+
+
+# -- what each species and band has banked (ADR-074) ----------------------
+
+
+def test_banked_counts_are_per_species_and_ignore_reclaimed_assets(
+    db, station_and_detector, tmp_path
+) -> None:
+    """A reclaimed clip no longer occupies a bank slot.
+
+    Otherwise a species that banked its 200, had them reclaimed by the
+    watermark tier, and then reappeared could never bank again -- the bank
+    would remember clips that no longer exist.
+    """
+    station_id, detector_id = station_and_detector
+    with session_scope() as session:
+        for _ in range(3):
+            _seed_detection(
+                session, station_id=station_id, detector_id=detector_id,
+                clip_dir=db.clip_dir, age_days=1.0, common_name="Grey Heron",
+            )
+        for _ in range(2):
+            _seed_detection(
+                session, station_id=station_id, detector_id=detector_id,
+                clip_dir=db.clip_dir, age_days=1.0, common_name="European Robin",
+            )
+        session.commit()
+
+    sweeper = _sweeper(db)
+    with session_scope() as session:
+        counts = sweeper._banked_counts(session)
+
+    assert counts["Grey Heron"] == 3
+    assert counts["European Robin"] == 2
+
+    # Reclaim one heron clip; the bank must shrink to match reality.
+    with session_scope() as session:
+        asset = session.execute(
+            select(orm.MediaAsset)
+            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+            .where(orm.Detection.common_name == "Grey Heron")
+            .limit(1)
+        ).scalar_one()
+        asset.reclaimed_at = FIXED_NOW
+        session.commit()
+
+    with session_scope() as session:
+        assert sweeper._banked_counts(session)["Grey Heron"] == 2
+
+
+def test_band_counts_bucket_bat_passes_by_five_kilohertz(
+    db, station_and_detector, tmp_path
+) -> None:
+    """Bats have no species, so the bank is keyed on peak frequency instead."""
+    station_id, detector_id = station_and_detector
+    with session_scope() as session:
+        for hz in (21_000, 22_500, 24_900, 61_000):
+            _seed_detection(
+                session, station_id=station_id, detector_id=detector_id,
+                clip_dir=db.clip_dir, age_days=1.0,
+                taxonomic_group="bat", common_name=None,
+                peak_frequency_hz=hz,
+            )
+        session.commit()
+
+    sweeper = _sweeper(db)
+    with session_scope() as session:
+        counts = sweeper._band_counts(session, since=FIXED_NOW - timedelta(days=90))
+
+    assert counts[20] == 3, "21.0, 22.5 and 24.9 kHz all fall in the 20-25 band"
+    assert counts[60] == 1
