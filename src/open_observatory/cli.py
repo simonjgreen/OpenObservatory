@@ -1546,6 +1546,10 @@ def clips_retention(
         watermark_ratio=settings.retention_watermark_ratio,
         batch_size=settings.retention_batch_size,
         batch_budget_s=settings.retention_batch_budget_s,
+        evidence_value_enabled=settings.evidence_value_enabled,
+        evidence_common_species=settings.evidence_common_species,
+        evidence_bank_size=settings.evidence_bank_size,
+        evidence_sample_permille=settings.evidence_sample_permille,
     )
     report = sweeper.sweep(dry_run=dry_run)
 

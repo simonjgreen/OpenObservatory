@@ -2546,3 +2546,49 @@ class TestEvidenceValueExemptions:
                 if _asset(session, asset_id).reclaimed_at is None
             ]
             assert survivors == [], f"{len(survivors)} common-band bat clips were exempted"
+
+
+class TestConstructorCarriesEvidenceSettings:
+    """A previous implementer found, and correctly flagged as outside its
+    permitted files, that `station.py` and `cli.py` constructed
+    `RetentionSweeper` without the four `evidence_*` keyword arguments this
+    class accepts. `apply_tuning` only pushes settings that changed in a
+    given request, so a value already persisted in `config/runtime.env` --
+    including a previously-toggled `evidence_value_enabled=True` -- would
+    report as "applied" while the constructor's own defaults (`False`, `200`,
+    `10`, `()`) silently won at the next process restart, because nothing
+    ever read `Settings` for these four at construction time.
+
+    This mirrors, line for line, the keyword list both call sites pass today
+    (`native_days=`, `audible_only_days=`, `watermark_ratio=`, `batch_size=`,
+    `batch_budget_s=`, then the four `evidence_*` settings) -- if a future
+    edit ever drops one of the four again, this fails instead of silently
+    reverting a deployed policy to its constructor default.
+    """
+
+    def test_construction_the_way_station_and_cli_build_it_carries_settings(
+        self, db
+    ) -> None:
+        db.evidence_value_enabled = True
+        db.evidence_common_species = ("Grey Heron",)
+        db.evidence_bank_size = 55
+        db.evidence_sample_permille = 250
+
+        sweeper = RetentionSweeper(
+            clip_dir=db.clip_dir,
+            session_factory=session_scope,
+            native_days=db.retention_native_days,
+            audible_only_days=db.retention_audible_only_days,
+            watermark_ratio=db.retention_watermark_ratio,
+            batch_size=db.retention_batch_size,
+            batch_budget_s=db.retention_batch_budget_s,
+            evidence_value_enabled=db.evidence_value_enabled,
+            evidence_common_species=db.evidence_common_species,
+            evidence_bank_size=db.evidence_bank_size,
+            evidence_sample_permille=db.evidence_sample_permille,
+        )
+
+        assert sweeper.evidence_value_enabled is True
+        assert sweeper.evidence_common_species == ("Grey Heron",)
+        assert sweeper.evidence_bank_size == 55
+        assert sweeper.evidence_sample_permille == 250
