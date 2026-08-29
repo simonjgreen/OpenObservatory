@@ -76,7 +76,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -84,7 +84,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import Integer, cast, func, select, tuple_
+from sqlalchemy import Integer, and_, cast, func, not_, or_, select, tuple_
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -132,6 +132,37 @@ _BAT_GROUP = "bat"
 #: scan on `ix_detection_group_start` instead of a table scan.
 _BAND_WINDOW_DAYS = 90
 
+#: How long one evidence-value census is reused before it is taken again
+#: (ADR-074). `_banked_counts` is the one query in this sweep that no index
+#: can narrow -- "how many live clips has each species got" is a census of the
+#: whole archive by construction -- so it is taken rarely and reused rather
+#: than paid for on every sweep. Fifteen minutes against the 300 s sweep
+#: cadence (`retention_interval_s`) is a factor of three, and the number moves
+#: by a handful of clips a day against a bank of 200: staleness can only mean
+#: a species banks a few clips too many before the next census notices, which
+#: is the harmless direction. Only the two *queries* are reused; the policy is
+#: re-derived from them every sweep, so an operator's edit to the common list
+#: or the bank size takes effect on the next sweep and nothing about
+#: `tuning.py`'s "live" claim is weakened. Not a constructor knob: it trades
+#: freshness of a slow-moving number against the batch budget, and
+#: `batch_budget_s`/`batch_size` remain the only two an operator needs.
+_EVIDENCE_CENSUS_TTL_S = 900.0
+
+#: The plausibility band (ADR-049) this sweep classifies every species under.
+#:
+#: ADR-074 crosses rarity with plausibility so that a naive rarity bias does
+#: not preferentially archive BirdNET's mistakes, and caps an implausible
+#: species at three examples rather than 200. That cap is **not applied here**,
+#: deliberately: the band is stored inside `detection.native_result`, a wide
+#: JSON column, and reading it per species would mean a scan of that column
+#: inside the 1.5 s budget ADR-062 exists to defend -- the sweep's preamble
+#: goes out of its way never to touch `native_result`. The cost of leaving it
+#: out is bounded and small: an implausible species banks up to `bank_size`
+#: instead of 3, and the ones this station actually has (California Quail,
+#: Asian Brown Flycatcher) hold one clip each. Closing it properly needs the
+#: band as an indexed column, which is a migration and an ADR of its own.
+_ASSUMED_BAND = "in_range"
+
 
 def _band_expression() -> Any:
     """``detection.peak_frequency_hz`` bucketed into 5 kHz bands, in SQL.
@@ -148,6 +179,56 @@ def _band_expression() -> Any:
     return cast(orm.Detection.peak_frequency_hz / evidence_value.BAND_WIDTH_HZ, Integer) * (
         evidence_value.BAND_WIDTH_HZ // 1000
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _EvidenceBank:
+    """What ADR-074 banks right now: species by name, bat passes by band.
+
+    Only ``BANK`` verdicts are in here. ``QUOTA`` and ``SAMPLE`` clips are a
+    rolling window rather than an archive -- ADR-074 keeps them under the
+    ordinary age tiers on purpose, which is the other half of what makes the
+    policy bounded -- so they are not exemptions and do not appear.
+    """
+
+    species: frozenset[str]
+    bands: frozenset[int]
+
+    def exclusion(self) -> Any | None:
+        """SQL for "this detection is not one the bank is keeping", or None.
+
+        Written as ``NOT (banked_species OR banked_band)`` with an explicit
+        ``IS NOT NULL`` guard on each side rather than the shorter
+        ``common_name NOT IN (...)``. That shorter spelling is a trap: SQL
+        three-valued logic makes ``NULL NOT IN (...)`` evaluate to NULL, not
+        true, and a `WHERE` keeps only rows that are true -- so every bat
+        pass (`common_name` is always NULL for those, by design) would
+        silently drop out of both age tiers' candidate queries and no bat
+        clip would ever age off the disk again. Same trap on the band side
+        for every bird, which has no `peak_frequency_hz`.
+
+        `None` when nothing is banked, so an empty bank adds no predicate at
+        all and the tier queries stay byte-identical to what they were.
+        """
+        banked = []
+        if self.species:
+            banked.append(
+                and_(
+                    orm.Detection.common_name.is_not(None),
+                    orm.Detection.common_name.in_(sorted(self.species)),
+                )
+            )
+        if self.bands:
+            banked.append(
+                and_(
+                    orm.Detection.peak_frequency_hz.is_not(None),
+                    orm.Detection.peak_frequency_hz > 0,
+                    _band_expression().in_(sorted(self.bands)),
+                )
+            )
+        if not banked:
+            return None
+        return not_(or_(*banked))
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +385,10 @@ class RetentionSweeper:
         batch_size: int = 200,
         batch_budget_s: float = 1.5,
         clock: Callable[[], datetime] | None = None,
+        evidence_value_enabled: bool = False,
+        evidence_common_species: Sequence[str] = (),
+        evidence_bank_size: int = 200,
+        evidence_sample_permille: int = 10,
     ) -> None:
         self.clip_dir = Path(clip_dir)
         self._session_factory = session_factory
@@ -313,6 +398,24 @@ class RetentionSweeper:
         self.batch_size = batch_size
         self.batch_budget_s = batch_budget_s
         self._clock = clock or (lambda: datetime.now(UTC))
+
+        # -- value-based retention (ADR-074) --------------------------------
+        #: All four are plain attributes because that is how a live-tier
+        #: setting reaches this object: `tuning.LIVE_TARGETS` maps each one
+        #: here and `Station.apply_tuning` assigns it, exactly as it does for
+        #: `native_days` and its siblings. Defaults are the shipped ones, and
+        #: the flag ships **off**: this policy deletes clips, it has never run
+        #: against real data, and its first run must be a dry-run a human
+        #: reads (ADR-074 rule 3).
+        self.evidence_value_enabled = evidence_value_enabled
+        self.evidence_common_species = evidence_common_species
+        self.evidence_bank_size = evidence_bank_size
+        self.evidence_sample_permille = evidence_sample_permille
+        #: Last census (`_banked_counts`, `_band_counts`) and when it was
+        #: taken, on the monotonic clock. See `_EVIDENCE_CENSUS_TTL_S`. Never
+        #: populated at all while the flag is off.
+        self._census: tuple[dict[str, int], dict[int, int]] | None = None
+        self._census_taken_at: float = 0.0
 
         #: Cumulative across the process lifetime, for Prometheus counters.
         self.totals: dict[str, int] = {}
@@ -477,6 +580,19 @@ class RetentionSweeper:
                 else:
                     watermark_ran = False
                 current_tier = "native"
+                # ADR-074, and deliberately below the watermark tier rather
+                # than in the preamble above: value decides what is *worth*
+                # keeping, the watermark decides what the disk can *hold*, and
+                # the cheapest way to guarantee the second never waits on the
+                # first is to do the first afterwards. Inert while the flag is
+                # off -- no query is issued and the tiers below get a `None`
+                # bank, which leaves their candidate queries exactly as they
+                # were.
+                bank = (
+                    self._evidence_bank(session, now=now, deadline=deadline)
+                    if self.evidence_value_enabled
+                    else None
+                )
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
                         session,
@@ -486,6 +602,7 @@ class RetentionSweeper:
                         budget=budget,
                         dry_run=dry_run,
                         held_ids=held_ids,
+                        bank=bank,
                     )
                 else:
                     report.tiers_skipped.append("native")
@@ -499,6 +616,7 @@ class RetentionSweeper:
                         budget=budget,
                         dry_run=dry_run,
                         held_ids=held_ids,
+                        bank=bank,
                     )
                 else:
                     report.tiers_skipped.append("unkept")
@@ -720,6 +838,7 @@ class RetentionSweeper:
         budget: int,
         dry_run: bool,
         held_ids: set[uuid.UUID] | None = None,
+        bank: _EvidenceBank | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.native_days)
         query = (
@@ -740,6 +859,15 @@ class RetentionSweeper:
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
+        # ADR-074, and it goes here for the same reason `kept_at`'s exemption
+        # does: this is a candidate query, and an exemption belongs in the
+        # `SELECT` that chooses what to delete rather than anywhere near the
+        # stage-then-commit-then-unlink ordering below, which is not this
+        # policy's business. `None` when the flag is off or nothing is banked,
+        # and then the query is exactly what it was.
+        exclusion = bank.exclusion() if bank is not None else None
+        if exclusion is not None:
+            query = query.where(exclusion)
         query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
@@ -765,6 +893,7 @@ class RetentionSweeper:
         budget: int,
         dry_run: bool,
         held_ids: set[uuid.UUID] | None = None,
+        bank: _EvidenceBank | None = None,
     ) -> int:
         cutoff = now - timedelta(days=self.audible_only_days)
         query = (
@@ -780,6 +909,10 @@ class RetentionSweeper:
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
+        # ADR-074 -- see `_strip_native`.
+        exclusion = bank.exclusion() if bank is not None else None
+        if exclusion is not None:
+            query = query.where(exclusion)
         query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
@@ -793,6 +926,97 @@ class RetentionSweeper:
         )
 
     # -- what has been banked (ADR-074) -----------------------------------
+
+    def _evidence_bank(
+        self, session: Session, *, now: datetime, deadline: float
+    ) -> _EvidenceBank:
+        """The current bank: census (rarely) then classify (every sweep).
+
+        Called from `sweep()` **after** the watermark tier, never before, and
+        that ordering is deliberate. The census is bounded by the same
+        `_bounded_statements` deadline as everything else here, so if it ever
+        did outgrow the budget it would be aborted -- and an abort must never
+        be able to starve the one tier that stops a full disk stopping
+        capture. Aborted here, this sweep reports `interrupted_tier="native"`
+        and simply deletes nothing by age, with the safety valve already run.
+        """
+        taken = self._census
+        if taken is None or (time.monotonic() - self._census_taken_at) >= _EVIDENCE_CENSUS_TTL_S:
+            started = time.monotonic()
+            with self._bounded_statements(session, deadline):
+                species_counts = self._banked_counts(session)
+                band_counts = self._band_counts(
+                    session, since=now - timedelta(days=_BAND_WINDOW_DAYS)
+                )
+            taken = (species_counts, band_counts)
+            self._census = taken
+            self._census_taken_at = time.monotonic()
+            log.info(
+                "retention.evidence_census",
+                species=len(species_counts),
+                bands=len(band_counts),
+                took_s=round(self._census_taken_at - started, 4),
+            )
+        return self._derive_bank(*taken)
+
+    def _derive_bank(
+        self, species_counts: dict[str, int], band_counts: dict[int, int]
+    ) -> _EvidenceBank:
+        """Turn two censuses into the set of exemptions, via `evidence_value`.
+
+        Re-derived on every sweep even when the census behind it is reused, so
+        that an operator's edit to the common list, the bank size or the
+        sample rate is in force on the next sweep -- which is what
+        ``tier="live"`` promises those settings in `site_settings.py`, and
+        ADR-048's honesty rule is precisely that a setting reported live must
+        be live.
+
+        Every verdict comes from `evidence_value.classify`, never from a rule
+        restated here: the pure module is the single place the policy lives,
+        so the sweep, a dry-run report and any future UI cannot drift apart.
+        """
+        policy = evidence_value.Policy(
+            bank_size=self.evidence_bank_size,
+            sample_permille=self.evidence_sample_permille,
+        )
+        common = {name.casefold() for name in self.evidence_common_species}
+        species = frozenset(
+            name
+            for name, live in species_counts.items()
+            # `detection_id` only reaches the blind sample draw, which is
+            # downstream of every branch that can return BANK, so the species
+            # name is a stable stand-in here and cannot bias anything.
+            if evidence_value.classify(
+                banded_already=live,
+                band=_ASSUMED_BAND,
+                is_common=name.casefold() in common,
+                detection_id=name,
+                policy=policy,
+            )
+            is evidence_value.Verdict.BANK
+        )
+        # A band under 1% of the trailing window is the bat equivalent of an
+        # uncommon species: keep it whole (ADR-074). The same `bank_size` then
+        # applies per band, so a band that stops being sparse -- or that turns
+        # out to be busy inside its own window -- stops accumulating. Counted
+        # in passes rather than in live clips, which is what `_band_counts`
+        # measures and what "1% of the passes" means.
+        sparse = evidence_value.sparse_bands(
+            band_counts, permille=self.evidence_sample_permille
+        )
+        bands = frozenset(
+            edge
+            for edge, passes in band_counts.items()
+            if evidence_value.classify(
+                banded_already=passes,
+                band=_ASSUMED_BAND,
+                is_common=edge not in sparse,
+                detection_id=str(edge),
+                policy=policy,
+            )
+            is evidence_value.Verdict.BANK
+        )
+        return _EvidenceBank(species=species, bands=bands)
 
     def _banked_counts(self, session: Session) -> dict[str, int]:
         """Live clips per species: one aggregate, no loop, no correlated scan.

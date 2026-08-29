@@ -345,6 +345,15 @@ def _sweeper(settings, **overrides) -> RetentionSweeper:
         batch_size=1000,
         batch_budget_s=30.0,
         clock=lambda: FIXED_NOW,
+        # ADR-074, built the way `station.py` builds the real one: the four
+        # evidence settings come off the same `Settings` object every other
+        # retention knob does. `evidence_value_enabled` ships False, so every
+        # test above this line runs with the policy wired in and switched off
+        # -- which is the point: their expectations must not move.
+        evidence_value_enabled=settings.evidence_value_enabled,
+        evidence_common_species=settings.evidence_common_species,
+        evidence_bank_size=settings.evidence_bank_size,
+        evidence_sample_permille=settings.evidence_sample_permille,
     )
     kwargs.update(overrides)
     return RetentionSweeper(**kwargs)
@@ -1948,6 +1957,60 @@ class TestCandidateQueryPlans:
         assert any("ix_detection_group_start" in step for step in plan), plan
         assert not any("SCAN detection" in step for step in plan), plan
 
+    def test_the_banked_exclusion_does_not_displace_the_native_tier_index(
+        self, db, station_and_detector, tmp_path
+    ):
+        """ADR-074 must not cost ADR-062 its plan.
+
+        The exemption is an extra predicate on the native tier's candidate
+        query, and an extra predicate is exactly what displaced the right
+        index in all three earlier incidents. `common_name` is not indexed and
+        the band is a computed expression, so neither can tempt the planner
+        away -- but "cannot" is the sort of claim this class exists to check
+        rather than assert.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=8,
+            )
+        bank = retention_module._EvidenceBank(
+            species=frozenset({"Grey Heron", "Common Kingfisher"}),
+            bands=frozenset({55, 60}),
+        )
+        cutoff = FIXED_NOW - timedelta(days=7)
+        query = (
+            sa.select(orm.MediaAsset, orm.Detection.id)
+            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.MediaAsset.kind.in_(retention_module.NATIVE_KINDS))
+            .where(orm.MediaAsset.created_at <= cutoff)
+            .where(orm.Detection.kept_at.is_(None))
+            .where(bank.exclusion())
+            .order_by(orm.MediaAsset.created_at.asc())
+            .limit(250)
+        )
+        with session_scope() as session:
+            plan = self._plan(session, query)
+        assert any("ix_media_asset_live_kind_created" in step for step in plan), plan
+        assert not any("TEMP B-TREE" in step for step in plan), plan
+        assert any("ix_detection_media_asset" in step for step in plan), plan
+
+    def test_an_empty_bank_adds_no_predicate_at_all(self, db) -> None:
+        """Nothing banked must mean the candidate query is what it always was.
+
+        `evidence_value_enabled` ships off and the first run against real data
+        is a dry-run; until then, and whenever the census finds nothing worth
+        banking, this policy has to be not merely harmless but absent.
+        """
+        empty = retention_module._EvidenceBank(species=frozenset(), bands=frozenset())
+        assert empty.exclusion() is None
+
 
 class TestTierAgeIsMeasuredOnTheAsset:
     """ADR-062's deliberate semantic change, pinned in both directions."""
@@ -2198,3 +2261,238 @@ def test_band_counts_bucket_bat_passes_by_five_kilohertz(
 
     assert counts[20] == 3, "21.0, 22.5 and 24.9 kHz all fall in the 20-25 band"
     assert counts[60] == 1
+
+
+class TestEvidenceValueExemptions:
+    """ADR-074: what is worth keeping, and what still outranks it.
+
+    Retention today asks only how old a clip is, which is why European Robin
+    and Common Woodpigeon hold 31% of the SSD while the heron dies on a
+    30-day timer. These tests fix the order of precedence that fixes that:
+
+    1. `kept_at` (ADR-061) outranks everything, banked or not;
+    2. the watermark (ADR-026/064) outranks value -- a full disk stops
+       capture, and capture outranks evidence absolutely;
+    3. value outranks age, which is the new part;
+    4. with `evidence_value_enabled` off, none of this exists.
+    """
+
+    def test_a_banked_heron_survives_the_native_tier(self, db, station_and_detector) -> None:
+        """The clip is a month old and would age out. It must not.
+
+        This is the whole point of ADR-074: the heron currently dies on a
+        timer while the robins fill the disk. 31 days rather than 30 because
+        the tiers measure the *asset's* age (ADR-062) and `_seed_detection`
+        writes it 6 s after the event, so a clip seeded at exactly 30 days is
+        6 s short of the cutoff.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+
+        report = _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None, (
+                "a banked species lost its full-rate evidence to the age tier"
+            )
+            assert _asset(session, assets["playback"]).reclaimed_at is None
+        assert report.tier_counts.get("native", 0) == 0, report.tier_counts
+        assert report.tier_counts.get("unkept", 0) == 0, report.tier_counts
+
+    def test_a_common_species_clip_still_ages_out_normally(
+        self, db, station_and_detector
+    ) -> None:
+        """Robin is on the operator's common list and banks nothing."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="European Robin",
+            )
+
+        _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+            assert _asset(session, assets["playback"]).reclaimed_at is not None
+
+    def test_a_kept_detection_survives_regardless_of_species_or_band(
+        self, db, station_and_detector
+    ) -> None:
+        """ADR-061 outranks ADR-074. A human said keep; that is the end of it.
+
+        Deliberately a *common* species, so nothing about ADR-074 is
+        protecting it: if the value path ever became the only thing keeping a
+        clip alive, this is the test that notices.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=400,
+                common_name="European Robin",
+                kept=True,
+            )
+
+        _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+            assert _asset(session, assets["playback"]).reclaimed_at is None
+
+    def test_the_watermark_tier_still_reclaims_banked_clips(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """Value decides what is worth keeping; the watermark decides what the
+        disk can hold. Value must never override the watermark, or a full disk
+        stops capture -- and capture outranks evidence."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                common_name="Grey Heron",
+                kinds=("evidence_native",),
+            )
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+        report = _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85
+        ).sweep()
+
+        assert report.tier_counts.get("watermark", 0) >= 1, report.tier_counts
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None, (
+                "a banked clip blocked the one tier that keeps the disk from filling"
+            )
+
+    def test_with_the_flag_off_the_same_heron_ages_out(self, db, station_and_detector) -> None:
+        """The control for the first test, and the inertness proof.
+
+        `evidence_value_enabled` ships False and this path must not exist
+        until an operator turns it on, having read a dry-run.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+
+        assert db.evidence_value_enabled is False
+        _sweeper(db).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+            assert _asset(session, assets["playback"]).reclaimed_at is not None
+
+    def test_the_census_never_runs_while_the_flag_is_off(
+        self, db, station_and_detector
+    ) -> None:
+        """Inert means inert: not "computed and then ignored".
+
+        The bank census is the one query in this sweep no index can narrow,
+        and it must cost nothing at all until the policy is switched on.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+            )
+
+        sweeper = _sweeper(db)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("the census ran with evidence_value_enabled False")
+
+        sweeper._banked_counts = _boom  # type: ignore[method-assign]
+        sweeper._band_counts = _boom  # type: ignore[method-assign]
+        report = sweeper.sweep()
+
+        assert report.tier_counts.get("native", 0) == 1, report.tier_counts
+
+    def test_a_sparse_bat_band_is_banked_and_a_common_band_is_not(
+        self, db, station_and_detector
+    ) -> None:
+        """Bats have no species, so the axis is peak frequency (ADR-074).
+
+        Also the test that catches the SQL NULL trap: every bat detection has
+        a NULL `common_name`, and a naive ``common_name NOT IN (...)``
+        evaluates to NULL for those rows and quietly drops every one of them
+        from the candidate query -- which would look exactly like "bats are
+        all banked" and would never age a single bat clip off the disk again.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            common_assets = [
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=31,
+                    taxonomic_group="bat",
+                    common_name=None,
+                    peak_frequency_hz=21_000,
+                    kinds=("evidence_native",),
+                )[1]["evidence_native"]
+                for _ in range(150)
+            ]
+            _, sparse_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                taxonomic_group="bat",
+                common_name=None,
+                peak_frequency_hz=61_000,
+                kinds=("evidence_native",),
+            )
+
+        _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, sparse_assets["evidence_native"]).reclaimed_at is None, (
+                "the 60-65 kHz band holds four passes in the whole record and "
+                "must be kept whole"
+            )
+            survivors = [
+                asset_id
+                for asset_id in common_assets
+                if _asset(session, asset_id).reclaimed_at is None
+            ]
+            assert survivors == [], f"{len(survivors)} common-band bat clips were exempted"

@@ -112,6 +112,18 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     "retention_watermark_ratio": LiveTarget("retention", "watermark_ratio"),
     "retention_batch_size": LiveTarget("retention", "batch_size"),
     "retention_batch_budget_s": LiveTarget("retention", "batch_budget_s"),
+    # -- evidence kept by value (ADR-074) ------------------------------------
+    # The sweeper holds these the same way it holds `native_days`: copied in at
+    # construction, so an edit reaches it only by being pushed here. Without
+    # these four entries the settings page would report them "live" while they
+    # did nothing until a restart, which is the exact dishonesty ADR-048's
+    # tiers exist to prevent. The sweeper re-derives its exemptions from the
+    # three policy values on every sweep (`_derive_bank`), so a push takes
+    # effect on the next one rather than on the next census.
+    "evidence_value_enabled": LiveTarget("retention", "evidence_value_enabled"),
+    "evidence_common_species": LiveTarget("retention", "evidence_common_species"),
+    "evidence_bank_size": LiveTarget("retention", "evidence_bank_size"),
+    "evidence_sample_permille": LiveTarget("retention", "evidence_sample_permille"),
 }
 
 #: Bound when the process starts -- logging is configured once, the metrics
