@@ -132,6 +132,22 @@ _BAT_GROUP = "bat"
 #: scan on `ix_detection_group_start` instead of a table scan.
 _BAND_WINDOW_DAYS = 90
 
+#: Share of the trailing window, in parts per thousand, below which a bat band
+#: is sparse and is banked whole (ADR-074: "a band holding < 1% of the
+#: trailing-90-day passes").
+#:
+#: Deliberately **not** `evidence_sample_permille`, which this used to reuse
+#: because both happened to be "one per thousand" on the day they were
+#: written. They are not the same quantity. `evidence_sample_permille` is the
+#: settings-page knob labelled "blind sample (per 1000)" -- how often an
+#: unbiased draw keeps a clip the policy would otherwise let age out -- while
+#: this one decides which bat bands are exempt from age expiry *for ever*.
+#: Sharing the number meant an operator raising the blind sample to 10%
+#: silently and permanently banked the 45-50 kHz band along with it, which is
+#: not a trade anyone was offered on that page. A constant rather than a
+#: second setting because this is ADR-074's definition of "sparse", not a knob.
+_BAND_SPARSE_PERMILLE = 10
+
 #: How long one evidence-value census is reused before it is taken again
 #: (ADR-074). `_banked_counts` is the one query in this sweep that no index
 #: can narrow -- "how many live clips has each species got" is a census of the
@@ -207,6 +223,14 @@ class _EvidenceBank:
         clip would ever age off the disk again. Same trap on the band side
         for every bird, which has no `peak_frequency_hz`.
 
+        The band arm carries the same ``taxonomic_group == 'bat'`` guard
+        `_band_counts` uses to measure sparseness in the first place. Without
+        it the two halves disagree: a band is banked on the strength of bat
+        passes alone, but the exemption would be inherited by *any* detection
+        carrying a `peak_frequency_hz` in that band. Inert today, because only
+        the bat detector writes that column -- and exactly the kind of
+        assumption that stops being true quietly.
+
         `None` when nothing is banked, so an empty bank adds no predicate at
         all and the tier queries stay byte-identical to what they were.
         """
@@ -221,6 +245,9 @@ class _EvidenceBank:
         if self.bands:
             banked.append(
                 and_(
+                    # Bats only -- see the docstring. `_band_counts` counts
+                    # nothing else, so nothing else may claim the exemption.
+                    orm.Detection.taxonomic_group == _BAT_GROUP,
                     orm.Detection.peak_frequency_hz.is_not(None),
                     orm.Detection.peak_frequency_hz > 0,
                     _band_expression().in_(sorted(self.bands)),
@@ -429,11 +456,25 @@ class RetentionSweeper:
         self.evidence_common_species = evidence_common_species
         self.evidence_bank_size = evidence_bank_size
         self.evidence_sample_permille = evidence_sample_permille
-        #: Last census (`_banked_counts`, `_band_counts`) and when it was
-        #: taken, on the monotonic clock. See `_EVIDENCE_CENSUS_TTL_S`. Never
-        #: populated at all while the flag is off.
+        #: Last census (`_banked_counts`, `_band_counts`). Never populated at
+        #: all while the flag is off.
         self._census: tuple[dict[str, int], dict[int, int]] | None = None
-        self._census_taken_at: float = 0.0
+        #: When the last census *succeeded*, and when one was last *attempted*
+        #: -- both on the monotonic clock, `None` meaning never. Two numbers
+        #: rather than one because `_EVIDENCE_CENSUS_TTL_S` has to gate the
+        #: attempt, not the result: recording only successes meant a census
+        #: that could not afford the batch budget was re-attempted -- and
+        #: re-aborted, burning the whole budget -- on every single sweep, for
+        #: ever, with no negative caching anywhere.
+        self._census_taken_at: float | None = None
+        self._census_attempted_at: float | None = None
+        #: How long the last census attempt took (successful or aborted), and
+        #: how many attempts the deadline guard has aborted. Both reported by
+        #: `snapshot()`: the census is the most expensive query this sweep
+        #: issues and the newest, so an operator watching it stall has to be
+        #: able to see *it* rather than infer it from an interrupted tier.
+        self.last_census_duration_s: float | None = None
+        self.census_aborts: int = 0
 
         #: Cumulative across the process lifetime, for Prometheus counters.
         self.totals: dict[str, int] = {}
@@ -972,34 +1013,83 @@ class RetentionSweeper:
 
     def _evidence_bank(
         self, session: Session, *, now: datetime, deadline: float
-    ) -> _EvidenceBank:
+    ) -> _EvidenceBank | None:
         """The current bank: census (rarely) then classify (every sweep).
 
         Called from `sweep()` **after** the watermark tier, never before, and
         that ordering is deliberate. The census is bounded by the same
         `_bounded_statements` deadline as everything else here, so if it ever
-        did outgrow the budget it would be aborted -- and an abort must never
-        be able to starve the one tier that stops a full disk stopping
-        capture. Aborted here, this sweep reports `interrupted_tier="native"`
-        and simply deletes nothing by age, with the safety valve already run.
+        outgrows the budget it is aborted -- and an abort must never be able
+        to starve the one tier that stops a full disk stopping capture.
+
+        **An aborted census degrades to age-only, and is not re-attempted
+        until the TTL is up.** `_banked_counts` is the one query here that no
+        index can narrow, so the abort is a live possibility rather than a
+        theoretical one, and both halves of the handling are load-bearing:
+
+        * letting the abort escape skipped all three tiers -- `sweep()`
+          expands "interrupted at `native`" into "skipped from `native` on" --
+          leaving retention as watermark-only, which is *worse* than the
+          age-only policy ADR-074 replaces, and visible only as a rising
+          `consecutive_barren_sweeps` beside a `last_interrupted_tier` naming
+          the tier that never got to run. Caught here, the sweep carries on
+          with no bank at all: no exemptions, no value verdicts, exactly the
+          age-only behaviour of the day before this flag existed;
+        * the attempt is recorded on failure as well as on success, so a
+          census that cannot afford its budget is retried at most once per
+          `_EVIDENCE_CENSUS_TTL_S` instead of on every 300 s sweep for ever.
+          A failure neither resets that TTL to zero nor discards a previous
+          good census -- the last one keeps being reused until it is replaced.
+
+        Returns `None` when there is no bank to apply, which is what both age
+        tiers already understand: their candidate queries stay byte-identical
+        to the age-only ones, and `_run_tier` tallies no value verdict for a
+        deletion this policy never actually got to classify.
         """
-        taken = self._census
-        if taken is None or (time.monotonic() - self._census_taken_at) >= _EVIDENCE_CENSUS_TTL_S:
+        attempted = self._census_attempted_at
+        if attempted is None or (time.monotonic() - attempted) >= _EVIDENCE_CENSUS_TTL_S:
             started = time.monotonic()
-            with self._bounded_statements(session, deadline):
-                species_counts = self._banked_counts(session)
-                band_counts = self._band_counts(
-                    session, since=now - timedelta(days=_BAND_WINDOW_DAYS)
+            try:
+                with self._bounded_statements(session, deadline):
+                    species_counts = self._banked_counts(session)
+                    band_counts = self._band_counts(
+                        session, since=now - timedelta(days=_BAND_WINDOW_DAYS)
+                    )
+            except OperationalError as exc:
+                if "interrupted" not in str(getattr(exc, "orig", exc)):
+                    # A genuine database error, not our deadline guard --
+                    # never swallow it as if it were a bounded timeout.
+                    raise
+                # No rollback here: the aborted statement is a read, and this
+                # is the same recovery `_watermark_reclaim` already makes for
+                # its own interrupted reporting query -- the tiers below go on
+                # to use this session normally.
+                self._census_attempted_at = time.monotonic()
+                self.last_census_duration_s = round(self._census_attempted_at - started, 4)
+                self.census_aborts += 1
+                log.warning(
+                    "retention.evidence_census_aborted",
+                    after_s=self.last_census_duration_s,
+                    batch_budget_s=self.batch_budget_s,
+                    aborts=self.census_aborts,
+                    retry_after_s=_EVIDENCE_CENSUS_TTL_S,
+                    reusing_previous_census=self._census is not None,
+                    degraded_to="age-only, no value exemptions",
                 )
-            taken = (species_counts, band_counts)
-            self._census = taken
-            self._census_taken_at = time.monotonic()
-            log.info(
-                "retention.evidence_census",
-                species=len(species_counts),
-                bands=len(band_counts),
-                took_s=round(self._census_taken_at - started, 4),
-            )
+            else:
+                self._census = (species_counts, band_counts)
+                self._census_attempted_at = time.monotonic()
+                self._census_taken_at = self._census_attempted_at
+                self.last_census_duration_s = round(self._census_taken_at - started, 4)
+                log.info(
+                    "retention.evidence_census",
+                    species=len(species_counts),
+                    bands=len(band_counts),
+                    took_s=self.last_census_duration_s,
+                )
+        taken = self._census
+        if taken is None:
+            return None
         return self._derive_bank(*taken)
 
     def _derive_bank(
@@ -1044,9 +1134,10 @@ class RetentionSweeper:
         # out to be busy inside its own window -- stops accumulating. Counted
         # in passes rather than in live clips, which is what `_band_counts`
         # measures and what "1% of the passes" means.
-        sparse = evidence_value.sparse_bands(
-            band_counts, permille=self.evidence_sample_permille
-        )
+        # `_BAND_SPARSE_PERMILLE`, never `evidence_sample_permille`: the
+        # blind-sample knob must not also decide which bands are banked for
+        # ever. See the constant.
+        sparse = evidence_value.sparse_bands(band_counts, permille=_BAND_SPARSE_PERMILLE)
         bands = frozenset(
             edge
             for edge, passes in band_counts.items()
@@ -1093,8 +1184,10 @@ class RetentionSweeper:
           (`_evidence_exclusions`), rather than paying for it every sweep;
         * the caller runs it **after** the watermark tier and inside
           `_bounded_statements`, so if it ever does outgrow the budget it is
-          aborted, this sweep degrades to "no age-tier deletions" -- and the
-          one tier that keeps the disk from filling has already run.
+          aborted -- and `_evidence_bank` catches that abort, degrades this
+          sweep to age-only deletions with no value exemptions, and does not
+          try again until the census TTL is up. The one tier that keeps the
+          disk from filling has already run either way.
         """
         intact = (
             select(orm.DetectionMedia.detection_id.label("detection_id"))
@@ -1634,6 +1727,22 @@ class RetentionSweeper:
             "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,
             "watermark_blocked_by_kept": self.last_watermark_blocked_by_kept,
+            # ADR-074. Reported separately so a stalled census is visible *as*
+            # a stalled census. Without these its only symptom is
+            # `consecutive_barren_sweeps` climbing beside
+            # `last_interrupted_tier="native"` -- which names the tier that
+            # never got to run, and reads exactly like the ADR-062 incident it
+            # is not. `census_age_s` is the age of the last *successful*
+            # census, so an age that stops advancing next to a rising
+            # `census_aborts` is the whole diagnosis.
+            "evidence_value_enabled": self.evidence_value_enabled,
+            "last_census_duration_s": self.last_census_duration_s,
+            "census_age_s": (
+                None
+                if self._census_taken_at is None
+                else round(time.monotonic() - self._census_taken_at, 1)
+            ),
+            "census_aborts": self.census_aborts,
             "totals": dict(self.totals),
             # ADR-057. Named "missing_audit", not folded into `totals`: these
             # count rows whose file vanished *without* a retention decision,

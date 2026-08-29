@@ -27,6 +27,7 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
 import open_observatory.retention as retention_module
 from open_observatory.config import REPO_ROOT
@@ -2547,48 +2548,364 @@ class TestEvidenceValueExemptions:
             ]
             assert survivors == [], f"{len(survivors)} common-band bat clips were exempted"
 
+    def test_a_bird_sharing_a_banked_bat_band_is_not_exempt(
+        self, db, station_and_detector
+    ) -> None:
+        """The band exemption is a *bat* rule, so its predicate must be one too.
 
-class TestConstructorCarriesEvidenceSettings:
-    """A previous implementer found, and correctly flagged as outside its
-    permitted files, that `station.py` and `cli.py` constructed
-    `RetentionSweeper` without the four `evidence_*` keyword arguments this
-    class accepts. `apply_tuning` only pushes settings that changed in a
-    given request, so a value already persisted in `config/runtime.env` --
-    including a previously-toggled `evidence_value_enabled=True` -- would
-    report as "applied" while the constructor's own defaults (`False`, `200`,
-    `10`, `()`) silently won at the next process restart, because nothing
-    ever read `Settings` for these four at construction time.
+        `_band_counts` counts only ``taxonomic_group == 'bat'``, so a band is
+        banked on the strength of bat passes alone -- but `exclusion()` used
+        to test frequency and nothing else, which handed the same permanent
+        exemption to any non-bat detection that happened to carry a
+        `peak_frequency_hz` in that band. Inert while only the bat detector
+        writes that column; a silent, permanent leak the moment anything else
+        does.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for _ in range(150):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=31,
+                    taxonomic_group="bat",
+                    common_name=None,
+                    peak_frequency_hz=21_000,
+                    kinds=("evidence_native",),
+                )
+            _, sparse_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                taxonomic_group="bat",
+                common_name=None,
+                peak_frequency_hz=61_000,
+                kinds=("evidence_native",),
+            )
+            # A common bird -- nothing about the *species* bank protects it --
+            # carrying a peak frequency that lands in the banked bat band.
+            _, bird_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                taxonomic_group="bird",
+                common_name="European Robin",
+                peak_frequency_hz=61_000,
+                kinds=("evidence_native",),
+            )
 
-    This mirrors, line for line, the keyword list both call sites pass today
-    (`native_days=`, `audible_only_days=`, `watermark_ratio=`, `batch_size=`,
-    `batch_budget_s=`, then the four `evidence_*` settings) -- if a future
-    edit ever drops one of the four again, this fails instead of silently
-    reverting a deployed policy to its constructor default.
+        _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, sparse_assets["evidence_native"]).reclaimed_at is None, (
+                "control: the sparse bat band must still be kept whole"
+            )
+            assert _asset(session, bird_assets["evidence_native"]).reclaimed_at is not None, (
+                "a bird inherited the bat band's permanent exemption"
+            )
+
+    def test_the_blind_sample_rate_does_not_decide_which_bands_are_banked(
+        self, db, station_and_detector
+    ) -> None:
+        """`evidence_sample_permille` is the settings-page knob labelled
+        "blind sample (per 1000)". Band sparseness used to read the same
+        number, so raising the blind sample to 25% would also have banked --
+        permanently, exempt from every age tier -- every band holding under a
+        quarter of the passes. The two are different quantities and must not
+        share one operator-facing knob.
+
+        Five passes in 105 is 4.8% of the window: sparse under a 250/1000
+        threshold, not sparse under ADR-074's 1%.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for _ in range(100):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=31,
+                    taxonomic_group="bat",
+                    common_name=None,
+                    peak_frequency_hz=21_000,
+                    kinds=("evidence_native",),
+                )
+            busy_enough = [
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=31,
+                    taxonomic_group="bat",
+                    common_name=None,
+                    peak_frequency_hz=61_000,
+                    kinds=("evidence_native",),
+                )[1]["evidence_native"]
+                for _ in range(5)
+            ]
+
+        _sweeper(
+            db, evidence_value_enabled=True, evidence_sample_permille=250
+        ).sweep()
+
+        with session_scope() as session:
+            survivors = [
+                asset_id
+                for asset_id in busy_enough
+                if _asset(session, asset_id).reclaimed_at is None
+            ]
+        assert survivors == [], (
+            f"{len(survivors)} clips in a band holding 4.8% of the passes were "
+            "banked because the blind-sample knob was raised to 250/1000"
+        )
+
+
+class TestCensusFailureDegradesToAgeOnly:
+    """ADR-074 F3/F4: what happens when the census cannot afford its budget.
+
+    `_banked_counts` is a census of the whole archive -- a full scan of
+    `detection_media` plus a lookup per surviving detection -- and this repo
+    has already measured a strictly smaller query at 1.8 s against a 1.5 s
+    budget (`_watermark_reclaim`'s own comment). So the abort is a live
+    possibility, and before the fix it escaped `_evidence_bank`: `sweep()`
+    read it as "interrupted at `native`", marked all three tiers skipped, and
+    -- because the census timestamp was recorded only on success -- did the
+    identical thing again on the next sweep, and every sweep after it.
+    Retention would have quietly become watermark-only: *worse* than the
+    age-only policy ADR-074 replaces.
     """
 
-    def test_construction_the_way_station_and_cli_build_it_carries_settings(
+    @staticmethod
+    def _interrupted(*_args, **_kwargs):
+        """Exactly what the progress handler raises (see `_bounded_statements`)."""
+        raise OperationalError("SELECT census", {}, Exception("interrupted (test)"))
+
+    def test_an_aborted_census_still_sweeps_all_three_tiers_by_age(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, heron = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+            _, robin = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="European Robin",
+            )
+
+        sweeper = _sweeper(db, evidence_value_enabled=True)
+        monkeypatch.setattr(sweeper, "_banked_counts", self._interrupted)
+
+        with capture_logs() as cap:
+            report = sweeper.sweep()
+
+        assert report.complete is True, report.to_dict()
+        assert report.interrupted_tier is None, report.to_dict()
+        assert report.tiers_skipped == [], report.to_dict()
+        with session_scope() as session:
+            # Age-only, which is exactly today's behaviour: even the heron the
+            # census would have banked ages out, because a bank that could not
+            # be computed exempts nothing.
+            for assets in (heron, robin):
+                assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+                assert _asset(session, assets["playback"]).reclaimed_at is not None
+        # ...and the report must not claim a value verdict for a deletion the
+        # policy never actually classified.
+        assert report.value_counts == {}, report.value_counts
+        warnings = [
+            entry
+            for entry in cap
+            if entry["log_level"] == "warning" and "census" in entry["event"]
+        ]
+        assert warnings, [entry["event"] for entry in cap]
+
+    def test_a_failed_census_is_not_re_attempted_on_the_very_next_sweep(
+        self, db, station_and_detector
+    ) -> None:
+        """Negative caching. Without it the whole batch budget is burnt on the
+        same doomed query every 300 s, for ever."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+
+        sweeper = _sweeper(db, evidence_value_enabled=True)
+        attempts = 0
+
+        def _count_then_fail(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            return TestCensusFailureDegradesToAgeOnly._interrupted()
+
+        sweeper._banked_counts = _count_then_fail  # type: ignore[method-assign]
+        sweeper.sweep()
+        sweeper.sweep()
+
+        assert attempts == 1, (
+            f"the census was re-attempted {attempts} times across two sweeps; "
+            "a failure must be cached for the same TTL a success is"
+        )
+
+    def test_the_snapshot_shows_the_census_rather_than_blaming_the_native_tier(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """F4. The operator-visible symptom of a stalled census used to be
+        `consecutive_barren_sweeps` climbing next to
+        `last_interrupted_tier="native"` -- which names the tier that never
+        got to run, and reads exactly like the ADR-062 incident it is not."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+
+        failing = _sweeper(db, evidence_value_enabled=True)
+        monkeypatch.setattr(failing, "_banked_counts", self._interrupted)
+        failing.sweep()
+        snap = failing.snapshot()
+
+        assert snap["evidence_value_enabled"] is True
+        assert snap["census_aborts"] == 1, snap
+        assert snap["census_age_s"] is None, snap
+        assert snap["last_census_duration_s"] is not None, snap
+
+        # Positive control: a census that succeeds reports an age and no aborts.
+        working = _sweeper(db, evidence_value_enabled=True)
+        working.sweep()
+        healthy = working.snapshot()
+        assert healthy["census_aborts"] == 0, healthy
+        assert isinstance(healthy["census_age_s"], float), healthy
+        assert isinstance(healthy["last_census_duration_s"], float), healthy
+
+    def test_the_census_is_never_touched_while_the_flag_is_off(
+        self, db, station_and_detector
+    ) -> None:
+        """The flag ships off, and off must stay inert: no census, nothing to
+        abort, and a snapshot that says so."""
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=31,
+                common_name="Grey Heron",
+            )
+
+        sweeper = _sweeper(db, evidence_value_enabled=False)
+        sweeper._banked_counts = self._interrupted  # type: ignore[method-assign]
+        report = sweeper.sweep()
+
+        assert report.complete is True
+        snap = sweeper.snapshot()
+        assert snap["evidence_value_enabled"] is False
+        assert snap["census_aborts"] == 0
+        assert snap["census_age_s"] is None
+        assert snap["last_census_duration_s"] is None
+
+
+class TestConstructorCarriesEvidenceSettings:
+    """Commit 0170be1: `station.py` and `cli.py` both built `RetentionSweeper`
+    without the four `evidence_*` keyword arguments. `apply_tuning` only
+    pushes settings that changed in a given request, so a value already
+    persisted in `config/runtime.env` -- including a previously-toggled
+    `evidence_value_enabled=True` -- reported as "applied" while the
+    constructor's own defaults (`False`, `()`, `200`, `10`) silently won at
+    the next process restart, because nothing read `Settings` for these four
+    at construction time.
+
+    These tests therefore go through the **real** construction paths rather
+    than repeating the keyword list inline: an inline `RetentionSweeper(...)`
+    with the four kwargs present asserts only that Python passes arguments,
+    and passes untouched while `station.py` drops every one of them, which is
+    precisely the regression that shipped.
+    """
+
+    def test_the_sweeper_station_builds_carries_the_evidence_settings(
         self, db
     ) -> None:
+        """`Station.__init__` is the call site the running station uses."""
+        from open_observatory.station import Station
+
         db.evidence_value_enabled = True
         db.evidence_common_species = ("Grey Heron",)
         db.evidence_bank_size = 55
         db.evidence_sample_permille = 250
 
-        sweeper = RetentionSweeper(
-            clip_dir=db.clip_dir,
-            session_factory=session_scope,
-            native_days=db.retention_native_days,
-            audible_only_days=db.retention_audible_only_days,
-            watermark_ratio=db.retention_watermark_ratio,
-            batch_size=db.retention_batch_size,
-            batch_budget_s=db.retention_batch_budget_s,
-            evidence_value_enabled=db.evidence_value_enabled,
-            evidence_common_species=db.evidence_common_species,
-            evidence_bank_size=db.evidence_bank_size,
-            evidence_sample_permille=db.evidence_sample_permille,
-        )
+        sweeper = Station(db).retention
 
         assert sweeper.evidence_value_enabled is True
         assert sweeper.evidence_common_species == ("Grey Heron",)
         assert sweeper.evidence_bank_size == 55
         assert sweeper.evidence_sample_permille == 250
+        # The settings around them still arrive too, so a future edit that
+        # reorders or truncates the keyword list is caught whichever half of
+        # it it damages.
+        assert sweeper.native_days == db.retention_native_days
+        assert sweeper.batch_budget_s == db.retention_batch_budget_s
+
+    def test_the_cli_call_site_passes_the_same_four_settings(self) -> None:
+        """The other call site from 0170be1, `open-observatory retention-sweep`.
+
+        Read off the source rather than executed: the command opens the real
+        engine and runs migrations before it constructs anything, which is not
+        something this test wants to do to get at one keyword list. Each of the
+        four must be passed, and must be passed *its own* setting -- a
+        copy-paste that wires `evidence_bank_size=settings.evidence_sample_permille`
+        would be silent otherwise.
+        """
+        import ast
+        import inspect
+
+        from open_observatory import cli
+
+        tree = ast.parse(inspect.getsource(cli))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "RetentionSweeper"
+        ]
+        assert len(calls) == 1, f"{len(calls)} RetentionSweeper call sites in cli.py"
+        passed = {kw.arg: kw.value for kw in calls[0].keywords if kw.arg is not None}
+        for name in (
+            "evidence_value_enabled",
+            "evidence_common_species",
+            "evidence_bank_size",
+            "evidence_sample_permille",
+        ):
+            assert name in passed, f"cli.py builds RetentionSweeper without {name}="
+            value = passed[name]
+            assert (
+                isinstance(value, ast.Attribute) and value.attr == name
+            ), f"cli.py passes {name}={ast.unparse(value)}, not settings.{name}"
