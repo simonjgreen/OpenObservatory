@@ -773,6 +773,18 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
        minimum=10, maximum=86400,
        help="Rounded up to the nearest 10 s housekeeping tick. Sweeping every "
             "tick measured 1.6 false capture-gap records a minute."),
+    _e("evidence_value_enabled", "retention", label="value-based retention",
+       help="Keep clips by how interesting they are, not only by age (ADR-074). "
+            "Off until a dry-run has been read."),
+    _e("evidence_common_species", "retention", label="common species",
+       help="Species whose clips go straight to the daily quota. The birds you "
+            "do not need a thousand recordings of."),
+    _e("evidence_bank_size", "retention", label="clips banked per species",
+       minimum=0, maximum=10000),
+    _e("evidence_sample_permille", "retention", label="blind sample (per 1000)",
+       minimum=0, maximum=1000,
+       help="Kept at random regardless of score, so the archive can still "
+            "estimate how often the detector is wrong."),
     # ---- refinement --------------------------------------------------------
     _e("refinement_enabled", "refinement", label="overnight refinement",
        note="Read by the separate 'oo refine run' process at the start of each "

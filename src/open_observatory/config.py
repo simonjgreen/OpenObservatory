@@ -413,6 +413,28 @@ class Settings(BaseSettings):
     #: any plausible fill rate -- so the sweep is paced instead.
     retention_interval_s: float = 300.0
 
+    #: ADR-074. Value-based evidence retention. **Off by default**: this policy
+    #: deletes clips, it has never run against real data, and its first run must
+    #: be a dry-run a human reads.
+    evidence_value_enabled: bool = False
+    #: Species whose clips go straight to the daily quota, skipping the bank.
+    #: An operator list, not a computed threshold -- which birds are boring is a
+    #: matter of taste and place. Pre-populated with the six species that are
+    #: 86% of this station's bird evidence; a purely volumetric rule would also
+    #: have swept up Spotted Flycatcher, which is declining.
+    evidence_common_species: Annotated[tuple[str, ...], NoDecode] = (
+        "Common Woodpigeon",
+        "European Robin",
+        "Eurasian Jackdaw",
+        "Eurasian Blue Tit",
+        "Rook",
+        "Collared Dove",
+    )
+    #: Clips a species may bank before falling back to the quota (ADR-074).
+    evidence_bank_size: int = 200
+    #: Blind sample rate, parts per thousand. 10 = 1%.
+    evidence_sample_permille: int = 10
+
     # ---- making ultrasound listenable ------------------------------------
     #: How to render an ultrasonic event into something a human can hear.
     #:
@@ -686,6 +708,7 @@ class Settings(BaseSettings):
         "clip_plugins",
         "auth_public_read_paths",
         "pause_presets",
+        "evidence_common_species",
         mode="before",
     )
     @classmethod
