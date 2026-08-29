@@ -23,6 +23,45 @@
 - Repo conventions: `ruff`, `mypy`, `pytest`. Run `./.venv/bin/python -m pytest` from the repo root. Full suite baseline before this plan: **1055 passed, 9 skipped, 12 deselected**.
 - Do **not** touch `src/open_observatory/models.py`, `api/app.py`, `cli.py`'s models section, `web/src/App.tsx`, `web/src/components/ModelsPanel.tsx` or `tests/test_api.py` beyond what a task explicitly names — another session has uncommitted work in those files. Check `git diff <path>` before staging anything.
 
+## The test helper, exactly as it is
+
+Every test sketch below calls `_seed_detection` (`tests/test_retention.py:65`).
+It is **keyword-only** after `session`, and it returns
+`tuple[uuid.UUID, dict[str, uuid.UUID]]` — a detection id and a dict of
+`kind -> asset_id`, **not** a list:
+
+```python
+detection_id, assets = _seed_detection(
+    session,
+    station_id=station_id,
+    detector_id=detector_id,
+    clip_dir=db.clip_dir,
+    age_days=1,                       # age is in days before FIXED_NOW
+    kinds=("evidence_native", "playback"),
+    taxonomic_group="bird",           # "bat" for passes
+    common_name="European Robin",     # None for bats
+    peak_frequency_hz=None,           # set for bats
+    kept=False,                       # ADR-061 operator flag
+)
+```
+
+There is no `created_at=` parameter — use `age_days=`. `asset_lag` defaults to
+6 s and is what the age tiers actually measure (ADR-062), so do not set
+`created_at` on assets by hand.
+
+To force the disk over the watermark, copy the idiom the existing watermark
+tests use (`tests/test_retention.py:617`):
+
+```python
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+```
+
 ---
 
 ## File Structure
@@ -475,8 +514,11 @@ class TestExclusionIsOnePredicate:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             det, assets = _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=90),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=90,
                 common_name="Grey Heron",
             )
             session.execute(
@@ -489,7 +531,7 @@ class TestExclusionIsOnePredicate:
         _sweeper(db, evidence_value_enabled=True).sweep()
 
         with session_scope() as session:
-            for asset_id in assets:
+            for asset_id in assets.values():
                 assert _asset(session, asset_id).reclaimed_at is None, (
                     "a banked detection was reclaimed by an age tier"
                 )
@@ -637,8 +679,11 @@ class TestPromotion:
         with session_scope() as session:
             for days in (50, 40, 30):
                 det, _ = _seed_detection(
-                    session, station_id, detector_id,
-                    created_at=FIXED_NOW - timedelta(days=days),
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=days,
                     common_name="Grey Heron",
                 )
                 ids.append(det)
@@ -658,8 +703,11 @@ class TestPromotion:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             det, _ = _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=1),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
                 common_name="European Robin",
             )
             session.commit()
@@ -673,8 +721,11 @@ class TestPromotion:
         with session_scope() as session:
             for days in range(10, 20):
                 _seed_detection(
-                    session, station_id, detector_id,
-                    created_at=FIXED_NOW - timedelta(days=days),
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=days,
                     common_name="California Quail",
                 )
             session.commit()
@@ -701,13 +752,16 @@ class TestPromotion:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             det, assets = _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=60),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=60,
                 common_name="Grey Heron",
             )
             session.execute(
                 sa.update(orm.MediaAsset)
-                .where(orm.MediaAsset.id.in_(assets))
+                .where(orm.MediaAsset.id.in_(assets.values()))
                 .values(reclaimed_at=FIXED_NOW)
             )
             session.commit()
@@ -719,8 +773,11 @@ class TestPromotion:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             det, _ = _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=1),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
                 common_name="Grey Heron",
             )
             session.commit()
@@ -985,12 +1042,15 @@ class TestTheCliffIsGone:
     ) -> None:
         station_id, detector_id = station_and_detector
         cap = 3
-        first, assets_of_first = None, []
+        first, assets_of_first = None, {}
         with session_scope() as session:
             for days in (400, 300, 200):
                 det, assets = _seed_detection(
-                    session, station_id, detector_id,
-                    created_at=FIXED_NOW - timedelta(days=days),
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=days,
                     common_name="Grey Heron",
                 )
                 if first is None:
@@ -1012,8 +1072,11 @@ class TestTheCliffIsGone:
         # A fourth heron arrives, taking the species past the cap.
         with session_scope() as session:
             _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=100),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=100,
                 common_name="Grey Heron",
             )
             session.commit()
@@ -1025,7 +1088,7 @@ class TestTheCliffIsGone:
             assert session.get(orm.Detection, first).banked_at is not None, (
                 "the first-ever recording was unbanked by crossing the cap"
             )
-            for asset_id in assets_of_first:
+            for asset_id in assets_of_first.values():
                 assert _asset(session, asset_id).reclaimed_at is None, (
                     "the first-ever recording of the species was deleted -- "
                     "ADR-074's blocking defect has returned"
@@ -1044,8 +1107,11 @@ class TestTheCliffIsGone:
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             det, assets = _seed_detection(
-                session, station_id, detector_id,
-                created_at=FIXED_NOW - timedelta(days=200),
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
                 common_name="European Greenfinch",
             )
             session.commit()
@@ -1060,7 +1126,7 @@ class TestTheCliffIsGone:
 
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is not None
-            for asset_id in assets:
+            for asset_id in assets.values():
                 assert _asset(session, asset_id).reclaimed_at is None
 ```
 
@@ -1107,16 +1173,22 @@ class TestBandPromotion:
         with session_scope() as session:
             for _ in range(200):                        # the busy 20-25 kHz band
                 _seed_detection(
-                    session, station_id, detector_id,
-                    created_at=FIXED_NOW - timedelta(days=2),
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=2,
                     common_name=None, taxonomic_group="bat",
                     peak_frequency_hz=22_000.0,
                 )
             sparse = []
             for _ in range(2):                          # the sparse 60-65 kHz band
-                det, _a = _seed_detection(
-                    session, station_id, detector_id,
-                    created_at=FIXED_NOW - timedelta(days=2),
+                det, _assets = _seed_detection(
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=2,
                     common_name=None, taxonomic_group="bat",
                     peak_frequency_hz=62_000.0,
                 )
@@ -1137,7 +1209,7 @@ class TestBandPromotion:
         assert busy_banked == 0, "a busy band was banked"
 ```
 
-`_seed_detection` may not accept `taxonomic_group` / `peak_frequency_hz` — read it and extend it if not, in this task.
+`_seed_detection` already accepts `taxonomic_group` and `peak_frequency_hz` (see "The test helper, exactly as it is" above), so no change to the helper is needed. Bat passes carry `common_name=None`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1240,17 +1312,69 @@ git commit -m "ADR-076: bank sparse bat bands by banked detections, not by pass 
 
 ```python
 class TestWatermarkPrefersUnbanked:
-    def test_unbanked_evidence_goes_first(self, db, station_and_detector, monkeypatch) -> None:
-        """ADR-076 defect 5.
+    """ADR-076 defect 5.
 
-        `_watermark_reclaim` orders `created_at ASC` and was never passed the
-        bank, so the emergency valve reclaimed the oldest clips on the disk --
-        which, once the bank works, is precisely the banked set. The archive
-        would be the first thing sacrificed to protect the disk.
-        """
-        # Seed one old banked detection and one newer unbanked one, force the
-        # disk over the watermark, and assert the unbanked one goes first.
-        ...
+    `_watermark_reclaim` orders `created_at ASC` and was never passed the bank,
+    so the emergency valve reclaimed the oldest clips on the disk -- which, once
+    the bank works, is precisely the banked set. The archive would be the first
+    thing sacrificed to protect the disk.
+    """
+
+    @staticmethod
+    def _over_watermark(monkeypatch) -> None:
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+    def test_unbanked_evidence_goes_first(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, banked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,                     # older: reclaimed first today
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            _unbanked, unbanked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,                     # newer
+                kinds=("evidence_native",),
+                common_name="European Robin",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        # batch_size=1 so exactly one asset can be reclaimed: whichever the
+        # tier chooses first is the whole assertion.
+        _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85, batch_size=1
+        ).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, unbanked_assets["evidence_native"]).reclaimed_at is not None, (
+                "the unbanked clip was not taken first"
+            )
+            assert _asset(session, banked_assets["evidence_native"]).reclaimed_at is None, (
+                "the watermark reclaimed the archive while unbanked evidence "
+                "was still available -- ADR-076 defect 5 has returned"
+            )
 
     def test_the_watermark_still_takes_banked_evidence_when_it_must(
         self, db, station_and_detector, monkeypatch
@@ -1262,7 +1386,35 @@ class TestWatermarkPrefersUnbanked:
         watermark deletes banked evidence first" are different rules, and only
         the first was ever intended.
         """
-        ...
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, banked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        report = _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85
+        ).sweep()
+
+        assert report.tier_counts.get("watermark", 0) >= 1
+        with session_scope() as session:
+            assert _asset(session, banked_assets["evidence_native"]).reclaimed_at is not None, (
+                "the bank became an exemption from the watermark; it is only a "
+                "preference (ADR-074 rule 1)"
+            )
 
     def test_reclaiming_a_banked_detection_clears_banked_at(
         self, db, station_and_detector, monkeypatch
@@ -1273,10 +1425,33 @@ class TestWatermarkPrefersUnbanked:
         files, and because promotion is monotone it stays consumed for ever --
         the species is locked out of the bank permanently.
         """
-        ...
-```
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, _assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
 
-Fill in the three bodies using the existing watermark tests in `tests/test_retention.py` as the pattern for forcing the disk over the line (they already monkeypatch `shutil.disk_usage`; find and copy that mechanism exactly).
+        self._over_watermark(monkeypatch)
+        _sweeper(db, evidence_value_enabled=True, watermark_ratio=0.85).sweep()
+
+        with session_scope() as session:
+            assert session.get(orm.Detection, banked).banked_at is None, (
+                "the slot stays consumed by a detection with no files, and "
+                "promotion is monotone -- the species is locked out for ever"
+            )
+```
 
 - [ ] **Step 2: Run to verify they fail**
 
