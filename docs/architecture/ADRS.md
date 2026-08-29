@@ -8589,3 +8589,322 @@ than as a threshold.
   long-running stream, and nobody should "fix" it without reading this first.
 - A soak that runs for months is also a soak whose timestamps are minutes out.
   That is worth knowing *before* the reliability work succeeds rather than after.
+
+---
+
+## ADR-073: What "missing audio" means, and five SLOs instead of one continuity number
+
+**Status:** accepted, 2026-08-29
+**Supersedes:** the single "72-hour continuity ≥ 99.9%" criterion as the *only*
+capture-completeness measure. That criterion is not deleted; it is decomposed.
+**Relates to:** ADR-039 (loss accounting), ADR-072 (accepted drift)
+
+### The problem: one number measuring three unrelated things
+
+`continuity_ratio = frames / expected_frames`, where `expected_frames` is
+elapsed monotonic time × the **nominal** sample rate. That single ratio silently
+sums three phenomena with nothing in common:
+
+| | what happened | is audio actually missing? |
+|---|---|---|
+| **coverage** | the capture process was not running | **yes — gone** |
+| **integrity** | frames dropped while it *was* running | **yes — gone** |
+| **drift** | the crystal ran slow (ADR-072) | **no — the audio exists and is fine** |
+
+Drift is not loss. Nothing is missing; the audio is merely labelled a few
+seconds off. Yet it lands in the ratio, and it dominates it:
+
+| soak | continuity | reported shortfall | **audio actually lost** | drift |
+|---|---|---|---|---|
+| 2026-08-22 → 25 (72.1 h) | 0.999948 | 13.5 s | **0.597 s** | ~12.9 s |
+| 2026-08-25 → 28 (78.7 h) | 0.999943 | 16.0 s | **0.000 s** | 16.0 s |
+
+**96% of the first soak's "loss", and 100% of the second's, was the crystal.**
+The second soak lost no audio whatsoever and was still reported as 99.9943%
+complete. We have been tuning a figure that mostly measures an oscillator.
+
+There is also a latent absurdity: at about **1150 ppm the drift alone consumes
+the entire 0.1% budget**, so a station with flawless capture would fail the
+criterion because of a component this project has already decided to tolerate.
+
+And the number is silent about the thing that costs most. Over the last 9.8
+days the station lost **0.60 s** to in-stream gaps and **114 s** to being
+switched off between streams. The criterion measures the former and ignores the
+latter by two orders of magnitude.
+
+### What the device actually does
+
+Loss by era, every `capture_gap` row ever written:
+
+| era | gap events | audio lost |
+|---|---|---|
+| before ADR-060/061 | 2,983 | 662.6 s |
+| 2026-08-14 → 19 | 183 | 58.8 s |
+| **since 2026-08-19 (10 days)** | **2** | **0.60 s** |
+
+Coverage, measured by clipping every `audio_stream` row to the window:
+
+| window | uptime | downtime | outages |
+|---|---|---|---|
+| since 2026-08-19 (9.8 d) | **99.986%** | 1.9 min | 3 (mains cut 105 s; deploy 4 s; unattended-upgrade 6 s) |
+| last 7 days | **99.998%** | 0.2 min | 2 |
+
+So: roughly **0.06 s of audio lost per day** and **12 s of downtime per day**.
+
+### The decision
+
+**Five SLOs, one per failure mode, measured and reported separately.** A number
+that mixes failure modes cannot be acted on, because each mode has a different
+cause, a different fix and a different tolerance.
+
+The unit of value for this device is not the second. It is *did we miss a bird*.
+A two-minute outage at dawn costs more than two hours at 14:00 in December. The
+targets below are deliberately loose in wall-clock terms and tight where birds
+actually are.
+
+| | SLO | target | measured | derivation |
+|---|---|---|---|---|
+| **A** | **Coverage** — wall-clock fraction with capture running | **≥ 99.5% / month** (≈3.6 h) | 99.986% | absorbs two power cuts, a reboot and weekly package restarts without a breach. This is a domestic device on unprotected mains (ADR-072); a target that a power cut breaches is a target that trains you to ignore it |
+| **A2** | **Prime-hours coverage** — the same, restricted to civil twilight ±2 h and the ultrasonic night window | **≥ 99.9% / month** | ~100% | where the birds and bats are. Loss here is real loss; loss at 14:00 in December mostly is not |
+| **B** | **Capture integrity** — of recorded time, the fraction not dropped | **≥ 99.99%** (≤ 8.6 s/day) | 0.06 s/day | 140× headroom on measured, which is the point: it catches a genuine regression and ignores noise. The pre-ADR-060 era ran at ~9 s/day and would breach it |
+| **C** | **Timestamp accuracy** — absolute UTC error of a detection | **≤ 60 s** | ≤4.3 s/day, resets each stream | at 50 ppm this bounds a stream to ~14 days. Restarts already deliver that (longest ever: 83.8 h) |
+| **D** | **Detection coverage** — fraction of captured audio actually analysed | **≥ 99%** | not yet measured | audio captured but never analysed is invisible loss and nothing currently reports it |
+| **E** | **Evidence sufficiency** — detections worth keeping that kept a clip | **≥ 95%** | see ADR-074 | "worth keeping" changes meaning entirely under ADR-074's value-based retention |
+
+### The rule that makes this work
+
+**Drift is excluded from every loss SLO.** It is measured, reported, and
+budgeted under C as a *labelling* error, never under A or B as a *loss*. A
+report that says "we lost 16 seconds" when nothing was lost is not conservative,
+it is wrong, and it sends somebody hunting for a fault that does not exist.
+
+Restated under these SLOs, the 2026-08-25 soak reads: **coverage 100%, capture
+integrity 100%, zero audio lost, timestamp error 16 s.** That is what actually
+happened.
+
+### Consequences
+
+- `ACCEPTANCE_CRITERIA.md`'s continuity box is replaced by A and B. The box
+  ticked on 2026-08-25 stands: it passed under the old criterion and passes more
+  comfortably under the new one.
+- **D is not currently measurable.** Nothing reports the fraction of captured
+  audio the detectors actually consumed. Recording an SLO that cannot be
+  measured is honest only if the gap is stated: it is stated here, and closing
+  it is work, not a formality.
+- A2 needs the solar scheduler's window, which already exists for ultrasonic
+  gating, applied to a coverage calculation. Small.
+- Nobody should tune capture against a single percentage again.
+
+### What this ADR does not do
+
+It does not change any capture code, and it does not lower a bar. B is
+*stricter* than the old criterion in the dimension that matters (8.6 s/day
+against an effective ~86 s/day once drift is removed from the 0.1% budget).
+What it removes is the pretence that one number described a healthy device.
+
+---
+
+## ADR-074: Evidence is retained by value, not by age
+
+**Status:** accepted, 2026-08-29
+**Supersedes:** age-only retention as the sole policy (ADR-062's tiers remain as
+the backstop)
+**Relates to:** ADR-049 (plausibility bands), ADR-062 (retention sweep), ADR-017
+
+### The problem, measured
+
+The station holds **234,761 live clips totalling 388.8 GB** on a 458 GB SSD.
+Nothing in the retention path asks whether a clip is *worth* keeping — only how
+old it is (7 days native, 30 days audible, then a watermark sweep at 85%).
+
+Where it goes:
+
+| | | |
+|---|---|---|
+| bird `evidence_native` | 133.2 GB | bat `audible_ultrasonic` 132.9 GB |
+| bird `playback` | 54.4 GB | bat `evidence_native` 40.1 GB |
+| acoustic_event (all) | 13.2 GB | bat `playback` 15.1 GB |
+
+Birds 48%, bats 48%, everything else 3%. And within birds the distribution is
+brutally skewed — 143 species, but:
+
+```
+European Robin      38,016 clips   68.4 GB   36.5% of bird evidence
+Common Woodpigeon   42,816 clips   51.8 GB   27.6%
+--> those two alone = 120.2 GB = 31% of the entire SSD
+
+all 91 species with fewer than 50 clips = 1.62 GB = 0.87%
+```
+
+**The decisive fact: the cost is concentrated, and the interesting material is
+cheap.** The 91 species with fewer than 50 clips cost 1.62 GB *between them*.
+The disk is not full of interesting things. It is full of robins.
+
+But "keep the rare tail forever" does **not** follow, and an early draft of this
+ADR said so wrongly. Everything outside the six commonest species is 15,024
+clips and **26.1 GB — and that is a ~30-day steady state, not a lifetime**.
+Kept indefinitely it grows about **313 GB/year**, which is not a policy, it is
+the same problem later. The mid-range species (Goldfinch 1,447, Dunnock 877,
+Blackbird 668) are individually reasonable and collectively ruinous.
+
+So the design problem is not "what do we keep". It is **"what do we cap"**.
+
+### The trap in "just keep the rare ones"
+
+The rarest entries are not the most interesting ones. They are mostly wrong:
+
+```
+Chestnut-backed Chickadee 1    California Quail 1    Asian Brown Flycatcher 1
+Eastern Screech-Owl 1          Grey-winged Inca-Finch 1
+```
+
+None of those can occur in a Surrey garden. A naive rarity bias would
+preferentially archive BirdNET's mistakes. Rarity alone is the wrong axis.
+
+### The decision
+
+**Rarity × plausibility, plus a blind sample.** ADR-049 already computes a
+plausibility band per detection from the occurrence prior; cross it with volume:
+
+| | plausible here | implausible here |
+|---|---|---|
+| **uncommon** | Grey Heron, Kingfisher, Great Spotted Woodpecker → **bank up to 200 clips per species, exempt from age expiry**, then quota | California Quail, Asian Brown Flycatcher → **keep 3 per species, ever**, then stop |
+| **common** (operator list) | Robin, Woodpigeon → **no bank; straight to quota** (best, median and worst per species per day) | — |
+
+**The species bank is what makes this bounded.** Each species accumulates up to
+**K = 200** clips that never age out; past that it falls back to the daily
+quota. The property that matters is that it is **self-limiting**: a genuinely
+rare bird keeps everything it will ever produce, while a species that turns out
+to be common banks its 200 and then stops costing anything. The heron has 139
+today — it banks the lot, and when it eventually passes 200 that is precisely
+the point at which further heron clips stop being interesting.
+
+Absolute ceiling: 143 species × 200 × 1.53 MB ≈ **44 GB**, and only if every
+species maxes out, which none but the common six will. Measured today, 102
+species sit under 200 lifetime detections and hold 3.80 GB between them.
+
+**Everything not banked keeps the existing age tiers** (7-day native, 30-day
+audible). Quota clips and sampled clips are a rolling window, not an archive, so
+they cannot grow without bound either. Only banked clips are exempt from expiry.
+
+Three examples of a systematic misidentification are enough to judge it; the
+3,000th adds nothing. And keeping the *median and worst* alongside the best is
+deliberate: an archive selected purely on score is selected on the very variable
+anyone would later want to measure.
+
+**Plus a 1% blind sample of everything**, chosen by
+`sha256(detection_id)[:8] % 100 == 0` — deterministic, reproducible, auditable,
+stateless, and independent of score. Without it the archive can never answer
+"what is our actual false-positive rate?", because a best-of collection cannot
+estimate a distribution it was selected from. Cost ≈ 4 GB.
+
+### "Common" is an operator list, not a computed threshold
+
+Which birds are boring is a matter of taste and place, not statistics. The
+common list is therefore a **UI-editable setting**, `evidence_common_species`,
+a `tuple[str, ...]` following the existing `preferred_formats` / `pause_presets`
+pattern, persisted to `config/runtime.env` through `site_settings.py`, `tier="live"`.
+`_split_sequence` already accepts both JSON and comma-separated spellings.
+
+**Pre-populated with the six species that are 86% of all bird evidence:**
+
+    Common Woodpigeon, European Robin, Eurasian Jackdaw,
+    Eurasian Blue Tit, Rook, Collared Dove
+
+Nothing below Rook is added. Every remaining species has under 900 detections
+and is individually cheap, so capping it would trade real information for
+negligible disk. Note that a purely volumetric rule would have swept up Spotted
+Flycatcher (397, a declining species) — which is exactly why this is a list a
+person edits rather than a threshold a machine picks.
+
+### Suggesting additions, without nagging
+
+A species is **suggested** for the common list when, over the trailing 30 days,
+it has produced **> 500 detections** and **> 2% of evidence bytes**, is **not**
+already listed, is **not** dismissed, and its plausibility band is `in_range` —
+that last clause matters, because a false-positive burst should be *investigated*,
+not silenced by adding it to a list of boring birds.
+
+Surfaced on the settings page as a dismissible row: *"European Greenfinch
+produced 1,204 clips (3.1 GB) in the last 30 days. Add to the common list?"*
+with **Add** and **Never suggest this species**. The dismissal list is persisted
+too; a prompt that returns after being declined is a prompt that gets ignored
+along with everything else on the page.
+
+### Bats: the axis is frequency, and the sample is 1%
+
+Bat passes are never given a species, by design, so rarity cannot come from a
+name. It comes from **peak frequency band**, and the distribution is as skewed
+as the birds':
+
+```
+20-25 kHz  36,180  (54%)      50-55 kHz   1,464
+30-35 kHz   8,655             25-30 kHz     768
+35-40 kHz   7,603             55-60 kHz     107   <-- sparse
+15-20 kHz   7,040             60-65 kHz       4   <-- sparse
+45-50 kHz   3,328
+```
+
+- A band holding **< 1% of the trailing-90-day passes is sparse: keep every
+  pass**, banked and exempt from expiry. Today that is 55–60 kHz and 60–65 kHz —
+  111 passes, 0.3 GB.
+- All other bands: **keep 1%**, by the same deterministic hash, subject to the
+  normal age tiers.
+- The bank cap applies per band as it does per species, so a band that stops
+  being sparse stops accumulating.
+
+The operator's instruction was "agreed on frequency, and also let's keep only
+1%". Read literally those pull in different directions, so the resolution is
+recorded explicitly: **1% within common bands, 100% within sparse bands.** A
+flat 1% everywhere would leave the 60–65 kHz band with an expected 0.04 passes —
+it would throw away the rarest signal the station has, which is the opposite of
+the intent.
+
+This is the single largest saving: bat evidence is 188 GB and almost all of it
+is three common bands.
+
+### Expected effect
+
+| | now | after (steady state) | bounded by |
+|---|---|---|---|
+| bird species bank | — | 3.8 GB today, **≤44 GB ever** | K=200 × species count |
+| bird quota + rolling tiers | 187.5 GB | ~5 GB | 7/30-day expiry |
+| bat sparse bands (kept whole) | — | 0.3 GB | 111 passes today |
+| bat 1% + rolling tiers | 188.1 GB | ~2 GB | 1% × expiry |
+| acoustic_event | 13.2 GB | 13.2 GB (untouched) | existing tiers |
+| 1% blind sample | — | ~4 GB | 1% × expiry |
+| **total** | **388.8 GB** | **~28 GB now, ≤70 GB at the ceiling** | |
+
+The second figure matters more than the first. The current 388.8 GB is not a
+steady state — it is what the disk happened to hold when the watermark last
+swept. The point of this policy is a total that is bounded **by construction**
+rather than by a high-water mark.
+
+And it keeps *more* of what is wanted: the heron, the kingfisher and the 60 kHz
+bat pass survive as a permanent bank, instead of being lost to a 30-day timer
+while robins fill the disk.
+
+### Rules that must not be broken
+
+1. **Age tiers remain as a backstop.** Value-based selection decides what is
+   *worth* keeping; ADR-062's watermark still decides what the disk can *hold*.
+   Value never overrides the watermark.
+2. **Never delete a human-reviewed or operator-kept detection**, whatever its
+   species. The `kept` flag (ADR-061) already outranks everything and continues to.
+3. **Deletion is irreversible and this policy is new.** First rollout runs in
+   `--dry-run` and reports what it *would* remove, per category, for a human to
+   read before anything is deleted.
+4. **The sample must stay blind.** If the hash is ever replaced by anything that
+   consults score, band or species, the 1% stops being able to estimate anything
+   and becomes another best-of pile.
+
+### Consequences
+
+- Retention gains a value dimension it has never had, and the operator gains a
+  control they have never had.
+- A species moved onto the common list does **not** retroactively delete its
+  history; the change applies to the next sweep forward, matching ADR-063's rule
+  that corrections fix the future rather than rewriting the past.
+- SLO E in ADR-073 ("evidence sufficiency") changes meaning under this policy:
+  the denominator becomes *detections worth keeping*, not *all detections*. It
+  cannot be measured until this lands.
