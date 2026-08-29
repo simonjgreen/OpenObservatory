@@ -511,6 +511,39 @@ def test_kept_at_has_a_partial_index_that_cannot_steal_the_ordered_plan(
     assert "WHERE kept_at IS NOT NULL" in sql.replace("\n", " "), sql
 
 
+# --- 0012_detection_banked_at (ADR-076) --------------------------------------
+
+
+def test_detection_has_a_banked_at_column(migrated_session: Session) -> None:
+    columns = {c["name"] for c in sa.inspect(migrated_session.bind).get_columns("detection")}
+    assert "banked_at" in columns
+
+
+def test_banked_at_index_is_partial_so_it_cannot_steal_the_ordered_plan(
+    migrated_session: Session,
+) -> None:
+    """ADR-076 rule 2, asserted on the `WHERE` clause rather than the name.
+
+    `banked_at` is NULL for ~99.2% of rows -- the same shape as `kept_at`,
+    whose *plain* index SQLite preferred for the `IS NULL` filter, costing the
+    planner `ix_detection_event_start_utc` and wedging the station inside one
+    statement for over five minutes (ADR-061, revision 0009). A name check
+    alone would pass against a plain index, which is the defect this asserts
+    against.
+    """
+    sql = migrated_session.execute(
+        sa.text(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='ix_detection_banked_partial'"
+        )
+    ).scalar_one_or_none()
+    assert sql is not None, "the partial index is missing"
+    assert "banked_at IS NOT NULL" in sql, (
+        "the index is not partial; a plain index on banked_at re-creates the "
+        "ADR-061 failure that wedged the station"
+    )
+
+
 def test_live_asset_indexes_are_partial_and_the_plain_one_is_gone(
     migrated_session: Session,
 ) -> None:

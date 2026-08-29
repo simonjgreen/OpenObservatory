@@ -234,6 +234,24 @@ class Detection(Base):
     #: first-of-species rule this replaced.
     kept_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
+    # -- the evidence bank (ADR-076) -----------------------------------------
+    #: When this detection was promoted into the evidence bank: the archive
+    #: ADR-074 wants and ADR-076 makes monotone. Set once by promotion, and
+    #: cleared **only** by `_watermark_reclaim` actually reclaiming this
+    #: detection's evidence, in the same transaction -- which is what frees the
+    #: species' slot again.
+    #:
+    #: Not the same thing as `kept_at`, and must never be presented as though
+    #: it were: `kept_at` is a human's decision and is exempt from every tier
+    #: including the watermark; this is a policy's decision and the watermark
+    #: overrules it (ADR-074 rule 1, ADR-076 rule 4).
+    #:
+    #: Indexed **partially** -- see `ix_detection_banked_partial` below and
+    #: revision 0012. A plain index here re-creates the ADR-061 failure.
+    banked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     media: Mapped[list[DetectionMedia]] = relationship(
         back_populates="detection", cascade="all, delete-orphan"
     )
@@ -253,6 +271,19 @@ class Detection(Base):
             "ix_detection_kept_at_partial",
             "kept_at",
             sqlite_where=text("kept_at IS NOT NULL"),
+        ),
+        # Partial, for exactly the reason `ix_detection_kept_at_partial` is
+        # (ADR-061, ADR-076 rule 2): `banked_at` is NULL for ~99.2% of rows, so
+        # a plain index is one SQLite prefers for the `IS NULL` filter in every
+        # tier's candidate query, losing `ix_detection_event_start_utc` and
+        # adding a temp B-tree sort. Covering `(common_name, event_start_utc)`
+        # because the banked count and the promotion candidate query are the
+        # only two readers.
+        Index(
+            "ix_detection_banked_partial",
+            "common_name",
+            "event_start_utc",
+            sqlite_where=text("banked_at IS NOT NULL"),
         ),
     )
 
