@@ -430,6 +430,29 @@ class Settings(BaseSettings):
         "Rook",
         "Collared Dove",
     )
+    #: Species the range model says cannot occur here (ADR-049 bands, ADR-076).
+    #: They are banked to `evidence_implausible_cap` examples rather than
+    #: `evidence_bank_size`: three examples are enough to judge a systematic
+    #: misidentification, and the 3,000th adds nothing.
+    #:
+    #: An operator list rather than a query against the stored band, because
+    #: the band lives inside the wide `native_result` JSON column that the
+    #: sweep's preamble goes out of its way never to touch (ADR-062's 1.5 s
+    #: budget). ADR-074's own principle -- which birds are boring is a list a
+    #: person edits, not a threshold a machine picks -- applies word for word
+    #: to which birds are impossible here.
+    #:
+    #: Pre-populated with the five this station has actually recorded, one
+    #: detection each, none of which can occur in a Surrey garden.
+    evidence_implausible_species: Annotated[tuple[str, ...], NoDecode] = (
+        "Chestnut-backed Chickadee",
+        "California Quail",
+        "Asian Brown Flycatcher",
+        "Eastern Screech-Owl",
+        "Grey-winged Inca-Finch",
+    )
+    #: Examples kept of an implausible species, ever (ADR-074).
+    evidence_implausible_cap: int = 3
     #: Clips a species may bank before falling back to the quota (ADR-074).
     evidence_bank_size: int = 200
     #: Blind sample rate, parts per thousand. 10 = 1%.
@@ -709,6 +732,7 @@ class Settings(BaseSettings):
         "auth_public_read_paths",
         "pause_presets",
         "evidence_common_species",
+        "evidence_implausible_species",
         mode="before",
     )
     @classmethod

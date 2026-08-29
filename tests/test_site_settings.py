@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from open_observatory.api.app import create_app
-from open_observatory.config import Settings, set_settings
+from open_observatory.config import Settings, get_settings, set_settings
 from open_observatory.site_settings import (
     CATEGORY_IDS,
     EDITABLE_BY_NAME,
@@ -229,6 +229,22 @@ class TestTheAuditIsComplete:
         """The instruction was to default to making a setting editable. If
         this ratio ever inverts, the bar for "never" has slipped."""
         assert len(EDITABLE_BY_NAME) > 6 * len(NON_EDITABLE)
+
+    def test_implausible_species_is_editable_and_live(self) -> None:
+        """ADR-076: the plausibility gate is an operator list, not a migration.
+
+        ADR-074's first amendment proposed persisting the band as an indexed
+        column -- a migration, a write-path change and an ADR of its own. Its
+        second amendment found that unnecessary: which birds are *impossible
+        here* is the same kind of judgement as which are *boring*, and that is
+        a list a person edits.
+        """
+        entry = next(
+            e for e in EDITABLE_SETTINGS if e.name == "evidence_implausible_species"
+        )
+        assert entry.category == "retention"
+        assert entry.tier == "live"
+        assert "California Quail" in get_settings().evidence_implausible_species
 
 
 class TestValidation:

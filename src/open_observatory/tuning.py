@@ -122,6 +122,8 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     # effect on the next one rather than on the next census.
     "evidence_value_enabled": LiveTarget("retention", "evidence_value_enabled"),
     "evidence_common_species": LiveTarget("retention", "evidence_common_species"),
+    "evidence_implausible_species": LiveTarget("retention", "evidence_implausible_species"),
+    "evidence_implausible_cap": LiveTarget("retention", "evidence_implausible_cap"),
     "evidence_bank_size": LiveTarget("retention", "evidence_bank_size"),
     "evidence_sample_permille": LiveTarget("retention", "evidence_sample_permille"),
 }
