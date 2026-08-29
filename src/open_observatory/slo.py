@@ -199,11 +199,20 @@ __all__ += ["detection_coverage"]
 
 
 def _as_int(value: object) -> int:
-    """Coerce a counter pulled from a loosely-typed mapping. Falsy is zero."""
+    """Coerce a counter pulled from a loosely-typed mapping.
+
+    Total, not partial: this feeds ``detection_coverage``, which feeds the
+    live ``/api/v1/health`` endpoint. One detector reporting a malformed
+    counter must degrade that detector to zero, not raise out of the health
+    check and take every detector's reading down with it. Falsy and
+    non-numeric values are both zero.
+    """
     if not value:
         return 0
-    assert isinstance(value, (int, float))
-    return int(value)
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
 
 
 def detection_coverage(detectors: Sequence[Mapping[str, object]]) -> float | None:

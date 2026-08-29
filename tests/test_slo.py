@@ -252,3 +252,23 @@ def test_a_detector_that_has_seen_nothing_yet_is_not_zero_percent() -> None:
     empty = {"windows_analysed": 0, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0}
     assert slo.detection_coverage([empty]) is None
     assert slo.detection_coverage([]) is None
+
+
+def test_a_malformed_counter_zeroes_that_detector_not_the_whole_reading() -> None:
+    """detection_coverage feeds the live /api/v1/health endpoint.
+
+    One detector reporting a non-numeric counter must not raise out of the
+    health check and take every detector's reading down with it -- it should
+    degrade just that detector to a zero-analysed reading instead.
+    """
+    string_counter = [
+        {"windows_analysed": "oops", "windows_dropped_queue_full": 5, "windows_dropped_stale": 0},
+        {"windows_analysed": 100, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0},
+    ]
+    assert slo.detection_coverage(string_counter) == pytest.approx(0.0)
+
+    list_counter = [
+        {"windows_analysed": [1, 2, 3], "windows_dropped_queue_full": 5, "windows_dropped_stale": 0},
+        {"windows_analysed": 100, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0},
+    ]
+    assert slo.detection_coverage(list_counter) == pytest.approx(0.0)
