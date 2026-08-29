@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-__all__ = ["Policy", "Verdict", "cap_for", "classify", "sampled"]
+__all__ = ["Policy", "Verdict", "cap_for", "sampled"]
 
 
 class Verdict(StrEnum):
@@ -52,10 +52,6 @@ class Policy:
     implausible_cap: int = 3
 
 
-#: Bands ADR-049 computes that mean "the range model says not here".
-IMPLAUSIBLE_BANDS = frozenset({"implausible", "out_of_range"})
-
-
 def sampled(detection_id: str, permille: int) -> bool:
     """Deterministic, blind 1-in-N draw.
 
@@ -71,34 +67,6 @@ def sampled(detection_id: str, permille: int) -> bool:
         return False
     digest = hashlib.sha256(detection_id.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") % 1000 < permille
-
-
-def classify(
-    *,
-    banded_already: int,
-    band: str,
-    is_common: bool,
-    detection_id: str,
-    policy: Policy,
-) -> Verdict:
-    """One clip's verdict.
-
-    ``is_common`` comes from the operator's own list, not from a threshold.
-    Which birds are boring is a matter of taste and place: a purely volumetric
-    rule would have swept up Spotted Flycatcher (397 detections, a declining
-    species) alongside the woodpigeons.
-    """
-    if band in IMPLAUSIBLE_BANDS:
-        # Kept for review, not for the record. Capped hard.
-        return Verdict.BANK if banded_already < policy.implausible_cap else Verdict.EXPIRE
-
-    if not is_common and banded_already < policy.bank_size:
-        return Verdict.BANK
-
-    if sampled(detection_id, policy.sample_permille):
-        return Verdict.SAMPLE
-
-    return Verdict.QUOTA
 
 
 def cap_for(

@@ -24,7 +24,6 @@ from alembic import command
 from alembic.config import Config
 from hypothesis import given
 from hypothesis import strategies as st
-from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -2010,14 +2009,13 @@ class TestCandidateQueryPlans:
     def test_the_banked_exclusion_does_not_displace_the_native_tier_index(
         self, db, station_and_detector, tmp_path
     ):
-        """ADR-074 must not cost ADR-062 its plan.
+        """ADR-076 must not cost ADR-062 its plan.
 
-        The exemption is an extra predicate on the native tier's candidate
-        query, and an extra predicate is exactly what displaced the right
-        index in all three earlier incidents. `common_name` is not indexed and
-        the band is a computed expression, so neither can tempt the planner
-        away -- but "cannot" is the sort of claim this class exists to check
-        rather than assert.
+        `banked_at IS NULL` is the exemption's whole predicate now, added to
+        the native tier's candidate query the same way `kept_at IS NULL`
+        already is -- and an extra predicate is exactly what displaced the
+        right index in all three earlier incidents. But "cannot" is the sort
+        of claim this class exists to check rather than assert.
         """
         station_id, detector_id = station_and_detector
         with session_scope() as session:
@@ -2028,10 +2026,7 @@ class TestCandidateQueryPlans:
                 clip_dir=tmp_path / "clips",
                 age_days=8,
             )
-        bank = retention_module._EvidenceBank(
-            species=frozenset({"Grey Heron", "Common Kingfisher"}),
-            bands=frozenset({55, 60}),
-        )
+        bank = retention_module._EvidenceBank(banked={"Grey Heron": 1}, bands={55: 1})
         cutoff = FIXED_NOW - timedelta(days=7)
         query = (
             sa.select(orm.MediaAsset, orm.Detection.id)
@@ -2051,15 +2046,16 @@ class TestCandidateQueryPlans:
         assert not any("TEMP B-TREE" in step for step in plan), plan
         assert any("ix_detection_media_asset" in step for step in plan), plan
 
-    def test_an_empty_bank_adds_no_predicate_at_all(self, db) -> None:
-        """Nothing banked must mean the candidate query is what it always was.
-
-        `evidence_value_enabled` ships off and the first run against real data
-        is a dry-run; until then, and whenever the census finds nothing worth
-        banking, this policy has to be not merely harmless but absent.
+    def test_an_empty_bank_still_returns_the_predicate(self, db) -> None:
+        """ADR-076: unlike ADR-074's set-based exclusion, `exclusion()` is
+        never `None` -- it is always `banked_at IS NULL`, whether or not
+        anything is currently banked. An empty bank excludes nothing extra in
+        practice (no row has `banked_at` set), but the query text is
+        identical either way -- there is no "nothing banked, so skip the
+        predicate" branch left to test.
         """
-        empty = retention_module._EvidenceBank(species=frozenset(), bands=frozenset())
-        assert empty.exclusion() is None
+        empty = retention_module._EvidenceBank(banked={}, bands={})
+        assert empty.exclusion() is not None
 
 
 class TestTierAgeIsMeasuredOnTheAsset:
@@ -2241,53 +2237,54 @@ class TestWatermarkTierIsNotShadowedByTheAgeTiers:
         assert report.tiers_skipped.count("watermark") == 0
 
 
-# -- what each species and band has banked (ADR-074) ----------------------
+# -- what each species and band has banked (ADR-076) ----------------------
 
 
-def test_banked_counts_are_per_species_and_ignore_reclaimed_assets(
+def test_the_bank_counts_species_and_bands_from_banked_at(
     db, station_and_detector, tmp_path
 ) -> None:
-    """A reclaimed clip no longer occupies a bank slot.
+    """`_evidence_bank` counts what `banked_at` actually says, in one pass.
 
-    Otherwise a species that banked its 200, had them reclaimed by the
-    watermark tier, and then reappeared could never bank again -- the bank
-    would remember clips that no longer exist.
+    ADR-074's `_banked_counts` counted *live clips per species*, ignoring
+    reclaimed assets, because membership was re-derived from clip survival
+    every sweep. ADR-076 replaces that: membership is the column, so this
+    counts rows where `banked_at IS NOT NULL` directly -- reclaiming a
+    banked detection's clip does not, on its own, touch `banked_at`, and
+    whether it should is a promotion-time decision (a later task), not
+    something this read infers.
     """
     station_id, detector_id = station_and_detector
     with session_scope() as session:
+        heron_ids = []
         for _ in range(3):
-            _seed_detection(
+            det, _ = _seed_detection(
                 session, station_id=station_id, detector_id=detector_id,
                 clip_dir=db.clip_dir, age_days=1.0, common_name="Grey Heron",
             )
-        for _ in range(2):
-            _seed_detection(
-                session, station_id=station_id, detector_id=detector_id,
-                clip_dir=db.clip_dir, age_days=1.0, common_name="European Robin",
-            )
+            heron_ids.append(det)
+        robin_det, _ = _seed_detection(
+            session, station_id=station_id, detector_id=detector_id,
+            clip_dir=db.clip_dir, age_days=1.0, common_name="European Robin",
+        )
+        bat_det, _ = _seed_detection(
+            session, station_id=station_id, detector_id=detector_id,
+            clip_dir=db.clip_dir, age_days=1.0, taxonomic_group="bat",
+            common_name=None, peak_frequency_hz=61_000,
+        )
+        session.execute(
+            sa.update(orm.Detection)
+            .where(orm.Detection.id.in_([*heron_ids[:2], robin_det, bat_det]))
+            .values(banked_at=FIXED_NOW)
+        )
         session.commit()
 
-    sweeper = _sweeper(db)
+    sweeper = _sweeper(db, evidence_value_enabled=True)
     with session_scope() as session:
-        counts = sweeper._banked_counts(session)
+        bank = sweeper._evidence_bank(session)
 
-    assert counts["Grey Heron"] == 3
-    assert counts["European Robin"] == 2
-
-    # Reclaim one heron clip; the bank must shrink to match reality.
-    with session_scope() as session:
-        asset = session.execute(
-            select(orm.MediaAsset)
-            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
-            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
-            .where(orm.Detection.common_name == "Grey Heron")
-            .limit(1)
-        ).scalar_one()
-        asset.reclaimed_at = FIXED_NOW
-        session.commit()
-
-    with session_scope() as session:
-        assert sweeper._banked_counts(session)["Grey Heron"] == 2
+    assert bank.banked == {"Grey Heron": 2, "European Robin": 1}
+    assert bank.bands == {60: 1}
+    assert bank.total() == 4
 
 
 def test_band_counts_bucket_bat_passes_by_five_kilohertz(
@@ -2313,8 +2310,52 @@ def test_band_counts_bucket_bat_passes_by_five_kilohertz(
     assert counts[60] == 1
 
 
+class TestExclusionIsOnePredicate:
+    """ADR-076: bank membership is a column, and the exclusion is one predicate."""
+
+    def test_a_banked_detection_survives_both_age_tiers(self, db, station_and_detector) -> None:
+        """The exclusion is `banked_at IS NULL`, and nothing else.
+
+        ADR-074 spelled this as `NOT (common_name IN (...) OR band IN (...))`
+        over up to 127 species names, recomputed from an 18.32 s census. The
+        column makes it one indexed predicate.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=90,
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == det)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        _sweeper(db, evidence_value_enabled=True).sweep()
+
+        with session_scope() as session:
+            for asset_id in assets.values():
+                assert _asset(session, asset_id).reclaimed_at is None, (
+                    "a banked detection was reclaimed by an age tier"
+                )
+
+    def test_census_machinery_is_gone(self, db) -> None:
+        sweeper = _sweeper(db, evidence_value_enabled=True)
+        assert not hasattr(sweeper, "census_aborts")
+        assert not hasattr(sweeper, "_derive_bank")
+        assert not hasattr(sweeper, "_banked_counts")
+        assert "census_aborts" not in sweeper.snapshot()
+        assert "bank_size_now" in sweeper.snapshot()
+
+
 class TestEvidenceValueExemptions:
-    """ADR-074: what is worth keeping, and what still outranks it.
+    """ADR-074/ADR-076: what is worth keeping, and what still outranks it.
 
     Retention today asks only how old a clip is, which is why European Robin
     and Common Woodpigeon hold 31% of the SSD while the heron dies on a
@@ -2325,20 +2366,26 @@ class TestEvidenceValueExemptions:
        capture, and capture outranks evidence absolutely;
     3. value outranks age, which is the new part;
     4. with `evidence_value_enabled` off, none of this exists.
+
+    ADR-074's derivation of *which* species/bands get banked (a census,
+    `classify()`, the common-species list, the sparse-band rule) is deleted by
+    ADR-076 along with the census -- promotion into the bank is a later task's
+    concern (see `.superpowers/sdd/2026-08-29-evidence-bank-redesign/`).
+    These tests therefore set `banked_at` directly, the same way a promoted
+    row will actually get there, rather than seeding a population and letting
+    a derivation rule decide.
     """
 
     def test_a_banked_heron_survives_the_native_tier(self, db, station_and_detector) -> None:
         """The clip is a month old and would age out. It must not.
 
-        This is the whole point of ADR-074: the heron currently dies on a
-        timer while the robins fill the disk. 31 days rather than 30 because
-        the tiers measure the *asset's* age (ADR-062) and `_seed_detection`
-        writes it 6 s after the event, so a clip seeded at exactly 30 days is
-        6 s short of the cutoff.
+        31 days rather than 30 because the tiers measure the *asset's* age
+        (ADR-062) and `_seed_detection` writes it 6 s after the event, so a
+        clip seeded at exactly 30 days is 6 s short of the cutoff.
         """
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            _, assets = _seed_detection(
+            det, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
@@ -2346,21 +2393,28 @@ class TestEvidenceValueExemptions:
                 age_days=31,
                 common_name="Grey Heron",
             )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == det)
+                .values(banked_at=FIXED_NOW)
+            )
+            session.commit()
 
         report = _sweeper(db, evidence_value_enabled=True).sweep()
 
         with session_scope() as session:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is None, (
-                "a banked species lost its full-rate evidence to the age tier"
+                "a banked detection lost its full-rate evidence to the age tier"
             )
             assert _asset(session, assets["playback"]).reclaimed_at is None
         assert report.tier_counts.get("native", 0) == 0, report.tier_counts
         assert report.tier_counts.get("unkept", 0) == 0, report.tier_counts
 
-    def test_a_common_species_clip_still_ages_out_normally(
+    def test_an_unbanked_detection_ages_out_normally(
         self, db, station_and_detector
     ) -> None:
-        """Robin is on the operator's common list and banks nothing."""
+        """`banked_at` is left `NULL`, so the age tiers behave exactly as they
+        do with the flag off -- the bank exists but this row is not in it."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             _, assets = _seed_detection(
@@ -2413,7 +2467,7 @@ class TestEvidenceValueExemptions:
         stops capture -- and capture outranks evidence."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            _, assets = _seed_detection(
+            det, assets = _seed_detection(
                 session,
                 station_id=station_id,
                 detector_id=detector_id,
@@ -2422,6 +2476,12 @@ class TestEvidenceValueExemptions:
                 common_name="Grey Heron",
                 kinds=("evidence_native",),
             )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == det)
+                .values(banked_at=FIXED_NOW)
+            )
+            session.commit()
 
         class FakeUsage:
             total = 1000
@@ -2465,375 +2525,23 @@ class TestEvidenceValueExemptions:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
             assert _asset(session, assets["playback"]).reclaimed_at is not None
 
-    def test_the_census_never_runs_while_the_flag_is_off(
-        self, db, station_and_detector
+    def test_the_bank_query_never_runs_while_the_flag_is_off(
+        self, db, station_and_detector, monkeypatch
     ) -> None:
         """Inert means inert: not "computed and then ignored".
 
-        The bank census is the one query in this sweep no index can narrow,
-        and it must cost nothing at all until the policy is switched on.
+        `_evidence_bank` checks the flag before issuing any query at all, so
+        this asserts on the query itself rather than on a downstream effect:
+        with the flag off, a `session.execute` that raises must never fire.
         """
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-            )
-
         sweeper = _sweeper(db)
 
-        def _boom(*args, **kwargs):
-            raise AssertionError("the census ran with evidence_value_enabled False")
-
-        sweeper._banked_counts = _boom  # type: ignore[method-assign]
-        sweeper._band_counts = _boom  # type: ignore[method-assign]
-        report = sweeper.sweep()
-
-        assert report.tier_counts.get("native", 0) == 1, report.tier_counts
-
-    def test_a_sparse_bat_band_is_banked_and_a_common_band_is_not(
-        self, db, station_and_detector
-    ) -> None:
-        """Bats have no species, so the axis is peak frequency (ADR-074).
-
-        Also the test that catches the SQL NULL trap: every bat detection has
-        a NULL `common_name`, and a naive ``common_name NOT IN (...)``
-        evaluates to NULL for those rows and quietly drops every one of them
-        from the candidate query -- which would look exactly like "bats are
-        all banked" and would never age a single bat clip off the disk again.
-        """
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            common_assets = [
-                _seed_detection(
-                    session,
-                    station_id=station_id,
-                    detector_id=detector_id,
-                    clip_dir=db.clip_dir,
-                    age_days=31,
-                    taxonomic_group="bat",
-                    common_name=None,
-                    peak_frequency_hz=21_000,
-                    kinds=("evidence_native",),
-                )[1]["evidence_native"]
-                for _ in range(150)
-            ]
-            _, sparse_assets = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                taxonomic_group="bat",
-                common_name=None,
-                peak_frequency_hz=61_000,
-                kinds=("evidence_native",),
-            )
-
-        _sweeper(db, evidence_value_enabled=True).sweep()
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("the bank query ran with evidence_value_enabled False")
 
         with session_scope() as session:
-            assert _asset(session, sparse_assets["evidence_native"]).reclaimed_at is None, (
-                "the 60-65 kHz band holds four passes in the whole record and "
-                "must be kept whole"
-            )
-            survivors = [
-                asset_id
-                for asset_id in common_assets
-                if _asset(session, asset_id).reclaimed_at is None
-            ]
-            assert survivors == [], f"{len(survivors)} common-band bat clips were exempted"
-
-    def test_a_bird_sharing_a_banked_bat_band_is_not_exempt(
-        self, db, station_and_detector
-    ) -> None:
-        """The band exemption is a *bat* rule, so its predicate must be one too.
-
-        `_band_counts` counts only ``taxonomic_group == 'bat'``, so a band is
-        banked on the strength of bat passes alone -- but `exclusion()` used
-        to test frequency and nothing else, which handed the same permanent
-        exemption to any non-bat detection that happened to carry a
-        `peak_frequency_hz` in that band. Inert while only the bat detector
-        writes that column; a silent, permanent leak the moment anything else
-        does.
-        """
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            for _ in range(150):
-                _seed_detection(
-                    session,
-                    station_id=station_id,
-                    detector_id=detector_id,
-                    clip_dir=db.clip_dir,
-                    age_days=31,
-                    taxonomic_group="bat",
-                    common_name=None,
-                    peak_frequency_hz=21_000,
-                    kinds=("evidence_native",),
-                )
-            _, sparse_assets = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                taxonomic_group="bat",
-                common_name=None,
-                peak_frequency_hz=61_000,
-                kinds=("evidence_native",),
-            )
-            # A common bird -- nothing about the *species* bank protects it --
-            # carrying a peak frequency that lands in the banked bat band.
-            _, bird_assets = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                taxonomic_group="bird",
-                common_name="European Robin",
-                peak_frequency_hz=61_000,
-                kinds=("evidence_native",),
-            )
-
-        _sweeper(db, evidence_value_enabled=True).sweep()
-
-        with session_scope() as session:
-            assert _asset(session, sparse_assets["evidence_native"]).reclaimed_at is None, (
-                "control: the sparse bat band must still be kept whole"
-            )
-            assert _asset(session, bird_assets["evidence_native"]).reclaimed_at is not None, (
-                "a bird inherited the bat band's permanent exemption"
-            )
-
-    def test_the_blind_sample_rate_does_not_decide_which_bands_are_banked(
-        self, db, station_and_detector
-    ) -> None:
-        """`evidence_sample_permille` is the settings-page knob labelled
-        "blind sample (per 1000)". Band sparseness used to read the same
-        number, so raising the blind sample to 25% would also have banked --
-        permanently, exempt from every age tier -- every band holding under a
-        quarter of the passes. The two are different quantities and must not
-        share one operator-facing knob.
-
-        Five passes in 105 is 4.8% of the window: sparse under a 250/1000
-        threshold, not sparse under ADR-074's 1%.
-        """
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            for _ in range(100):
-                _seed_detection(
-                    session,
-                    station_id=station_id,
-                    detector_id=detector_id,
-                    clip_dir=db.clip_dir,
-                    age_days=31,
-                    taxonomic_group="bat",
-                    common_name=None,
-                    peak_frequency_hz=21_000,
-                    kinds=("evidence_native",),
-                )
-            busy_enough = [
-                _seed_detection(
-                    session,
-                    station_id=station_id,
-                    detector_id=detector_id,
-                    clip_dir=db.clip_dir,
-                    age_days=31,
-                    taxonomic_group="bat",
-                    common_name=None,
-                    peak_frequency_hz=61_000,
-                    kinds=("evidence_native",),
-                )[1]["evidence_native"]
-                for _ in range(5)
-            ]
-
-        _sweeper(
-            db, evidence_value_enabled=True, evidence_sample_permille=250
-        ).sweep()
-
-        with session_scope() as session:
-            survivors = [
-                asset_id
-                for asset_id in busy_enough
-                if _asset(session, asset_id).reclaimed_at is None
-            ]
-        assert survivors == [], (
-            f"{len(survivors)} clips in a band holding 4.8% of the passes were "
-            "banked because the blind-sample knob was raised to 250/1000"
-        )
-
-
-class TestCensusFailureDegradesToAgeOnly:
-    """ADR-074 F3/F4: what happens when the census cannot afford its budget.
-
-    `_banked_counts` is a census of the whole archive -- a full scan of
-    `detection_media` plus a lookup per surviving detection -- and this repo
-    has already measured a strictly smaller query at 1.8 s against a 1.5 s
-    budget (`_watermark_reclaim`'s own comment). So the abort is a live
-    possibility, and before the fix it escaped `_evidence_bank`: `sweep()`
-    read it as "interrupted at `native`", marked all three tiers skipped, and
-    -- because the census timestamp was recorded only on success -- did the
-    identical thing again on the next sweep, and every sweep after it.
-    Retention would have quietly become watermark-only: *worse* than the
-    age-only policy ADR-074 replaces.
-    """
-
-    @staticmethod
-    def _interrupted(*_args, **_kwargs):
-        """Exactly what the progress handler raises (see `_bounded_statements`)."""
-        raise OperationalError("SELECT census", {}, Exception("interrupted (test)"))
-
-    def test_an_aborted_census_still_sweeps_all_three_tiers_by_age(
-        self, db, station_and_detector, monkeypatch
-    ) -> None:
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            _, heron = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                common_name="Grey Heron",
-            )
-            _, robin = _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                common_name="European Robin",
-            )
-
-        sweeper = _sweeper(db, evidence_value_enabled=True)
-        monkeypatch.setattr(sweeper, "_banked_counts", self._interrupted)
-
-        report = sweeper.sweep()
-
-        assert report.complete is True, report.to_dict()
-        assert report.interrupted_tier is None, report.to_dict()
-        assert report.tiers_skipped == [], report.to_dict()
-        with session_scope() as session:
-            # Age-only, which is exactly today's behaviour: even the heron the
-            # census would have banked ages out, because a bank that could not
-            # be computed exempts nothing.
-            for assets in (heron, robin):
-                assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
-                assert _asset(session, assets["playback"]).reclaimed_at is not None
-        # ...and the report must not claim a value verdict for a deletion the
-        # policy never actually classified.
-        assert report.value_counts == {}, report.value_counts
-        # The failure is *reported*, and asserted on the durable counter rather
-        # than on a captured log line. `structlog.testing.capture_logs` is
-        # global state this repo's CLI tests reconfigure out from under it
-        # (`cli.configure_logging` installs cached filtering bound loggers), so
-        # the same assertion passed alone and captured nothing in a full-suite
-        # run. `snapshot()` is what an operator actually reads, which is the
-        # whole point of F4 -- and it is deterministic.
-        snap = sweeper.snapshot()
-        assert snap["census_aborts"] == 1, snap
-        assert snap["census_age_s"] is None, snap
-        assert snap["last_census_duration_s"] is not None, snap
-
-    def test_a_failed_census_is_not_re_attempted_on_the_very_next_sweep(
-        self, db, station_and_detector
-    ) -> None:
-        """Negative caching. Without it the whole batch budget is burnt on the
-        same doomed query every 300 s, for ever."""
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                common_name="Grey Heron",
-            )
-
-        sweeper = _sweeper(db, evidence_value_enabled=True)
-        attempts = 0
-
-        def _count_then_fail(*_args, **_kwargs):
-            nonlocal attempts
-            attempts += 1
-            return TestCensusFailureDegradesToAgeOnly._interrupted()
-
-        sweeper._banked_counts = _count_then_fail  # type: ignore[method-assign]
-        sweeper.sweep()
-        sweeper.sweep()
-
-        assert attempts == 1, (
-            f"the census was re-attempted {attempts} times across two sweeps; "
-            "a failure must be cached for the same TTL a success is"
-        )
-
-    def test_the_snapshot_shows_the_census_rather_than_blaming_the_native_tier(
-        self, db, station_and_detector, monkeypatch
-    ) -> None:
-        """F4. The operator-visible symptom of a stalled census used to be
-        `consecutive_barren_sweeps` climbing next to
-        `last_interrupted_tier="native"` -- which names the tier that never
-        got to run, and reads exactly like the ADR-062 incident it is not."""
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                common_name="Grey Heron",
-            )
-
-        failing = _sweeper(db, evidence_value_enabled=True)
-        monkeypatch.setattr(failing, "_banked_counts", self._interrupted)
-        failing.sweep()
-        snap = failing.snapshot()
-
-        assert snap["evidence_value_enabled"] is True
-        assert snap["census_aborts"] == 1, snap
-        assert snap["census_age_s"] is None, snap
-        assert snap["last_census_duration_s"] is not None, snap
-
-        # Positive control: a census that succeeds reports an age and no aborts.
-        working = _sweeper(db, evidence_value_enabled=True)
-        working.sweep()
-        healthy = working.snapshot()
-        assert healthy["census_aborts"] == 0, healthy
-        assert isinstance(healthy["census_age_s"], float), healthy
-        assert isinstance(healthy["last_census_duration_s"], float), healthy
-
-    def test_the_census_is_never_touched_while_the_flag_is_off(
-        self, db, station_and_detector
-    ) -> None:
-        """The flag ships off, and off must stay inert: no census, nothing to
-        abort, and a snapshot that says so."""
-        station_id, detector_id = station_and_detector
-        with session_scope() as session:
-            _seed_detection(
-                session,
-                station_id=station_id,
-                detector_id=detector_id,
-                clip_dir=db.clip_dir,
-                age_days=31,
-                common_name="Grey Heron",
-            )
-
-        sweeper = _sweeper(db, evidence_value_enabled=False)
-        sweeper._banked_counts = self._interrupted  # type: ignore[method-assign]
-        report = sweeper.sweep()
-
-        assert report.complete is True
-        snap = sweeper.snapshot()
-        assert snap["evidence_value_enabled"] is False
-        assert snap["census_aborts"] == 0
-        assert snap["census_age_s"] is None
-        assert snap["last_census_duration_s"] is None
+            monkeypatch.setattr(session, "execute", _boom)
+            assert sweeper._evidence_bank(session) is None
 
 
 class TestConstructorCarriesEvidenceSettings:

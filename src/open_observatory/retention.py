@@ -76,7 +76,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -84,7 +84,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from sqlalchemy import Integer, and_, cast, func, not_, or_, select, tuple_
+from sqlalchemy import Integer, cast, func, select, tuple_
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -148,37 +148,6 @@ _BAND_WINDOW_DAYS = 90
 #: second setting because this is ADR-074's definition of "sparse", not a knob.
 _BAND_SPARSE_PERMILLE = 10
 
-#: How long one evidence-value census is reused before it is taken again
-#: (ADR-074). `_banked_counts` is the one query in this sweep that no index
-#: can narrow -- "how many live clips has each species got" is a census of the
-#: whole archive by construction -- so it is taken rarely and reused rather
-#: than paid for on every sweep. Fifteen minutes against the 300 s sweep
-#: cadence (`retention_interval_s`) is a factor of three, and the number moves
-#: by a handful of clips a day against a bank of 200: staleness can only mean
-#: a species banks a few clips too many before the next census notices, which
-#: is the harmless direction. Only the two *queries* are reused; the policy is
-#: re-derived from them every sweep, so an operator's edit to the common list
-#: or the bank size takes effect on the next sweep and nothing about
-#: `tuning.py`'s "live" claim is weakened. Not a constructor knob: it trades
-#: freshness of a slow-moving number against the batch budget, and
-#: `batch_budget_s`/`batch_size` remain the only two an operator needs.
-_EVIDENCE_CENSUS_TTL_S = 900.0
-
-#: The plausibility band (ADR-049) this sweep classifies every species under.
-#:
-#: ADR-074 crosses rarity with plausibility so that a naive rarity bias does
-#: not preferentially archive BirdNET's mistakes, and caps an implausible
-#: species at three examples rather than 200. That cap is **not applied here**,
-#: deliberately: the band is stored inside `detection.native_result`, a wide
-#: JSON column, and reading it per species would mean a scan of that column
-#: inside the 1.5 s budget ADR-062 exists to defend -- the sweep's preamble
-#: goes out of its way never to touch `native_result`. The cost of leaving it
-#: out is bounded and small: an implausible species banks up to `bank_size`
-#: instead of 3, and the ones this station actually has (California Quail,
-#: Asian Brown Flycatcher) hold one clip each. Closing it properly needs the
-#: band as an indexed column, which is a migration and an ADR of its own.
-_ASSUMED_BAND = "in_range"
-
 
 def _band_expression() -> Any:
     """``detection.peak_frequency_hz`` bucketed into 5 kHz bands, in SQL.
@@ -199,63 +168,36 @@ def _band_expression() -> Any:
 
 @dataclass(frozen=True, slots=True)
 class _EvidenceBank:
-    """What ADR-074 banks right now: species by name, bat passes by band.
+    """What each species has banked right now (ADR-076).
 
-    Only ``BANK`` verdicts are in here. ``QUOTA`` and ``SAMPLE`` clips are a
-    rolling window rather than an archive -- ADR-074 keeps them under the
-    ordinary age tiers on purpose, which is the other half of what makes the
-    policy bounded -- so they are not exemptions and do not appear.
+    ADR-074 carried the *members* of the bank -- a set of species names, and a
+    set of bat bands, recomputed from a census measured at 18.3219 s against a
+    1.5 s budget. This carries only the **counts**, read from an index over the
+    banked rows in 0.0023 s, because membership is now a column and no longer
+    has to be re-derived to be applied.
     """
 
-    species: frozenset[str]
-    bands: frozenset[int]
+    #: species name -> detections it has banked. Bats appear under `_BAT_GROUP`
+    #: keyed by band edge in `bands`, not here.
+    banked: Mapping[str, int]
+    #: band edge (kHz) -> detections that band has banked.
+    bands: Mapping[int, int]
 
-    def exclusion(self) -> Any | None:
-        """SQL for "this detection is not one the bank is keeping", or None.
+    def exclusion(self) -> Any:
+        """SQL for "the bank is not keeping this detection".
 
-        Written as ``NOT (banked_species OR banked_band)`` with an explicit
-        ``IS NOT NULL`` guard on each side rather than the shorter
-        ``common_name NOT IN (...)``. That shorter spelling is a trap: SQL
-        three-valued logic makes ``NULL NOT IN (...)`` evaluate to NULL, not
-        true, and a `WHERE` keeps only rows that are true -- so every bat
-        pass (`common_name` is always NULL for those, by design) would
-        silently drop out of both age tiers' candidate queries and no bat
-        clip would ever age off the disk again. Same trap on the band side
-        for every bird, which has no `peak_frequency_hz`.
-
-        The band arm carries the same ``taxonomic_group == 'bat'`` guard
-        `_band_counts` uses to measure sparseness in the first place. Without
-        it the two halves disagree: a band is banked on the strength of bat
-        passes alone, but the exemption would be inherited by *any* detection
-        carrying a `peak_frequency_hz` in that band. Inert today, because only
-        the bat detector writes that column -- and exactly the kind of
-        assumption that stops being true quietly.
-
-        `None` when nothing is banked, so an empty bank adds no predicate at
-        all and the tier queries stay byte-identical to what they were.
+        One predicate over an ordinary nullable column, and none of ADR-074's
+        three-valued-logic hazard: `banked_at IS NULL` is true or false for
+        every row, including the bat passes whose `common_name` is NULL by
+        design and the birds whose `peak_frequency_hz` is. The `NOT (x OR y)`
+        spelling this replaces evaluated to NULL for exactly those rows, which
+        would have dropped every bat clip out of both tiers' candidate queries
+        for ever.
         """
-        banked = []
-        if self.species:
-            banked.append(
-                and_(
-                    orm.Detection.common_name.is_not(None),
-                    orm.Detection.common_name.in_(sorted(self.species)),
-                )
-            )
-        if self.bands:
-            banked.append(
-                and_(
-                    # Bats only -- see the docstring. `_band_counts` counts
-                    # nothing else, so nothing else may claim the exemption.
-                    orm.Detection.taxonomic_group == _BAT_GROUP,
-                    orm.Detection.peak_frequency_hz.is_not(None),
-                    orm.Detection.peak_frequency_hz > 0,
-                    _band_expression().in_(sorted(self.bands)),
-                )
-            )
-        if not banked:
-            return None
-        return not_(or_(*banked))
+        return orm.Detection.banked_at.is_(None)
+
+    def total(self) -> int:
+        return sum(self.banked.values()) + sum(self.bands.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,25 +398,17 @@ class RetentionSweeper:
         self.evidence_common_species = evidence_common_species
         self.evidence_bank_size = evidence_bank_size
         self.evidence_sample_permille = evidence_sample_permille
-        #: Last census (`_banked_counts`, `_band_counts`). Never populated at
-        #: all while the flag is off.
-        self._census: tuple[dict[str, int], dict[int, int]] | None = None
-        #: When the last census *succeeded*, and when one was last *attempted*
-        #: -- both on the monotonic clock, `None` meaning never. Two numbers
-        #: rather than one because `_EVIDENCE_CENSUS_TTL_S` has to gate the
-        #: attempt, not the result: recording only successes meant a census
-        #: that could not afford the batch budget was re-attempted -- and
-        #: re-aborted, burning the whole budget -- on every single sweep, for
-        #: ever, with no negative caching anywhere.
-        self._census_taken_at: float | None = None
-        self._census_attempted_at: float | None = None
-        #: How long the last census attempt took (successful or aborted), and
-        #: how many attempts the deadline guard has aborted. Both reported by
-        #: `snapshot()`: the census is the most expensive query this sweep
-        #: issues and the newest, so an operator watching it stall has to be
-        #: able to see *it* rather than infer it from an interrupted tier.
-        self.last_census_duration_s: float | None = None
-        self.census_aborts: int = 0
+        #: Total banked detections as of the last sweep (`_EvidenceBank.total`),
+        #: 0 while the flag is off. Reported by `snapshot()` in place of
+        #: ADR-074's census-timing figures (ADR-076: there is no census left to
+        #: time -- membership is a column, read by one indexed query every
+        #: sweep, not derived rarely and reused).
+        self.last_bank_size: int = 0
+        #: Detections promoted into the bank by the last sweep. Always 0 in
+        #: this ADR-076 milestone -- nothing here writes `banked_at` yet, that
+        #: is a later task -- kept as a real attribute now so `snapshot()`'s
+        #: shape does not change again when promotion lands.
+        self.promoted_last_sweep: int = 0
 
         #: Cumulative across the process lifetime, for Prometheus counters.
         self.totals: dict[str, int] = {}
@@ -647,11 +581,19 @@ class RetentionSweeper:
                 # off -- no query is issued and the tiers below get a `None`
                 # bank, which leaves their candidate queries exactly as they
                 # were.
-                bank = (
-                    self._evidence_bank(session, now=now, deadline=deadline)
-                    if self.evidence_value_enabled
-                    else None
-                )
+                #
+                # Wrapped here, at the call site, rather than inside
+                # `_evidence_bank` itself (ADR-076): the method's contract is
+                # deliberately deadline-free -- it is one indexed query, not a
+                # census with its own abort/retry machinery to bound -- but
+                # every statement this sweep issues still runs under the same
+                # per-statement guard, so an unexpectedly slow bank read
+                # degrades this sweep to "native tier interrupted" (the
+                # ordinary backlog-drain path below) rather than escaping
+                # unbounded.
+                with self._bounded_statements(session, deadline):
+                    bank = self._evidence_bank(session)
+                self.last_bank_size = bank.total() if bank is not None else 0
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
                         session,
@@ -941,15 +883,11 @@ class RetentionSweeper:
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
-        # ADR-074, and it goes here for the same reason `kept_at`'s exemption
-        # does: this is a candidate query, and an exemption belongs in the
-        # `SELECT` that chooses what to delete rather than anywhere near the
-        # stage-then-commit-then-unlink ordering below, which is not this
-        # policy's business. `None` when the flag is off or nothing is banked,
-        # and then the query is exactly what it was.
-        exclusion = bank.exclusion() if bank is not None else None
-        if exclusion is not None:
-            query = query.where(exclusion)
+        # ADR-076: one indexed predicate, in the candidate query where every
+        # other exemption lives. `None` when the flag is off, and then this
+        # query is byte-identical to the age-only one.
+        if bank is not None:
+            query = query.where(bank.exclusion())
         query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
@@ -992,10 +930,9 @@ class RetentionSweeper:
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
-        # ADR-074 -- see `_strip_native`.
-        exclusion = bank.exclusion() if bank is not None else None
-        if exclusion is not None:
-            query = query.where(exclusion)
+        # ADR-076 -- see `_strip_native`.
+        if bank is not None:
+            query = query.where(bank.exclusion())
         query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
         return self._run_tier(
             session,
@@ -1009,202 +946,56 @@ class RetentionSweeper:
             bank=bank,
         )
 
-    # -- what has been banked (ADR-074) -----------------------------------
+    # -- what has been banked (ADR-076) -------------------------------------
 
-    def _evidence_bank(
-        self, session: Session, *, now: datetime, deadline: float
-    ) -> _EvidenceBank | None:
-        """The current bank: census (rarely) then classify (every sweep).
+    def _evidence_bank(self, session: Session) -> _EvidenceBank | None:
+        """Per-species and per-band banked counts: **one** pass over the bank.
 
-        Called from `sweep()` **after** the watermark tier, never before, and
-        that ordering is deliberate. The census is bounded by the same
-        `_bounded_statements` deadline as everything else here, so if it ever
-        outgrows the budget it is aborted -- and an abort must never be able
-        to starve the one tier that stops a full disk stopping capture.
+        No TTL, no cached census, no abort handling -- all three existed to
+        survive an 18.32 s query that no longer exists. `detection.banked_at`
+        (migration 0012) is a column, not a derived fact, so membership no
+        longer has to be re-derived from a census of the whole archive every
+        sweep -- it is read straight off the rows the bank actually holds.
 
-        **An aborted census degrades to age-only, and is not re-attempted
-        until the TTL is up.** `_banked_counts` is the one query here that no
-        index can narrow, so the abort is a live possibility rather than a
-        theoretical one, and both halves of the handling are load-bearing:
+        One query rather than two aggregates, and the reason is which number
+        the cost scales with. The obvious band aggregate --
+        ``WHERE banked_at IS NOT NULL AND taxonomic_group = 'bat'`` -- looks
+        cheaper and is not: ``ix_detection_group_start`` makes
+        ``taxonomic_group`` an equality SQLite can seek, so the planner takes
+        that index and then needs a row lookup per **bat detection** to test
+        ``banked_at``. Measured: it touches all 66,902 bat rows whether the
+        bank holds seven thousand or seven, and it would grow with the archive
+        for ever. That is the exact property this ADR exists to remove from
+        the sweep.
 
-        * letting the abort escape skipped all three tiers -- `sweep()`
-          expands "interrupted at `native`" into "skipped from `native` on" --
-          leaving retention as watermark-only, which is *worse* than the
-          age-only policy ADR-074 replaces, and visible only as a rising
-          `consecutive_barren_sweeps` beside a `last_interrupted_tier` naming
-          the tier that never got to run. Caught here, the sweep carries on
-          with no bank at all: no exemptions, no value verdicts, exactly the
-          age-only behaviour of the day before this flag existed;
-        * the attempt is recorded on failure as well as on success, so a
-          census that cannot afford its budget is retried at most once per
-          `_EVIDENCE_CENSUS_TTL_S` instead of on every 300 s sweep for ever.
-          A failure neither resets that TTL to zero nor discards a previous
-          good census -- the last one keeps being reused until it is replaced.
-
-        Returns `None` when there is no bank to apply, which is what both age
-        tiers already understand: their candidate queries stay byte-identical
-        to the age-only ones, and `_run_tier` tallies no value verdict for a
-        deletion this policy never actually got to classify.
+        Selecting only on ``banked_at IS NOT NULL`` puts the planner on
+        ``ix_detection_banked_partial`` (confirmed: ``SCAN detection USING
+        INDEX ix_detection_banked_partial``), so the work is bounded by the
+        **bank** -- 7,302 rows, itself bounded by ``bank_size`` times the
+        species count -- and aggregating two dicts from those rows in Python
+        costs nothing worth measuring.
         """
-        attempted = self._census_attempted_at
-        if attempted is None or (time.monotonic() - attempted) >= _EVIDENCE_CENSUS_TTL_S:
-            started = time.monotonic()
-            try:
-                with self._bounded_statements(session, deadline):
-                    species_counts = self._banked_counts(session)
-                    band_counts = self._band_counts(
-                        session, since=now - timedelta(days=_BAND_WINDOW_DAYS)
-                    )
-            except OperationalError as exc:
-                if "interrupted" not in str(getattr(exc, "orig", exc)):
-                    # A genuine database error, not our deadline guard --
-                    # never swallow it as if it were a bounded timeout.
-                    raise
-                # No rollback here: the aborted statement is a read, and this
-                # is the same recovery `_watermark_reclaim` already makes for
-                # its own interrupted reporting query -- the tiers below go on
-                # to use this session normally.
-                self._census_attempted_at = time.monotonic()
-                self.last_census_duration_s = round(self._census_attempted_at - started, 4)
-                self.census_aborts += 1
-                log.warning(
-                    "retention.evidence_census_aborted",
-                    after_s=self.last_census_duration_s,
-                    batch_budget_s=self.batch_budget_s,
-                    aborts=self.census_aborts,
-                    retry_after_s=_EVIDENCE_CENSUS_TTL_S,
-                    reusing_previous_census=self._census is not None,
-                    degraded_to="age-only, no value exemptions",
-                )
-            else:
-                self._census = (species_counts, band_counts)
-                self._census_attempted_at = time.monotonic()
-                self._census_taken_at = self._census_attempted_at
-                self.last_census_duration_s = round(self._census_taken_at - started, 4)
-                log.info(
-                    "retention.evidence_census",
-                    species=len(species_counts),
-                    bands=len(band_counts),
-                    took_s=self.last_census_duration_s,
-                )
-        taken = self._census
-        if taken is None:
+        if not self.evidence_value_enabled:
             return None
-        return self._derive_bank(*taken)
-
-    def _derive_bank(
-        self, species_counts: dict[str, int], band_counts: dict[int, int]
-    ) -> _EvidenceBank:
-        """Turn two censuses into the set of exemptions, via `evidence_value`.
-
-        Re-derived on every sweep even when the census behind it is reused, so
-        that an operator's edit to the common list, the bank size or the
-        sample rate is in force on the next sweep -- which is what
-        ``tier="live"`` promises those settings in `site_settings.py`, and
-        ADR-048's honesty rule is precisely that a setting reported live must
-        be live.
-
-        Every verdict comes from `evidence_value.classify`, never from a rule
-        restated here: the pure module is the single place the policy lives,
-        so the sweep, a dry-run report and any future UI cannot drift apart.
-        """
-        policy = evidence_value.Policy(
-            bank_size=self.evidence_bank_size,
-            sample_permille=self.evidence_sample_permille,
-        )
-        common = {name.casefold() for name in self.evidence_common_species}
-        species = frozenset(
-            name
-            for name, live in species_counts.items()
-            # `detection_id` only reaches the blind sample draw, which is
-            # downstream of every branch that can return BANK, so the species
-            # name is a stable stand-in here and cannot bias anything.
-            if evidence_value.classify(
-                banded_already=live,
-                band=_ASSUMED_BAND,
-                is_common=name.casefold() in common,
-                detection_id=name,
-                policy=policy,
-            )
-            is evidence_value.Verdict.BANK
-        )
-        # A band under 1% of the trailing window is the bat equivalent of an
-        # uncommon species: keep it whole (ADR-074). The same `bank_size` then
-        # applies per band, so a band that stops being sparse -- or that turns
-        # out to be busy inside its own window -- stops accumulating. Counted
-        # in passes rather than in live clips, which is what `_band_counts`
-        # measures and what "1% of the passes" means.
-        # `_BAND_SPARSE_PERMILLE`, never `evidence_sample_permille`: the
-        # blind-sample knob must not also decide which bands are banked for
-        # ever. See the constant.
-        sparse = evidence_value.sparse_bands(band_counts, permille=_BAND_SPARSE_PERMILLE)
-        bands = frozenset(
-            edge
-            for edge, passes in band_counts.items()
-            if evidence_value.classify(
-                banded_already=passes,
-                band=_ASSUMED_BAND,
-                is_common=edge not in sparse,
-                detection_id=str(edge),
-                policy=policy,
-            )
-            is evidence_value.Verdict.BANK
-        )
-        return _EvidenceBank(species=species, bands=bands)
-
-    def _banked_counts(self, session: Session) -> dict[str, int]:
-        """Live clips per species: one aggregate, no loop, no correlated scan.
-
-        The unit is the **detection**, not the asset: a detection is one
-        banked example of a species and carries two or three assets (native,
-        playback, audible rendering) that are all the same example.
-
-        A detection counts only while *none* of its assets has been
-        reclaimed. That is what makes the bank forget: a species that banked
-        its 200, had them reclaimed by the watermark tier (which outranks
-        value, ADR-074 rule 1) and then reappeared must be able to bank
-        again, and a count that remembered clips no longer on disk would
-        keep it locked out forever. It also means a clip whose full-rate
-        evidence an earlier age tier already took is not held to be banked
-        on the strength of the derivative that survived it.
-
-        **This is the one query in the sweep that no index can narrow**, and
-        that is inherent rather than an oversight: "how many live clips does
-        each species have" is a census of the whole archive, and neither
-        `detection.common_name` nor `media_asset.reclaimed_at` is indexed --
-        both deliberately, and both after measured incidents (ADR-037,
-        ADR-062). So the cost is managed instead of avoided:
-
-        * it is **one** statement -- `detection_media` grouped by its own
-          primary-key prefix (so no temp b-tree for that grouping) with a
-          single ``COUNT(reclaimed_at) = 0`` test per detection, then one
-          primary-key lookup per surviving detection. Not a per-species
-          query, not a per-row loop, not a correlated subquery;
-        * the caller takes it **rarely** and reuses the answer
-          (`_evidence_exclusions`), rather than paying for it every sweep;
-        * the caller runs it **after** the watermark tier and inside
-          `_bounded_statements`, so if it ever does outgrow the budget it is
-          aborted -- and `_evidence_bank` catches that abort, degrades this
-          sweep to age-only deletions with no value exemptions, and does not
-          try again until the census TTL is up. The one tier that keeps the
-          disk from filling has already run either way.
-        """
-        intact = (
-            select(orm.DetectionMedia.detection_id.label("detection_id"))
-            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
-            .group_by(orm.DetectionMedia.detection_id)
-            # COUNT(<column>) counts non-NULLs, so zero means "nothing about
-            # this detection has been reclaimed".
-            .having(func.count(orm.MediaAsset.reclaimed_at) == 0)
-            .subquery()
-        )
+        banked: dict[str, int] = {}
+        bands: dict[int, int] = {}
         rows = session.execute(
-            select(orm.Detection.common_name, func.count())
-            .join(intact, intact.c.detection_id == orm.Detection.id)
-            .where(orm.Detection.common_name.is_not(None))
-            .group_by(orm.Detection.common_name)
+            select(
+                orm.Detection.common_name,
+                orm.Detection.taxonomic_group,
+                orm.Detection.peak_frequency_hz,
+            ).where(orm.Detection.banked_at.is_not(None))
         ).all()
-        return {name: count for name, count in rows if name is not None}
+        for common_name, group, peak_hz in rows:
+            if common_name is not None:
+                banked[common_name] = banked.get(common_name, 0) + 1
+            if group == _BAT_GROUP:
+                # Same bucketing as the SQL `_band_expression`, and the same
+                # `None` for a missing or non-positive frequency.
+                edge = evidence_value.frequency_band(peak_hz)
+                if edge is not None:
+                    bands[edge] = bands.get(edge, 0) + 1
+        return _EvidenceBank(banked=banked, bands=bands)
 
     def _band_counts(self, session: Session, *, since: datetime) -> dict[int, int]:
         """Bat passes per 5 kHz band since `since`: one indexed aggregate.
@@ -1216,8 +1007,8 @@ class RetentionSweeper:
         share of the trailing window is what decides whether it is kept
         whole.
 
-        Unlike `_banked_counts` this one *is* index-served end to end:
-        ``ix_detection_group_start`` is exactly
+        Index-served end to end, unlike the old per-species census this
+        module used to also run: ``ix_detection_group_start`` is exactly
         ``(taxonomic_group, event_start_utc)``, so the equality and the range
         are one seek plus a walk of the window, and nothing outside it is
         touched however long the station has been running. The grouping is a
@@ -1727,22 +1518,16 @@ class RetentionSweeper:
             "kept_detections": self.last_kept_detections,
             "held_detections": self.last_held_detections,
             "watermark_blocked_by_kept": self.last_watermark_blocked_by_kept,
-            # ADR-074. Reported separately so a stalled census is visible *as*
-            # a stalled census. Without these its only symptom is
-            # `consecutive_barren_sweeps` climbing beside
-            # `last_interrupted_tier="native"` -- which names the tier that
-            # never got to run, and reads exactly like the ADR-062 incident it
-            # is not. `census_age_s` is the age of the last *successful*
-            # census, so an age that stops advancing next to a rising
-            # `census_aborts` is the whole diagnosis.
+            # ADR-076. Replaces ADR-074's census-timing figures
+            # (`last_census_duration_s`, `census_age_s`, `census_aborts`):
+            # there is no census left to time or abort, so the operator-facing
+            # question moves from "is the census keeping up" to "what is the
+            # bank actually holding". `bank_size_now` is `_EvidenceBank.total()`
+            # from the last sweep, 0 while the flag is off; `promoted_last_sweep`
+            # is 0 in this milestone -- nothing here writes `banked_at` yet.
             "evidence_value_enabled": self.evidence_value_enabled,
-            "last_census_duration_s": self.last_census_duration_s,
-            "census_age_s": (
-                None
-                if self._census_taken_at is None
-                else round(time.monotonic() - self._census_taken_at, 1)
-            ),
-            "census_aborts": self.census_aborts,
+            "bank_size_now": self.last_bank_size,
+            "promoted_last_sweep": self.promoted_last_sweep,
             "totals": dict(self.totals),
             # ADR-057. Named "missing_audit", not folded into `totals`: these
             # count rows whose file vanished *without* a retention decision,
