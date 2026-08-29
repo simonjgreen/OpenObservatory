@@ -1689,20 +1689,20 @@ def clips_bank_backfill(
     if dry_run:
         console.print("[bold yellow]DRY RUN[/bold yellow] — nothing was written\n")
 
-    by_species: dict[str, int] = result.get("by_species", {})  # type: ignore[assignment]
+    by_species = result.by_species
     table = Table(title="Bank backfill, by species")
     table.add_column("species")
     table.add_column("banked", justify="right")
     for species in sorted(by_species):
         table.add_row(species, str(by_species[species]))
-    if result["bands"]:
-        table.add_row("[dim](bat bands, no species)[/dim]", str(result["bands"]))
+    if result.bands:
+        table.add_row("[dim](bat bands, no species)[/dim]", str(result.bands))
     console.print(table)
 
     verb = "would bank" if dry_run else "banked"
     console.print(
-        f"{verb} {result['promoted']} detection(s) across {result['species']} species"
-        + (f" and {result['bands']} bat band(s)" if result["bands"] else "")
+        f"{verb} {result.promoted} detection(s) across {result.species} species"
+        + (f" and {result.bands} bat band(s)" if result.bands else "")
         + "."
     )
     if dry_run:

@@ -237,6 +237,23 @@ class RetentionDecision:
     existed_on_disk: bool
 
 
+@dataclass(frozen=True, slots=True)
+class BackfillResult:
+    """What one `bank_backfill` pass banked, or would bank.
+
+    Kept separate from `dict[str, int]` because `by_species` is itself a
+    count-per-species mapping, not another `int` -- folding it into the same
+    dict mixed value types (mypy dict-item) and pushed a `# type: ignore` onto
+    the one call site instead.
+    """
+
+    promoted: int
+    species: int
+    bands: int
+    #: species name -> detections banked for it in this pass.
+    by_species: Mapping[str, int]
+
+
 @dataclass(slots=True)
 class _TierTally:
     """One tier's staged-but-not-yet-reported tallies (C1, 2026-08-14).
@@ -833,7 +850,7 @@ class RetentionSweeper:
             )
         return report
 
-    def bank_backfill(self, *, dry_run: bool = True) -> dict[str, int]:
+    def bank_backfill(self, *, dry_run: bool = True) -> BackfillResult:
         """Fill the bank from the existing archive, once, with no time budget.
 
         The expensive part of ADR-074 does not disappear under ADR-076; it
@@ -911,12 +928,12 @@ class RetentionSweeper:
             species=len(by_species),
             bands=bands,
         )
-        return {
-            "promoted": promoted,
-            "species": len(by_species),
-            "bands": bands,
-            "by_species": by_species,
-        }
+        return BackfillResult(
+            promoted=promoted,
+            species=len(by_species),
+            bands=bands,
+            by_species=by_species,
+        )
 
     # -- tiers ------------------------------------------------------------
 
