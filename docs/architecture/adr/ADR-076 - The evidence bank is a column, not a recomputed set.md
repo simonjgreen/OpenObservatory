@@ -210,6 +210,38 @@ promotes only from a trailing window; everything older is
 `oo clips bank-backfill`'s job. A station that was down for a week catches up by
 running that command, not by widening the window.
 
+### The Critical the task reviews missed
+
+Nine task reviews passed this work. The final whole-branch review found a
+**Critical** that none of them did, and it is worth recording because of *why*
+they missed it.
+
+`_watermark_pass` iterates one row per media **asset**, but a detection carries
+two to four (`evidence_native`, `playback`, sometimes `audible_ultrasonic`), and
+the loop breaks part-way through a detection as soon as it has freed enough
+bytes. A banked detection was marked unbanked the moment **one** of its assets
+was staged. So: the first-ever Grey Heron loses its `evidence_native`, keeps its
+`playback`, and has `banked_at` nulled — and on the next sweep that surviving
+clip is the oldest unbanked asset on the disk, and the age tier deletes it.
+
+**The exact defect this ADR exists to prevent, restored by a different route.**
+
+It survived nine reviews because every watermark test in this work seeded
+`kinds=("evidence_native",)` — a single asset. The tests never exercised the
+multi-asset shape that is normal in production. The fix re-reads which banked
+detections still hold a live asset after the flush, and clears `banked_at` only
+for the ones genuinely emptied; the regression test now seeds the helper's
+two-asset default.
+
+Two more the same review found: an aborted bank read propagated with
+`current_tier == "preamble"`, which is not in `_TIER_ORDER`, so **all three
+tiers were skipped including the watermark** — the disk-fills-capture-stops
+failure, in code whose own comment promised the opposite. And
+`bank_backfill --dry-run` executed ~7,300 `UPDATE`s before rolling back, holding
+SQLite's write lock for ~9 s against a 5 s `busy_timeout` on a station that
+*drops* detections rather than retrying them: the safety step ADR-074 rule 3
+mandates was itself unsafe. Both fixed.
+
 ### Still outstanding
 
 - **The backfill dry-run has not been run on the station.** ADR-074 rule 3
@@ -218,6 +250,14 @@ running that command, not by widening the window.
   across ~135 species, from a lab copy of the archive. Not run because a
   concurrent session was measuring the station's clock and a deploy restarts
   capture. **This is a precondition on rollout, not a nicety.**
+- **A pre-existing hole, found by this work and deliberately not fixed by it.**
+  An abort in the sweep's *first* preamble block — the `kept_detections` count
+  and `held_detection_ids` — still propagates with `current_tier == "preamble"`
+  and skips all three tiers **including the watermark**. That is the same
+  disk-fills-capture-stops failure fixed above for the bank read, on a path
+  that predates ADR-076 entirely. Left alone because it is outside this ADR's
+  scope and the status quo is unchanged by leaving it, but it wants its own
+  fix and it is the most consequential thing on this list.
 - **The quota is still not built**, so ADR-074's "Expected effect" table is
   still unmet. Enabling the flag after the backfill will *raise* disk usage by
   the size of the bank — bounded, one-off, roughly 28 GB — and save nothing.
