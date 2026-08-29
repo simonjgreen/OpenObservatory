@@ -645,7 +645,27 @@ class RetentionSweeper:
                     # context manager's `finally` gets to disarm it.
                     if report.promoted and not dry_run:
                         session.commit()
-                    bank = self._evidence_bank(session)
+                    # Re-read, guarded the same as every other statement this
+                    # sweep issues: the age tiers below must see what
+                    # promotion just banked, or a detection promoted this
+                    # sweep is deleted by the same sweep that decided to keep
+                    # it. If this read is the one that gets interrupted,
+                    # `bank` is left holding the pre-promotion snapshot --
+                    # stale, and unsafe to hand to the age tiers, because
+                    # "stale" here specifically means missing the rows just
+                    # promoted, which is exactly what would get deleted by
+                    # the tiers' `bank.exclusion()` filter failing to exempt
+                    # them. So this is deliberately left unguarded by a local
+                    # `except`: the `OperationalError` propagates to
+                    # `sweep()`'s own handler, which records `current_tier`
+                    # ("native" by this point) as interrupted and skips the
+                    # native/unkept/watermark tiers for this pass entirely --
+                    # the same "fewer deletions this pass, try again next
+                    # sweep" degrade every other interrupted statement here
+                    # gets, and the only one of the two possible responses
+                    # that cannot unbank-by-omission what was just promoted.
+                    with self._bounded_statements(session, deadline):
+                        bank = self._evidence_bank(session)
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
                         session,
@@ -1135,15 +1155,16 @@ class RetentionSweeper:
             room_by_species[species] -= 1
             promoted += 1
 
-        # Deliberately *not* committed here, inside the arm: `_bounded_
-        # statements` disarms by calling `set_progress_handler(None, 0)` on
-        # the DBAPI connection it captured at entry, and `Session.commit()`
-        # checks that connection back into the pool, turning SQLAlchemy's
-        # proxy for it into a dead reference -- disarming against it
-        # afterwards raises `AttributeError: 'NoneType' object has no
+        # No commit in this method, on purpose: the whole call is made from
+        # inside `sweep()`'s own `_bounded_statements` arming, and
+        # `Session.commit()` checks the armed DBAPI connection back into the
+        # pool -- turning SQLAlchemy's proxy for it into a dead reference, so
+        # that arming's `finally` then calls `set_progress_handler` on
+        # nothing and raises `AttributeError: 'NoneType' object has no
         # attribute 'set_progress_handler'`. Same failure `_run_tier`
-        # documents; the caller (`sweep()`) commits once this call returns,
-        # outside its own arming.
+        # documents for its own tier loop. `sweep()` commits once this call
+        # returns and its arming has exited, exactly as it does for every
+        # other tier.
         return promoted
 
     def _promotion_candidates(
