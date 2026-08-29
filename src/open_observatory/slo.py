@@ -21,7 +21,7 @@ and the station still read 99.9943% "complete".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -193,3 +193,39 @@ def prime_intervals(
         else:
             merged.append((s, e))
     return merged
+
+
+__all__ += ["detection_coverage"]
+
+
+def _as_int(value: object) -> int:
+    """Coerce a counter pulled from a loosely-typed mapping. Falsy is zero."""
+    if not value:
+        return 0
+    assert isinstance(value, (int, float))
+    return int(value)
+
+
+def detection_coverage(detectors: Sequence[Mapping[str, object]]) -> float | None:
+    """SLO D. The fraction of offered windows a detector actually analysed.
+
+    **The worst detector, not the mean.** Averaging would let a healthy
+    detector paper over a starving one, and a detector that analysed half the
+    windows is not "partly covered" -- it is a hole in the record for whatever
+    it listens for. ADR-073 records this SLO as unmeasurable; it was not, the
+    counters were simply never divided.
+
+    ``None`` when no detector has been offered a window yet: before the first
+    window there is no ratio, and reporting 0% would read as total failure at
+    every startup.
+    """
+    worst: float | None = None
+    for d in detectors:
+        analysed = _as_int(d.get("windows_analysed", 0))
+        dropped = _as_int(d.get("windows_dropped_queue_full", 0)) + _as_int(d.get("windows_dropped_stale", 0))
+        offered = analysed + dropped
+        if offered <= 0:
+            continue
+        ratio = analysed / offered
+        worst = ratio if worst is None else min(worst, ratio)
+    return None if worst is None else round(worst, 6)

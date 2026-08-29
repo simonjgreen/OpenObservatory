@@ -221,3 +221,34 @@ def test_polar_latitudes_yield_no_prime_window_rather_than_crashing() -> None:
         longitude=11.9,
     )
     assert ivs == []
+
+
+def test_detection_coverage_is_analysed_over_offered() -> None:
+    d = [{"windows_analysed": 99, "windows_dropped_queue_full": 1, "windows_dropped_stale": 0}]
+    assert slo.detection_coverage(d) == pytest.approx(0.99)
+
+
+def test_detection_coverage_is_the_worst_detector_not_the_average() -> None:
+    """One starving detector is a hole in the record.
+
+    Averaging hides it: a detector analysing 50% alongside one analysing 100%
+    is not "75% covered", it is a detector missing half the garden.
+    """
+    d = [
+        {"windows_analysed": 100, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0},
+        {"windows_analysed": 50, "windows_dropped_queue_full": 50, "windows_dropped_stale": 0},
+    ]
+    assert slo.detection_coverage(d) == pytest.approx(0.5)
+
+
+def test_stale_drops_count_against_coverage_too() -> None:
+    """A window dropped for being stale was still never analysed."""
+    d = [{"windows_analysed": 90, "windows_dropped_queue_full": 5, "windows_dropped_stale": 5}]
+    assert slo.detection_coverage(d) == pytest.approx(0.90)
+
+
+def test_a_detector_that_has_seen_nothing_yet_is_not_zero_percent() -> None:
+    """Before the first window there is no ratio, and None says so."""
+    empty = {"windows_analysed": 0, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0}
+    assert slo.detection_coverage([empty]) is None
+    assert slo.detection_coverage([]) is None
