@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-058
+tags:
+  - adr
+---
 # ADR-058: The spectrogram's detection labels are placed, not drawn where they fall
 **Status:** active. Frontend only: one new pure module, one draw-loop change.
 
@@ -46,7 +52,7 @@ Four details are load-bearing:
 
 - **The merge key is the rendered title, not a taxon id.** Two detections merge
   only if their words would have been identical anyway, so a withdrawn claim
-  (ADR-044 renders it `… · withdrawn`) can never be counted into a standing one,
+  ([[ADR-044]] renders it `… · withdrawn`) can never be counted into a standing one,
   and a 45 kHz bat pass never into a 55 kHz one. If the key matches, the merged
   label is literally correct for every member.
 - **A run's score is labelled `best`.** `Eurasian Jackdaw ×3 95%` would be a
@@ -111,7 +117,7 @@ deployed). The harness feeds fabricated detections, deliberately: the reported
 collision is a two-second coincidence in a garden and waiting for one is not a
 test.
 
-**Known and not addressed here.** Above the 640 px breakpoint ADR-054 floats the
+**Known and not addressed here.** Above the 640 px breakpoint [[ADR-054]] floats the
 spectrogram's badge strip back over the plot's top-right corner, and a detection
 label placed there is partly hidden behind it. That is a DOM element over the
 canvas rather than two canvas labels colliding, it predates this change, and
@@ -139,3 +145,6 @@ chromium --headless --disable-gpu --no-sandbox --mute-audio --hide-scrollbars \
 # cut short, nothing crossing the canvas edge, and a repeated species reading
 # "<name> ×N · best NN%" rather than N labels in one place.
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

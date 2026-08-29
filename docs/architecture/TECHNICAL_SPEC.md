@@ -15,14 +15,14 @@
 >
 > | This spec says | What actually runs | Why |
 > |---|---|---|
-> | §3 Docker Compose, eleven services | one `systemd` unit, one process, one venv | ADR-008 |
-> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | ADR-007 |
-> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | ADR-009, and an explicit permission in `CLAUDE.md` |
-> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime and not adopted | ADR-013, ADR-017 |
-> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | ADR-012, ADR-019 |
+> | §3 Docker Compose, eleven services | one `systemd` unit, one process, one venv | [[ADR-008]] |
+> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | [[ADR-007]] |
+> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | [[ADR-009]], and an explicit permission in `CLAUDE.md` |
+> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime and not adopted | [[ADR-013]], [[ADR-017]] |
+> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | [[ADR-012]], [[ADR-019]] |
 > | §2 MCP server | not implemented; no MCP code exists in this repository | Milestone 7, not started |
-> | §9 anonymous read disabled by default | authentication exists but is **off by default**, with three deliberately credential-free paths | ADR-015 → ADR-034 |
-> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | ADR-008 |
+> | §9 anonymous read disabled by default | authentication exists but is **off by default**, with three deliberately credential-free paths | [[ADR-015]] → [[ADR-034]] |
+> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | [[ADR-008]] |
 >
 > §14's performance budgets are engineering targets, not measurements. The
 > measurements are in
@@ -235,7 +235,7 @@ Defaults:
 
 PostgreSQL is canonical for configuration, health events, detections, reviews, telemetry references and asset metadata. Filesystem/SSD is canonical for clip bytes. Redis is not durable product state.
 
-Use Alembic migrations and immutable event timestamps. See `docs/data/DATA_MODEL.md`.
+Use Alembic migrations and immutable event timestamps. See [[DATA_MODEL]].
 
 ## 9. APIs and authentication
 

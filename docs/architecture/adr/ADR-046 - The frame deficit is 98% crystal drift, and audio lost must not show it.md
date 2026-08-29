@@ -1,7 +1,13 @@
+---
+aliases:
+  - ADR-046
+tags:
+  - adr
+---
 # ADR-046: The frame deficit is 98% crystal drift, and "audio lost" must not show it
 **Decision:** the debug UI's `audio lost` row no longer shows the raw frame
 deficit `expected_frames - frames`. It shows `estimated_missing_seconds`, the
-estimator's confirmed loss (ADR-039). The deficit is shown separately as
+estimator's confirmed loss ([[ADR-039]]). The deficit is shown separately as
 **`behind clock`**, with its crystal-drift term named inline and its
 sampling-phase uncertainty stated. `describeDeficit` in
 `web/src/components/Pipeline.tsx` performs the decomposition and is unit-tested
@@ -25,14 +31,14 @@ things added together, and on this station only one of them is lost audio:
 3. **Anchor bias**, sub-millisecond (0.34 ms measured), from where frame zero is
    pinned.
 4. **Lost audio**, which is what `estimated_missing_frames` measures — being, by
-   ADR-039's construction, exactly the part of the deficit that never came back.
+   [[ADR-039]]'s construction, exactly the part of the deficit that never came back.
 
 Terms 1 and 2 are why the raw deficit read **0.104 s** on a station that had
 lost nothing, and why over a night it would have reached 2 s and read as a slow
 leak of audio that is not happening.
 
 **The measurement that settles it** is recorded in full, with its windows and
-its contamination, in `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`. In
+its contamination, in [[OPEN_INVESTIGATION_CAPTURE_GAPS]]. In
 short: `/api/v1/health` sampled every 2 s for 43 minutes on one uninterrupted
 stream (2026-08-09, UTC 10:31:32 → 11:14:13), with the deficit re-evaluated at
 the last block's own start — which `block_age_s` publishes, and which removes
@@ -55,7 +61,7 @@ arrives as a step that stays up; there is no such step anywhere. Independently,
 and a second agent measuring the same station in the same hour got **−49.96
 ppm**. The deficit's growth and the crystal's rate agree to about **1 ppm — 3.6
 ms/hour — and of ambiguous sign.** The deficit is drift. There is no loss the
-estimator is missing, and **ADR-039's confirmation window is not too permissive**
+estimator is missing, and **[[ADR-039]]'s confirmation window is not too permissive**
 on this evidence.
 
 **The limit of the claim:** the longest *clean* window is 22.2 minutes. This
@@ -72,8 +78,8 @@ this station's measured −51.62 ppm, drift accounts for only about 10 s of that
 a settled, duration-independent fact; it is settled only for the runs measured
 here (minutes to about an hour). At 72 hours the residual is unexplained and
 should be read as suspected real loss, not drift, until isolated. See
-`HANDOVER.md`'s "Two things suspected, not established" note and
-`MILESTONE_STATUS.md` §Milestone 4.5.
+[[HANDOVER]]'s "Two things suspected, not established" note and
+[[MILESTONE_STATUS]] §Milestone 4.5.
 
 **A correction to how these two numbers were being reasoned about.** They were
 treated as independent measurements that had to be reconciled. They are not
@@ -88,7 +94,7 @@ station has **one** measurement of lost audio, not two, and future work must not
 assume otherwise.
 
 **Consequence:** `CaptureStatus` in `web/src/types.ts` gained the fields the API
-has published since ADR-039 and the UI ignored — `estimated_missing_seconds`,
+has published since [[ADR-039]] and the UI ignored — `estimated_missing_seconds`,
 `gaps_with_loss`, `gaps_without_loss`, `late_reads`, `late_read_max_frames`,
 `alsa_buffer_frames`. `late_reads` is now shown beside `overruns`, because a
 stall the ring absorbed is the thing `capture.gap` used to impersonate and the
@@ -155,3 +161,6 @@ gaps 0 0 overruns 0 late_reads 41 of ring 192000 ppm -50.44
 Note what that says: the raw deficit is now **0.219 s**, more than twice the
 0.104 s that prompted this whole investigation, and the station has still lost
 nothing. Under the old label that would have read as the leak getting worse.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

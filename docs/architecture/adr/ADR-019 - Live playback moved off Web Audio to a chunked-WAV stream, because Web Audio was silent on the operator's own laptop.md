@@ -1,10 +1,16 @@
+---
+aliases:
+  - ADR-019
+tags:
+  - adr
+---
 # ADR-019: Live playback moved off Web Audio to a chunked-WAV stream, because Web Audio was silent on the operator's own laptop
 **Decision:** Add `GET /api/v1/live/audio.wav`, streaming a 44-byte WAV header with
 both size fields set to `0xFFFFFFFF` — the conventional placeholder for a stream of
 unknown, effectively endless length — followed by continuous 16-bit little-endian
 mono PCM at the broadcaster's sample rate. The debug UI's GO LIVE button now points a
 plain `<audio>` element at this endpoint by default. `/api/v1/live/audio`, the
-WebSocket channel from ADR-012, is unchanged and still serves other clients — a phone
+WebSocket channel from [[ADR-012]], is unchanged and still serves other clients — a phone
 uses it and had no problem to fix.
 
 **Reason:** Diagnosed empirically, not guessed, in the operator's own browser.
@@ -27,7 +33,7 @@ node in that graph left to suspect.
 
 - The page is served over plain HTTP to a LAN IP, so `window.isSecureContext` is
   false, `navigator.mediaDevices` is undefined, and `AudioWorklet` was already
-  unavailable before today (see `DEBUG_UI_TRANSPORT.md`'s discussion of why the
+  unavailable before today (see [[DEBUG_UI_TRANSPORT]]'s discussion of why the
   original WebSocket client scheduled `AudioBuffer`s on an explicit cursor instead of
   using a worklet). That pre-existing constraint shaped the original design and is
   worth restating here, because it is adjacent to but not the cause of today's bug —
@@ -50,7 +56,7 @@ node in that graph left to suspect.
 - The response carries `Cache-Control: no-store` and `X-Live-Sample-Rate`, plus
   `X-Live-Tune-Hz`/`X-Live-Bandwidth-Hz` on the ultrasonic channel, since there is no
   JSON hello frame over plain HTTP to carry that information instead. See
-  `DEBUG_UI_TRANSPORT.md` for the full header and lifecycle description.
+  [[DEBUG_UI_TRANSPORT]] for the full header and lifecycle description.
 
 **The lesson worth generalising, because it will recur:** every meter the old client
 displayed was measured *inside* the failing subsystem, upstream of where the signal
@@ -60,3 +66,6 @@ transport-layer check (listener count, one) and a decoder-layer check
 machine's actual output device — was silently broken. A meter that cannot observe
 the failure is worse than no meter, because it actively suggests there is nothing
 left to check.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

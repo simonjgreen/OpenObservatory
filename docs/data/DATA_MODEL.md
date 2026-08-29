@@ -19,12 +19,12 @@ lower-precision field for external disclosure and no access control on them.
 
 **Open gap, still open on 2026-08-09:** this overstates a privacy protection that
 does not exist. There is no encryption, no access control on these two columns,
-and no lower-precision field for external disclosure — which `PRD.md` §10 asks
+and no lower-precision field for external disclosure — which [[PRD]] §10 asks
 for ("location precision exposed through APIs must be configurable; external
 integrations should default to coarse location") and which the acceptance
 criteria list.
 
-Authentication now exists (ADR-034, closing ADR-015) but is **off by default**,
+Authentication now exists ([[ADR-034]], closing [[ADR-015]]) but is **off by default**,
 and `GET /api/v1/station` is not in the credential-free allow-list — so with auth
 enabled, exact coordinates are gated; with auth off, which is the default and is
 the live station's state, anyone who can reach the port can read them. Enabling
@@ -63,7 +63,7 @@ Columns as implemented:
 - frame count
 - discontinuity count
 - last_frame_at_utc — nullable; a heartbeat written every ~10 s while the
-  stream is open, added by ADR-024. NULL for rows written before it existed
+  stream is open, added by [[ADR-024]]. NULL for rows written before it existed
   and for streams too short-lived to see a housekeeping tick. `frame_count`
   and `discontinuity_count` are also written at that same cadence now, not
   only at close, so a crashed process's row carries real numbers rather than
@@ -71,9 +71,9 @@ Columns as implemented:
 - detail — free-form JSON; also now carries an `orphan_recovery` or
   `reconciliation` sub-object when `Station._close_orphaned_streams` or
   `oo history reconcile-streams` has corrected the row's `end_utc`, recording
-  the original claim and the method used (ADR-024).
+  the original claim and the method used ([[ADR-024]]).
 
-**Correctness note (ADR-024):** `start_utc`/`end_utc` is a *claim*, not
+**Correctness note ([[ADR-024]]):** `start_utc`/`end_utc` is a *claim*, not
 ground truth — a stream row was found in the live database claiming a 32 hour
 span while its own `frame_count` implied 2.79 hours of actual audio, with the
 gap explained by a capture-side hang rather than a crash. `history.coverage()`
@@ -166,10 +166,10 @@ Columns as implemented:
 - native_result JSON
 - created_at
 - refined_at (indexed) / refinement_version / refinement_outcome — added by
-  revision `0006_refinement` (ADR-045); described in full in the refinement
+  revision `0006_refinement` ([[ADR-045]]); described in full in the refinement
   section below
 
-**`native_result` since 2026-08-09 (ADR-037 option C)**: `normaliser.py`
+**`native_result` since 2026-08-09 ([[ADR-037]] option C)**: `normaliser.py`
 drops a small, fixed set of keys before persisting a *new* `native_result`,
 each only when its value (not merely its name) is proven to duplicate
 something already persisted elsewhere on the same row —
@@ -186,7 +186,7 @@ is planned.
 | `confidence` | `detection.score` (exact — the dropped copy was itself a rounded display value) |
 | `peak_frequency_hz` | `detection.peak_frequency_hz` (exact — the dropped copy had *less* precision than the typed column) |
 
-`occurrence_probability` and `plausibility_band` (ADR-032's plausibility
+`occurrence_probability` and `plausibility_band` ([[ADR-032]]'s plausibility
 audit trail) are never dropped — they are not duplicates of anything, they
 are evidence. Likewise kept, deliberately, are `band_hz`, `score_definition`
 and `confidence_definition`: these look like per-detector-version constants
@@ -194,7 +194,7 @@ but are not — the live database shows `activity-v1`'s `score_definition`
 changed (a config value, `activity_band_hz`/`ultrasonic_band_hz`-adjacent,
 changed without a `plugin_version`/`model_version` bump) under the *same*
 `detector_id`, so "the detector version recorded on the row" cannot reliably
-reconstruct them. See ADR-037's "B and C: what was implemented" section for
+reconstruct them. See [[ADR-037]]'s "B and C: what was implemented" section for
 the measured before/after byte counts and the full reasoning.
 
 ### detection_cluster / detection_cluster_member — Planned, not implemented
@@ -222,8 +222,8 @@ The seed spec documented `kind` as a closed enum of
 (`evidence_native`, `playback`, `spectrogram`, `export`). In the implemented
 model, `kind` is a plain indexed `String(32)` column with no enum constraint
 at the database or ORM level — any string is accepted. The set of values
-actually in use has also grown: `audible_ultrasonic` (see ADR-014 and
-`DEBUG_UI_TRANSPORT.md`) is a real, produced-by-default value that was missing
+actually in use has also grown: `audible_ultrasonic` (see [[ADR-014]] and
+[[DEBUG_UI_TRANSPORT]]) is a real, produced-by-default value that was missing
 from the original documented set.
 
 Columns as implemented:
@@ -239,7 +239,7 @@ Columns as implemented:
 - byte length
 - SHA-256
 - created/expires timestamps
-- reclaimed_at nullable — set by the retention sweeper (ADR-026) when it
+- reclaimed_at nullable — set by the retention sweeper ([[ADR-026]]) when it
   deletes the underlying file; the row itself is never deleted
 - reclaim_reason nullable — which tier reclaimed it (`native`,
   `unkept`, `watermark`)
@@ -255,12 +255,12 @@ Columns as implemented:
 
 The `review` table is implemented in `db/models.py` exactly as specified below.
 **This entry previously said nothing wrote to it; that is no longer true.**
-`POST /api/v1/detections/{id}/review` (ADR-029) inserts a row on every call —
+`POST /api/v1/detections/{id}/review` ([[ADR-029]]) inserts a row on every call —
 append-only, setting `supersedes_review_id` to the prior row for that detection —
 and `GET /api/v1/detections/{id}/review` returns the latest. The debug UI's
 detection drawer has confirm/reject controls wired to it.
 
-**The correction columns are now written (ADR-043, 2026-08-09).** This section
+**The correction columns are now written ([[ADR-043]], 2026-08-09).** This section
 previously said `corrected_taxon_id` "is always written `None`" and that
 correction was deferred to a future ADR. That is no longer true: revision
 `0005_review_correction_names` added the denormalised name columns, and
@@ -328,7 +328,7 @@ admissible.
 them would defeat the charter's retention safeguard, whose stated risk is "not
 old data, it is data the refiner never actually saw".
 
-No shipped refiner may set `applied`. See ADR-045 for the measured accuracy
+No shipped refiner may set `applied`. See [[ADR-045]] for the measured accuracy
 evidence behind that ceiling.
 
 ### detection.refined_at / refinement_version / refinement_outcome
@@ -337,12 +337,12 @@ Three columns on `detection`, denormalised from the newest `refinement` row.
 They exist because the charter's retention decision asks that "each event should
 carry the fact that refinement ran, at what version, with what outcome, and
 deletion should require it" — and the retention sweeper runs *inside the capture
-process* on a paced 1.5 s budget (ADR-026, ADR-033), so that question has to be
+process* on a paced 1.5 s budget ([[ADR-026]], [[ADR-033]]), so that question has to be
 answerable from an index (`ix_detection_refined_at`), not from a correlated
 subquery against a second table.
 
 NULL means no refiner has ever examined the event. **Retention does not yet
-consult these columns** — see ADR-045's "What this does not do" for the exact
+consult these columns** — see [[ADR-045]]'s "What this does not do" for the exact
 predicate that would close the gap, and why applying it is the operator's call.
 
 On the live station on 2026-08-09 every row was still NULL: the runner has not
@@ -350,15 +350,15 @@ been run against it.
 
 ### BirdNET near-miss ledger — deliberately not persisted (not an omission)
 
-ADR-052 records what BirdNET proposed and refused, with per-band score
+[[ADR-052]] records what BirdNET proposed and refused, with per-band score
 histograms, and serves it at `GET /api/v1/detectors/near-misses`. **There is no
 table for it and there must not be one.** It is a bounded in-memory ring
 (`detectors/near_miss.py`, `birdnet_near_miss_ring`, default 200) that touches no
 session and issues no commit, and it is empty after a restart by design: the
 station rejects thousands of candidates an hour and persisting them would move
-the detection table's growth problem (ADR-037) into a table nobody browses,
+the detection table's growth problem ([[ADR-037]]) into a table nobody browses,
 against a charter cross-cutting constraint on SD-card write amplification. If
-you find yourself adding a migration for it, read ADR-052 first.
+you find yourself adding a migration for it, read [[ADR-052]] first.
 
 ### telemetry_series / telemetry_sample — Planned, not implemented
 
@@ -467,7 +467,7 @@ Implemented:
 - `media_asset.reclaimed_at` — added by Alembic revision `0002`, because
   `ALTER TABLE ADD COLUMN` (how the column reached the live station) creates a
   column but never its index
-- `detection.refined_at` — added by Alembic revision `0006` (ADR-045), created
+- `detection.refined_at` — added by Alembic revision `0006` ([[ADR-045]]), created
   explicitly and unconditionally there for the same reason `media_asset.reclaimed_at`
   needed revision `0002`: `ALTER TABLE ADD COLUMN` cannot create an index
 - `review.detection_id`
@@ -476,7 +476,7 @@ Implemented:
 - `refinement.outcome`
 - `refinement.created_at`
 - `refinement (detection_id, evidence_fingerprint)` — **unique**; this is charter
-  item 5's "only from new information" rule as a database constraint (ADR-045)
+  item 5's "only from new information" rule as a database constraint ([[ADR-045]])
 - `health_event.service`
 - `health_event.severity`
 - `health_event.start_utc`
@@ -488,7 +488,7 @@ Implemented:
 - `api_token.token_prefix`
 - `api_token.token_hash` — unique
 
-**Dropped 2026-08-09 (ADR-037 option B, Alembic revision
+**Dropped 2026-08-09 ([[ADR-037]] option B, Alembic revision
 `0004_drop_dead_detection_indexes`)**: `detection.station_id`,
 `detection.canonical_taxon_id`, a standalone `detection.taxonomic_group`
 index, and the composite `detection (station_id, event_start_utc desc)`. None
@@ -498,7 +498,7 @@ ever read into Python (never filtered or ordered by), and the standalone
 `taxonomic_group` index was a dead prefix of the composite above, which
 survives. `detection.detector_id` was also proposed for removal by the
 original research but was **kept**: re-verification found
-`plausibility_repair.reconcile_plausibility` (ADR-032) joins from `detector`
+`plausibility_repair.reconcile_plausibility` ([[ADR-032]]) joins from `detector`
 (filtered by `plugin_id`) into `detection` and SQLite uses this exact index
 to satisfy that join. Reversible with `alembic downgrade -1`.
 
@@ -512,7 +512,7 @@ Planned only (would apply if the corresponding table is built):
 - analysis windows: minutes/hours, removed after all leases complete (planned
   — no `analysis_window` table exists yet, see above);
 - rolling raw PCM: memory-only by default;
-- evidence clips: **tiered aging, not a flat 30 days** (ADR-026,
+- evidence clips: **tiered aging, not a flat 30 days** ([[ADR-026]],
   `src/open_observatory/retention.py`) — native (full-rate) clip and its
   audible rendering both survive 0–7 days; 7–30 days keeps the audible
   rendering only; 30–90 days keeps only the first-ever and best-of-species
@@ -522,10 +522,10 @@ Planned only (would apply if the corresponding table is built):
 - detections/reviews/refinements: **indefinite, unconditionally** — no tier or
   watermark in `retention.py` ever deletes a `detection`, `review` or
   `refinement` row, or mutates a detection's claim columns;
-- **an open gap, recorded rather than closed (ADR-045):** the clip tiers above
+- **an open gap, recorded rather than closed ([[ADR-045]]):** the clip tiers above
   delete on *age alone*. Nothing reads `detection.refined_at`, so a clip can be
   reclaimed at 7, 30 or 90 days having never been examined by a refiner once —
-  which is exactly the failure `docs/CHARTER.md`'s retention decision names
+  which is exactly the failure [[CHARTER]]'s retention decision names
   ("delete on 'refinement has run', not on age alone"). The schema supports the
   fix and `oo refine status` reports how many events have never been examined;
   applying it is a live deletion-policy change and is the operator's call;
@@ -540,13 +540,13 @@ Planned only (would apply if the corresponding table is built):
 |---|---|
 | `0001_initial` | the baseline, autogenerated from an empty database against `Base.metadata` and verified by stamping a `create_all()`-built database and running `alembic check` |
 | `0002_media_asset_reclaimed_at_index` | a real fix, not a demonstration: `ALTER TABLE ADD COLUMN` creates a column but never an index, so the live station's `media_asset.reclaimed_at` had none despite the model declaring one. Written `IF NOT EXISTS`, so it is a no-op on a database that reached the baseline by a normal upgrade |
-| `0003_auth_tables` | `user`, `auth_session`, `api_token` (ADR-034) |
-| `0004_drop_dead_detection_indexes` | drops four unused `detection` indexes found dead by re-verification against the live database (ADR-037 option B) |
-| `0005_review_correction_names` | `review.corrected_common_name` / `corrected_scientific_name`, so a human correction carries the name it asserts (ADR-043) |
-| `0006_refinement` | the `refinement` table plus `detection.refined_at` / `refinement_version` / `refinement_outcome` and `ix_detection_refined_at` (ADR-045) |
+| `0003_auth_tables` | `user`, `auth_session`, `api_token` ([[ADR-034]]) |
+| `0004_drop_dead_detection_indexes` | drops four unused `detection` indexes found dead by re-verification against the live database ([[ADR-037]] option B) |
+| `0005_review_correction_names` | `review.corrected_common_name` / `corrected_scientific_name`, so a human correction carries the name it asserts ([[ADR-043]]) |
+| `0006_refinement` | the `refinement` table plus `detection.refined_at` / `refinement_version` / `refinement_outcome` and `ix_detection_refined_at` ([[ADR-045]]) |
 
 **The live station is at `0006_refinement`, which is `head`** — read directly
-from its `alembic_version` table, read-only, on 2026-08-09 at 21:46Z. ADR-042's
+from its `alembic_version` table, read-only, on 2026-08-09 at 21:46Z. [[ADR-042]]'s
 deploy step has therefore now carried a real station across three revisions
 (`0004` → `0005` → `0006`) unattended, which is the thing that was untested when
 that ADR was written.
@@ -565,7 +565,7 @@ repository root are a real migration environment, wired to
 `Settings.resolved_database_dsn` (the same `OO_DATABASE_DSN` resolution the
 application uses) and to `Base.metadata` from `db/models.py`.
 
-**As of ADR-042, Alembic is the only thing that creates or changes schema.**
+**As of [[ADR-042]], Alembic is the only thing that creates or changes schema.**
 `db/session.py: create_all()` still exists, but only for tests that want a
 non-Alembic way to build a comparison schema (`tests/test_migrations.py`) or
 a fast disposable one; it is no longer called by `api/app.py` or `cli.py` on
@@ -573,7 +573,7 @@ startup. The old `_patch_sqlite_columns` ALTER TABLE patcher is deleted
 outright. Application and CLI startup now call
 `db/session.py: ensure_schema_at_head()`, and `deploy/deploy.sh` runs
 `alembic upgrade head` as an explicit step before every restart — see
-ADR-042 for why the migration itself runs in the deploy script and not in
+[[ADR-042]] for why the migration itself runs in the deploy script and not in
 application startup.
 
 ### Which case are you in?
@@ -586,7 +586,7 @@ application startup.
   `alembic upgrade head` yourself first also works and is equivalent.
 - **Existing database built by `create_all()` before Alembic existed** (a
   developer database that predates this environment; the live station was in
-  this position until it was adopted while ADR-035 was written): **do not
+  this position until it was adopted while [[ADR-035]] was written): **do not
   run `alembic upgrade head` first** — the initial revision's `upgrade()`
   issues `CREATE TABLE` for every table and will fail (or, worse on some
   backends, silently diverge) against tables that already exist. Instead:
@@ -643,13 +643,13 @@ immediately: `ensure_schema_at_head()` raises a specific, actionable
   state; prefer `alembic upgrade head` by hand if you specifically want to
   exercise the real migration path outside the application).
 - Station SQLite: `deploy/deploy.sh` runs `alembic upgrade head` itself, as
-  an explicit step before the systemd unit is restarted (ADR-042) — a normal
+  an explicit step before the systemd unit is restarted ([[ADR-042]]) — a normal
   deploy needs no manual migration step. See "Which case are you in?" above
   for the one-time adoption sequence a pre-Alembic database needs first. Back
   up `data/openobservatory.sqlite` (and its `-wal`/`-shm` siblings, if
   present) before running anything by hand — there is still no automated
   backup tooling in this repository
-  (`docs/operations/DEPLOYMENT_AND_OPERATIONS.md`).
+  ([[DEPLOYMENT_AND_OPERATIONS]]).
 - PostgreSQL 16: same commands, `OO_DATABASE_DSN` pointed at the PostgreSQL
   DSN. Not yet exercised against a real PostgreSQL instance in this
   repository — the environment is dialect-portable by construction (batch
@@ -689,11 +689,11 @@ for a scratch database and destructive for a real one. To roll back a bad
 migration against a real database: stop the service, restore
 `data/openobservatory.sqlite` from the backup taken before the migration ran
 (there is no automated backup tool; this is an operator's own
-responsibility per `DEPLOYMENT_AND_OPERATIONS.md`), check out the previous
+responsibility per [[DEPLOYMENT_AND_OPERATIONS]]), check out the previous
 commit, and restart. `alembic downgrade` is a tool for development, not a
 substitute for that backup.
 
-**If `deploy/deploy.sh`'s migration step itself fails (ADR-042):** the script
+**If `deploy/deploy.sh`'s migration step itself fails ([[ADR-042]]):** the script
 runs `alembic upgrade head` before touching the systemd unit and uses `set
 -euo pipefail`, so a failing migration stops the deploy there — the
 previous, working version keeps running under the old schema, nothing is

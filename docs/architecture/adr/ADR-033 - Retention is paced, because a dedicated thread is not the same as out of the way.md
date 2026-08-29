@@ -1,7 +1,13 @@
+---
+aliases:
+  - ADR-033
+tags:
+  - adr
+---
 # ADR-033: Retention is paced, because a dedicated thread is not the same as out of the way
 **Decision:** `RetentionSweeper.sweep()` runs every `retention_interval_s`
 (default **300 s**), rounded to the nearest 10 s housekeeping tick, not on every
-tick as ADR-026's implementation did. Nothing else about retention changes: the
+tick as [[ADR-026]]'s implementation did. Nothing else about retention changes: the
 sweep still runs in the evidence executor's dedicated thread, still bounds itself
 by `retention_batch_size` and `retention_batch_budget_s`, and still resumes where
 it left off. Two permanent instruments are added: an event-loop lag watchdog
@@ -24,8 +30,8 @@ coincidence. With the sweep on a 10 s cadence the loop was starved for 55–150 
 about five times a minute, on that same ~10.4 s beat. With the sweep disabled the
 lag events fell to ~1.6/min on an unrelated 30 s beat and no gap was produced.
 
-**Why a dedicated thread was not enough.** ADR-021 moved retention off the default
-pool so it could not queue in front of the ALSA read, and ADR-030 gave the read its
+**Why a dedicated thread was not enough.** [[ADR-021]] moved retention off the default
+pool so it could not queue in front of the ALSA read, and [[ADR-030]] gave the read its
 own executor as well. Both were right, and neither addresses this: a ~0.30 s sweep
 is SQLAlchemy ORM work in Python, so it holds the GIL, and CPython hands the GIL
 back to a waiting I/O-bound thread reluctantly. The event loop is the I/O-bound
@@ -42,18 +48,18 @@ ten-second granularity; the 10 s cadence bought no property the operator can
 observe. Five minutes is what the pre-merge code did (`ticks % 30`) and it restores
 that behaviour behind a setting rather than a literal, so a station that genuinely
 fills its disk fast can be tuned without a code change. The bounded-batch design
-from ADR-026 is what makes a longer interval safe: a backlog still drains
+from [[ADR-026]] is what makes a longer interval safe: a backlog still drains
 incrementally, just on a slower beat.
 
-**What this did not fix, and left open — now CLOSED by ADR-039 (2026-08-09).** The
-paragraph below is kept as written because it is the diagnosis ADR-039 acts on. It
+**What this did not fix, and left open — now CLOSED by [[ADR-039]] (2026-08-09).** The
+paragraph below is kept as written because it is the diagnosis [[ADR-039]] acts on. It
 is no longer an open item: the estimator now confirms a deficit step against the
 following blocks before crediting it, and `reason=overrun` is no longer attached to
 an event ALSA never reported. The stall did not lose
 any audio, and the station said it did. Over the affected window the capture path
 was 21,300 frames (0.055 s) behind what elapsed time implied, while
 `estimated_missing_frames` claimed 252,495 (0.657 s) and `overruns` was **0** —
-ALSA never reported a ring overflow, because the 500 ms ring from ADR-030 absorbed
+ALSA never reported a ring overflow, because the 500 ms ring from [[ADR-030]] absorbed
 the stall exactly as intended. The deficit-step estimator in `_read_blocking`
 credits a timing step of more than one block as lost audio immediately, which was
 correct against an 80 ms ring where such a step really did mean an overflow, and
@@ -64,7 +70,7 @@ whole of the nonsense `rate_offset_ppm` of +2,680 against a true device offset n
 means "the read was late", not "recording was lost".** Confirming a deficit step
 against the following blocks before crediting it is the fix, and it belongs to
 whoever next owns the estimator; it is recorded in
-`OPEN_INVESTIGATION_CAPTURE_GAPS.md` with the numbers above.
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]] with the numbers above.
 
 **Consequence:** `/api/v1/station` and `/api/v1/health` report `loop_lag_max_s`,
 `loop_lag_events`, `housekeeping_blocking_s` and `snapshot_phase_s`. A future
@@ -72,3 +78,6 @@ whoever next owns the estimator; it is recorded in
 loop from a blocked device in one reading, which nothing the station published
 before could do. `retention.enabled` in the snapshot now reflects the station's
 setting rather than always claiming `true`.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-020
+tags:
+  - adr
+---
 # ADR-020: Detections from non-live sources are excluded from browsing views by default
 **Decision:** Every endpoint that presents detections as observations —
 `GET /api/v1/detections`, `GET /api/v1/detections/{id}`, `GET /api/v1/taxa/activity`,
@@ -34,10 +40,13 @@ detections attributed to *Grey-winged Inca-Finch* — a South American species w
 plausible presence at this station — plus 515 acoustic events, and both were
 indistinguishable from real records in the history and species views. Deleting the
 rows would have destroyed a true record of detector behaviour on synthetic input,
-which is useful for exactly the kind of regression testing ADR-010's `activity-v1`
+which is useful for exactly the kind of regression testing [[ADR-010]]'s `activity-v1`
 exists for; the fix is at the presentation layer, not the storage layer.
 
 **Constraint:** Any new endpoint that lists or aggregates detections for a human to
 read as observations must apply the same `is_live`/`is_not_live` predicate and
 report `excluded_synthetic_count`. An endpoint that aggregates without this filter
 and without the count is a regression of this ADR, not a stylistic choice.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

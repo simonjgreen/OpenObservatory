@@ -1,10 +1,16 @@
+---
+aliases:
+  - ADR-016
+tags:
+  - adr
+---
 # ADR-016: The debug UI is the foundation of the product dashboard, not a throwaway
 **Decision:** Milestone 4 promotes the existing UI rather than starting a second one.
 Operator and diagnostic views become progressive disclosure within one application —
 one component library, one design-token stylesheet, one transport client, one type set —
 not two applications sharing a repository.
 
-**Reason:** ADR-011 was written before the UI existed, when the risk was that debug
+**Reason:** [[ADR-011]] was written before the UI existed, when the risk was that debug
 affordances would set the product's direction. The opposite happened: the surface that
 got built is largely product-shaped. HISTORY mode already answers "what visited last
 night" over persisted data, with named windows resolved in the station's timezone and
@@ -33,11 +39,11 @@ and the second implementation would not be better — it would be untested.
   jitter-buffer resync — is untested.
 - There is no router and no URL-driven state, so a refresh loses the view.
 
-Milestone 4's own exit gate in `IMPLEMENTATION_PLAN.md` asks that a user can "operate
+Milestone 4's own exit gate in [[IMPLEMENTATION_PLAN]] asks that a user can "operate
 **and diagnose** the station entirely through the local UI". That is one surface with two
-depths, which is what ADR-011 forbade. The plan's gate wins.
+depths, which is what [[ADR-011]] forbade. The plan's gate wins.
 
-**Constraint — what ADR-011 got right and is retained:** a diagnostic number must never
+**Constraint — what [[ADR-011]] got right and is retained:** a diagnostic number must never
 be mistaken for a product claim. Queue depths, drop counters, frame offsets, resampler
 deficits and detector lag stay behind an explicit diagnostics disclosure. Product
 surfaces must not present uncalibrated levels as measurements, model scores as
@@ -59,8 +65,11 @@ cleanly. State extraction is the first task of Milestone 4, not an optional tidy
 > `@testing-library/react` is installed and there are **235 frontend tests across
 > 22 files** — re-measured on merged `main` late on 2026-08-09; it read 140 across
 > 15 files earlier the same day — not one; `?view=operate|diagnose` gives URL-driven state that
-> survives a refresh (ADR-028); and `styles.css` gained spacing and type scales
-> (ADR-027 — which also records that ~700 lines of older component CSS were
+> survives a refresh ([[ADR-028]]); and `styles.css` gained spacing and type scales
+> ([[ADR-027]] — which also records that ~700 lines of older component CSS were
 > deliberately *not* migrated, so that part of the assessment still stands). The
 > line counts and hook counts quoted above are kept as the measurement that
 > justified the decision, not as a description of the code today.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

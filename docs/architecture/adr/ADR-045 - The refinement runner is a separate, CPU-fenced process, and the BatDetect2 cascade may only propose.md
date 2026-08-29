@@ -1,9 +1,15 @@
+---
+aliases:
+  - ADR-045
+tags:
+  - adr
+---
 # ADR-045: The refinement runner is a separate, CPU-fenced process, and the BatDetect2 cascade may only propose
 **Decision:** Charter item 5 — "refine the record later, when better information
 exists — and never silently" — ships as a **second process**, `oo refine run`,
 started by `open-observatory-refine.timer` at 01:00 UTC and fenced with
 `AllowedCPUs=2-3`, `Nice=19`, `MemoryMax=1G`, `CPUWeight=1`, `IOWeight=1`,
-`IOSchedulingClass=idle`. Its first job is the ADR-017 BatDetect2 cascade over
+`IOSchedulingClass=idle`. Its first job is the [[ADR-017]] BatDetect2 cascade over
 stored `evidence_native` ultrasonic clips.
 
 Four things are enforced in code rather than left to discipline
@@ -35,13 +41,13 @@ project so far has been sincere:
    BatDetect2 and `record_refinement` raises if a propose-authority refiner
    reports an `applied` outcome. No shipped refiner has `apply` authority.
 
-**Reason — the fence.** ADR-033 measured what "expensive work, isolated on its
+**Reason — the fence.** [[ADR-033]] measured what "expensive work, isolated on its
 own thread, inside the capture process" is actually worth: a 0.30 s retention
 sweep starved the event loop 55–150 ms and produced **~1.9 false `capture.gap`
 records a minute**, because an executor partitions queueing and nothing
 partitions the GIL. A BatDetect2 pass is 2.1 s of inference — the same defect,
 two orders of magnitude larger. `DeferredDetectorWorker` (`detectors/deferred.py`)
-is the mechanism `HANDOVER.md` §1a nominated for this, and it is deliberately
+is the mechanism [[HANDOVER]] §1a nominated for this, and it is deliberately
 **not** used: it is an in-process `asyncio.Queue` of live `AudioWindow`s whose
 central safety property is dropping anything older than
 `max_delivery_latency_s`, and a clip written six hours ago is exactly what it
@@ -97,7 +103,7 @@ column means anything, both already recorded on this project:
   *nominal* rate, and this AudioMoth runs about 50 ppm slow
   (`observed_rate_hz` 383,980.8 → **−49.96 ppm**), so it legitimately delivers
   fewer frames than nominal with nothing lost — see
-  `OPEN_INVESTIGATION_CAPTURE_GAPS.md`, "the deficit has a bias of its own"
+  [[OPEN_INVESTIGATION_CAPTURE_GAPS]], "the deficit has a bias of its own"
   (2026-08-09). At −50 ppm, pure drift accounts for **11,538 frames** of the
   control window's 11,989 and **11,922** of the load window's 9,872. The load
   window's deficit is *smaller than drift alone predicts*.
@@ -111,7 +117,7 @@ So the honest reading is: **both windows are consistent with zero lost audio, an
 the difference between them is inside the measurement's own resolution.** Which
 is the finding — not "the fence made capture better".
 
-Zero capture gaps in either window, against ADR-033's ~1.9 per minute when the
+Zero capture gaps in either window, against [[ADR-033]]'s ~1.9 per minute when the
 same class of work ran inside the capture process. Loop-lag *events* rose by
 0.12/min (+6%), which is not distinguishable from run-to-run variation at these
 counts.
@@ -132,32 +138,32 @@ for both windows and for the whole session, agreeing with `gaps_with_loss` /
 `gaps_without_loss`. Detection writing continued throughout — 89 detection rows
 in the control window, 122 in the load window — so the pipeline was doing real
 work, not idling through the comparison. `estimated_missing_seconds` was
-deliberately not used: it over-reported by 12.9× (ADR-039, SETUP.md trap 10).
+deliberately not used: it over-reported by 12.9× ([[ADR-039]], SETUP.md trap 10).
 
 **What this measurement is not.** The refiner itself was not deployed to the
 station and no BatDetect2 pass was timed on target in this session; the 2.1 s per
-pass figure is ADR-017's, from 2026-08-05. What is measured here is the *fence* —
+pass figure is [[ADR-017]]'s, from 2026-08-05. What is measured here is the *fence* —
 that two cores can be saturated under it without capture noticing — which is the
 claim the design rests on.
 
 ### The accuracy decision: propose, do not apply
 
-The speed case for the cascade was settled by ADR-017's 2026-08-05 update — 2.1 s
+The speed case for the cascade was settled by [[ADR-017]]'s 2026-08-05 update — 2.1 s
 of inference per pass, so 1015 passes is ~36 minutes for a whole night, and
 trimming to 1.5 s centred on the loudest sample is where three quarters of that
 saving comes from. **The accuracy case is not settled, and this ADR does not
-pretend otherwise.** On this station's own 33–36 kHz cluster (`HANDOVER.md` §6.3
+pretend otherwise.** On this station's own 33–36 kHz cluster ([[HANDOVER]] §6.3
 item 6):
 
 - 6 of 8 clips leaned *Myotis*, at det_prob **0.20–0.30** — a lean, not an
   identification;
 - one clip returned *Pipistrellus pygmaeus* at **0.77** on a call whose measured
   peak was **34 kHz**, when soprano pipistrelle peaks near 55 kHz;
-- the AudioMoth gain is hot and still clips on loud nearby events (`HANDOVER.md`
+- the AudioMoth gain is hot and still clips on loud nearby events ([[HANDOVER]]
   §6.3 item 4), an unresolved confound for all of the above.
 
 That middle item is the decisive one. It is the same shape as the 0.96 BirdNET
-score on a species absent from the continent that ADR-032 ruled on: *a confident
+score on a species absent from the continent that [[ADR-032]] ruled on: *a confident
 answer contradicted by a physical fact the station measured itself is evidence
 that the score is meaningless for that species, not evidence of the animal.* A
 classifier that fails that test on this station's audio has not earned authority
@@ -175,7 +181,7 @@ reasoning:
   *pygmaeus* contradiction. This station has no calibrated, sourced reference for
   UK species peak frequencies, and reconstructing one from memory is the class of
   plausible fabrication this project avoids elsewhere (see the favicon note in
-  `HANDOVER.md` §6.3a for the same reasoning applied to an icon). Instead every
+  [[HANDOVER]] §6.3a for the same reasoning applied to an icon). Instead every
   proposal carries the station's *own* `peak_frequency_hz`, `peak_snr_db` and
   `pulse_count` next to the model's species and det_prob — the pairing that
   exposed the contradiction in the first place — plus a `caution` string
@@ -224,7 +230,7 @@ reason** (`RefinerUnavailable`), never a pass that silently found nothing.
 - **It does not implement the second safeguard**, the explicit human hold, and it
   does not connect proposals to the review workflow. `review` *is* written to —
   `POST /api/v1/detections/{id}/review` has inserted rows since 2026-08-08
-  (ADR-029), which corrects the charter's "nothing writes to it yet" — but that
+  ([[ADR-029]]), which corrects the charter's "nothing writes to it yet" — but that
   endpoint knows nothing about proposals, so `refinement.resolved_at` and
   `resolved_review_id` stay NULL. Wiring "accept this proposal" to a `review` row
   (and deciding whether accepting one may finally move the detection's claim) is
@@ -236,9 +242,9 @@ reason** (`RefinerUnavailable`), never a pass that silently found nothing.
   observation, and putting one on a counter-top display would be precisely the
   over-claiming this ADR exists to prevent. `oo refine status` is the surface.
 - **It does not add BatDetect2 as a dependency or an extra.** Its whole
-  repository is CC-BY-NC-4.0 (ADR-006, ADR-017); the operator installs it
+  repository is CC-BY-NC-4.0 ([[ADR-006]], [[ADR-017]]); the operator installs it
   (`pip install batdetect2==1.3.1` plus CPU torch, see
-  `docs/detectors/BATDETECT2_EVALUATION.md`), and the tests stub the library at
+  [[BATDETECT2_EVALUATION]]), and the tests stub the library at
   its own boundary rather than requiring it.
 
 ### Rollback and smoke test (ADR-045)
@@ -262,7 +268,7 @@ problem, which is unlikely since nothing else reads it:
 ```
 
 Note that `db/session.py`'s `create_all()` + ALTER TABLE patcher re-adds the
-columns on the next start (ADR-035's known coupling), so a full schema rollback
+columns on the next start ([[ADR-035]]'s known coupling), so a full schema rollback
 also means reverting the code.
 
 Target smoke test — run **on the Pi**, in this order, checking capture at each
@@ -295,3 +301,6 @@ curl -s localhost:8080/api/v1/health | python3 -c \
 python3 -c "import sqlite3; print(sqlite3.connect('data/openobservatory.sqlite').execute(
   \"select count(*), coalesce(sum(estimated_missing_frames),0) from capture_gap where start_utc >= datetime('now','-1 hour')\").fetchall())"
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

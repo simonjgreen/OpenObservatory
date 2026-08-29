@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-029
+tags:
+  - adr
+---
 # ADR-029: Retention UI built against an assumed API shape; review workflow shipped minimally
 **Decision, retention:** `RetentionPanel` calls `GET /api/v1/retention/status` against a
 shape documented in the component's own header comment (tiers by age, bytes/clip counts
@@ -33,3 +39,6 @@ agreed to. Whoever lands the retention backend should either match it or tell th
 maintainer what actually shipped; `RetentionPanel`'s degrade-gracefully path means a shape
 mismatch fails safe (shows "not available") rather than silently, but it will still need a
 one-time reconciliation pass.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

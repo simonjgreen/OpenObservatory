@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-032
+tags:
+  - adr
+---
 # ADR-032: A near-zero occurrence prior suppresses a BirdNET candidate outright; a missing one gets the strictest bar, not the easiest
 **Decision:** `BirdNetDetector._band_for` (`detectors/birdnet.py`) now takes two
 arguments that were previously conflated into one: `occurrence` (what the range
@@ -20,7 +26,7 @@ both the live detector and a new historical-repair CLI command,
 `oo detections reconcile-plausibility` (`cli.py`, logic in the new
 `plausibility_repair.py`), apply exactly one definition of "implausible" rather
 than two that could drift apart. The repair command is dry-run by default,
-follows the exact shape of ADR-024's `oo history reconcile-streams`: it never
+follows the exact shape of [[ADR-024]]'s `oo history reconcile-streams`: it never
 deletes a detection row or overwrites its `native_result`, only adds a
 `native_result.plausibility_review` block recording the recomputed band,
 occurrence and reason, and requires `--apply` plus a confirmation (or `--yes`) to
@@ -66,7 +72,7 @@ new `oo_birdnet_suppressed_total{plugin_id, reason}` Prometheus gauge in
 `api/metrics.py`.
 
 **Suppress at the detector, not hide at the presentation layer, for new
-detections — and why that differs from ADR-020's precedent.** ADR-020 keeps
+detections — and why that differs from [[ADR-020]]'s precedent.** [[ADR-020]] keeps
 non-live rows in the database but excludes them from browsing views by default,
 specifically because they are "a true record of detector behaviour" worth
 keeping for regression testing (a synthetic tone generator's output is legitimate
@@ -98,7 +104,7 @@ firmware (owned by a concurrent agent on `web/**` and by the ESP32 work
 elsewhere). Until that follow-up lands, a flagged historical row — including
 whatever North American owls remain unflagged until an operator runs the repair
 command with `--apply` — is still visible everywhere it was before, just
-auditable as reviewed in the database once flagged. Tracked in `HANDOVER.md`
+auditable as reviewed in the database once flagged. Tracked in [[HANDOVER]]
 section 6.3 item 0.
 
 **What was verified and what was not.** The exact measured priors and scores
@@ -116,3 +122,6 @@ Whether `oo detections reconcile-plausibility --apply` behaves correctly against
 the live station's actual 5833-row database, under its actual BirdNET model
 assets, has not been verified and must be checked — ideally with `--json` piped
 to a file first, without `--apply` — before it is ever run there.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

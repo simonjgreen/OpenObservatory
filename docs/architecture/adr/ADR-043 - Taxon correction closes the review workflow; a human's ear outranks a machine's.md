@@ -1,6 +1,12 @@
+---
+aliases:
+  - ADR-043
+tags:
+  - adr
+---
 # ADR-043: Taxon correction closes the review workflow; a human's ear outranks a machine's
-**Status:** active. Closes the item ADR-029 deliberately left open ("correcting a
-misidentified taxon... is left for a future ADR") and `HANDOVER.md` §6.4 item 11
+**Status:** active. Closes the item [[ADR-029]] deliberately left open ("correcting a
+misidentified taxon... is left for a future ADR") and [[HANDOVER]] §6.4 item 11
 ("`corrected_taxon_id` is always written `None`").
 
 **Decision.** A reviewer can now replace a wrong identification with the correct
@@ -27,7 +33,7 @@ sweeper on request.
    write time from whichever of the station's own past detections the taxon id
    matched (`review.resolve_taxon`). `actor` records who: the logged-in
    operator's username when auth is enabled and a session/token is presented,
-   else the existing anonymous default `"local"` (ADR-034).
+   else the existing anonymous default `"local"` ([[ADR-034]]).
 3. **Every consumer that shows an identification shows the correction
    alongside it, not instead of it.** `_detection_payload` (`api/app.py`) adds,
    next to the untouched `common_name`/`scientific_name`:
@@ -85,7 +91,7 @@ list or a bundled/fetched taxonomy database.** Three options existed:
 in principle say); a bundled or network-fetched taxonomy database (GBIF,
 eBird's taxonomy, etc.); or the station's own `detection` table. The first two
 were rejected. `birdnet_labels.txt` is model data under a separate
-non-commercial/share-alike licence (ADR-006) that this repository never
+non-commercial/share-alike licence ([[ADR-006]]) that this repository never
 bundles and that is only present on disk after an operator has run
 `oo models fetch` — a lookup source that might silently not exist is not a
 foundation for a core review action. A bundled or fetched taxonomy database is
@@ -153,3 +159,6 @@ never flagged; `apply_plausibility_flag` is a no-op if reviewed since the
 finding was computed). `web/src/components/DetectionDrawer.test.tsx` covers
 the hold button, taxon search-then-correct, and rendering an existing
 correction.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-041
+tags:
+  - adr
+---
 # ADR-041: The ultrasonic spectrogram gets its own floor/ceiling, measured on the live station
 **Decision:** `Settings` gains `ultrasonic_spectrogram_floor_db` (default
 **-85.0**) and `ultrasonic_spectrogram_ceiling_db` (default **-30.0**),
@@ -25,7 +31,7 @@ pair chosen for 48 kHz audio, and the ultrasonic channel's own hardcoded pair
 pick new numbers by eye, `scripts/measure_ultrasonic_contrast.py` was written
 and run against the live station (2026-08-09, AudioMoth capturing at 384 kHz,
 30 s sample, a live-view WebSocket connection held open for the duration --
-required, because ADR-040 gates the encoders on there being a viewer):
+required, because [[ADR-040]] gates the encoders on there being a viewer):
 
 ```
 columns sampled: 1250 (~30.0 s)
@@ -39,7 +45,7 @@ Against the old -105..-25 dB (span 80) ramp, that noise floor sat at roughly
 third (the `observatory` ramp turns orange at t~0.6-0.7) once ordinary
 variance (p95, p99) is accounted for. That is the saturation the operator
 saw, and it is daytime background: no bats, and the AudioMoth's gain is
-documented as too hot (`HANDOVER.md` sec6.3 item 4, still unresolved -- it
+documented as too hot ([[HANDOVER]] sec6.3 item 4, still unresolved -- it
 needs a physical switch change nobody has made), so this noise floor is
 higher than a well-gained capture would show and the display has to cope with
 that rather than wait for the hardware fix.
@@ -120,3 +126,6 @@ curl -s http://<station-host>:8080/api/v1/station \
 # then open http://<station-host>:8080/ with the ultrasonic panel selected and
 # confirm the noise floor reads dark rather than saturated orange.
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

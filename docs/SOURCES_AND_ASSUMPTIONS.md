@@ -11,8 +11,8 @@ Checked during preparation on 4 August 2026:
 
 Every item below has since been checked on the real device. Resolutions added
 2026-08-09; the measurements themselves live in
-`docs/operations/TARGET_DIAGNOSTICS.md` and
-`docs/detectors/BATDETECT2_EVALUATION.md`.
+[[TARGET_DIAGNOSTICS]] and
+[[BATDETECT2_EVALUATION]].
 
 - ~~Exact AudioMoth USB firmware and switch configuration.~~ **RESOLVED.**
   `AudioMoth-USB-Microphone` 1.3.2, uid `2453800264933F8F`, shipped with the
@@ -26,7 +26,7 @@ Every item below has since been checked on the real device. Resolutions added
   days.** Continuity 0.9990–0.9997, ~29% of four cores with all three detectors.
   **The 72-hour soak that would make this a durable claim ran 2026-08-10 to
   2026-08-13 and failed its continuity criterion** — 99.865% against ≥ 99.9%,
-  349.3 s lost out of 259,200 s (`MILESTONE_STATUS.md` §Milestone 4.5) — and
+  349.3 s lost out of 259,200 s ([[MILESTONE_STATUS]] §Milestone 4.5) — and
   there is an open capture-gap investigation.
 - **Whether USB/host power and enclosure produce electrical or fan noise.**
   *Partly open.* A weak PSU was found to cause intermittent USB enumeration and
@@ -40,9 +40,9 @@ Every item below has since been checked on the real device. Resolutions added
   0.5 s clips shipped for the library's own tests, through a confounded resampling
   path, and the top-ranked detection matched the label on one of the three.
 - ~~Required external storage capacity and retention preferences.~~ **RESOLVED.** A
-  465.8 GB USB SSD mounted at `data/clips` (ADR-021), after a busy bat night wrote
+  465.8 GB USB SSD mounted at `data/clips` ([[ADR-021]]), after a busy bat night wrote
   15 GB against a 20 GB budget. Retention is NVR-style tiered age-out with
-  detection metadata kept forever (ADR-026).
+  detection metadata kept forever ([[ADR-026]]).
 
 ## Licensing warning
 
@@ -53,10 +53,10 @@ and none ever have been. This code is Apache-2.0. BirdNET's *code* is permissive
 licensed but its released model assets are **CC BY-NC-SA 4.0**, which prohibits
 commercial use; they are fetched by the explicit operator step `oo models fetch`,
 which shows the licence before downloading, checksums against
-`models/manifest.tsv` (ADR-006), and surfaces what is installed and under what
+`models/manifest.tsv` ([[ADR-006]]), and surfaces what is installed and under what
 terms at `GET /api/v1/models` and in the UI. BatDetect2's licence is **CC-BY-NC-4.0
 uniformly across code, weights and example audio** — there is no split the way
-there is for BirdNET — so nothing of it is committed either (ADR-017).
+there is for BirdNET — so nothing of it is committed either ([[ADR-017]]).
 
 One third-party *recording* is committed, deliberately and after an individual
 licence check: `tests/fixtures/audio/erithacus_rubecula_XC441752.mp3`, a European

@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-056
+tags:
+  - adr
+---
 # ADR-056: History longer than a day is a different question, a different shape and a different table
 **Status: design spike. The range grammar is implemented; everything else is a
 proposal.** What was built and what was only proposed is separated explicitly in
@@ -65,7 +71,7 @@ That is a straight line through the origin at **15–17 µs per detection row**
 second, intercept within noise of zero). **16 µs/row is used for every Pi
 projection below, and every such projection is arithmetic, not a measurement.**
 The same work on the benchmark desktop is 1.6 µs/row, so this Pi is about
-**10×** slower on this workload — a little worse than the 5–6× ADR-037
+**10×** slower on this workload — a little worse than the 5–6× [[ADR-037]]
 measured, which is consistent with this being CPU-bound on text parsing rather
 than I/O-bound.
 
@@ -75,15 +81,15 @@ Detections per day, measured, by plugin:
 |---|---:|---:|---:|---:|
 | 2026-08-05 | 12,058 | 1,590 | 2,616 | 16,264 |
 | 2026-08-06 | 11,746 | 2,761 | 502 | 15,009 |
-| 2026-08-07 | 1,628 | 426 | 35 | 2,089 (the ADR-024 outage) |
+| 2026-08-07 | 1,628 | 426 | 35 | 2,089 (the [[ADR-024]] outage) |
 | 2026-08-08 | 10,018 | 1,370 | 1,489 | 12,877 |
 | 2026-08-09 | 16,770 | 4,335 | 2,912 | 24,017 |
 | 2026-08-10 (13.6 h) | 25,602 | 3,227 | 2,207 | 31,036 so far |
 
-**This is materially higher than ADR-037's 12,900–16,300/day**, measured eight
+**This is materially higher than [[ADR-037]]'s 12,900–16,300/day**, measured eight
 days earlier. 9 August is 24,017 and 10 August had already passed 31,000 before
 lunch. The projections below use **20,000/day**; anyone rerunning them should
-re-measure rather than trust that number, and ADR-037's growth table is now at
+re-measure rather than trust that number, and [[ADR-037]]'s growth table is now at
 the top of its own range (150.6 MB over 5.70 days = **26.4 MB/day**, against
 the 20.8 MB/day it measured).
 
@@ -132,7 +138,7 @@ Seven days is a spinner. Thirty is a page that looks broken. Ninety is a
 request an operator will assume has failed, cancel, and retry — three times, on
 a Pi that is also capturing audio at 384 kHz.
 
-**ADR-037's own trip-wire has already fired.** It said the recommendation would
+**[[ADR-037]]'s own trip-wire has already fired.** It said the recommendation would
 change "if a query that scans the *whole* detection history is added to the UI
 or API". `GET /api/v1/history?since=…` is unbounded today: it takes an
 arbitrary `since` with no cap, no `until` requirement and no authentication by
@@ -151,7 +157,7 @@ All measured on the grown copy, 90-day window, isolated SQL:
 | as shipped (bucketed group-by + `audio_stream` join) | 1,463 ms | — |
 | as shipped, without the join | 1,285 ms | — |
 | `+ (event_start_utc, taxonomic_group, stream_id, score)` covering index | 1,228 ms | **576 MB/year** |
-| integer-epoch column + covering index (ADR-037 option E) | 535 ms | 228 MB/year |
+| integer-epoch column + covering index ([[ADR-037]] option E) | 535 ms | 228 MB/year |
 | group-by with **no** bucket expression at all | 392 ms | — |
 | `substr()` on the ISO text instead of date parsing | 616 ms | — |
 
@@ -164,10 +170,10 @@ subexpression), and a temp b-tree for the group-by.
 Three consequences.
 
 - **A covering index buys 16% and costs 576 MB a year.** Rejected outright.
-  ADR-037 dropped four indexes for 9.76 MB; adding one 59 times larger to buy
+  [[ADR-037]] dropped four indexes for 9.76 MB; adding one 59 times larger to buy
   nothing would be an unusually expensive way to ignore that ADR.
-- **ADR-037's option E — integer epoch timestamps — is worth about 2× on this
-  workload specifically.** That is new evidence for a decision that ADR-037
+- **[[ADR-037]]'s option E — integer epoch timestamps — is worth about 2× on this
+  workload specifically.** That is new evidence for a decision that [[ADR-037]]
   banked for the PostgreSQL move, and it should be recorded there: this is the
   one query shape that cares. It is still not enough on its own (535 ms desktop
   is ~4 s on the Pi at 90 days) and it is still a breaking rewrite of every row.
@@ -211,7 +217,7 @@ those are 29 ms and 120 ms. Interactive, on the device, over a season.
 
 **The write cost, which is the part the charter cares about.** The database
 lives on an SD card and write amplification is a real cost, so the roll-up was
-costed the way ADR-037 costed inserts: WAL bytes per detection insert, one
+costed the way [[ADR-037]] costed inserts: WAL bytes per detection insert, one
 commit per detection, `wal_autocheckpoint=0` so every dirtied page is counted.
 
 | maintenance strategy | µs/row | WAL B/row | extra writes/day at 20,000/day |
@@ -229,7 +235,7 @@ detections themselves write.
 That is the whole answer to "a roll-up table is a write amplifier, cost it".
 **It is, if it is written per event; it is not, if it is written per day.** The
 station already has a daily batch process with a CPU fence — the refinement
-runner (ADR-045) — and this belongs beside it, not in
+runner ([[ADR-045]]) — and this belongs beside it, not in
 `Station._insert_detection`.
 
 Two rules keep it honest rather than making it a second, divergent record:
@@ -242,11 +248,11 @@ Two rules keep it honest rather than making it a second, divergent record:
 - **Rebuildable, and marked with what built it.** A roll-up row records the day
   it covers and the version of the code that summarised it, so a changed
   definition (a new detector, a corrected filter, a withdrawn detection under
-  ADR-044) is a rebuild of affected days rather than a permanent lie. This also
+  [[ADR-044]]) is a rebuild of affected days rather than a permanent lie. This also
   makes refinement safe: refinement changes rows, so the days it touched are
   re-rolled.
 
-Note what this roll-up is **not**. ADR-037's option D proposed *replacing*
+Note what this roll-up is **not**. [[ADR-037]]'s option D proposed *replacing*
 `acoustic_event` rows with a per-minute summary — destroying per-event detail
 permanently, which that ADR correctly left to the operator's judgement. This is
 additive: nothing is deleted, every detection remains addressable, and the
@@ -318,7 +324,7 @@ intervals is **71 distinct outages**:
 | ≥ 300 s | 6 | 2,932 min |
 | ≥ 1 h | 5 | 2,905 min |
 
-The five longest are 1,777 min (the ADR-024 hang, 7–8 August), 432 min, 343
+The five longest are 1,777 min (the [[ADR-024]] hang, 7–8 August), 432 min, 343
 min, 180 min and 173 min. Now render those into a phone-width bar of ~360 px:
 
 | window | one pixel is | outages narrower than a pixel |
@@ -361,12 +367,12 @@ the *gaps* are the information, and there are few of them. Three changes:
    survive scale: it stops depending on geometry.
 3. **Stop returning per-stream spans for long windows.** They are a diagnostic,
    not a picture; keep them under the existing operator/diagnostic depth toggle
-   (ADR-028) or behind an explicit parameter.
+   ([[ADR-028]]) or behind an explicit parameter.
 
-The suspect-stream machinery from ADR-024 must survive this unchanged: a
+The suspect-stream machinery from [[ADR-024]] must survive this unchanged: a
 `suspect_stream_count` in a season view is exactly the kind of thing that must
 not be averaged away, and it is one integer. The same is true of
-`seconds_paused` and the pause list (ADR-055) — a paused fortnight must not
+`seconds_paused` and the pause list ([[ADR-055]]) — a paused fortnight must not
 read as a broken one.
 
 ---
@@ -427,7 +433,7 @@ Three properties earn this over a picker:
    comparison mode, no dual-range query shape, no second aggregate. The
    comparison the operator asked for falls out of navigation.
 2. **It is thumb-sized and stateless.** The whole control is (granularity,
-   anchor), which is one string on the wire — and ADR-054's `segmented-wrap`
+   anchor), which is one string on the wire — and [[ADR-054]]'s `segmented-wrap`
    already handles a chip row that will not fit a phone width.
 3. **It maps onto calendar ranges exactly**, which is what Finding 4 says the
    buckets have to be anyway.
@@ -439,7 +445,7 @@ years. Both are in the grammar. Open-ended ranges are already expressible as
 `since=` with no `until`.
 
 **"Everything" is deliberately not offered.** A full-history aggregate with no
-time bound is the exact query ADR-037 identified as the one thing that degrades
+time bound is the exact query [[ADR-037]] identified as the one thing that degrades
 with database size, and offering a button for it before the roll-up exists
 would be building the trap that ADR's trip-wire describes. Once the roll-up is
 there, "everything" costs 12 ms and becomes the easiest thing on the page.
@@ -452,10 +458,10 @@ there, "everything" costs 12 ms and becomes the easiest thing on the page.
 |---|---|---|
 | A | **Do nothing; cap windows at 24 h** | This is charter item 6, the thing the system is *for*. The record already spans longer than the UI can ask about, and the gap widens daily. |
 | B | **Date/datetime pickers as the primary control** | Six taps for "last week", divergent native behaviour, and it hands the user a way to request a 3-year aggregate that takes the Pi two minutes. Kept as the `custom…` escape hatch. |
-| C | **Index the detection table harder** | Measured: a covering index buys **16%** (1,463 → 1,228 ms at 90 days) for **576 MB/year**. ADR-037 dropped four indexes to save 9.76 MB; this would undo that 59 times over to buy nothing. |
-| D | **Integer-epoch timestamps now (ADR-037 option E)** | Measured at ~2× on this workload — real, and worth recording against that ADR — but still ~4 s on the Pi at 90 days, and it is a breaking rewrite of every row. Stays banked for the PostgreSQL move, as ADR-037 decided. |
+| C | **Index the detection table harder** | Measured: a covering index buys **16%** (1,463 → 1,228 ms at 90 days) for **576 MB/year**. [[ADR-037]] dropped four indexes to save 9.76 MB; this would undo that 59 times over to buy nothing. |
+| D | **Integer-epoch timestamps now ([[ADR-037]] option E)** | Measured at ~2× on this workload — real, and worth recording against that ADR — but still ~4 s on the Pi at 90 days, and it is a breaking rewrite of every row. Stays banked for the PostgreSQL move, as [[ADR-037]] decided. |
 | E | **Maintain the roll-up with an `AFTER INSERT` trigger** | Measured: **+4,065 WAL bytes per detection**, +10.7% on the station's whole write volume, forever, on an SD card, to maintain a 4 MB table. The daily batch costs 20 kB/day for the same result. |
-| F | **ADR-037 option D — replace `acoustic_event` rows with a per-minute summary** | Destroys per-event detail permanently and needs the operator's judgement, which this proposal does not have and does not need. The roll-up here is additive and droppable. |
+| F | **[[ADR-037]] option D — replace `acoustic_event` rows with a per-minute summary** | Destroys per-event detail permanently and needs the operator's judgement, which this proposal does not have and does not need. The roll-up here is additive and droppable. |
 | G | **Cache the `/history` JSON responses** | Does not compose across ranges (a cached July does not help "June to August"), invalidation has to understand refinement and withdrawal, and the *first* request still costs 29 s. A roll-up is a cache with a schema, which is the version that composes. |
 | H | **Sample or approximate the counts for wide windows** | Violates the honesty constraint outright: a number shown to a human must mean what its label says, and "about 4,000 detections" in a chart that elsewhere means exactly what it says is the kind of sincere error the charter's precedent table is made of. |
 | I | **PostgreSQL + TimescaleDB continuous aggregates** | The right *idea* — this is a continuous aggregate — but it needs a database server the station does not have, on a machine whose first rule is that capture wins. The roll-up proposed here is the same concept in 4 MB and one daily batch, and it works on the SQLite the station actually runs. Revisit at the PostgreSQL move, where it may replace the batch job. |
@@ -525,7 +531,7 @@ season views, and the granularity-plus-stepper control.
   The *ratio* against a per-insert trigger transfers; the absolute figure does
   not.
 - The 0.6439 coverage figure in Finding 5 is over the whole record including
-  the ADR-024 hang and is not a claim about the station's current health.
+  the [[ADR-024]] hang and is not a claim about the station's current health.
 
 ### Trigger — do the roll-up when any of these is true
 
@@ -535,3 +541,6 @@ season views, and the granularity-plus-stepper control.
 | p95 of `GET /api/v1/history` on the Pi | > 3 s |
 | Sustained detections/day, 7-day mean | > 30,000 (already close: 9 August was 24,017) |
 | Anyone asks for a species-by-week or phenology view | immediately — it has no cheap form without one |
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -1,7 +1,13 @@
+---
+aliases:
+  - ADR-025
+tags:
+  - adr
+---
 # ADR-025: MQTT publisher and Home Assistant Discovery, off by default, on its own bus subscription
 **Decision:** Milestone 6 adds `src/open_observatory/mqtt/` — `publisher.py` (the
 runtime) and `discovery.py` (pure Home Assistant Discovery payload builders) — as a
-consumer of the existing `EventBus` (ADR-009), the same seam the debug UI's
+consumer of the existing `EventBus` ([[ADR-009]]), the same seam the debug UI's
 WebSocket already uses. `Settings.mqtt_enabled` defaults to `false`; an operator who
 upgrades an existing station gets no new network traffic and no new failure mode
 until they opt in. Alongside it, `schemas/detection-event.schema.json` moves from
@@ -44,14 +50,14 @@ back-pressure to capture — there is no path for it to do so. All MQTT network 
 happens through `aiomqtt`'s native asyncio driver, never through
 `asyncio.to_thread`/`run_in_executor`, so it never contends with the ALSA blocking
 read for the default thread pool the way a naive synchronous client would (see the
-module docstring in `mqtt/publisher.py`, and ADR-021's own incident for what
+module docstring in `mqtt/publisher.py`, and [[ADR-021]]'s own incident for what
 sharing that pool with sustained I/O actually costs).
 
-**Why ADR-020's synthetic-exclusion rule is re-implemented here rather than
+**Why [[ADR-020]]'s synthetic-exclusion rule is re-implemented here rather than
 inherited.** The bus event for `detection.created` carries the full detection
 payload but not `source_kind` — that field lives on the `AudioStream` row and is
 joined in at the API/DB layer, not carried on the in-process event. MQTT is exactly
-the kind of "browsing/notification surface" ADR-020 was written for, so
+the kind of "browsing/notification surface" [[ADR-020]] was written for, so
 `MqttPublisher._handle_detection` reads `capture_status_provider()["is_live_hardware"]`
 (sourced from `station.status_snapshot()`, the same field `GET /api/v1/health`
 already uses) and withholds publication for a synthetic or replay detection,
@@ -64,12 +70,12 @@ recomputing it.** `api/app.py`'s `get_health` route body was extracted into
 `_health_payload()`, called both by the route and passed as
 `health_provider` to `MqttPublisher`. Two independently-maintained definitions of
 "healthy" — one for the API, one for MQTT — would eventually disagree, most
-plausibly exactly when it matters: the synthetic-source degradation case ADR-020
-and the 2026-08-05 incident (see `docs/delivery/HANDOVER.md` section 3a) both turn
+plausibly exactly when it matters: the synthetic-source degradation case [[ADR-020]]
+and the 2026-08-05 incident (see [[HANDOVER]] section 3a) both turn
 on. `binary_sensor.<station>_station_healthy` in Home Assistant means exactly what
 `GET /api/v1/health`'s `status` field means, by construction, not by convention.
 
-**Consequence — entity design.** See `docs/operations/HOME_ASSISTANT.md` for the
+**Consequence — entity design.** See [[HOME_ASSISTANT]] for the
 full entity table and setup instructions. In summary: one HA device per station,
 `sensor.<slug>_last_detection` / `_species_today` / `_bat_passes_tonight`,
 `binary_sensor.<slug>_bat_activity` / `_station_healthy`, and one `event` entity
@@ -87,10 +93,13 @@ operator's decision that bat passes are always shown and never scored.
 
 **What this explicitly does not implement.** Environmental telemetry ingestion, the
 alert rule engine with repetition/cooldown, and HMAC webhooks remain unimplemented,
-as scoped in `IMPLEMENTATION_PLAN.md`'s Milestone 6 description. `bat_passes_tonight`
+as scoped in [[IMPLEMENTATION_PLAN]]'s Milestone 6 description. `bat_passes_tonight`
 resets at local midnight in the station's configured timezone, not at true civil
-dawn — an approximation documented in `docs/operations/HOME_ASSISTANT.md` and in
+dawn — an approximation documented in [[HOME_ASSISTANT]] and in
 `publisher.py`'s `_roll_day_counters_if_needed`, chosen because precise dawn
 rollover would pull `schedule.py`'s solar geometry (and the station's optional
 coordinates) into a module that otherwise has no dependency on them; the database
 remains the authoritative record regardless of what the HA sensor shows.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

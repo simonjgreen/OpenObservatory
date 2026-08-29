@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-039
+tags:
+  - adr
+---
 # ADR-039: A deficit step is only lost audio once it fails to come back
 **Decision:** `AlsaSource`'s frame-deficit estimator no longer credits a timing
 step as lost audio at the moment it sees it. A step larger than one block — or an
@@ -23,13 +29,13 @@ and is not reported as a gap at all. Three consequences follow:
 An ALSA overrun that is confirmed to have cost nothing is still reported as a gap
 (`gaps_without_loss`), because a ring that came within a hair of overflowing is not
 nothing and ALSA is the authority on that. An ALSA overrun that did cost audio
-still has its cost estimated — that is ADR-030's regression and it is asserted by
+still has its cost estimated — that is [[ADR-030]]'s regression and it is asserted by
 name in `tests/test_alsa_source.py::test_a_genuine_overrun_still_has_its_cost_estimated`.
 
 **Reason — the estimator was answering a question the ring had already made
 obsolete.** Against the 80 ms ring the station shipped with, a read that arrived
 more than a block late really had lost audio: there was nowhere for the frames to
-wait. ADR-030 widened the ring to 500 ms precisely so that stalls would be
+wait. [[ADR-030]] widened the ring to 500 ms precisely so that stalls would be
 absorbed, and the estimator was not revisited, so every absorbed stall minted a
 phantom gap. Measured on the live station, mid-regression on 2026-08-08:
 `frames` 92,505,600 against `expected_frames` 92,526,900 — a real deficit of
@@ -40,7 +46,7 @@ comparison was 4.06 s real against 52.4 s claimed, **12.9x**.
 **The second number it contaminated.** Phantom frames are added back into
 `presented` in the observed-rate calculation, so the station read
 `rate_offset_ppm` of +2,680 to +3,600 against a device whose true crystal offset
-is about **-43 ppm** (`TARGET_DIAGNOSTICS.md`). 252,495/92,505,600 = 2,729 ppm,
+is about **-43 ppm** ([[TARGET_DIAGNOSTICS]]). 252,495/92,505,600 = 2,729 ppm,
 which is the whole of the error. No separate fix was needed for this and none was
 made: crediting only confirmed loss fixes it as a consequence, which is the
 measurement below.
@@ -113,6 +119,9 @@ is the observed figure. The arithmetic of the contamination is exact.
 
 **What is not verified.** This change has **not been deployed to the Pi** and no
 on-target before/after exists, because another agent owned the station this
-session. The reproduction commands are in `OPEN_INVESTIGATION_CAPTURE_GAPS.md`.
+session. The reproduction commands are in [[OPEN_INVESTIGATION_CAPTURE_GAPS]].
 Everything above is either an off-target measurement against a simulated device or
 a read-only reading of the *unfixed* station.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

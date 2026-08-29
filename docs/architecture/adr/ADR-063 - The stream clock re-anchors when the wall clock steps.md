@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-063
+tags:
+  - adr
+---
 # ADR-063: The stream clock re-anchors when the wall clock steps
 **Status:** accepted, 2026-08-19
 **Amends:** the `StreamClock` contract (technical spec §4.3)
@@ -110,3 +116,6 @@ the original design held exactly as intended.
 - The playhead banner was right, and was the only thing that was. It is worth
   keeping honest for that reason: a UI that had clamped the impossible-looking
   negative number to zero would have hidden a real data-integrity bug.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

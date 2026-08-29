@@ -1,10 +1,10 @@
 # Test plan
 
 What "tested" has to mean for this system, why each layer exists, and which
-layers are currently thin. Ordered by `docs/CHARTER.md`: a layer that protects
+layers are currently thin. Ordered by [[CHARTER]]: a layer that protects
 a higher charter priority matters more than one that protects a lower.
 
-This is a *plan*, not a status report. `MILESTONE_STATUS.md` records what is
+This is a *plan*, not a status report. [[MILESTONE_STATUS]] records what is
 done; this records what completeness would look like.
 
 ---
@@ -112,21 +112,21 @@ own counters (`display_channel.per_client`) cover the display.
 
 **The 72-hour soak ran 2026-08-10 to 2026-08-13 and failed**, at 99.865%
 continuity against a ≥ 99.9% criterion (349.3 s lost out of 259,200 s; see
-`docs/delivery/MILESTONE_STATUS.md` §Milestone 4.5). `CLAUDE.md` forbids the
+[[MILESTONE_STATUS]] §Milestone 4.5). `CLAUDE.md` forbids the
 word "complete" until it passes, and it has not passed yet. A re-run is needed
-once ADR-060 and ADR-061 are deployed and verified; a deploy voids a soak in
+once [[ADR-060]] and [[ADR-061]] are deployed and verified; a deploy voids a soak in
 progress, so it needs a deliberate quiet period.
 
 Watch: `oo_capture_continuity_ratio`, real deficit as judged by
 `estimated_missing_seconds` (**not** the raw `expected_frames - frames`,
-which also carries crystal drift and sampling-phase artefact — see ADR-046),
+which also carries crystal drift and sampling-phase artefact — see [[ADR-046]]),
 `loop_lag_max_s`, `late_reads`, RSS, disk growth, clip budget, MQTT drops,
 display reconnects.
 
 Also outstanding: the **one-hour drift run** (verified at 5 minutes only).
 
 Longer-horizon endurance the soak will not cover: SD-card write amplification,
-and detection-table growth (ADR-037's triggers are the tripwires).
+and detection-table growth ([[ADR-037]]'s triggers are the tripwires).
 
 ### L8 — Data integrity and irreversible operations
 
@@ -141,7 +141,7 @@ Anything that deletes or rewrites the operator's record:
 
 ### L9 — Regression corpus of measured figures
 
-The measured tables in `TARGET_DIAGNOSTICS.md` and `HANDOVER.md` are a test
+The measured tables in [[TARGET_DIAGNOSTICS]] and [[HANDOVER]] are a test
 oracle, not decoration. A change that moves continuity, hot-path CPU, inference
 p95 or bytes-on-the-wire should have to justify it.
 

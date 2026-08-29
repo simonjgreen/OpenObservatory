@@ -1,5 +1,11 @@
+---
+aliases:
+  - ADR-044
+tags:
+  - adr
+---
 # ADR-044: A withdrawn detection is marked in the record and suppressed on the claim surfaces; and the BirdNET week index is correct
-**Decision.** ADR-032 stopped the detector from ever writing another implausible
+**Decision.** [[ADR-032]] stopped the detector from ever writing another implausible
 identification, and shipped `oo detections reconcile-plausibility` to flag the
 ones already stored under `native_result.plausibility_review`. Nothing read that
 flag. This ADR makes the consumers read it, through one shared definition
@@ -26,14 +32,14 @@ item 6 is equally explicit that *an answer that is wrong is worse than no
 answer, because it will be believed*, and the honesty constraint requires that
 "unverified" stay available **all the way to the surface**. On the two surfaces
 where it cannot — a Home Assistant entity state, and a counter-top display that shows a
-name and an elapsed time with no score at all by ADR-023's rule — carrying the
+name and an elapsed time with no score at all by [[ADR-023]]'s rule — carrying the
 row with an unrenderable caveat *is* presenting it as fact. Suppression there is
 the honest reading of the same constraint, not an exception to it.
 
 The species-tally endpoints fall on the suppression side for a mechanical reason
 rather than a philosophical one: they `GROUP BY` species, so there is no row left
 to attach a marker to. "Western Screech-Owl, 4 detections, best score 0.96" is a
-claim with nowhere to put a retraction. They therefore follow ADR-020's existing
+claim with nowhere to put a retraction. They therefore follow [[ADR-020]]'s existing
 precedent exactly — exclude by default, expose an `include_*` escape hatch, and
 **report the count of what was excluded** (`excluded_withdrawn_count`), because a
 filter on a wildlife-facing view is only honest if the exclusion is
@@ -62,8 +68,8 @@ for the second, so it is excluded and counted instead.
   `= false` would have hidden the entire database rather than one owl. Same
   three-valued-logic trap `is_not_live` documents, with a far worse failure
   mode. It compiles to `json_extract` on SQLite and `->>`/`CAST` on PostgreSQL
-  with no dialect branch (ADR-007).
-* The display's connect snapshot filters in **SQL**, not in Python. ADR-038's
+  with no dialect branch ([[ADR-007]]).
+* The display's connect snapshot filters in **SQL**, not in Python. [[ADR-038]]'s
   whole point is that this query reads six narrow columns and never touches the
   ~1.8 kB `native_result` blob; reading the blob back just to test a flag would
   have undone that. `display_channel.wire_item` then checks the flag again for
@@ -87,16 +93,16 @@ for the second, so it is excluded and counted instead.
 see. It now takes effect immediately, with no restart, on every surface. The
 command's help and its post-apply message were updated to say so. ~~It has still
 **never been run against the live station**~~ — **it was, on
-2026-08-09T15:32:03Z, flagging 61 rows; see ADR-070, which also records why it
+2026-08-09T15:32:03Z, flagging 61 rows; see [[ADR-070]], which also records why it
 must not be run again until that fix is deployed.**
 
 ---
 
 ### The second half: the week index passed to the range model is **correct**
 
-ADR-032 left this explicitly unverified, and it was the higher-stakes of its two
+[[ADR-032]] left this explicitly unverified, and it was the higher-stakes of its two
 open items: a wrong week makes every occurrence prior wrong *globally*, which
-would silently invalidate the plausibility floor ADR-032 built on top of it.
+would silently invalidate the plausibility floor [[ADR-032]] built on top of it.
 
 **Derived independently from the code.** `birdnet_week` computes
 `(month - 1) * 4 + min(4, int(day / 7.25) + 1)`. That form obscures what it
@@ -123,11 +129,11 @@ for all 48 weeks and checked against known UK phenology
 | Common Cuckoo | peaks **w17** (0.448), ~0 from w29 | Late April to July ✔ |
 | Fieldfare | 0.28 in w1-5 and w45-48, 0.02 mid-summer | Winter visitor ✔ |
 | Common Woodpigeon | 0.96-1.00 all year | Resident ✔ |
-| Tawny Owl | 0.01-0.036 all year | Resident, and consistent with ADR-032's measured 0.019253 ✔ |
+| Tawny Owl | 0.01-0.036 all year | Resident, and consistent with [[ADR-032]]'s measured 0.019253 ✔ |
 | Western Screech-Owl, Flammulated Owl | **0.000 in every one of the 48 weeks** | North America ✔ |
 
 Week 30 — the week the owls were measured in — returns Common Woodpigeon 1.00,
-Barn Swallow 0.98, European Robin 0.83, matching the sane priors ADR-032
+Barn Swallow 0.98, European Robin 0.83, matching the sane priors [[ADR-032]]
 reported from the live database, from an independent run here.
 
 **Verdict: the week index is right.** The seasons land on the right calendar
@@ -177,3 +183,6 @@ python scripts/watch_display_channel.py --seconds 60 --label "post-withdrawal"
 # 4. The week audit, re-runnable whenever the model assets change.
 python scripts/birdnet_week_audit.py
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

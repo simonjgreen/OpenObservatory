@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-068
+tags:
+  - adr
+---
 # ADR-068: Deliberately unused
 Not a decision. This number was claimed and released on 2026-08-23 while two
 pieces of work were being written concurrently against the same checkout: both
@@ -9,3 +15,6 @@ Recorded rather than closed up, because silently renumbering 069 and 070 would
 rewrite twenty-two references in code and tests to remove a gap that costs
 nothing, and a reader who finds a hole in this file deserves an answer better
 than the absence of one.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

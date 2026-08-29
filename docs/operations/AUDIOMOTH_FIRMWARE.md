@@ -1,6 +1,6 @@
 # AudioMoth firmware, switch positions and USB access
 
-Everything here was established on the actual device; see `TARGET_DIAGNOSTICS.md`
+Everything here was established on the actual device; see [[TARGET_DIAGNOSTICS]]
 for the recorded values.
 
 ## The switch is the thing that confuses people
@@ -80,7 +80,7 @@ format for writing configuration is not implemented here, and guessing at it
 risks writing nonsense to the device.
 
 **This station's gain is currently hot** — loud nearby sounds clip (see
-`TARGET_DIAGNOSTICS.md`). Clipping is visible live in the debug UI's level meters
+[[TARGET_DIAGNOSTICS]]). Clipping is visible live in the debug UI's level meters
 and counted in the `oo_audio_clipping_ratio` metric. Lowering the device gain one
 step would trade a little sensitivity on quiet distant calls for headroom on close
 ones.

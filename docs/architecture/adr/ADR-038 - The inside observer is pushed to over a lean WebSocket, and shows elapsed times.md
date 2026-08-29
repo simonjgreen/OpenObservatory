@@ -1,5 +1,11 @@
+---
+aliases:
+  - ADR-038
+tags:
+  - adr
+---
 # ADR-038: The inside observer is pushed to over a lean WebSocket, and shows elapsed times
-**Decision:** Replace the counter-top display's HTTP polling (ADR-023) with a push
+**Decision:** Replace the counter-top display's HTTP polling ([[ADR-023]]) with a push
 channel served by the station itself — a new WebSocket at `GET /api/v1/display`
 carrying detections only, in compact JSON sized to fit a single Ethernet MTU
 several times over. The display renders **elapsed** times ("4s ago", "1m ago",
@@ -23,13 +29,13 @@ Per 20 s poll cycle, the display cost the station:
 | **total** | **~315 ms** | **~127 kB** |
 
 Forty detection records, ~1,785 bytes each, fetched to render six rows. The
-device already threw away almost all of it — ADR-023's ArduinoJson stream filters
+device already threw away almost all of it — [[ADR-023]]'s ArduinoJson stream filters
 exist precisely because it could not afford to hold it — so the waste was never
 the ESP32's, it was the Pi's.
 
 Making the display *feel* live by shortening the poll was the obvious move and
 the wrong one. 315 ms of query work every 3 s is ~3x the event-loop duty cycle
-this station has already been shown not to absorb: ADR-033's retention sweep
+this station has already been shown not to absorb: [[ADR-033]]'s retention sweep
 doing 0.3–0.4 s of synchronous work every 10 s starved the loop by 55–150 ms and
 produced ~1.9 capture gaps a minute. Capture always wins, so the answer was to
 stop asking rather than to ask harder. **11.4 B/s and one connection replaces
@@ -46,9 +52,9 @@ every two seconds, and a 30-second spectrogram backfill on connect. A "filtered
 subscription" would have had to replace every frame that socket sends — which is
 not a filter, it is a different channel sharing a URL.
 
-It would also have meant editing the one socket ADR-012 warns hardest about. That
+It would also have meant editing the one socket [[ADR-012]] warns hardest about. That
 bug — concurrent writers, flawless on loopback, near-total failure over Wi-Fi —
-cost more to find than anything else in this project, and ADR-012's constraint is
+cost more to find than anything else in this project, and [[ADR-012]]'s constraint is
 that any change to those channels must be re-measured from a real browser over
 the real network before it is believed. A separate endpoint leaves the debug UI's
 transport bit-for-bit untouched and lets this one be exactly as small as it needs
@@ -58,7 +64,7 @@ loop only ever call `offer()` and `receive_text()`.
 
 ### Why not MQTT, when the publisher now exists
 
-ADR-025 shipped the MQTT publisher, so routing the display through it was
+[[ADR-025]] shipped the MQTT publisher, so routing the display through it was
 available. It was rejected: the broker runs on the Home Assistant box, and the
 station and the display are the same system in the same house. Publishing garden
 detections to a third machine so a device on the same LAN can read them back
@@ -70,7 +76,7 @@ unused, and now documented as such.
 ### The wire format, and what is deliberately absent
 
 Three frame types, compact JSON, whitespace stripped, keys of one or two
-characters. Full field table in `docs/api/DEBUG_UI_TRANSPORT.md`.
+characters. Full field table in [[DEBUG_UI_TRANSPORT]].
 
 ```
 hello       {"t":"h","v":1,"now":1786263065,"hb":10,"st":"L","sp":30,
@@ -83,7 +89,7 @@ What is **not** on this wire, and cannot be added without editing both
 `display_channel.py` and `push_frame.h`: `native_result`, the media list with its
 checksums and byte lengths, every UUID, detector plugin/model/licence metadata,
 `rank`, `canonical_taxon_id`, `duration_s`, frame bounds, `stream_id` — and
-**`score`**. ADR-023's rule that no number a person could read as a confidence
+**`score`**. [[ADR-023]]'s rule that no number a person could read as a confidence
 figure reaches the glass is now structural rather than behavioural: the threshold
 is applied by the station, expressed in the URL the socket was opened with, and
 the number never leaves the Pi. A bat pass carries no name at all, only `b:1` and
@@ -109,7 +115,7 @@ identical to what the 112 ms history query returned, without the query.
 **Bounded, with an explicit drop policy**, like every queue here: 64 frames, and
 the *oldest detection* is shed first. Never a status frame — losing the banner to
 a burst of woodpigeons would make a broken station look merely quiet, which is the
-exact failure ADR-023 exists to prevent. Counters surface in `/api/v1/station`
+exact failure [[ADR-023]] exists to prevent. Counters surface in `/api/v1/station`
 under `display_channel`, including `mean_frame_bytes`, so this ADR's headline
 number is checkable at any time rather than only at the moment it was written.
 
@@ -188,7 +194,7 @@ distinct states survive: **degraded** carries the station's own words, mapped
 server-side by the same decision tree the firmware runs for the fallback (so the
 two transports cannot describe one station differently); **offline** is a fact
 only the device can know, so the station never sends it. Detections are **not**
-pushed at all while the station is not on the real microphone (ADR-020): the
+pushed at all while the station is not on the real microphone ([[ADR-020]]): the
 banner explains why, and the feed does not quietly fill with a test scene.
 
 **A stale feed must look stale, not merely quiet**, and on this device silence is
@@ -225,3 +231,6 @@ in a garden that is usually noisy says something a blank screen would not.
   multi-day silence — nothing has yet aged past a few hours on the real device, so
   the "1d ago" path is host-tested only. The Wi-Fi-loss path was not exercised on
   hardware either.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

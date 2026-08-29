@@ -23,18 +23,18 @@ somebody has to run, alongside a passing 72-hour soak, and record here with date
 - **Attempt 1, 2026-08-10 to 2026-08-13. FAILED.** Continuity over the exact
   72-hour window was 99.865% against the ≥ 99.9% criterion below —
   349.3 s of audio lost out of 259,200 s. Restart-free for the whole window,
-  which is itself a first. See `MILESTONE_STATUS.md` §Milestone 4.5 and
-  `../operations/TARGET_DIAGNOSTICS.md` for the full figures. No other
+  which is itself a first. See [[MILESTONE_STATUS]] §Milestone 4.5 and
+  [[TARGET_DIAGNOSTICS]] for the full figures. No other
   criterion below was formally exercised during this attempt. A re-run is
-  needed once ADR-060 and ADR-061 are deployed and verified.
+  needed once [[ADR-060]] and [[ADR-061]] are deployed and verified.
 
 - **Attempt 2, 2026-08-14 to 2026-08-17. VOID.** Reached 62.7 hours restart-free
   at 99.9935% continuity — comfortably passing — and then the Pi restarted at
   2026-08-17 09:07 UTC, 8.9 hours short. Cause not established at the time;
   the signature is identical to attempt 3's, which was later confirmed as a
-  mains cut. Nothing reported the restart, which is why ADR-065 exists. The run
-  was also hiding two defects while passing (ADR-062, ADR-063) — see
-  `../operations/SOAK_2026-08-14.md`.
+  mains cut. Nothing reported the restart, which is why [[ADR-065]] exists. The run
+  was also hiding two defects while passing ([[ADR-062]], [[ADR-063]]) — see
+  [[SOAK_2026-08-14]].
 
 - **Attempt 3, ended 2026-08-22T05:48:20Z. VOID.** Died 7h43m short. **Confirmed
   by the operator as a mains power cut** — the first *established* cause for any
@@ -90,9 +90,9 @@ deploying restarts capture and voids the run.
 - [ ] Continuous raw disk recording is off by default.
 - [ ] Evidence clips obey maximum duration and retention. **Known not met as of
   2026-08-14**: 2,743 detections were published with no clip at all (the bounded
-  evidence queue dropping under load, `HANDOVER.md` §1b), and retention had
-  never deleted anything until today's ADR-061 deploy — see
-  `../operations/TARGET_DIAGNOSTICS.md`.
+  evidence queue dropping under load, [[HANDOVER]] §1b), and retention had
+  never deleted anything until today's [[ADR-061]] deploy — see
+  [[TARGET_DIAGNOSTICS]].
 - [ ] Clip checksum and source-frame provenance are stored.
 - [ ] Publishing integrations are off by default.
 - [ ] Location precision for outbound integrations is configurable.
@@ -111,7 +111,7 @@ deploying restarts capture and voids the run.
 ## Operations
 
 - [ ] All services have health checks.
-- [ ] Services restart after host reboot. (There are no containers — ADR-008
+- [ ] Services restart after host reboot. (There are no containers — [[ADR-008]]
   chose native systemd deployment for this project. `WantedBy=multi-user.target`
   is the thing to verify here, not a container runtime.)
 - [ ] Disk-full behaviour preserves database integrity.

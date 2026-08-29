@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-027
+tags:
+  - adr
+---
 # ADR-027: A spacing/type scale for the web UI, applied to new surfaces rather than migrated wholesale
 **Decision:** `web/src/styles.css` gains a token layer — an 8-step spacing scale
 (`--space-1`..`--space-8`, 4px base) and an 8-step type scale (`--text-2xs`..`--text-2xl`,
@@ -27,3 +33,6 @@ ambient instrument left open next to a spectrogram at dusk (the module comment o
 for. `color-scheme: dark` is set on `:root` so the browser's own chrome (scrollbars, native
 form controls) matches rather than mismatching light-on-dark, which is the concrete gap a
 light theme would otherwise be closing.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

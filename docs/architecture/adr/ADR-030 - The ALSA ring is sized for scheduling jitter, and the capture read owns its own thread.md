@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-030
+tags:
+  - adr
+---
 # ADR-030: The ALSA ring is sized for scheduling jitter, and the capture read owns its own thread
 **Decision:** The kernel-side ALSA capture ring is sized from
 `capture_buffer_ms` (default **500 ms**) rather than a fixed eight periods, and
@@ -25,7 +31,7 @@ executor: eight workers on a 4-core Pi, shared with database inserts, health-eve
 writes, gap-row writes, device probes and every FastAPI `def` endpoint — and SQLite
 is configured with `busy_timeout=5000`, so one contended write can hold a worker for
 seconds. Evidence extraction and the retention sweep were given their own executor on
-2026-08-05 for exactly this reason (ADR-021); this extends the same rule to the reader
+2026-08-05 for exactly this reason ([[ADR-021]]); this extends the same rule to the reader
 itself. "Capture always wins" was already the queue policy; this makes it the thread
 policy too, so the read cannot queue behind anything.
 
@@ -41,3 +47,6 @@ with a measurement, not before one.
 negotiated ring at open. A ring that ALSA clamps below one block is a warning
 (`capture.buffer_shallower_than_block`) rather than a silent property, because that
 condition is invisible from every other counter the station publishes.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

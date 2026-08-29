@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-067
+tags:
+  - adr
+---
 # ADR-067: Unattended package work runs at 15:00, not in the dawn chorus
 **Status:** accepted, 2026-08-21
 
@@ -75,7 +81,7 @@ station's own units and should not quietly reconfigure the operating system's
 package schedule underneath an operator who did not ask for it. The drop-in
 lives in `deploy/` so it is version-controlled and reproducible after a
 reimage, and the install command is in
-`docs/operations/DEPLOYMENT_AND_OPERATIONS.md`.
+[[DEPLOYMENT_AND_OPERATIONS]].
 
 ### Consequences
 
@@ -92,3 +98,6 @@ reimage, and the install command is in
   effect. Nothing reboots this station automatically:
   `Unattended-Upgrade::Automatic-Reboot` is unset, confirmed with
   `apt-config dump` rather than by grepping the config files.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -12,7 +12,7 @@ four are the ones to read before touching anything.
 | **[delivery/HANDOVER.md](delivery/HANDOVER.md)** | Picks up where the last session left off: traps, next steps, and the bugs that were only found by measuring. |
 
 Verified against the code and the live station on **2026-08-09**, after that
-day's 87 commits (ADR-041 through ADR-053) merged to `main`. Where a document has
+day's 87 commits ([[ADR-041]] through [[ADR-053]]) merged to `main`. Where a document has
 not been re-verified since it was written, it says so in its own header.
 
 ---
@@ -45,7 +45,7 @@ reported by `/api/v1/health`, the station snapshot and a UI banner rather than
 silently defaulting to wherever this software was first developed. Tests and
 doc examples that need a location use the Royal Observatory, Greenwich; hosts
 in examples are placeholders (`<station-host>`). Do not hardcode a real site
-back in; see ADR-047 for the full reasoning and the settings whitelist's
+back in; see [[ADR-047]] for the full reasoning and the settings whitelist's
 tiers.
 
 ### The pipeline in one diagram
@@ -77,7 +77,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Surface | Where | Transport |
 |---|---|---|
 | Debug/operator web UI | `web/` | WebSocket + REST + chunked-WAV HTTP |
-| ESP32 counter-top display ("inside observer") | `firmware/inside-observer/` | **WebSocket push** on `/api/v1/display` — ~49 B a detection (ADR-038). REST polling every 20 s is retained in the firmware as an exercised fallback, not as the primary path. Firmware updates over the air from the station (ADR-050) |
+| ESP32 counter-top display ("inside observer") | `firmware/inside-observer/` | **WebSocket push** on `/api/v1/display` — ~49 B a detection ([[ADR-038]]). REST polling every 20 s is retained in the firmware as an exercised fallback, not as the primary path. Firmware updates over the air from the station ([[ADR-050]]) |
 | Home Assistant | `src/open_observatory/mqtt/` | MQTT + HA Discovery (off by default) |
 | Prometheus | `GET /metrics` | scrape |
 
@@ -106,10 +106,10 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Work on a detector | [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md) |
 | Know why BatDetect2 is not a live detector | [`detectors/BATDETECT2_EVALUATION.md`](detectors/BATDETECT2_EVALUATION.md) |
 | Chase the open capture-gap problem | [`delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`](delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md) |
-| Work on the ESP32 counter-top display, or update it over the air | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md), then ADR-050 |
-| Change a setting, or find out which settings are web-editable | the settings page itself, [`../config/example.env`](../config/example.env), then ADR-048 for the tiers and the named exclusions |
-| Find out why BirdNET rejected something | `GET /api/v1/detectors/near-misses` and ADR-052 — a counter is not a diagnostic |
-| Understand how a record gets refined, and why it may only propose | ADR-045, then [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md), "The refinement runner" |
+| Work on the ESP32 counter-top display, or update it over the air | [`../firmware/inside-observer/README.md`](../firmware/inside-observer/README.md), then [[ADR-050]] |
+| Change a setting, or find out which settings are web-editable | the settings page itself, [`../config/example.env`](../config/example.env), then [[ADR-048]] for the tiers and the named exclusions |
+| Find out why BirdNET rejected something | `GET /api/v1/detectors/near-misses` and [[ADR-052]] — a counter is not a diagnostic |
+| Understand how a record gets refined, and why it may only propose | [[ADR-045]], then [`detectors/DETECTOR_STRATEGY.md`](detectors/DETECTOR_STRATEGY.md), "The refinement runner" |
 
 ---
 
@@ -154,13 +154,13 @@ disagree, prefer the authority named here:
 
 | Fact | Authority |
 |---|---|
-| Measured CPU, continuity, latency, inference timing, hardware identity | `operations/TARGET_DIAGNOSTICS.md` |
-| What is delivered vs. outstanding, per milestone | `delivery/MILESTONE_STATUS.md` |
-| Why a design is the way it is | `architecture/ADRS.md` |
+| Measured CPU, continuity, latency, inference timing, hardware identity | [[TARGET_DIAGNOSTICS]] |
+| What is delivered vs. outstanding, per milestone | [[MILESTONE_STATUS]] |
+| Why a design is the way it is | [[ADRS]] |
 | Setting names, types and defaults | `src/open_observatory/config.py` (then `config/example.env`) |
-| Endpoint paths and query parameters | `src/open_observatory/api/app.py` (then `api/API_AND_INTEGRATIONS.md`) |
+| Endpoint paths and query parameters | `src/open_observatory/api/app.py` (then [[API_AND_INTEGRATIONS]]) |
 | The event wire envelope | `schemas/detection-event.schema.json` |
-| Operational traps and the next-steps list | `delivery/HANDOVER.md` |
+| Operational traps and the next-steps list | [[HANDOVER]] |
 
 ---
 
@@ -171,9 +171,9 @@ Breaking one of these is a correctness bug, not a style disagreement.
 - **A non-taxonomic detector cannot emit a species name.** `normaliser.py` raises
   `ClaimViolation`. Be exact about the mechanism, because it is easy to over-claim:
   `NON_TAXONOMIC_PLUGINS` contains **only `activity-v1`**. `ultrasonic-pass-v1` is
-  non-taxonomic by design and by test, but is protected by ADR-049's generic
+  non-taxonomic by design and by test, but is protected by [[ADR-049]]'s generic
   per-detection binomial check rather than by that allow-list.
-- **BirdNET's eleven sound categories are not taxa** (ADR-049). Engine, Human vocal
+- **BirdNET's eleven sound categories are not taxa** ([[ADR-049]]). Engine, Human vocal
   and Dog get no species rank, no fabricated taxon id, and no plausibility floor —
   a range model has no distribution for a car.
 - **`ultrasonic-pass-v1` detects bat *passes*, never species.** No document, UI,
@@ -185,18 +185,18 @@ Breaking one of these is a correctness bug, not a style disagreement.
 - **Frames, not timestamps, address audio.** `StreamClock` maps frame → time.
 - **Devices resolve by `stable_device_key`, never by ALSA card index.**
 - **One writer per WebSocket.** Concurrent writers caused the worst bug in the
-  project, and it is invisible on loopback (ADR-012).
+  project, and it is invisible on loopback ([[ADR-012]]).
 - **Capture always wins.** Every queue between capture and a consumer is bounded,
   drops explicitly, and counts its drops.
 - **A synthetic or replayed source is announced loudly**, including in
   `/api/v1/health`, and its detections are excluded from browsing views by
-  default (ADR-020).
+  default ([[ADR-020]]).
 - **Refinement proposes; it never edits a claim.** The refinement runner may write
   `refinement` rows and stamp bookkeeping columns, and the writer raises if a
-  detection's species, score or `native_result` moves (ADR-045). Nothing it writes
+  detection's species, score or `native_result` moves ([[ADR-045]]). Nothing it writes
   reaches the API, MQTT, the UI or the display.
 - **A record is marked; a claim is suppressed.** A withdrawn detection stays in
   `GET /api/v1/detections` flagged `withdrawn`, and disappears from the surfaces
-  that assert something — species aggregates, MQTT, the display (ADR-044).
-- **Human speech is not kept.** `clip_human_audio` defaults off (ADR-049).
+  that assert something — species aggregates, MQTT, the display ([[ADR-044]]).
+- **Human speech is not kept.** `clip_human_audio` defaults off ([[ADR-049]]).
 - **The system is not complete** until the 72-hour soak passes.

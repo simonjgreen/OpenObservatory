@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-021
+tags:
+  - adr
+---
 # ADR-021: Evidence clips live on their own device, mounted over the clips directory
 **Decision:** Evidence clips are stored on a dedicated USB SSD, mounted at
 `data/clips` — the path they already occupied. The SQLite database stays on the SD
@@ -10,7 +16,7 @@ budget already exceeded. Worse, it was competing with capture: ALSA reads go thr
 `asyncio.to_thread`, so clip writes and the capture read share the default thread
 pool, and on **2026-08-05** that produced 11 gaps and 8 overruns in five minutes with
 continuity down to 0.997. Note that moving evidence to the SSD on 2026-08-08 did
-**not** eliminate overruns — see `docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`.
+**not** eliminate overruns — see [[OPEN_INVESTIGATION_CAPTURE_GAPS]].
 The device was a real constraint, but it was not the whole cause. Isolating evidence onto its own executor helped but could
 not overcome the device.
 
@@ -39,7 +45,7 @@ inside it. Mounting the SSD while the station is running requires a restart befo
 it takes effect, and the health check is what makes that state visible rather than
 silent.
 
-> **Not the cause of the missing clips (ADR-057).** 8,067 `media_asset` rows
+> **Not the cause of the missing clips ([[ADR-057]]).** 8,067 `media_asset` rows
 > claim files that are gone, and the boundary lines up with this ADR closely
 > enough to look damning. It is the opposite: the SSD raised the clip budget
 > from 20 GB to 300 GB and is what *stopped* `ClipManager.enforce_retention`
@@ -52,3 +58,6 @@ per minute restored from 6 to 20, ultrasonic rendering restored from heterodyne-
 to both heterodyne and time expansion, and the budget raised from 20 GB to 300 GB
 against 458 GB of storage. The full analysis view of every bat pass is available
 again.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

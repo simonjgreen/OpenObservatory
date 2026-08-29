@@ -1,7 +1,13 @@
+---
+aliases:
+  - ADR-072
+tags:
+  - adr
+---
 # ADR-072: Capture timestamps drift with the microphone's crystal, and that is accepted
 **Status:** accepted, 2026-08-25
 **Component:** `audio/contracts.py` (`StreamClock`), `audio/alsa_source.py`
-**Relates to:** ADR-039 (loss accounting), ADR-063 (the anchor), ADR-069 (the
+**Relates to:** [[ADR-039]] (loss accounting), [[ADR-063]] (the anchor), [[ADR-069]] (the
 gate that surfaced this)
 
 ### The fact
@@ -79,11 +85,11 @@ fifteen seconds does.
 it is the cheapest possible bound: a monthly restart caps the error at ~2 min 9 s
 by construction, needs no change to the timestamp path, and risks nothing.
 
-If implemented, it must **not** land at dawn, dusk, or during bat hours. ADR-067
+If implemented, it must **not** land at dawn, dusk, or during bat hours. [[ADR-067]]
 already moved unattended package work to 15:00 for this reason, and a restart is
 more disruptive than a package upgrade: it costs a real capture gap. The same
 slot, or another verified-quiet one, is the right home for it. A graceful stop
-closes its own stream row (ADR-066), so a scheduled restart is clean in the
+closes its own stream row ([[ADR-066]]), so a scheduled restart is clean in the
 record rather than appearing as an unclean restart.
 
 **Not implemented by this ADR.** This ADR records the fact and the tolerance.
@@ -112,7 +118,7 @@ new segment anchored at the previous one's value for the boundary frame — whic
 is continuous by construction, so there is no step to tolerate, and keeps frame
 *N* mapping to a stable UTC provided the segments are persisted with the stream.
 Error would be bounded by (rate-estimate error) × (time since last update):
-about 3 ms at hourly updates given the ±0.85 ppm the ADR-069 sampler achieves.
+about 3 ms at hourly updates given the ±0.85 ppm the [[ADR-069]] sampler achieves.
 
 Any such change must refuse to update from a window containing confirmed loss —
 otherwise a station losing audio distorts its own time base — must clamp the
@@ -127,3 +133,6 @@ than as a threshold.
   long-running stream, and nobody should "fix" it without reading this first.
 - A soak that runs for months is also a soak whose timestamps are minutes out.
   That is worth knowing *before* the reliability work succeeds rather than after.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

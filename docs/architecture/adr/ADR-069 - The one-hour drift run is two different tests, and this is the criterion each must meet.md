@@ -1,30 +1,36 @@
+---
+aliases:
+  - ADR-069
+tags:
+  - adr
+---
 # ADR-069: "The one-hour drift run" is two different tests, and this is the criterion each must meet
 **Status:** accepted, 2026-08-23. Written **before** either run, deliberately.
 
 ### The problem: one line item, two tests, five documents
 
-`IMPLEMENTATION_PLAN.md` §Milestone 4.5 carries a single outstanding line item,
+[[IMPLEMENTATION_PLAN]] §Milestone 4.5 carries a single outstanding line item,
 "the drift test at its full one-hour duration". Five documents track it as one
 thing. It is not one thing, and reading them together shows two incompatible
 resolutions of the same phrase:
 
-**(a) A synthetic resampler run.** `AUDIO_PIPELINE.md`'s "Resampling
+**(a) A synthetic resampler run.** [[AUDIO_PIPELINE]]'s "Resampling
 correctness" list asks for "no cumulative timestamp drift over one hour of
 generated PCM", and its later note says that test "has been run at **five
-minutes**, not one hour". `TEST_PLAN.md` §L7 repeats it as "the one-hour drift
+minutes**, not one hour". [[TEST_PLAN]] §L7 repeats it as "the one-hour drift
 run (verified at 5 minutes only)". The five-minute evidence is the
-`oo audio resample-check` table in `TARGET_DIAGNOSTICS.md`. Wherever a document
+`oo audio resample-check` table in [[TARGET_DIAGNOSTICS]]. Wherever a document
 says "verified at 5 minutes", it means (a). This test touches no hardware and no
 station.
 
-**(b) A live capture-clock drift run.** `MILESTONE_STATUS.md`'s Milestone 1
+**(b) A live capture-clock drift run.** [[MILESTONE_STATUS]]'s Milestone 1
 exit-gate note, its §Milestone 4.5 list and its outstanding-items list, plus
-`HANDOVER.md` §6.3 item 3 and `OPEN_INVESTIGATION_CAPTURE_GAPS.md`, all say the
-best evidence for "the one-hour drift run" is ADR-046's 42.7-minute sampled run
+[[HANDOVER]] §6.3 item 3 and [[OPEN_INVESTIGATION_CAPTURE_GAPS]], all say the
+best evidence for "the one-hour drift run" is [[ADR-046]]'s 42.7-minute sampled run
 whose longest *clean* segment was 22.2 minutes. "Clean segment", "restart-free"
 and "a mechanism with an hourly or nightly period" are properties of a live
-station; none of them mean anything for a synthetic run. `HANDOVER.md`'s "the
-method is written down and takes 15 minutes" quotes ADR-046, which is about the
+station; none of them mean anything for a synthetic run. [[HANDOVER]]'s "the
+method is written down and takes 15 minutes" quotes [[ADR-046]], which is about the
 **live sampler**, not `resample-check`.
 
 **(c) And a third, in Milestone 1's own exit gate**, which neither of the above
@@ -98,12 +104,12 @@ Sampled **from the laptop over one persistent HTTP connection**, never over
 one-shot `ssh … curl`: a probe that opened an SSH handshake per sample was
 itself the load, taking the station from 5 overruns in 2 h to 6 in 13 minutes,
 and nothing from that window could be attributed
-(`OPEN_INVESTIGATION_CAPTURE_GAPS.md`, "Traps this round produced"). 65 minutes
+([[OPEN_INVESTIGATION_CAPTURE_GAPS]], "Traps this round produced"). 65 minutes
 are sampled to leave slack for the hour that must survive inside them.
 
 The quantity fitted is the **phase-corrected** deficit, because the raw
 `expected_frames - frames` sawtooths across a whole block while nothing is wrong
-and carries ±50 ms of pure artefact (ADR-046):
+and carries ±50 ms of pure artefact ([[ADR-046]]):
 
     corrected = expected_frames − block_age_s × sample_rate − (frames − block_frames)
 
@@ -111,13 +117,13 @@ and carries ±50 ms of pure artefact (ADR-046):
 
 | check | threshold | derivation |
 |---|---|---|
-| restart-free duration | **≥ 3600 s** in one segment, `stream_id` unchanged, `clock_reanchors` unchanged | the unproven hypothesis is a mechanism with a period longer than ADR-046's 22.2-minute clean window — an hourly sweep, a nightly rotation. An hour covers the hourly class. It does not cover the nightly class, and this ADR does not claim it does |
-| points fitted | **≥ 10** per-minute medians | a slope through a handful of points is not a measurement; ADR-046's shortest quoted window had ten and was already its weakest |
-| slope vs the station's own figure | `abs(abs(slope_ppm) − abs(rate_offset_ppm)) ≤ 2 ppm` | ADR-046 measured these agreeing to about **1 ppm** (3.6 ms/hour, ambiguous sign) on clean windows, while the crystal itself moved about **3 ppm** under a thermal change inside one hour. 2 ppm is above the agreement actually achieved and below the thermal excursion, so it fails on disagreement rather than on weather |
-| linearity | max abs residual from the Theil–Sen line, per-minute medians, **≤ 0.5 ms** | ADR-046's three segments measured 0.30, 0.25 and 0.44 ms. 0.5 ms is just above the worst clean value observed on this station |
+| restart-free duration | **≥ 3600 s** in one segment, `stream_id` unchanged, `clock_reanchors` unchanged | the unproven hypothesis is a mechanism with a period longer than [[ADR-046]]'s 22.2-minute clean window — an hourly sweep, a nightly rotation. An hour covers the hourly class. It does not cover the nightly class, and this ADR does not claim it does |
+| points fitted | **≥ 10** per-minute medians | a slope through a handful of points is not a measurement; [[ADR-046]]'s shortest quoted window had ten and was already its weakest |
+| slope vs the station's own figure | `abs(abs(slope_ppm) − abs(rate_offset_ppm)) ≤ 2 ppm` | [[ADR-046]] measured these agreeing to about **1 ppm** (3.6 ms/hour, ambiguous sign) on clean windows, while the crystal itself moved about **3 ppm** under a thermal change inside one hour. 2 ppm is above the agreement actually achieved and below the thermal excursion, so it fails on disagreement rather than on weather |
+| linearity | max abs residual from the Theil–Sen line, per-minute medians, **≤ 0.5 ms** | [[ADR-046]]'s three segments measured 0.30, 0.25 and 0.44 ms. 0.5 ms is just above the worst clean value observed on this station |
 | no step | no residual step **> 0.5 ms** | drift is a straight line; real loss arrives as a step that stays up. Same basis as the row above |
-| confirmed loss | `estimated_missing_frames` and `gaps_with_loss` both **unchanged** across the window | this is the station's one measurement of lost audio (ADR-039). Note it is *not* independent of the slope check — `rate_offset_ppm` is `-(deficit − missing_frames)/expected × 1e6` computed inside `AlsaSource`, so the two agree algebraically. The checks are complementary (different anchors, a slope against a cumulative average), not corroborating |
-| load | `--declare-load` recorded verbatim; `loop_lag_max_s`, `late_reads` and `hot_path_cpu_ratio` reported per segment | ADR-046's run was contaminated by another agent's two-core load probe and was salvaged only because the contamination was visible in these counters. Declaring beats assuming |
+| confirmed loss | `estimated_missing_frames` and `gaps_with_loss` both **unchanged** across the window | this is the station's one measurement of lost audio ([[ADR-039]]). Note it is *not* independent of the slope check — `rate_offset_ppm` is `-(deficit − missing_frames)/expected × 1e6` computed inside `AlsaSource`, so the two agree algebraically. The checks are complementary (different anchors, a slope against a cumulative average), not corroborating |
+| load | `--declare-load` recorded verbatim; `loop_lag_max_s`, `late_reads` and `hot_path_cpu_ratio` reported per segment | [[ADR-046]]'s run was contaminated by another agent's two-core load probe and was salvaged only because the contamination was visible in these counters. Declaring beats assuming |
 
 **The run can be voided by the mains, and the record must say so.** The station
 is on unprotected mains: the 2026-08-22 restart is now established as a **mains
@@ -135,7 +141,7 @@ did not happen.
 The fit is **Theil–Sen over per-minute medians**, never ordinary least squares:
 a late read corrupts the phase correction for a sample or two, because a block's
 `monotonic_start_ns` is read-completion minus one block duration, and OLS read
-**6 ppm high** on ADR-046's own data where the median pairwise slope did not.
+**6 ppm high** on [[ADR-046]]'s own data where the median pairwise slope did not.
 
 **Why (b) is worth the hour, and why it should run before the next soak
 attempt.** The failed soak left ~175 s of deficit that drift does not explain
@@ -189,10 +195,10 @@ dragged by a late-read excursion the way OLS is.
 
 ### What this ADR does not decide
 
-It does not tick anything. No box in `ACCEPTANCE_CRITERIA.md` currently covers
+It does not tick anything. No box in [[ACCEPTANCE_CRITERIA]] currently covers
 either gate — that omission is real and a wording is proposed alongside this
-ADR — and neither run has been executed. It also does not extend ADR-046's
-"98% crystal drift" claim: that holds at ≤ 1 hour and, per ADR-046's own
+ADR — and neither run has been executed. It also does not extend [[ADR-046]]'s
+"98% crystal drift" claim: that holds at ≤ 1 hour and, per [[ADR-046]]'s own
 2026-08-14 status note, does not hold at 72 hours.
 
 ### Rollback
@@ -215,3 +221,6 @@ oo audio resample-check --seconds 30 --json | python3 -c \
 python scripts/measure_capture_drift.py --host <station-host> --seconds 60 \
   --csv /tmp/drift-smoke.csv --declare-load "smoke test" | grep gate_met
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

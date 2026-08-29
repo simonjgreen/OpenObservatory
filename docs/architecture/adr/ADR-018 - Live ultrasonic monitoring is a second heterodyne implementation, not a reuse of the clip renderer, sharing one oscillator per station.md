@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-018
+tags:
+  - adr
+---
 # ADR-018: Live ultrasonic monitoring is a second heterodyne implementation, not a reuse of the clip renderer, sharing one oscillator per station
 **Decision:** `/api/v1/live/audio` gains a `?channel=ultrasonic` option: a live,
 real-time heterodyne of the native stream, tuned by the listener and reconfigurable
@@ -15,12 +21,12 @@ There is exactly **one** oscillator per station, shared by every ultrasonic list
 retuning is a broadcast, not a per-connection state. This mirrors how the spectrogram and
 `live_audio` (audible) channels already work: one produced stream, fanned out to however
 many browsers are watching. A second concurrent listener wanting a different tuning is
-not supported; this is a debug/operator surface for one person on a LAN (ADR-011,
-ADR-015), and multi-tenant tuning would be new architecture for a need nobody has yet.
+not supported; this is a debug/operator surface for one person on a LAN ([[ADR-011]],
+[[ADR-015]]), and multi-tenant tuning would be new architecture for a need nobody has yet.
 
 **Reason for the CPU gate:** heterodyning 384 kHz continuously has a real, measurable
 cost, and `station.py`'s ordering already treats "capture always wins" as non-negotiable
-(ADR-001, ADR-002). The live ultrasonic path is therefore gated exactly like
+([[ADR-001]], [[ADR-002]]). The live ultrasonic path is therefore gated exactly like
 `LiveAudioBroadcaster.publish`: `_handle_block` only calls
 `StreamingHeterodyne.process()` when `live_audio_ultrasonic.listener_count > 0`. Skipping
 calls while idle and resuming later is safe because all continuity state lives inside the
@@ -43,3 +49,6 @@ bandwidth and is reused unchanged, exactly as briefed.
 channel unavailable (`hello.available: false`, with a reason) rather than silently
 approximating a fractional ratio — AudioMoth's one hardware profile on this project's
 target is 384 kHz, so this is a defensive fallback, not an expected path.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

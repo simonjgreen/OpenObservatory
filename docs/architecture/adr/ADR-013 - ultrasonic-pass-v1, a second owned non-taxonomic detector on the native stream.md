@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-013
+tags:
+  - adr
+---
 # ADR-013: `ultrasonic-pass-v1`, a second owned non-taxonomic detector on the native stream
 **Decision:** Ship a pulse-train detector operating on the native 384 kHz stream, emitting
 `bat pass` events with a measured frequency band, pulse count and SNR — never a species.
@@ -23,4 +29,7 @@ Milestone 5 and is not implemented.
 > The detector also gained feeding-buzz flagging, sub-bin peak-frequency
 > interpolation, and presentational candidate group titles carrying a mandatory
 > `?`; the stored record still keeps `label = "bat pass"` with no species name,
-> and the normaliser's guard is unchanged. See `docs/detectors/DETECTOR_STRATEGY.md`.
+> and the normaliser's guard is unchanged. See [[DETECTOR_STRATEGY]].
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

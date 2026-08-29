@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14
 **Status:** approved, not yet implemented
-**Supersedes in part:** ADR-026 (tiered retention) — the exemplar mechanism only
+**Supersedes in part:** [[ADR-026]] (tiered retention) — the exemplar mechanism only
 
 ## Why this exists
 
@@ -25,7 +25,7 @@ One query causes three separate failures.
 It is also self-reinforcing: the query's cost scales with the number of live media
 assets, which grows precisely because the query prevents anything being deleted.
 
-ADR-060 made the wedge survivable. This removes the exposure that causes it.
+[[ADR-060]] made the wedge survivable. This removes the exposure that causes it.
 
 The failure was invisible for nine days because `complete=False` reads identically
 whether a sweep ran out of time with work outstanding or never reached a tier at
@@ -51,12 +51,12 @@ detection.kept_by   TEXT NULL            -- actor: "simon", or "exemplar-backfil
 
 Mutable columns, deliberately. `Review` is append-only because a correction is a
 *claim* about what a recording contains and the original claim must survive
-(ADR-043, charter priority 5). Keeping a recording is a storage preference, not a
+([[ADR-043]], charter priority 5). Keeping a recording is a storage preference, not a
 claim about the world, so it does not need that treatment. `kept_by` and `kept_at`
 retain who and when.
 
 Alembic revision `0008_detection_kept`, parent `0007_capture_pause`. Applied by
-`deploy.sh` (ADR-042).
+`deploy.sh` ([[ADR-042]]).
 
 ### Migration backfill: first-of-species only
 
@@ -140,7 +140,7 @@ Test-first throughout.
 | A sweep deletes native assets past the cutoff on the first tick | The tier is reached at all — the regression that started this |
 | A kept detection survives every tier, including 90-day expiry and watermark | "Forever" means forever |
 | Un-keeping makes it deletable again | Only a human clears it, but a human can |
-| A held detection is still exempt, and held ≠ kept | ADR-043's mechanism is untouched |
+| A held detection is still exempt, and held ≠ kept | [[ADR-043]]'s mechanism is untouched |
 | The sweep completes within `retention_batch_budget_s` with a realistic row count | The 3 s preamble is gone, not relocated |
 | The watermark reports a problem rather than deleting kept evidence | The honest failure mode |
 | Migration backfills exactly one detection per species key — the earliest by `event_start_utc` — and no `best`-ranked rows | The backfill set is first-of-species only. It will be smaller than the 177 the station currently reports, since that figure is the union of first and best; the test asserts the rule, not a row count |
@@ -173,8 +173,8 @@ measured, and two of them were wrong.
 ## Out of scope
 
 - The ESP32 display gets no keep control. It is a separate firmware deploy with
-  its own OTA rollback drill (ADR-050).
-- The 15,704 bat detections never examined by a refiner (ADR-045) remain
+  its own OTA rollback drill ([[ADR-050]]).
+- The 15,704 bat detections never examined by a refiner ([[ADR-045]]) remain
   unaddressed. Retention still deletes on age alone, and this change gives the
   operator a manual way to protect individual recordings, not a policy for that
   backlog.

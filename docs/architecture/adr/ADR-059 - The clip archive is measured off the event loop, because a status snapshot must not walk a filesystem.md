@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-059
+tags:
+  - adr
+---
 # ADR-059: The clip archive is measured off the event loop, because a status snapshot must not walk a filesystem
 **Decision:** `ClipManager.disk_usage()` no longer walks the clip tree. It reports
 the last measurement and how old it is (`clip_usage_age_s`); the walk itself moves
@@ -18,7 +24,7 @@ stalls of **254–370 ms** against a 500 ms ALSA ring, i.e. `late_read_max_frame
 of **142,137 of 192,000 (74%)**.
 
 The attribution needs no inference, because the station's own `snapshot_phase_s`
-instrument (added by ADR-033) names the phase in the same millisecond:
+instrument (added by [[ADR-033]]) names the phase in the same millisecond:
 
 ```
 13:38:07.428665Z housekeeping.tick  blocking_total_s=0.4532 snapshot_phases={'storage': 0.4512}
@@ -48,7 +54,7 @@ the end of a 72-hour soak. At the steady state the retention tiers imply (7 days
 of native plus 30 days of playback derivatives) it is ~250,000 files and ~2.7 s,
 every 30 seconds, against a 500 ms ring. This stops being headroom.
 
-**Why chunking rather than a thread.** ADR-033 settled this and it is the same
+**Why chunking rather than a thread.** [[ADR-033]] settled this and it is the same
 mistake offered again: the walk is CPU-bound Python, so a dedicated executor
 would still hold the GIL, and the event loop still has to issue each
 `run_in_executor` capture read and consume its result. *An executor partitions
@@ -66,14 +72,14 @@ recorded because the next person will want to know where the remaining cost is.
 
 **Why the cadence is deliberately unchanged.** Refreshing a *file count* every
 30 s is more often than anyone needs, and 300 s would have been defensible on
-exactly ADR-033's argument. It is left at 30 s so that this change moves one
+exactly [[ADR-033]]'s argument. It is left at 30 s so that this change moves one
 thing. If the next measurement is ambiguous it should not be because two
 variables moved at once.
 
 **What this does *not* fix.** All 2.70 s of audio genuinely lost in that window
 came from five ALSA overruns on a **~302 s** beat matching `retention_interval_s`,
 not from this walk — see the 2026-08-10 section of
-`docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md`. This change widens the margin
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]]. This change widens the margin
 those events land in; it does not remove them. That is a separate finding and
 deliberately a separate decision.
 
@@ -97,7 +103,7 @@ FAILED.** The pass criterion above was `late_read_max_frames` "well under
 to fix, not better. This does not mean chunking the walk was wrong; the
 "What this does *not* fix" note above already named a separate cost on the
 same beat, the retention sweep's own query cost, as the suspected remaining
-cause. ADR-061 (2026-08-14) has since removed that cost — see its entry for
+cause. [[ADR-061]] (2026-08-14) has since removed that cost — see its entry for
 the re-verification.
 
 **Verification, to run after deploying:**
@@ -129,3 +135,6 @@ git revert <this commit>
 rsync -a --delete --exclude __pycache__ ./src/ <user>@<station-host>:open-observatory/src/
 ssh <user>@<station-host> sudo systemctl restart open-observatory
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-053
+tags:
+  - adr
+---
 # ADR-053: Taxonomic grouping above species — genus is free, family is a data dependency
 **Status: proposed. Nothing is implemented.** Recorded because the question has
 a tempting wrong answer, and because the cheap option and the correct option are
@@ -22,7 +28,7 @@ they actually stand in the live database:
 | `taxonomic_group` | `bird` (9,620), `bat` (5,532), `acoustic_event` (56,050) |
 
 `taxonomic_group` answers "what kind of claim is this" — bird, bat, or a sound
-that is not an animal (ADR-049). It is not a taxonomic rank and must not be
+that is not an animal ([[ADR-049]]). It is not a taxonomic rank and must not be
 pressed into service as one.
 
 **What is free.** The genus is the first token of the binomial, so grouping by
@@ -54,7 +60,7 @@ which taxonomy the label list happened to follow.
    is exact, free, and honest about its own scope.
 2. **Family and order require a real taxonomic reference** — a checksummed,
    versioned, separately-licensed data file acquired the way model assets are
-   (ADR-006), not a table typed into the source. eBird/Clements is the natural
+   ([[ADR-006]]), not a table typed into the source. eBird/Clements is the natural
    choice because BirdNET's own labels derive from it, so the join is clean
    rather than fuzzy-matched.
 3. **A hardcoded list of corvid species is refused.** It is the tempting answer,
@@ -65,7 +71,7 @@ which taxonomy the label list happened to follow.
    from the reference is reported as ungrouped, never assigned to a plausible
    family by prefix matching.
 
-**Relationship to ADR-043.** ADR-043 argued against introducing a taxonomy
+**Relationship to [[ADR-043]].** [[ADR-043]] argued against introducing a taxonomy
 dependency when the payoff was a single mislabelled `Gray Wolf` row. That
 reasoning stands for that case. The payoff here is larger — family-level
 browsing and history for a general user — so this is a fairer trade than it was
@@ -74,3 +80,6 @@ then, and is why this is recorded as a proposal rather than a refusal.
 **Cost, honestly.** Genus is hours. Family is a day or more once acquisition,
 checksums, licence documentation, the unresolved-label path and the UI are
 counted. Neither should displace the 72-hour soak.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

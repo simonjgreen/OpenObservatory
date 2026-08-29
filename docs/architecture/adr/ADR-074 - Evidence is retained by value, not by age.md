@@ -1,8 +1,14 @@
+---
+aliases:
+  - ADR-074
+tags:
+  - adr
+---
 # ADR-074: Evidence is retained by value, not by age
 **Status:** accepted, 2026-08-29
-**Supersedes:** age-only retention as the sole policy (ADR-062's tiers remain as
+**Supersedes:** age-only retention as the sole policy ([[ADR-062]]'s tiers remain as
 the backstop)
-**Relates to:** ADR-049 (plausibility bands), ADR-062 (retention sweep), ADR-017
+**Relates to:** [[ADR-049]] (plausibility bands), [[ADR-062]] (retention sweep), [[ADR-017]]
 
 ### The problem, measured
 
@@ -56,7 +62,7 @@ preferentially archive BirdNET's mistakes. Rarity alone is the wrong axis.
 
 ### The decision
 
-**Rarity × plausibility, plus a blind sample.** ADR-049 already computes a
+**Rarity × plausibility, plus a blind sample.** [[ADR-049]] already computes a
 plausibility band per detection from the occurrence prior; cross it with volume:
 
 | | plausible here | implausible here |
@@ -180,10 +186,10 @@ while robins fill the disk.
 ### Rules that must not be broken
 
 1. **Age tiers remain as a backstop.** Value-based selection decides what is
-   *worth* keeping; ADR-062's watermark still decides what the disk can *hold*.
+   *worth* keeping; [[ADR-062]]'s watermark still decides what the disk can *hold*.
    Value never overrides the watermark.
 2. **Never delete a human-reviewed or operator-kept detection**, whatever its
-   species. The `kept` flag (ADR-061) already outranks everything and continues to.
+   species. The `kept` flag ([[ADR-061]]) already outranks everything and continues to.
 3. **Deletion is irreversible and this policy is new.** First rollout runs in
    `--dry-run` and reports what it *would* remove, per category, for a human to
    read before anything is deleted.
@@ -196,8 +202,11 @@ while robins fill the disk.
 - Retention gains a value dimension it has never had, and the operator gains a
   control they have never had.
 - A species moved onto the common list does **not** retroactively delete its
-  history; the change applies to the next sweep forward, matching ADR-063's rule
+  history; the change applies to the next sweep forward, matching [[ADR-063]]'s rule
   that corrections fix the future rather than rewriting the past.
-- SLO E in ADR-073 ("evidence sufficiency") changes meaning under this policy:
+- SLO E in [[ADR-073]] ("evidence sufficiency") changes meaning under this policy:
   the denominator becomes *detections worth keeping*, not *all detections*. It
   cannot be measured until this lands.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

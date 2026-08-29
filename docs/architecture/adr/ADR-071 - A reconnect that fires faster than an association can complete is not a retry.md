@@ -1,8 +1,14 @@
+---
+aliases:
+  - ADR-071
+tags:
+  - adr
+---
 # ADR-071: A reconnect that fires faster than an association can complete is not a retry
 **Status:** accepted, 2026-08-24
 **Component:** `firmware/inside-observer`
 **Supersedes nothing.** Fixes behaviour introduced with the push transport
-(ADR-038).
+([[ADR-038]]).
 
 ### Observation
 
@@ -196,3 +202,6 @@ On the bench, with the display running and joined:
 Expect one `[wifi] link lost` line, then attempts at roughly 5, 10, 20, 40 and
 60 s, then `[wifi] link restored after Nms` within a minute of the AP returning.
 Anything printing faster than once a second is this bug back again.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

@@ -1,8 +1,14 @@
+---
+aliases:
+  - ADR-073
+tags:
+  - adr
+---
 # ADR-073: What "missing audio" means, and five SLOs instead of one continuity number
 **Status:** accepted, 2026-08-29
 **Supersedes:** the single "72-hour continuity ≥ 99.9%" criterion as the *only*
 capture-completeness measure. That criterion is not deleted; it is decomposed.
-**Relates to:** ADR-039 (loss accounting), ADR-072 (accepted drift)
+**Relates to:** [[ADR-039]] (loss accounting), [[ADR-072]] (accepted drift)
 
 ### The problem: one number measuring three unrelated things
 
@@ -14,7 +20,7 @@ sums three phenomena with nothing in common:
 |---|---|---|
 | **coverage** | the capture process was not running | **yes — gone** |
 | **integrity** | frames dropped while it *was* running | **yes — gone** |
-| **drift** | the crystal ran slow (ADR-072) | **no — the audio exists and is fine** |
+| **drift** | the crystal ran slow ([[ADR-072]]) | **no — the audio exists and is fine** |
 
 Drift is not loss. Nothing is missing; the audio is merely labelled a few
 seconds off. Yet it lands in the ratio, and it dominates it:
@@ -43,7 +49,7 @@ Loss by era, every `capture_gap` row ever written:
 
 | era | gap events | audio lost |
 |---|---|---|
-| before ADR-060/061 | 2,983 | 662.6 s |
+| before [[ADR-060]]/061 | 2,983 | 662.6 s |
 | 2026-08-14 → 19 | 183 | 58.8 s |
 | **since 2026-08-19 (10 days)** | **2** | **0.60 s** |
 
@@ -69,12 +75,12 @@ actually are.
 
 | | SLO | target | measured | derivation |
 |---|---|---|---|---|
-| **A** | **Coverage** — wall-clock fraction with capture running | **≥ 99.5% / month** (≈3.6 h) | 99.986% | absorbs two power cuts, a reboot and weekly package restarts without a breach. This is a domestic device on unprotected mains (ADR-072); a target that a power cut breaches is a target that trains you to ignore it |
+| **A** | **Coverage** — wall-clock fraction with capture running | **≥ 99.5% / month** (≈3.6 h) | 99.986% | absorbs two power cuts, a reboot and weekly package restarts without a breach. This is a domestic device on unprotected mains ([[ADR-072]]); a target that a power cut breaches is a target that trains you to ignore it |
 | **A2** | **Prime-hours coverage** — the same, restricted to civil twilight ±2 h and the ultrasonic night window | **≥ 99.9% / month** | ~100% | where the birds and bats are. Loss here is real loss; loss at 14:00 in December mostly is not |
-| **B** | **Capture integrity** — of recorded time, the fraction not dropped | **≥ 99.99%** (≤ 8.6 s/day) | 0.06 s/day | 140× headroom on measured, which is the point: it catches a genuine regression and ignores noise. The pre-ADR-060 era ran at ~9 s/day and would breach it |
+| **B** | **Capture integrity** — of recorded time, the fraction not dropped | **≥ 99.99%** (≤ 8.6 s/day) | 0.06 s/day | 140× headroom on measured, which is the point: it catches a genuine regression and ignores noise. The pre-[[ADR-060]] era ran at ~9 s/day and would breach it |
 | **C** | **Timestamp accuracy** — absolute UTC error of a detection | **≤ 60 s** | ≤4.3 s/day, resets each stream | at 50 ppm this bounds a stream to ~14 days. Restarts already deliver that (longest ever: 83.8 h) |
 | **D** | **Detection coverage** — fraction of captured audio actually analysed | **≥ 99%** | not yet measured | audio captured but never analysed is invisible loss and nothing currently reports it |
-| **E** | **Evidence sufficiency** — detections worth keeping that kept a clip | **≥ 95%** | see ADR-074 | "worth keeping" changes meaning entirely under ADR-074's value-based retention |
+| **E** | **Evidence sufficiency** — detections worth keeping that kept a clip | **≥ 95%** | see [[ADR-074]] | "worth keeping" changes meaning entirely under [[ADR-074]]'s value-based retention |
 
 ### The rule that makes this work
 
@@ -89,7 +95,7 @@ happened.
 
 ### Consequences
 
-- `ACCEPTANCE_CRITERIA.md`'s continuity box is replaced by A and B. The box
+- [[ACCEPTANCE_CRITERIA]]'s continuity box is replaced by A and B. The box
   ticked on 2026-08-25 stands: it passed under the old criterion and passes more
   comfortably under the new one.
 - **D is not currently measurable.** Nothing reports the fraction of captured
@@ -106,3 +112,6 @@ It does not change any capture code, and it does not lower a bar. B is
 *stricter* than the old criterion in the dimension that matters (8.6 s/day
 against an effective ~86 s/day once drift is removed from the 0.1% budget).
 What it removes is the pretence that one number described a healthy device.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

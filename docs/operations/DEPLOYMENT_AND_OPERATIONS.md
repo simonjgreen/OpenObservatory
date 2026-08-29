@@ -4,7 +4,7 @@ This document describes the deployment that exists: `rsync` into a Python
 virtualenv on the Pi, managed by a single `systemd` unit. It does not use
 Docker, Compose, PostgreSQL or Redis. The Compose/PostgreSQL topology described
 in the technical spec is kept further down as the unrealised production
-target — see ADR-007 and ADR-008 in `docs/architecture/ADRS.md` for why the two
+target — see [[ADR-007]] and [[ADR-008]] in [[ADRS]] for why the two
 diverge and what would have to be true before the Compose path is real.
 
 ## Current deployment: rsync + venv + systemd
@@ -13,8 +13,8 @@ diverge and what would have to be true before the Compose path is real.
 
 One host, one process, one owner of the microphone. `oo serve` runs capture,
 detectors, the API and the debug UI in a single Python process under
-`systemd`. Storage is SQLite by default (ADR-007); there is no database
-server. There is no message broker; the event bus is in-process (ADR-009).
+`systemd`. Storage is SQLite by default ([[ADR-007]]); there is no database
+server. There is no message broker; the event bus is in-process ([[ADR-009]]).
 
 ### Layout on the target
 
@@ -42,13 +42,13 @@ server. There is no message broker; the event bus is in-process (ADR-009).
 3. creates `.venv` if absent and installs the package with
    `pip install -e '.[alsa,resample,birdnet,dev]'`;
 4. runs `alembic upgrade head` **before** anything is restarted, against the
-   database the still-running old version is using (ADR-042). A slow or failing
+   database the still-running old version is using ([[ADR-042]]). A slow or failing
    migration therefore fails this script and leaves the previous, working
    service up, rather than failing inside the new version's startup path. A
    database already at head is a single read-only revision check, so this is
    safe on every deploy;
 5. installs `deploy/open-observatory.service`, the refinement service and its
-   timer (ADR-045), and `deploy/99-audiomoth.rules`; reloads `udev` and
+   timer ([[ADR-045]]), and `deploy/99-audiomoth.rules`; reloads `udev` and
    `systemd`; does `enable --now` then `restart` on the station, and
    `enable --now` on `open-observatory-refine.timer` — which arms the schedule
    without starting a pass, so deploying never puts the classifier on the CPU;
@@ -58,7 +58,7 @@ server. There is no message broker; the event bus is in-process (ADR-009).
 
 The three systemd units are committed as templates: `deploy.sh` substitutes the
 deploy user and install path at install time, so no station's paths are baked
-into the repository (ADR-047).
+into the repository ([[ADR-047]]).
 
 It is idempotent — safe to run repeatedly. **`HOST` is required**, deliberately:
 the repository ships no station address, so a deploy always says where it is
@@ -103,7 +103,7 @@ In addition to `config/runtime.env`, `deploy.sh` excludes: `.git`, `.claude`,
 `models/*.txt`. The model exclusions matter operationally: model assets
 fetched on the target with `oo models fetch` are not overwritten or deleted
 by a later deploy, and are not shipped from the developer machine either
-(ADR-006 — model licences differ from the code's and are not bundled).
+([[ADR-006]] — model licences differ from the code's and are not bundled).
 `.claude` is excluded because agent worktrees live there and are full checkouts
 with their own virtualenvs; syncing them would push gigabytes to the Pi.
 
@@ -139,7 +139,7 @@ window — and are installed and armed by `deploy.sh` alongside the station.
 `enable --now` on a `.timer` arms the schedule without starting a pass, so
 deploying never puts the classifier on the CPU.
 
-It is a separate process on purpose, and the fence is the point. ADR-033
+It is a separate process on purpose, and the fence is the point. [[ADR-033]]
 measured a 0.30 s retention sweep, on its own thread *inside* the station,
 starving the capture event loop 55–150 ms and producing ~1.9 false
 `capture.gap` records a minute. A BatDetect2 pass is 2.1 s of inference.
@@ -218,18 +218,18 @@ version of this list omitted the three repair/maintenance commands.
 |---|---|
 | `oo audio probe` | enumerate capture devices; record formats, stable identity and native rate support. `--json`, `--write PATH`, `--test-rates` |
 | `oo audio test-capture` | capture briefly and report frames delivered vs elapsed, levels and clipping. `--seconds`, `--out` |
-| `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. Runs in constant memory, so `--seconds 3600` — the duration the audio pipeline spec asks for, and ADR-069 gate (a) — costs about as much resident memory as `--seconds 60`. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms`, `--json` |
+| `oo audio resample-check` | verify group delay, delivery-latency bounds and seam continuity. Runs in constant memory, so `--seconds 3600` — the duration the audio pipeline spec asks for, and [[ADR-069]] gate (a) — costs about as much resident memory as `--seconds 60`. `--source-rate`, `--target-rate`, `--seconds`, `--block-ms`, `--json` |
 | `oo audio window-dump` | inspect a specific segmenter window with ground truth: actual frame bounds, actual sample count cross-checked against an independent `RingBuffer` read, UTC and local-time rendering, and `--gap-at-s`/`--gap-frames` to show a capture gap's real effect on the segmenter. Runs against a replayed WAV (`--source`) or a synthetic scene, never the live station — see its own `--help` for why. `--stream-kind native\|audible48`, `--duration-s`, `--stride-s`, `--index`, `--write-wav PATH`, `--timezone`, `--json` |
 | `oo models status` | what model assets are installed |
 | `oo models fetch` | checksummed acquisition, licences shown before download. `--force`, `--yes` |
 | `oo audiomoth info` | firmware identity over USB HID (switch must be in `USB/OFF`) |
-| `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts (ADR-024). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
-| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor (ADR-032). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since ADR-044 `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the counter-top display |
-| `oo detections reconcile-taxonomy` | stop stored sound categories (Engine, Human vocal, Dog, …) claiming to be birds at species rank (ADR-049). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Clears `rank`, `scientific_name` and `canonical_taxon_id`, sets `taxonomic_group` to `acoustic_event`, keeps `common_name`, never deletes a row; the originals are preserved under `native_result.taxonomy_review` |
-| `oo clips purge-human-audio` | delete evidence clips of human speech and mark their `media_asset` rows reclaimed (ADR-049). **Dry-run by default**; `--apply`, `--yes`, `--json`. Detection rows are never touched |
-| `oo clips reconcile-missing` | reconcile `media_asset` rows that claim a clip the disk does not have (ADR-057). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Sets `reclaimed_at` and `reclaim_reason = "missing"` — never a retention tier name, because nothing decided to give these clips up — and preserves what the row claimed under `detail.missing_reconciliation`. Deletes no file, no `media_asset` row and no `detection`. The station reports the same condition on its own as a health note and as `oo_media_missing_files`; a non-zero figure there is what should prompt this command |
-| `oo clips retention` | run the tiered retention sweep manually (ADR-026). `--dry-run`, `--limit` |
-| `oo refine run` | one refinement pass over stored evidence clips (ADR-045). Normally started by `open-observatory-refine.timer`, not by hand. Refuses outside 01:00–03:00 UTC unless `--force`. `--dry-run`, `--limit`, `--json`. **Writes only append-only `refinement` rows plus three bookkeeping columns; never edits a detection's species, score or `native_result`** |
+| `oo history reconcile-streams` | repair `audio_stream` rows whose `end_utc` is a claim the frame count contradicts ([[ADR-024]]). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--ratio-threshold` |
+| `oo detections reconcile-plausibility` | re-evaluate stored BirdNET detections against the current range model and plausibility floor ([[ADR-032]]). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Never deletes a row or overwrites `native_result`; adds a `native_result.plausibility_review` block. Since [[ADR-044]] `--apply` takes effect immediately with no restart: flagged rows are marked `withdrawn` by the API, dropped from species tallies, and shown by neither MQTT nor the counter-top display |
+| `oo detections reconcile-taxonomy` | stop stored sound categories (Engine, Human vocal, Dog, …) claiming to be birds at species rank ([[ADR-049]]). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Clears `rank`, `scientific_name` and `canonical_taxon_id`, sets `taxonomic_group` to `acoustic_event`, keeps `common_name`, never deletes a row; the originals are preserved under `native_result.taxonomy_review` |
+| `oo clips purge-human-audio` | delete evidence clips of human speech and mark their `media_asset` rows reclaimed ([[ADR-049]]). **Dry-run by default**; `--apply`, `--yes`, `--json`. Detection rows are never touched |
+| `oo clips reconcile-missing` | reconcile `media_asset` rows that claim a clip the disk does not have ([[ADR-057]]). **Dry-run by default**; `--apply`, `--yes`, `--json`, `--limit`. Sets `reclaimed_at` and `reclaim_reason = "missing"` — never a retention tier name, because nothing decided to give these clips up — and preserves what the row claimed under `detail.missing_reconciliation`. Deletes no file, no `media_asset` row and no `detection`. The station reports the same condition on its own as a health note and as `oo_media_missing_files`; a non-zero figure there is what should prompt this command |
+| `oo clips retention` | run the tiered retention sweep manually ([[ADR-026]]). `--dry-run`, `--limit` |
+| `oo refine run` | one refinement pass over stored evidence clips ([[ADR-045]]). Normally started by `open-observatory-refine.timer`, not by hand. Refuses outside 01:00–03:00 UTC unless `--force`. `--dry-run`, `--limit`, `--json`. **Writes only append-only `refinement` rows plus three bookkeeping columns; never edits a detection's species, score or `native_result`** |
 | `oo refine status` | what the refiner has done, what is waiting for a human ear, and — the number the charter's retention safeguard needs — how many bat detections have **never been examined**. `--limit`, `--json` |
 | `oo system-report` | host facts worth recording with a diagnostic. `--json` |
 | `oo serve` | run the station. `--host`, `--port`, `--source auto\|alsa\|replay\|synthetic`, `--reload` |
@@ -279,7 +279,7 @@ Four things worth knowing before you publish:
   the image.** This defends against corruption, not against someone who can
   already impersonate the station on your LAN. Image signing is not implemented.
 
-A display running pre-ADR-050 firmware reports its version as `unknown`. That is
+A display running pre-[[ADR-050]] firmware reports its version as `unknown`. That is
 not the same as "out of date", and the UI does not present it as such. Getting
 such a display onto the two-slot partition table needs one cable flash — see
 [`../../firmware/inside-observer/README.md`](../../firmware/inside-observer/README.md).
@@ -322,10 +322,10 @@ the `detected_at` attribute in the payload carries the drift.
 
 **If you want it bounded tighter, restart capture on a schedule.** A monthly
 restart caps the error at ~2 minutes by construction and needs no code change.
-Put it in a quiet window — **not** dawn, dusk or bat hours; ADR-067's 15:00 slot
+Put it in a quiet window — **not** dawn, dusk or bat hours; [[ADR-067]]'s 15:00 slot
 exists for exactly this kind of disruption, and a restart costs a real capture
 gap where a package upgrade does not. A graceful `systemctl restart` closes its
-own stream row (ADR-066), so it appears as a clean end rather than an unclean
+own stream row ([[ADR-066]]), so it appears as a clean end rather than an unclean
 one.
 
 ### Health check
@@ -367,7 +367,7 @@ curl -s http://<station-host>:8080/api/v1/pause                # what is it doin
 ```
 
 If a station is ever stuck paused with the API unreachable, clear it in the
-database and restart — see the ADR-055 rollback section in
+database and restart — see the [[ADR-055]] rollback section in
 [`../architecture/ADRS.md`](../architecture/ADRS.md).
 
 ### Live listening: two transports, since ADR-019
@@ -376,7 +376,7 @@ The debug UI's GO LIVE button plays audio from `GET /api/v1/live/audio.wav` by
 default — a plain `<audio>` element against a chunked WAV stream (44-byte header,
 size fields `0xFFFFFFFF`, continuous 16-bit PCM). This replaced a Web Audio graph
 that was silent on the operator's own laptop for reasons diagnosed but not fully
-explained (ADR-019) — media-element playback worked on the same machine where Web
+explained ([[ADR-019]]) — media-element playback worked on the same machine where Web
 Audio, by any routing, did not. The original WebSocket channel,
 `/api/v1/live/audio`, is unchanged and still used by other clients (a phone, without
 issue). If a quiet garden (around −45 dBFS) proves too quiet over the new path,
@@ -392,7 +392,7 @@ is gone and has no replacement yet.
    `journalctl` on failure.
 3. If something is wrong post-deploy, re-run `oo audio probe` and
    `oo system-report` on the target and compare against
-   `docs/operations/TARGET_DIAGNOSTICS.md`.
+   [[TARGET_DIAGNOSTICS]].
 4. **Schema changes need nothing extra.** `deploy.sh` runs `alembic upgrade head`
    itself, after the sync and before the restart. Back up
    `data/openobservatory.sqlite` first if the revision is one you have not run
@@ -412,10 +412,10 @@ procedure, until something is built and tested.
 
 ## Database: SQLite by default, Alembic migrations exist
 
-Per ADR-007, the default and only database in the current deployment is
+Per [[ADR-007]], the default and only database in the current deployment is
 SQLite at `data/openobservatory.sqlite`, selected via `OO_DATABASE_DSN` (empty
 by default, which resolves to the SQLite path). PostgreSQL 16 remains the
-documented production DSN target. As of ADR-035:
+documented production DSN target. As of [[ADR-035]]:
 
 - `alembic/` (`env.py`, `versions/`) and `alembic.ini` at the repository root
   are a real migration environment, wired to `Settings` (the same
@@ -425,13 +425,13 @@ documented production DSN target. As of ADR-035:
   application/CLI startup and still builds a correct schema for a database
   that has never been touched at all — it has **not** been removed, and new
   columns should go through an Alembic revision from here on rather than
-  relying on it (full reasoning in ADR-035);
+  relying on it (full reasoning in [[ADR-035]]);
 - switching `OO_DATABASE_DSN` to a PostgreSQL URL remains the intended
   one-line configuration change; the migration environment is dialect-portable
   by construction (batch mode, no dialect-specific types) but has only been
   exercised against SQLite so far, not against a real PostgreSQL 16 instance.
 
-**`deploy.sh` runs `alembic upgrade head` on every deploy** (ADR-042), after the
+**`deploy.sh` runs `alembic upgrade head` on every deploy** ([[ADR-042]]), after the
 sync and before the service restart, so an ordinary schema change needs no
 manual step. The live station's database is at head today.
 
@@ -442,8 +442,8 @@ Two things still need a person:
   first deploy that would migrate it. Never run `alembic upgrade head` from
   scratch against a database that already has the tables: the initial revision
   issues `CREATE TABLE` and will collide with what is there. The fuller
-  creation/rollback workflow is in `docs/data/DATA_MODEL.md`
-  ("Migrations (Alembic, ADR-035)").
+  creation/rollback workflow is in [[DATA_MODEL]]
+  ("Migrations (Alembic, [[ADR-035]])").
 - **A backup, when the revision is one you have not run before.** Copy
   `data/openobservatory.sqlite` and any `-wal`/`-shm` files next to it. No
   automated backup tool exists (below).
@@ -461,20 +461,20 @@ a non-active profile). The skeleton wires:
   health check;
 - `redis:7-alpine` with append-only persistence, matching the "Redis Streams
   for the internal job/event bus" line in the required stack, not yet
-  implemented (ADR-009 describes only the in-process `EventBus`, with Redis
+  implemented ([[ADR-009]] describes only the in-process `EventBus`, with Redis
   Streams as "a second implementation of the same protocol" that has not been
   built);
 - `capture` and `api` services referencing `services/capture/Dockerfile` and
   `services/api/Dockerfile`, neither of which exists in this repository at
   the time of writing.
 
-ADR-008 records why this was deferred rather than built first: only the
+[[ADR-008]] records why this was deferred rather than built first: only the
 capture process may own the ALSA device, and getting `/dev/snd`, USB
 hot-plug re-enumeration and real-time scheduling right through a container
 adds failure surface with no benefit while the target device work was still
 being commissioned. Native execution also gives CPU/latency measurements
 uncontended by container overhead — the figures in
-`docs/operations/TARGET_DIAGNOSTICS.md` are only trustworthy because nothing
+[[TARGET_DIAGNOSTICS]] are only trustworthy because nothing
 sits between the process and the hardware.
 
 Do not deploy this Compose file. It will not run as checked in.
@@ -482,7 +482,7 @@ Do not deploy this Compose file. It will not run as checked in.
 ## Host preparation (current deployment)
 
 - The commissioned target is Ubuntu 24.04.3 LTS (Noble) on a Raspberry Pi 5,
-  **not** Raspberry Pi OS — see `docs/operations/TARGET_DIAGNOSTICS.md`. This
+  **not** Raspberry Pi OS — see [[TARGET_DIAGNOSTICS]]. This
   document does not assume Raspberry Pi OS.
 - Python 3.12 available as the system interpreter.
 - `node`/`npm` on the *developer* machine only, for the web build; not
@@ -490,7 +490,7 @@ Do not deploy this Compose file. It will not run as checked in.
 - `libasound2-dev` on the Pi for `pyalsaaudio` to build from source.
 - A stable ALSA device identity via `by-id` symlink or USB
   vendor:product:serial — never card index, which is demonstrated unstable
-  across reboots in `TARGET_DIAGNOSTICS.md`. `deploy/99-audiomoth.rules` is
+  across reboots in [[TARGET_DIAGNOSTICS]]. `deploy/99-audiomoth.rules` is
   the udev rule installed by `deploy.sh` for this.
 - NTP enabled; the station operates internally in UTC and presents local time
   using the configured IANA timezone.
@@ -501,8 +501,8 @@ Do not deploy this Compose file. It will not run as checked in.
 
 ### Evidence storage: the USB SSD must be mounted before the service starts
 
-Since 2026-08-08 (ADR-021), evidence clips are written to a USB SSD mounted at
-`data/clips`, not the SD card — see `docs/operations/TARGET_DIAGNOSTICS.md` for the
+Since 2026-08-08 ([[ADR-021]]), evidence clips are written to a USB SSD mounted at
+`data/clips`, not the SD card — see [[TARGET_DIAGNOSTICS]] for the
 device details (partition, UUID, `fstab` line). The database stays on the SD card.
 
 This has one operational consequence that is easy to get wrong: **the systemd unit
@@ -522,7 +522,7 @@ synthetic-source fallback pattern — it only reports the problem loudly.
 
 ## Configuration
 
-**Since ADR-048, the browser is the primary way to configure a station.**
+**Since [[ADR-048]], the browser is the primary way to configure a station.**
 Open the station's UI, click `settings`, and every field below is there, with
 its help text, units, bounds and shipped default. You do not need an SSH
 session, and you do not need to know the `OO_*` spelling of anything. The
@@ -589,7 +589,7 @@ The knobs, in the order to reach for them, all live-tier:
    rather than detecting. Raising the floor pushes a noisy background to black.
    These change the picture only; they change nothing about what is detected.
 6. `birdnet_threshold_out_of_range` and `birdnet_plausibility_floor` — for
-   implausible species rather than noise (ADR-032).
+   implausible species rather than noise ([[ADR-032]]).
 
 Every one of these carries its measured default in the UI as a one-click
 reset, so an experiment always has a way back. Note that none of this fixes a
@@ -773,7 +773,7 @@ Generated from the code — regenerate with
 |---|---|---|---|
 | `retention_enabled` | live | `True` | tiered retention |
 | `retention_native_days` | live (pushed) | `7` days | keep full-rate audio for |
-| `retention_audible_only_days` | live (pushed) | `30` days | keep every audible clip for, unless kept (ADR-061) |
+| `retention_audible_only_days` | live (pushed) | `30` days | keep every audible clip for, unless kept ([[ADR-061]]) |
 | `retention_watermark_ratio` | live (pushed) | `0.85` | reclaim above disk usage |
 | `retention_batch_size` | live (pushed) | `200` | assets per sweep |
 | `retention_batch_budget_s` | live (pushed) | `1.5` s | sweep time budget |
@@ -889,7 +889,7 @@ actually produced.
 carry four keys with no corresponding `Settings` field — `OO_POSTGRES_DSN`,
 `OO_REDIS_URL`, `OO_MQTT_ENABLED` and `OO_MQTT_URL`. Three have since been
 removed from the template and `OO_MQTT_ENABLED` became a real field when the
-MQTT publisher shipped (ADR-025). Re-checked mechanically on 2026-08-09: **every
+MQTT publisher shipped ([[ADR-025]]). Re-checked mechanically on 2026-08-09: **every
 key in `config/example.env` now maps to a declared `Settings` field.**
 
 `config/example.env` is a curated subset, not the full surface —
@@ -978,12 +978,12 @@ repository, `config/example.env`, or any other file. The web UI forces a
 password change on that account's first login; a machine client that logs in
 via `POST /api/v1/auth/login` directly and ignores `must_change_password` in
 the response is not currently blocked from continuing to use the generated
-password (see ADR-034's bootstrap note).
+password (see [[ADR-034]]'s bootstrap note).
 
 **What this does and does not protect against — stated exactly, not
 generously.** It stops another device or person on the same LAN from
 reading or changing station state with no credential at all, which is the
-gap ADR-015 recorded as a "real security consequence." It does **not**
+gap [[ADR-015]] recorded as a "real security consequence." It does **not**
 protect a session cookie or an API token from anything that can observe LAN
 traffic: this station is served over plain HTTP, and nothing in this
 codebase terminates TLS. `auth_cookie_secure` (`OO_AUTH_COOKIE_SECURE`)
@@ -994,10 +994,10 @@ and then authenticates nothing. Only set `OO_AUTH_COOKIE_SECURE=true` once a
 reverse proxy or similar is terminating TLS in front of this station on this
 network path. Until then, treat a session cookie or API token exactly like
 the plaintext HTTP that carries it: readable by anything already positioned
-on the LAN, same as ADR-015 always implied.
+on the LAN, same as [[ADR-015]] always implied.
 
 **The ESP32 counter-top display's exemption.** `firmware/inside-observer` reads
-`/api/v1/display` (its WebSocket push channel since ADR-038) and, when that is
+`/api/v1/display` (its WebSocket push channel since [[ADR-038]]) and, when that is
 down, polls `GET /api/v1/detections` and `GET /api/v1/health` — with no way to
 carry a credential, and it cannot be reflashed as part of an ordinary station
 upgrade. Those paths (plus `GET /metrics`, scraped by Prometheus with no
@@ -1013,7 +1013,7 @@ media, no UUIDs and no detector metadata. This means recent
 detections (species, timestamps, scores — not clip audio, not station
 coordinates, not history/export/anything else) remain readable by anything
 on the LAN even with auth turned on, until a future firmware update adds
-bearer-token support and `auth_public_read_paths` is cleared. See ADR-034
+bearer-token support and `auth_public_read_paths` is cleared. See [[ADR-034]]
 for the full trade-off and the firmware follow-up this implies.
 
 **`deploy/deploy.sh` is unaffected.** Its health-check loop polls
@@ -1043,7 +1043,7 @@ Ubuntu's `apt-daily.timer` and `apt-daily-upgrade.timer` default to
 `OnCalendar=6:00` with an hour of jitter, which on this station lands package
 downloads and installs at a random point inside the **dawn chorus** — 06:00 and
 07:00 local carry 10.0% and 11.3% of all detections, four times the afternoon
-trough. ADR-067 moves both to 15:00 with 15 minutes of jitter and
+trough. [[ADR-067]] moves both to 15:00 with 15 minutes of jitter and
 `Persistent=false`.
 
 Install the drop-in (it is deliberately **not** applied by `deploy.sh`, which
@@ -1086,10 +1086,10 @@ which `/var/run/reboot-required` will tell you about.
 
 The acceptance criteria require a continuous 72-hour soak test on the target
 device before the system may be described as complete (see
-`docs/delivery/ACCEPTANCE_CRITERIA.md`). `TARGET_DIAGNOSTICS.md` records
+[[ACCEPTANCE_CRITERIA]]). [[TARGET_DIAGNOSTICS]] records
 that one was run 2026-08-10 to 2026-08-13 and **failed** its continuity
-criterion (99.865% against ≥ 99.9%); a re-run is needed once ADR-060 and
-ADR-061 are deployed and verified. Capture the following over the run:
+criterion (99.865% against ≥ 99.9%); a re-run is needed once [[ADR-060]] and
+[[ADR-061]] are deployed and verified. Capture the following over the run:
 
 - frame continuity and gaps (frames captured ÷ frames elapsed time implies);
 - USB disconnect/reconnect behaviour;
@@ -1103,15 +1103,15 @@ ADR-061 are deployed and verified. Capture the following over the run:
 - database growth (`data/openobservatory.sqlite` size);
 - false health-check failures;
 - **that nothing else scheduled ran inside the window** — the host's
-  `apt-daily*` timers (ADR-067), `open-observatory-refine.timer` at 02:02,
-  and any deploy. A restart voids the run, and until ADR-065 nothing said
+  `apt-daily*` timers ([[ADR-067]]), `open-observatory-refine.timer` at 02:02,
+  and any deploy. A restart voids the run, and until [[ADR-065]] nothing said
   so: the 2026-08-17 attempt was killed 8.9 hours from completing and was
   not noticed for two days. Check `oo_station_unclean_restart` and
   `oo_capture_clock_reanchors_total` are both 0 for the whole window.
 
 ## Commissioning output
 
-`docs/operations/TARGET_DIAGNOSTICS.md` is the working example of a
+[[TARGET_DIAGNOSTICS]] is the working example of a
 commissioning report: hardware identity, negotiated audio profile, firmware
 version, measured resampler and capture timing, per-detector runtime, live
 channel delivery over Wi-Fi, and a plainly stated list of known limitations.

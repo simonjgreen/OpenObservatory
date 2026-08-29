@@ -1,5 +1,11 @@
+---
+aliases:
+  - ADR-023
+tags:
+  - adr
+---
 # ADR-023: The inside observer is an ESP32 counter-top display that polls HTTP and never shows a score
-> **Transport superseded by ADR-038 (2026-08-09).** The display is now pushed to
+> **Transport superseded by [[ADR-038]] (2026-08-09).** The display is now pushed to
 > over a lean WebSocket (`GET /api/v1/display`) served by the Pi itself. HTTP
 > polling remains in the firmware as a real, exercised fallback, so the "why HTTP
 > polling rather than MQTT" reasoning below still describes running code — but it
@@ -11,7 +17,7 @@
 > ADR stands unchanged** — the board, the partition table and its NVS
 > inheritance, the no-PSRAM sprite strategy, and every honesty rule: no score, no
 > percentage, no confidence figure, bat passes never named, and three visibly
-> distinct failure states. ADR-038 tightens the score rule rather than relaxing
+> distinct failure states. [[ADR-038]] tightens the score rule rather than relaxing
 > it: the field no longer exists on the wire at all.
 
 **Decision:** The "inside observer" — the ambient display that lives in the house and
@@ -51,12 +57,12 @@ requested out of band.
 
 ### Why HTTP polling rather than MQTT
 
-The MQTT publisher specified in `API_AND_INTEGRATIONS.md` does not exist. No code in
+The MQTT publisher specified in [[API_AND_INTEGRATIONS]] does not exist. No code in
 this repository publishes to a broker. Building the display against a transport that
 has not been written would have made the display's correctness untestable and its
 delivery contingent on someone else's milestone.
 
-> **Status 2026-08-08:** that premise no longer holds — ADR-025's MQTT publisher
+> **Status 2026-08-08:** that premise no longer holds — [[ADR-025]]'s MQTT publisher
 > shipped later the same day and is live against the operator's real broker. The
 > *decision* stands unchanged: the display still polls HTTP, `StationSource`
 > remains the seam an `MqttStationSource` would drop into, and the broker settings
@@ -64,13 +70,13 @@ delivery contingent on someone else's milestone.
 > Nothing about this ADR needs undoing; only this paragraph's premise is dated.
 
 The REST API, by contrast, is live, read-only, documented and already carries
-everything the display needs — including the `include_synthetic` exclusion of ADR-020,
+everything the display needs — including the `include_synthetic` exclusion of [[ADR-020]],
 which matters here more than anywhere: a counter-top display is exactly the "browsing view"
 that must not present a test scene as an observation.
 
 Polling is therefore an interim transport, not a rejection of MQTT. `StationSource` is
 an abstract seam with one implementation today; another implementation satisfies the
-same interface without the UI changing. (ADR-038 is what that seam was for: a
+same interface without the UI changing. ([[ADR-038]] is what that seam was for: a
 `PushStationSource` was dropped in alongside this one. It did **not** turn out to be
 MQTT — the broker lives on the Home Assistant box, and making two devices that are
 the same system depend on a third is the opposite of local-first.) The broker settings (host, port, credentials,
@@ -82,7 +88,7 @@ One consequence worth recording: the display has no clock and no IANA timezone
 database, and does not run NTP. It gets the station's true local offset — DST included
 — from `range.start_utc` of the `today` window in `GET /api/v1/history`, which is the
 station's own local midnight expressed in UTC. UTC internally, local for presentation,
-with the station remaining the single authority on what local means. **ADR-038
+with the station remaining the single authority on what local means. **[[ADR-038]]
 removed the need for this on the primary path**: elapsed times need no timezone at
 all, only a monotonic base and an epoch anchor, and the derived offset is now unused
 by the feed.
@@ -106,7 +112,7 @@ it: that this filters what gets named, that it is not a probability, and that it
 not apply to bats.
 
 **Bat passes bypass the threshold entirely and are never named.** `ultrasonic-pass-v1`
-detects passes, not species (ADR-013). Its score is a pulse-train confidence about
+detects passes, not species ([[ADR-013]]). Its score is a pulse-train confidence about
 whether *something* passed, not about *what*, so filtering passes by it would hide real
 observations on the strength of an irrelevant number, and naming them would invent an
 identification the detector cannot make. A pass therefore renders as "Bat pass" with
@@ -121,9 +127,9 @@ claimed always agrees with what a person can actually see listed.
 
 ### Why a silent screen must not look like a broken one
 
-The failure that motivates this is the same one behind ADR-020. When the AudioMoth's
-mode switch was moved [date corrected 2026-08-09: **2026-08-08**, matching ADR-020
-and `TARGET_DIAGNOSTICS.md`; this ADR said 2026-08-05] the station fell back to a synthetic source,
+The failure that motivates this is the same one behind [[ADR-020]]. When the AudioMoth's
+mode switch was moved [date corrected 2026-08-09: **2026-08-08**, matching [[ADR-020]]
+and [[TARGET_DIAGNOSTICS]]; this ADR said 2026-08-05] the station fell back to a synthetic source,
 correctly reported itself degraded, and kept detecting — and every browsing view that
 existed at the time showed the results as observations. An ambient display is worse
 than a debug UI here, because the whole point of it is to be glanced at rather than
@@ -143,6 +149,9 @@ the reason underneath). All three are visible from across the room.
   value. The host test `test_no_feed_item_ever_carries_a_score` is the regression
   guard, and `FeedItem` deliberately has no field to carry one.
 * A bat pass must never acquire a species name or a score in any view.
-* Anything that lists detections as observations honours ADR-020's synthetic
+* Anything that lists detections as observations honours [[ADR-020]]'s synthetic
   exclusion. The display requests `include_synthetic=false` explicitly rather than
   relying on the default.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

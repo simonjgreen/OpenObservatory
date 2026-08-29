@@ -1,6 +1,12 @@
+---
+aliases:
+  - ADR-052
+tags:
+  - adr
+---
 # ADR-052: A counter is not a diagnostic — record what BirdNET proposed and refused, in a bounded ring with per-band score histograms
-**Status:** active. Extends ADR-032's four suppression counters with the
-evidence behind them, and is wired through ADR-048's settings mechanism.
+**Status:** active. Extends [[ADR-032]]'s four suppression counters with the
+evidence behind them, and is wired through [[ADR-048]]'s settings mechanism.
 
 **Context, measured on the live station, 2026-08-09.** The operator was
 listening to the live stream, could hear bird calls, and saw no detections for
@@ -23,7 +29,7 @@ by 12.9x, four counters that were confidently lying. *A number shown to a human
 must mean what its label says* — and `152` means nothing at all on its own.
 
 **Two of the four counters' scope is also wrong for this question.** By
-ADR-032's design, `_count_suppressed` counts only the *plausibility* bands. A
+[[ADR-032]]'s design, `_count_suppressed` counts only the *plausibility* bands. A
 candidate in the `in_range` or `unfiltered` band that scores 0.54 against a
 0.55 bar is counted **nowhere** — and that is precisely the case an operator
 hits first when they can hear a blackbird and the station reports nothing.
@@ -52,7 +58,7 @@ as `oo_birdnet_candidates_{rejected,admitted}_total{plugin_id, band}` — a
 different series from `oo_birdnet_suppressed_total`, because it covers bands
 that metric deliberately does not.
 
-**Measured cost, on the hardware, before anything else.** ADR-033 is the
+**Measured cost, on the hardware, before anything else.** [[ADR-033]] is the
 precedent that makes this non-negotiable: a 10-second retention sweep cost
 ~1.9 capture gaps/minute. Measured with `scripts/bench_near_miss.py` on the
 Raspberry Pi 5 itself (the module and a driver piped to the station's own
@@ -81,7 +87,7 @@ retrospective. At 0.028% of the detector's own budget there is no version of
 this worth switching off, and a fifth-decimal saving is a worse trade than the
 certainty that the record exists when someone asks. What *is* a setting is the
 ring depth: `birdnet_near_miss_ring`, default 200, live-tier, web-editable
-(ADR-048), mapped in `tuning.py` so it genuinely takes effect on a running
+([[ADR-048]]), mapped in `tuning.py` so it genuinely takes effect on a running
 detector. 0 keeps the histograms and the species tally — the part that decides
 a threshold — and stops keeping individual rows. A resize keeps the cumulative
 record, because comparing it either side of a threshold change is the entire
@@ -97,16 +103,16 @@ to the database, so the SD card's write budget is untouched.
 
 **Privacy: metadata, not evidence.** No audio is extracted for a rejected
 candidate, no clip is written, no row is persisted; the whole structure lives
-in memory and dies with the process. This does not reopen ADR-049's decision
+in memory and dies with the process. This does not reopen [[ADR-049]]'s decision
 that human sound gets a detection row and no clip: a near-miss record carries
-the same class of fact ADR-049 already permits a detection row to carry
+the same class of fact [[ADR-049]] already permits a detection row to carry
 ("something the model thought was a human vocal, at 18:55"), contains no
 speech, and cannot be exported to a file. It is deliberately *less* durable
-than the rows ADR-049 allows.
+than the rows [[ADR-049]] allows.
 
 **Honesty details that are not decoration.**
 
-- The `implausible` band's bar is `math.inf` (ADR-032). Its `threshold` and
+- The `implausible` band's bar is `math.inf` ([[ADR-032]]). Its `threshold` and
   `shortfall` are reported as `null`, never as a large number: a distance would
   imply the candidate was merely a long way off rather than refused on
   principle, and "not applicable" stays available to the surface.
@@ -115,7 +121,7 @@ than the rows ADR-049 allows.
 - The thresholds on the payload come from the **detector instance**, not from
   `Settings`. A settings write and a detector retune are two steps; reporting
   the saved value next to rejections judged under the old one is exactly the
-  saved-versus-in-force dishonesty ADR-048 exists to prevent.
+  saved-versus-in-force dishonesty [[ADR-048]] exists to prevent.
 - The payload states that nothing below `min_confidence` is ever a candidate,
   so the histogram's lowest bins are structurally empty and are not evidence
   that the model is quiet down there.
@@ -138,7 +144,7 @@ down instead of being papered over.
   `oo detections reconcile-plausibility` still reads the durable table.
 - **No `oo` subcommand.** The CLI has no HTTP client and inventing one for this
   would be a larger change than the feature; the `curl` recipes in
-  `DEPLOYMENT_AND_OPERATIONS.md` cover the terminal case exactly.
+  [[DEPLOYMENT_AND_OPERATIONS]] cover the terminal case exactly.
 - **The score histograms are not in Prometheus.** Twenty buckets × seven bands
   is a scrape's worth of series for something read interactively; the per-band
   totals are exported and the distribution is served on demand.
@@ -146,7 +152,7 @@ down instead of being papered over.
   plausibility bands and are correctly absent from the endpoint rather than
   carrying an empty stub.
 - **Not yet run against real BirdNET inference.** The model assets are
-  unbundled (ADR-006) and this was never deployed — the operator was tuning on
+  unbundled ([[ADR-006]]) and this was never deployed — the operator was tuning on
   the station throughout. Every test here uses a stub interpreter with the
   exact measured scores and priors from the live database, and the cost figure
   is from the Pi. Whether the species table's 512-entry bound is generous or
@@ -210,3 +216,6 @@ curl -s http://<station-host>:8080/metrics | grep oo_birdnet_candidates
 #    Compare across a few minutes of rejections.
 curl -s http://<station-host>:8080/metrics | grep oo_detections_persisted_total
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

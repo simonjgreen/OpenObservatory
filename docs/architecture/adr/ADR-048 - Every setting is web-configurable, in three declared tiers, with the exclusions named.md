@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-048
+tags:
+  - adr
+---
 # ADR-048: Every setting is web-configurable, in three declared tiers, with the exclusions named
 **Decision:** A new operator gets from a freshly imaged Pi to a working, tuned
 station **without opening a terminal or a text editor**. Every field of
@@ -7,11 +13,11 @@ hazard that earns the exclusion. The default is editable; the bar for "never"
 is a named outcome with no recovery path from the browser, not tidiness and
 not "an operator might get it wrong".
 
-**Context.** ADR-047 established the mechanism — `config/runtime.env` as the
+**Context.** [[ADR-047]] established the mechanism — `config/runtime.env` as the
 one store, written atomically with comments and unknown keys preserved, mode
 0600, with `Station.applied_site` keeping "saved" and "in force" honestly
 apart — but applied it to a whitelist of 16 site-identity fields. Everything
-else, including every detector threshold and the ADR-041 spectrogram floors
+else, including every detector threshold and the [[ADR-041]] spectrogram floors
 and ceilings, meant SSH and a text editor. That is the wrong shape for two
 reasons. It makes commissioning a developer task, when the product is an
 appliance. And it makes *tuning* — the thing an operator does repeatedly, in
@@ -37,7 +43,7 @@ to hand, and a restart-and-SSH per attempt turns a minute's work into a day's.
   `tuning.py` to the object that holds their value: a `SpectrogramEncoder`
   floor/ceiling, a detector's thresholds via a new `retune()`, a `ClipManager`
   or `RetentionSweeper` attribute. *Restart-pinned* means saved, reported, and
-  not injected: coordinates (ADR-047's original reasoning — a live swap under a
+  not injected: coordinates ([[ADR-047]]'s original reasoning — a live swap under a
   running range model changes what "plausible" means mid-stream), and capture
   geometry, because re-negotiating a rate or a ring depth means tearing down
   capture, and **charter item 1 forbids that as a side effect of a form
@@ -58,7 +64,7 @@ to hand, and a restart-and-SSH per attempt turns a minute's work into a day's.
 - **Validation is the API's job, in two layers.** Per-field: type via Pydantic
   v2, plus declared bounds, enum choices and semantics, reported by field name
   with the limit in the message. Cross-field (`validate_merged`): floor below
-  ceiling, ring at least two capture blocks (ADR-030), retention ladder in
+  ceiling, ring at least two capture blocks ([[ADR-030]]), retention ladder in
   order, pre-roll inside both the maximum clip length and the native ring,
   plausibility bands in order, at least one sample rate offered. Every rule
   runs against the *merged* configuration and only fires when one of its own
@@ -68,7 +74,7 @@ to hand, and a restart-and-SSH per attempt turns a minute's work into a day's.
   were, and cannot leave the station unable to start capture.
 - **Defaults travel with the fields.** Every field carries its shipped value in
   the payload and a one-click reset in the panel, and clearing a field restores
-  it. The ADR-041 measurements are only a reference point if an operator who
+  it. The [[ADR-041]] measurements are only a reference point if an operator who
   has wandered away from them can get back.
 - **Dangerous but legitimate is a warning, not an exclusion.** `source`,
   `audio_device`, `clip_plugins` and `mqtt_tls_insecure` each carry a `danger`
@@ -130,7 +136,7 @@ mistake to make.
 
 ### Rollback and smoke test (ADR-048)
 
-No schema change, no new dependency, no migration. Additive to ADR-047: revert
+No schema change, no new dependency, no migration. Additive to [[ADR-047]]: revert
 the commits and the page returns to the 16-field site whitelist. Values already
 written to a station's `config/runtime.env` are untouched by either direction —
 they are read by `Settings` regardless of whether the UI can edit them.
@@ -159,3 +165,6 @@ curl -s -X PUT http://<station-host>:8080/api/v1/settings \
 # First run:
 curl -s http://<station-host>:8080/api/v1/setup | python3 -m json.tool
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

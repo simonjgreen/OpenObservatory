@@ -1,5 +1,11 @@
+---
+aliases:
+  - ADR-049
+tags:
+  - adr
+---
 # ADR-049: BirdNET's eleven sound categories are not species — no clip for human speech, no bird claim, no plausibility floor
-**Status:** active. Corrects ADR-032's plausibility floor and ADR-044's
+**Status:** active. Corrects [[ADR-032]]'s plausibility floor and [[ADR-044]]'s
 withdrawal flag where they meet a non-taxonomic class, and adds the first
 implementation of the charter's privacy constraint beyond "we do not record
 continuously".
@@ -19,7 +25,7 @@ up three problems of increasing seriousness, all measured rather than inferred:
 1. **91 of the 114 findings were correct detections.** 62 `Engine`, 24 `Human
    vocal`, 5 `Dog`. The range model returns 4e-06 for "Engine" at this station
    — not because engines are absent from the garden but because a car is not a
-   taxon with a distribution — and ADR-032's floor reads that as "essentially
+   taxon with a distribution — and [[ADR-032]]'s floor reads that as "essentially
    impossible here". A passing car detected at 0.99 is very probably a passing
    car, and withdrawing it also costs the operator the honest "that was
    traffic, not a bird" signal.
@@ -33,12 +39,12 @@ up three problems of increasing seriousness, all measured rather than inferred:
 
    **Corrected at merge.** An earlier draft of this ADR read the stored
    `plausibility_band: 'out_of_range'` / `threshold_applied: 0.9` on those rows
-   as evidence that ADR-032 was never deployed to the station. It was not: those
+   as evidence that [[ADR-032]] was never deployed to the station. It was not: those
    are historical rows written before the deploy of 2026-08-09 14:04 UTC.
    Checked afterwards, all 141 banded detections written since carry `in_range`
    at `0.55` and none carry `out_of_range` at `0.9`, and
    `oo_birdnet_suppressed_total{reason="suppressed_implausible_prior"}` — a
-   counter that exists only under ADR-032 — was already at 19. ADR-032 is live
+   counter that exists only under [[ADR-032]] — was already at 19. [[ADR-032]] is live
    and suppressing. The taxonomy defect described here is real and independent
    of it; the deployment claim was not.
 3. **24 `Human vocal` detections held 48 evidence clips and 125 MB** of
@@ -49,7 +55,7 @@ up three problems of increasing seriousness, all measured rather than inferred:
 ### Privacy first: no clip is written for human sound, by default
 
 New setting `clip_human_audio`, default **False**, live-tier, editable in the
-browser behind a `danger` acknowledgement (ADR-048). With it off, a detection
+browser behind a `danger` acknowledgement ([[ADR-048]]). With it off, a detection
 of `Human vocal`, `Human non-vocal` or `Human whistle` gets its detection row
 and **no audio at all**.
 
@@ -77,7 +83,7 @@ nobody can see is a promise rather than a mechanism.
 `oo clips purge-human-audio` deals with what a station already has. It deletes
 the files and marks the `media_asset` rows `reclaimed_at` /
 `reclaim_reason='privacy_human_audio'`, exactly the shape `retention.py` uses
-when a clip ages out (ADR-026), so `/api/v1/media/{id}` keeps answering 410
+when a clip ages out ([[ADR-026]]), so `/api/v1/media/{id}` keeps answering 410
 rather than 500. **Detection rows are never touched.** This is a delete rather
 than a withdrawal because the charter's "withdraw, not delete" rule is about
 *records*; clip bytes have always been deletable, and this is an existing
@@ -103,7 +109,7 @@ like `Turdus merula`. There is no string rule that keeps the crickets and
 rejects "Power tools", which is why this is a list and not a regular
 expression. `tests/test_birdnet_classes.py::TestAgainstTheShippedLabels`
 re-derives the eleven from the real file and skips when the file is absent
-(ADR-006 — the labels are never committed); it was run against the station's
+([[ADR-006]] — the labels are never committed); it was run against the station's
 own copy on 2026-08-09 and the derivation matches exactly.
 
 These classes now emit `rank=None`, `scientific_name=None` and
@@ -132,7 +138,7 @@ catalogue is.
 
 `band_for` gains `non_taxonomic`, checked before the range model is consulted
 at all, returning a new `non_biological` band at the ordinary in-range bar. The
-detector and `plausibility_repair` share it, as ADR-032 intended — one
+detector and `plausibility_repair` share it, as [[ADR-032]] intended — one
 definition of "implausible", not two.
 
 **Measured on the live station's database, read-only, 2026-08-09** (68,023
@@ -160,16 +166,16 @@ NULL, `taxonomic_group` to `acoustic_event`, `scientific_name` and
 `native_result.taxonomy_review` with a timestamp and a reason. Dry-run by
 default, `--json`, confirmation before `--apply`, idempotent.
 
-**Why this one rewrites typed columns when ADR-043 says the original claim is
-never edited and ADR-044 marks rather than rewrites.** Both precedents are
+**Why this one rewrites typed columns when [[ADR-043]] says the original claim is
+never edited and [[ADR-044]] marks rather than rewrites.** Both precedents are
 about a *claim*: which species this was. Nobody is proposing that "Engine" was
 really a wren. `rank` and `taxonomic_group` say what *kind* of statement the
 row is; they were set by this pipeline rather than by the detector, and they
 are false. A marker alone cannot fix what they do: `/api/v1/history`'s species
 list and `/api/v1/taxa/activity` `GROUP BY` those columns and would keep
 counting engines among the garden's birds, and `GET /api/v1/taxa/search`
-(ADR-043 point 6) offers `sci:engine` as a taxon a reviewer can correct a real
-bird *into*. So ADR-044's binding rules are kept — nothing deleted, the
+([[ADR-043]] point 6) offers `sci:engine` as a taxon a reviewer can correct a real
+bird *into*. So [[ADR-044]]'s binding rules are kept — nothing deleted, the
 original preserved and attributable — while declining to leave a knowingly
 false category assertion in a column four consumers aggregate over. That is
 also why this command does *not* skip human-reviewed rows the way
@@ -190,7 +196,7 @@ mean what its label says.
   catalogue and correctly flagged as implausible in a UK garden — but BirdNET
   GLOBAL 6K contains mammals, amphibians and insects as well as birds, and
   this adapter has no way to tell which is which. Fixing that needs a real
-  taxonomy source, which ADR-043 argued at length against introducing. One row
+  taxonomy source, which [[ADR-043]] argued at length against introducing. One row
   on the live station today.
 * **Nothing reads `sound_kind` on a presentation surface.** The web UI, MQTT
   and the counter-top display treat a corrected row as any other
@@ -241,3 +247,6 @@ curl -s 'http://<station-host>:8080/api/v1/taxa/search?q=Engine'
 curl -s http://<station-host>:8080/api/v1/status \
   | python3 -c 'import json,sys; c=json.load(sys.stdin)["clips"]; print(c["skipped_human_audio"], c["policy"]["clip_human_audio"])'
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

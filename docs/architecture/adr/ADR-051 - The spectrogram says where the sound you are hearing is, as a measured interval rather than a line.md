@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-051
+tags:
+  - adr
+---
 # ADR-051: The spectrogram says where the sound you are hearing is, as a measured interval rather than a line
 **Decision:** The live spectrogram draws a playhead marker: an amber band across
 the frequency axis at the point on its own time axis corresponding to the audio
@@ -52,7 +58,7 @@ estimator is ever trusted alone.
 Exactly one term is estimated rather than read: the browser/OS output buffer
 between `currentTime` and the speaker. A media element exposes no equivalent of
 `AudioContext.outputLatency`, and Web Audio is unavailable to this UI at all
-(ADR-019), so it is carried as an interval, 0.02–0.20 s, half of which is
+([[ADR-019]]), so it is carried as an interval, 0.02–0.20 s, half of which is
 charged to the uncertainty along with 0.05 s for the skew measurement's own
 round trip. That gives a floor of **±0.14 s** on a healthy stream, and the
 observed working figure is **±0.26 s**.
@@ -117,9 +123,12 @@ position it asserts is wrong — while the badge still reports the number. Past
 single line overclaims.
 
 **Cost when nobody is listening: nothing.** `playhead` is `null`, no interval
-runs, and the overlay's only expense is one ref read per frame. ADR-040's
+runs, and the overlay's only expense is one ref read per frame. [[ADR-040]]'s
 premise — the steady state of this station is nobody watching — is not weakened.
 
 **Rollback:** revert the commit. The marker is additive; `playhead` is an
 optional prop and the four new `AudioTelemetry` fields are genuine readings that
 nothing else depends on.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

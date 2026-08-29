@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-037
+tags:
+  - adr
+---
 # ADR-037: Detection-table growth is real but slow; prune the five indexes nothing reads, and defer the rest
 **Status: options B and C Accepted and implemented, 2026-08-09. Options A and
 D–K remain open, exactly as originally proposed — the operator has not chosen
@@ -88,7 +94,7 @@ detection-media links accumulated over **4.53 days**.
 | `ix_detection_canonical_taxon_id` | 0.76 | 0.8% | **never used** |
 | `ix_media_asset_kind` | 0.64 | 0.7% | used |
 | `capture_gap` + its 3 indexes | 0.51 | 0.5% | |
-| `ix_media_asset_reclaimed_at` | 0.23 | 0.2% | used (added by ADR-035's `0002`) |
+| `ix_media_asset_reclaimed_at` | 0.23 | 0.2% | used (added by [[ADR-035]]'s `0002`) |
 | everything else (audio_stream, health_event, auth, schema) | 0.26 | 0.3% | |
 
 Indexes are **27.0 MB, 28.7% of the file**. Detection indexes alone are 23.87 MB
@@ -184,7 +190,7 @@ rain are acoustic events too.
 | database, 10 yr | 43 GB | 76 GB | 117 GB |
 
 Assumptions: current schema and current index set; media assets keep accruing at
-the observed 5,967/day (their rows are never deleted either — ADR-026 only sets
+the observed 5,967/day (their rows are never deleted either — [[ADR-026]] only sets
 `reclaimed_at`); no roll-up; SQLite page size 4096.
 
 #### Does SQLite actually get slow? No.
@@ -206,7 +212,7 @@ Every query the station actually runs is **flat in database size**, because ever
 one of them is a bounded range scan on `event_start_utc` (or on `taxonomic_group,
 event_start_utc`). They get *faster* on the grown copies only because the b-tree
 was rebuilt densely. The retention exemplar scan — the one unbounded read
-ADR-026 deliberately allowed — is bounded in practice by *live* media assets, not
+[[ADR-026]] deliberately allowed — is bounded in practice by *live* media assets, not
 by history, and did not grow.
 
 The only thing that degrades is a whole-database aggregation with no time
@@ -228,7 +234,7 @@ reads.
 
 ### 3. Where the data lives: **not the emergency it was in August**
 
-The database is on the SD card by ADR-021's deliberate choice, and heavy SD I/O
+The database is on the SD card by [[ADR-021]]'s deliberate choice, and heavy SD I/O
 caused capture overruns on 2026-08-05. But:
 
 - **Capacity is a non-issue.** `/dev/mmcblk0p2` is 237.8 GB with **194 GB free**
@@ -251,7 +257,7 @@ caused capture overruns on 2026-08-05. But:
 
 For contrast, the **SSD** took **146,616 sectors = 75 MB in the same 120 s
 (~54 GB/day)** and holds 43 GB of clips after five days, with **zero** assets
-reclaimed so far because nothing has aged past ADR-026's 7-day native tier yet.
+reclaimed so far because nothing has aged past [[ADR-026]]'s 7-day native tier yet.
 Clip storage is two to three orders of magnitude more data than the database and
 is where the storage engineering actually is.
 
@@ -382,13 +388,13 @@ available anywhere in the system:
 
 - Encoding ~10 hours of clip audio a day is real CPU on a machine whose first rule
   is that capture always wins. It would land on `_evidence_executor` — correctly,
-  *not* the default pool the ALSA read shares (ADR-021) — but that executor is
+  *not* the default pool the ALSA read shares ([[ADR-021]]) — but that executor is
   already the busiest non-capture thread, and 2026-08-05 is on record for what
   happens when evidence I/O contends with capture. **I did not measure FLAC encode
   time on the Pi 5 itself** (that would have meant putting load on a live station),
   only on a desktop, so the CPU figure is unquantified and must be measured before
   anyone acts on this.
-- The SSD is **10% full (43 GB of 458 GB)** and ADR-026's tiers have not fired once
+- The SSD is **10% full (43 GB of 458 GB)** and [[ADR-026]]'s tiers have not fired once
   yet — nothing is 7 days old. The compression would be solving a problem the
   tiering has not been given a chance to solve.
 - It changes `media_asset.mime_type`, the `/api/v1/media/{id}` response, the web
@@ -411,10 +417,10 @@ the CPU, and a Pi-side encode benchmark is the first step.
 | E | **Re-encode UUIDs/timestamps** (`BLOB(16)`, integer epoch) | 21.5% | Breaking schema change, rewrite of every row, `TypeDecorator`, unreadable in `sqlite3` | **Do it at the PostgreSQL move or not at all.** Free there, expensive later. |
 | F | **Time-ordered primary key (UUIDv7)** | halves insert write amplification (13,162 → 6,852 WAL B/row) | Breaking key change; UUIDs stay UUIDs so the contract is unchanged | **Do it at the PostgreSQL move.** Cheapest big win available *at that moment*, unavailable cheaply after. |
 | G | **`taxon` lookup table** | 8.9% | Join on two hot query paths, interning cache on the write path | Only if E is happening anyway. |
-| H | **Move the database to the SSD** | 0 bytes; removes DB writes from the SD card | Contradicts ADR-021's explicit reasoning: the station keeps capturing, detecting and serving history with the SSD unplugged *because* the database is on the always-present system disk. Buys ~0.3–0.7 GB/day of SD writes against 6 GB/day total | **No.** ADR-021 already decided this and the numbers do not overturn it. |
-| I | **PostgreSQL** (ADR-007's DSN swap, now that ADR-035 exists) | 0 bytes by itself | The migration environment exists but has never been run against a real PostgreSQL 16; adds a server to a machine that has none | Not for size. Do it when concurrent writers or `LISTEN/NOTIFY` are needed, and take E+F+G with it. |
+| H | **Move the database to the SSD** | 0 bytes; removes DB writes from the SD card | Contradicts [[ADR-021]]'s explicit reasoning: the station keeps capturing, detecting and serving history with the SSD unplugged *because* the database is on the always-present system disk. Buys ~0.3–0.7 GB/day of SD writes against 6 GB/day total | **No.** [[ADR-021]] already decided this and the numbers do not overturn it. |
+| I | **PostgreSQL** ([[ADR-007]]'s DSN swap, now that [[ADR-035]] exists) | 0 bytes by itself | The migration environment exists but has never been run against a real PostgreSQL 16; adds a server to a machine that has none | Not for size. Do it when concurrent writers or `LISTEN/NOTIFY` are needed, and take E+F+G with it. |
 | J | **PostgreSQL + TimescaleDB compression** | plausibly 5–10× on a columnar-compressed hypertable | Everything in I, plus a feature flag the spec allows but nothing has exercised, plus compressed chunks are effectively read-mostly | Premature. Revisit only if D is rejected *and* the trigger below fires. |
-| K | **FLAC for evidence clips** | ~47% of 8.6 GB/day — the biggest saving in the system | CPU on the evidence executor, unmeasured on the Pi; touches ADR-026 | Defer; see trigger above. |
+| K | **FLAC for evidence clips** | ~47% of 8.6 GB/day — the biggest saving in the system | CPU on the evidence executor, unmeasured on the Pi; touches [[ADR-026]] | Defer; see trigger above. |
 
 ---
 
@@ -482,8 +488,8 @@ the SSD is at 43 GB.
 - Whether recent main-branch changes (`68f4234`, the acoustic-event filter fix) have
   reached the running station, which would lower the `activity-v1` rate the
   projections use.
-- Nothing here has been run on PostgreSQL; ADR-007's "the DSN swap is
-  configuration-only" is still unverified beyond SQLite, exactly as ADR-035 says.
+- Nothing here has been run on PostgreSQL; [[ADR-007]]'s "the DSN swap is
+  configuration-only" is still unverified beyond SQLite, exactly as [[ADR-035]] says.
 
 ---
 
@@ -492,7 +498,7 @@ the SSD is at 43 GB.
 **Options A and D–K above are unchanged and still open** — this section
 covers only B and C, which the operator accepted. Both were re-verified
 against `main` as it stood on 2026-08-09 (which had moved since the research
-above was written — in particular, ADR-032's `plausibility_repair.py` did not
+above was written — in particular, [[ADR-032]]'s `plausibility_repair.py` did not
 exist yet when the original indexes-nothing-reads grep was run) and against a
 fresh read-only copy of the live database (63,234 detections, up from 61,453),
 not merely re-trusted from the research above.
@@ -504,7 +510,7 @@ Re-running the two-part check (`EXPLAIN QUERY PLAN` over every query in
 `station.py`, `mqtt/publisher.py`, `mqtt/discovery.py`, plus a grep for any
 filter/order-by touching the five candidate columns) turned up exactly the
 case this ADR asked a successor to watch for:
-`plausibility_repair.reconcile_plausibility` (ADR-032, landed on `main` after
+`plausibility_repair.reconcile_plausibility` ([[ADR-032]], landed on `main` after
 this ADR's research) joins **from** `detector` (filtered by
 `Detector.plugin_id == BIRDNET_PLUGIN_ID`) **into** `detection`, and
 `EXPLAIN QUERY PLAN` against the live database shows SQLite satisfies that
@@ -531,11 +537,11 @@ the reason the research itself flagged as the risk to watch.
 
 Implemented as Alembic revision `0004_drop_dead_detection_indexes`
 (`alembic/versions/20260809_0003_000000000004_drop_dead_detection_indexes.py`
-— ADR-035's baseline used `0001`–`0003`, so `0004` is the next free number;
+— [[ADR-035]]'s baseline used `0001`–`0003`, so `0004` is the next free number;
 the `0003` this ADR originally said to use had already been taken by the
 authentication tables). Plain `DROP INDEX` / `CREATE INDEX`, following
 revision `0002`'s precedent — no batch mode needed for a bare index change on
-SQLite, and both statements are standard SQL on PostgreSQL 16 too (ADR-007).
+SQLite, and both statements are standard SQL on PostgreSQL 16 too ([[ADR-007]]).
 `alembic check` reports no drift after upgrading to head. `downgrade -1`
 recreates all four indexes in one command;
 `tests/test_migrations.py::test_0004_drops_and_restores_the_four_dead_detection_indexes`
@@ -573,7 +579,7 @@ persisted elsewhere on the same row:
 | `peak_frequency_hz` | `Detection.peak_frequency_hz` | matches to the native result's own 1 dp rounding (≤ 0.05 Hz observed) on 49,726/49,726 activity-v1 rows; compared with `math.isclose(rel_tol=1e-3, abs_tol=0.1)` |
 
 **`occurrence_probability` and `plausibility_band` are never touched** — they
-are ADR-032's audit trail for why a candidate was or was not admitted, not a
+are [[ADR-032]]'s audit trail for why a candidate was or was not admitted, not a
 duplicate of anything, exactly as this work was instructed to preserve.
 
 **This is a materially smaller set than the original research proposed, and
@@ -674,3 +680,6 @@ The full test suite (389 baseline + 5 new = 394 passed, 6 skipped),
 `ruff check .` (clean) and `mypy src` (29 pre-existing errors, none added)
 were run locally against a Python 3.12 venv; none of this was exercised
 against PostgreSQL or on the Pi 5 itself.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

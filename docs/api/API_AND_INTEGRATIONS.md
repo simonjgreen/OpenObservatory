@@ -9,7 +9,7 @@ components to remain recorded, not silently dropped.
 
 Source of truth for what is implemented: `src/open_observatory/api/app.py`.
 The implemented list below was re-checked route by route against that file on
-**2026-08-09, after the ADR-043/045/049/050/052 work merged to `main`** — an
+**2026-08-09, after the [[ADR-043]]/045/049/050/052 work merged to `main`** — an
 earlier "regenerated on 2026-08-09" claim was made against a branch that predated
 those merges and was missing seven routes.
 
@@ -24,11 +24,11 @@ those merges and was missing seven routes.
 | `GET /station` | station identity and the full pipeline snapshot |
 | `GET /health` | always credential-free, even with auth on |
 | `GET /system` | host facts |
-| `GET /settings` | the whole operator-editable catalogue, with tier, bounds, units and shipped defaults (ADR-047/048) |
+| `GET /settings` | the whole operator-editable catalogue, with tier, bounds, units and shipped defaults ([[ADR-047]]/048) |
 | `PUT /settings` | partial update; validates, persists to `config/runtime.env`, applies live where safe |
-| `GET /setup` | guided first-run state: what a new station still needs (ADR-048) |
-| `GET /retention/status` | tiered clip retention state (ADR-026/029) |
-| `GET /pause` | the privacy pause: current state **and** the durations offered, in one response (ADR-055) |
+| `GET /setup` | guided first-run state: what a new station still needs ([[ADR-048]]) |
+| `GET /retention/status` | tiered clip retention state ([[ADR-026]]/029) |
+| `GET /pause` | the privacy pause: current state **and** the durations offered, in one response ([[ADR-055]]) |
 | `POST /pause` | body `{"preset": "15m"\|"1h"\|"3h"\|"6h"\|"until-midnight"}`. Stops detection, evidence, publishing and live listening until the deadline; capture keeps running. Pressing it while paused *replaces* the deadline. 422 on an unknown key |
 | `DELETE /pause` | resume now. Idempotent — resuming a station that is not paused is a 200 |
 | `GET /audio/devices` | |
@@ -37,14 +37,14 @@ those merges and was missing seven routes.
 | `GET /streams` | |
 | `GET /gaps` | |
 | `GET /detectors` | includes schedule state and deferred-queue lag |
-| `GET /detectors/near-misses` | what BirdNET proposed and refused, in a bounded in-memory ring with per-band score histograms (ADR-052). `limit` 0–500 (default 50), `species_limit` 0–500 (default 40). **Persists nothing** — it is a live ring, empty after a restart |
+| `GET /detectors/near-misses` | what BirdNET proposed and refused, in a bounded in-memory ring with per-band score histograms ([[ADR-052]]). `limit` 0–500 (default 50), `species_limit` 0–500 (default 40). **Persists nothing** — it is a live ring, empty after a restart |
 | `GET /models` | installed model assets and their licences |
-| `GET /detections` | credential-free by default even with auth on, for the ESP32 display (ADR-034) |
+| `GET /detections` | credential-free by default even with auth on, for the ESP32 display ([[ADR-034]]) |
 | `GET /detections/export` | CSV/JSON; registered *before* `/detections/{id}` so the path parameter does not swallow it |
 | `GET /detections/{id}` | |
-| `POST /detections/{id}/review` | append-only; body `{status: confirmed\|rejected\|corrected\|held, note?, corrected_taxon_id?}` (ADR-029, closed by ADR-043). `corrected_taxon_id` is required iff `status == "corrected"` and 400s on an unknown id; `held` also exempts the detection's evidence from retention's age tiers |
+| `POST /detections/{id}/review` | append-only; body `{status: confirmed\|rejected\|corrected\|held, note?, corrected_taxon_id?}` ([[ADR-029]], closed by [[ADR-043]]). `corrected_taxon_id` is required iff `status == "corrected"` and 400s on an unknown id; `held` also exempts the detection's evidence from retention's age tiers |
 | `GET /detections/{id}/review` | latest review, or `null` |
-| `GET /taxa/search` | resolves a taxon the station has itself identified before, for the correction picker (ADR-043). `q` required, 1–120 chars; `limit` 1–100 (default 20); returns `{taxa, source: "station_history"}` |
+| `GET /taxa/search` | resolves a taxon the station has itself identified before, for the correction picker ([[ADR-043]]). `q` required, 1–120 chars; `limit` 1–100 (default 20); returns `{taxa, source: "station_history"}` |
 | `GET /taxa/activity` | |
 | `GET /history` | |
 | `GET /history/windows` | `last-hour`, `last-night`, `dawn-chorus`, `today`, `yesterday`, `last-24h`, `last-7d`. This is what the dashboard puts on screen, **not** the whole grammar `window` accepts — see below. |
@@ -54,11 +54,11 @@ those merges and was missing seven routes.
 | `GET /debug/events` | |
 | `WS /live` | |
 | `WS /live/audio` | |
-| `WS /display` | the counter-top display's push channel — detections only, ~49 B a detection (ADR-038), plus ADR-050's OTA offer frame. Wire format in [`DEBUG_UI_TRANSPORT.md`](DEBUG_UI_TRANSPORT.md) |
-| `GET /live/audio.wav` | the debug UI's default listen path (ADR-019) |
-| `POST /live/tune` | retunes the shared ultrasonic oscillator in place (ADR-022) |
+| `WS /display` | the counter-top display's push channel — detections only, ~49 B a detection ([[ADR-038]]), plus [[ADR-050]]'s OTA offer frame. Wire format in [`DEBUG_UI_TRANSPORT.md`](DEBUG_UI_TRANSPORT.md) |
+| `GET /live/audio.wav` | the debug UI's default listen path ([[ADR-019]]) |
+| `POST /live/tune` | retunes the shared ultrasonic oscillator in place ([[ADR-022]]) |
 
-Counter-top display firmware over the air (ADR-050). All five verified on
+Counter-top display firmware over the air ([[ADR-050]]). All five verified on
 hardware on 2026-08-09, including a deliberate rollback drill:
 
 | Endpoint | Notes |
@@ -69,7 +69,7 @@ hardware on 2026-08-09, including a deliberate rollback drill:
 | `GET /firmware/image` | the bytes themselves; 404 when nothing is published. Public-read by default, since the display carries no credential |
 | `POST /firmware/rollout` | offers the image to connected displays; 409 when nothing is published. **`offered` is how many displays were *told*, not how many installed** — only the display can say that, via `GET /station`'s `display_channel.per_client[].firmware_version` |
 
-Authentication (ADR-034; the whole gate is inert while `auth_enabled` is `false`,
+Authentication ([[ADR-034]]; the whole gate is inert while `auth_enabled` is `false`,
 which is the default):
 
 | Endpoint | Notes |
@@ -87,9 +87,9 @@ exposition format, disabled via `metrics_enabled=false`; never gated by auth,
 because the gate only matches `/api/v1/*` at all).
 
 The two WebSocket endpoints and the WAV endpoint are documented in detail in
-`DEBUG_UI_TRANSPORT.md`; see also ADR-012 in `docs/architecture/ADRS.md` for
+[[DEBUG_UI_TRANSPORT]]; see also [[ADR-012]] in [[ADRS]] for
 the decision to use WebSocket rather than SSE for the live channel, and
-ADR-019 for why `GET /live/audio.wav` was added and made the debug UI's
+[[ADR-019]] for why `GET /live/audio.wav` was added and made the debug UI's
 default listen path — Web Audio produced no audible output at all on a real
 laptop, for reasons unrelated to the transport, and a plain `<audio>` element
 against a chunked WAV stream did work on the same machine. `WS /live/audio` is
@@ -99,7 +99,7 @@ unchanged and still used by clients (a phone) that never had that problem.
 44-byte WAV header with both size fields set to `0xFFFFFFFF` (the endless-
 stream convention) followed by continuous 16-bit little-endian mono PCM,
 answers `503` if the ultrasonic channel is unavailable for this station's
-native rate **or if the operator has paused the station (ADR-055)** — in the
+native rate **or if the operator has paused the station ([[ADR-055]])** — in the
 pause case the `detail` is the pause banner, which `web/src/audio.ts` surfaces
 on the listen control — and carries `Cache-Control: no-store` plus `X-Live-Sample-Rate`
 (and, on the ultrasonic channel, `X-Live-Tune-Hz`/`X-Live-Bandwidth-Hz`)
@@ -112,9 +112,9 @@ response headers in place of the WebSocket's JSON hello frame.
 - `POST /detectors/{id}/enable`
 - `POST /detectors/{id}/disable`
 - ~~`POST /detections/{id}/reviews`~~ — **implemented, at the singular path
-  `POST /api/v1/detections/{id}/review`** (ADR-029). Append-only; every call
+  `POST /api/v1/detections/{id}/review`** ([[ADR-029]]). Append-only; every call
   inserts, setting `supersedes_review_id` to the prior row. ~~`corrected_taxon_id`
-  is always written `None`.~~ **Closed by ADR-043, 2026-08-09:** a correction is
+  is always written `None`.~~ **Closed by [[ADR-043]], 2026-08-09:** a correction is
   resolved through `GET /api/v1/taxa/search` and denormalised onto the review row
   as `corrected_taxon_id` / `corrected_common_name` / `corrected_scientific_name`.
   The detection's own claim columns are never touched, so the original stays
@@ -194,7 +194,7 @@ table directly, at a measured ~16 µs per detection row on the Pi 5, so a window
 costs roughly what it contains: about 2 s for seven days, 10 s for thirty and
 30 s for ninety at this station's mid-2026 detection rate. `GET /detections`
 and the export are bounded by their `limit` and do not have this problem.
-ADR-056 measures all of it and proposes the roll-up that fixes it; until then,
+[[ADR-056]] measures all of it and proposes the roll-up that fixes it; until then,
 prefer the export for wide ranges.
 
 ### `include_synthetic` and `excluded_synthetic_count` — implemented, ADR-020
@@ -218,10 +218,10 @@ already separates `seconds_from_microphone` from total coverage and exists to
 answer "was the microphone listening", which synthetic-exclusion would
 obscure rather than clarify. Motivating incident: the AudioMoth's USB mode
 switch was moved to `USB/OFF` and the problem was found on 2026-08-08 (this
-document previously said 2026-08-05, disagreeing with ADR-020 and
-`TARGET_DIAGNOSTICS.md`; the audio itself stopped at about 2026-08-07 06:26 UTC
+document previously said 2026-08-05, disagreeing with [[ADR-020]] and
+[[TARGET_DIAGNOSTICS]]; the audio itself stopped at about 2026-08-07 06:26 UTC
 and nothing noticed for 29 hours, derived from frame counts in
-`OPEN_INVESTIGATION_CAPTURE_GAPS.md`). The station correctly fell back
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]]). The station correctly fell back
 to a synthetic source and correctly reported itself degraded, but detectors
 kept running against synthetic audio and persisted 5 bird detections
 (*Grey-winged Inca-Finch*, implausible at this station) plus 515 acoustic
@@ -231,7 +231,7 @@ existed at the time.
 ### `withdrawn` and `excluded_withdrawn_count` — implemented, ADR-044
 
 A detection whose identification a plausibility review has retracted
-(`oo detections reconcile-plausibility --apply`, ADR-032) is treated differently
+(`oo detections reconcile-plausibility --apply`, [[ADR-032]]) is treated differently
 depending on whether the surface is a *record* or a *claim*.
 
 Every detection payload carries a top-level **`withdrawn`** boolean — always
@@ -255,7 +255,7 @@ and names nothing.
 
 The MQTT publisher and the `/api/v1/display` counter-top display channel present a
 withdrawn detection not at all. Both are claim surfaces with no room for a
-caveat — a Home Assistant entity state is a bare name, and ADR-023 forbids the
+caveat — a Home Assistant entity state is a bare name, and [[ADR-023]] forbids the
 display from showing a score — so marking is not an option there and silence is
 the honest answer.
 
@@ -302,9 +302,9 @@ only as a record of the original intent:
 > richer controls.~~
 
 In fact WebSocket is the only live transport implemented, and no SSE endpoint
-exists or is planned. See `DEBUG_UI_TRANSPORT.md` for the full wire format of
-`GET /api/v1/live` and `GET /api/v1/live/audio`, and ADR-012 in
-`docs/architecture/ADRS.md` for why WebSocket was chosen over SSE.
+exists or is planned. See [[DEBUG_UI_TRANSPORT]] for the full wire format of
+`GET /api/v1/live` and `GET /api/v1/live/audio`, and [[ADR-012]] in
+[[ADRS]] for why WebSocket was chosen over SSE.
 
 ### Event envelope
 
@@ -315,14 +315,14 @@ inline example in this document had drifted from it.
 **Fixed in schema_version 1.1 (Milestone 6).** The gap recorded here through
 1.0 — `additionalProperties: false` with `rank` and `taxonomic_group` missing,
 even though every internal detection record carries them (see `detection` in
-`DATA_MODEL.md`) — is closed. The schema now describes the full envelope
+[[DATA_MODEL]]) — is closed. The schema now describes the full envelope
 (`schema_version`, `event_id`, `event_type`, `occurred_at`, `station_id`,
 `data`) rather than just the inner record, because the MQTT publisher made
 that envelope the first shape something outside this repository depends on.
 `data` includes `rank`, `taxonomic_group` and the `media` array the WebSocket
 and MQTT paths both already send. `tests/test_mqtt_schema.py` validates a real
 emitted `detection.created` event against the schema so this cannot drift
-again unnoticed. See ADR-025.
+again unnoticed. See [[ADR-025]].
 
 ## MQTT — implemented, disabled by default
 
@@ -331,8 +331,8 @@ again unnoticed. See ADR-025.
 snapshot, capture/detector state, and per-station metrics) over MQTT with
 Home Assistant discovery. Off by default (`OO_MQTT_ENABLED=false`); every
 setting is in `config/runtime.env` (see `config.py`'s MQTT section) and never
-hardcoded. See `docs/operations/HOME_ASSISTANT.md` for topics, entities, setup
-and verification with `mosquitto_sub`, and ADR-025 for the design.
+hardcoded. See [[HOME_ASSISTANT]] for topics, entities, setup
+and verification with `mosquitto_sub`, and [[ADR-025]] for the design.
 
 Topic layout (`{prefix}` defaults to `openobservatory/{station_id}`):
 
@@ -352,7 +352,7 @@ when the broker is unreachable. Broker/credential state is surfaced at
 
 Not implemented: environmental telemetry ingestion, the alert rule engine,
 and HMAC webhooks (still planned, see below and the original Milestone 6
-scope in `IMPLEMENTATION_PLAN.md`).
+scope in [[IMPLEMENTATION_PLAN]]).
 
 ## Home Assistant discovery — implemented
 
@@ -365,7 +365,7 @@ connects, grouped under one HA device via the `device` block. Entities:
 station for detection notifications in automations. No numeric score is ever
 published as `device_class: probability`, and bat detections never carry a
 species name — see the full entity table and the calibration caveat in
-`docs/operations/HOME_ASSISTANT.md`. One entity per detected species is
+[[HOME_ASSISTANT]]. One entity per detected species is
 deliberately not created, per the original design intent below.
 
 ## Settings — implemented (ADR-047, widened by ADR-048)
@@ -408,9 +408,9 @@ and are mode 0600.
 
 - `tier` is `"live"` (in force now) or `"restart"` (saved, applied at next
   start). `restart_required` is the same fact under the name the field has
-  carried since ADR-047.
+  carried since [[ADR-047]].
 - `default` is the value shipped in `config.py` — the operator's documented way
-  back to a known state, including ADR-041's measured spectrogram floors.
+  back to a known state, including [[ADR-041]]'s measured spectrogram floors.
 - An individual field also carries `"pending_restart": true` when it is one of
   the fields named in the top-level `pending_restart` list, so a UI need not
   cross-reference.
@@ -430,7 +430,7 @@ and are mode 0600.
   requires an explicit acknowledgement; the API does not — it is advice, not a
   gate.
 - `non_editable` lists what is deliberately not editable from a browser, with
-  the hazard. See ADR-048 for the reasoning on each.
+  the hazard. See [[ADR-048]] for the reasoning on each.
 
 ### `PUT /api/v1/settings`
 
@@ -494,7 +494,7 @@ cookie or `Authorization: Bearer <token>` on every `/api/v1/*` path except:
   ESP32 counter-top display, which cannot carry a credential: `/api/v1/detections`
   (the HTTP fallback), `/api/v1/display` (the push channel — a WebSocket, checked
   before the 4401 close, not a GET) and `/api/v1/firmware/image` (so a display can
-  fetch its own update). ADR-050 removed the "cannot be reflashed" half of the
+  fetch its own update). [[ADR-050]] removed the "cannot be reflashed" half of the
   original reasoning: it can now be updated over the air, but still without a
   credential.
 
@@ -504,8 +504,8 @@ bearer token is readable by anything positioned on the LAN;
 `auth_cookie_secure` therefore defaults to `false`, because a `Secure` cookie on
 a plain-HTTP origin is silently never sent back and turns a working login into
 one that appears to succeed and authenticates nothing. See
-`docs/operations/DEPLOYMENT_AND_OPERATIONS.md` for the operator procedure and
-ADR-034 for the full trade-off.
+[[DEPLOYMENT_AND_OPERATIONS]] for the operator procedure and
+[[ADR-034]] for the full trade-off.
 
 ## MCP server — planned, not implemented
 

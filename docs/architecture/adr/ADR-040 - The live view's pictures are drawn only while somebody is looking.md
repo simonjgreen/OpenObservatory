@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-040
+tags:
+  - adr
+---
 # ADR-040: The live view's pictures are drawn only while somebody is looking
 **Decision:** `Station._handle_block` gates both spectrogram encoders on there
 being a live viewer, exactly as it already gated the heterodyne. Two settings
@@ -18,7 +24,7 @@ framing is that the counter-top display is the first-class surface and "first cl
 experience is no web browser open"; the web UI must be fully functional while it
 is open, but it is not expected to be open. Work done for an absent browser is
 therefore not merely inefficient, it is charged against the event loop whose
-stalls ADR-033 showed produce capture gaps. The heterodyne already carried this
+stalls [[ADR-033]] showed produce capture gaps. The heterodyne already carried this
 reasoning in a comment — "continuously heterodyning 384 kHz for nobody would
 waste real CPU on a device that must never be starved of it" — and the
 spectrograms simply had not been held to it.
@@ -60,7 +66,7 @@ taste, but it is **off** by default: on the evidence there is no cheap channel.
 **Why the in-station saving (0.0901) exceeds the bench figure (0.0554).**
 `hot_path_seconds` is wall time on the event-loop thread, not CPU time, so it
 includes time the thread spent descheduled mid-block. That is not an error to
-correct for: the quantity ADR-033 cares about is exactly how long the loop is
+correct for: the quantity [[ADR-033]] cares about is exactly how long the loop is
 unavailable to issue the next ALSA read, and that is what this measures. The
 bench measures pure CPU in an uncontended process, and the gap between the two is
 the contention the encoders were adding.
@@ -106,7 +112,7 @@ nothing much? Because a canvas whose columns are one second apart on the left an
 which is a worse failure than a blank one. Blank is honest.
 
 **The display is not collateral damage, and this was measured rather than
-assumed.** ADR-038's channel and the debug UI's live channel share one process
+assumed.** [[ADR-038]]'s channel and the debug UI's live channel share one process
 and one event loop, so a browser connecting *could* have cost the first-class
 surface. Ninety-second windows on the live station either side of a real browser
 connecting over Wi-Fi:
@@ -119,7 +125,7 @@ connecting over Wi-Fi:
 `display_channel.per_client` reported zero drops and a zero queue in every window
 of this session, including the two five-minute windows with encoders running.
 No change to either transport was made, because the evidence did not ask for one:
-ADR-012's single-writer rule and ADR-038's separate endpoint are what already
+[[ADR-012]]'s single-writer rule and [[ADR-038]]'s separate endpoint are what already
 make this hold, and restructuring them speculatively would have put the project's
 most expensive bug back in play.
 
@@ -131,7 +137,7 @@ assert the opposite and now connects a viewer first.
 
 **Not verified:** no 72-hour soak has run, and these are five-minute windows.
 The saving is measured on the event loop's own clock; the effect on capture gaps
-is inferred from ADR-033's mechanism rather than demonstrated, because zero gaps
+is inferred from [[ADR-033]]'s mechanism rather than demonstrated, because zero gaps
 occurred in any window here — before or after.
 
 ### Rollback and smoke test (ADR-040)
@@ -157,3 +163,6 @@ python scripts/measure_live_cost.py --seconds 300 --label "browser open"
 python scripts/bench_spectrogram.py     # run ON the Pi; laptop figures are not evidence
 python scripts/watch_display_channel.py --seconds 90 --label "browser connecting"
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

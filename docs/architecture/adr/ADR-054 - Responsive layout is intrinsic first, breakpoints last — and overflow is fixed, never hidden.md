@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-054
+tags:
+  - adr
+---
 # ADR-054: Responsive layout is intrinsic first, breakpoints last — and overflow is fixed, never hidden
 **Decision:** Every row of controls in the web UI wraps and carries `min-width: 0` at
 *every* width, rather than being rearranged by a media query at one. Media queries are
@@ -38,7 +44,7 @@ only four media queries in the entire 1145-line stylesheet, so every width betwe
 was unconsidered. `flex-wrap` plus `min-width: 0` degrades continuously and needs no
 one to have thought about 414 px specifically.
 
-**Constraint — nothing is hidden to make it fit (ADR-016, ADR-028).** A stat that
+**Constraint — nothing is hidden to make it fit ([[ADR-016]], [[ADR-028]]).** A stat that
 disappears at 400 px is a stat an operator cannot check from the garden, which is
 exactly where they are standing when they want it. So:
 
@@ -108,3 +114,6 @@ chromium --headless --disable-gpu --no-sandbox --mute-audio --hide-scrollbars \
 #    every element's right edge inside document.documentElement.clientWidth,
 #    and .go-live topmost at its own centre.
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

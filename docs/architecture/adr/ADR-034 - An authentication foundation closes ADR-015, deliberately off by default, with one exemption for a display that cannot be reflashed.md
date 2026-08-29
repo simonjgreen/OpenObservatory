@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-034
+tags:
+  - adr
+---
 # ADR-034: An authentication foundation closes ADR-015, deliberately off by default, with one exemption for a display that cannot be reflashed
 **Decision:** Local operator accounts (Argon2id-hashed passwords), `HttpOnly`
 session cookies for the browser UI, and revocable, hashed, long-lived API
@@ -61,7 +67,7 @@ anyway would need a physical USB reflash of a device sitting on the
 operator's counter top. Two paths were available: leave those two endpoints
 reachable with no credential even when `auth_enabled` is true (chosen), or
 require a reflash before `auth_enabled` could ever be turned on for a station
-running this display. The second option effectively vetoes closing ADR-015
+running this display. The second option effectively vetoes closing [[ADR-015]]
 at all for the one station this session has real telemetry from, which is
 worse than a scoped, documented exemption. **What the exemption actually
 costs:** with `auth_enabled: true`, anything on the LAN can still read the
@@ -75,7 +81,7 @@ after every restart with no credential and no login flow of its own — making
 it authenticate-only would turn every future deploy into a hang.
 **Follow-up, not built here:** `firmware/inside-observer` already has an
 NVS-persisted `MqttSettings` struct with `username`/`password` fields
-(`model/settings.h`) that are unused today (ADR-023 shipped HTTP polling
+(`model/settings.h`) that are unused today ([[ADR-023]] shipped HTTP polling
 first, MQTT is "not wired up yet"); the natural home for a future bearer
 token is a new field alongside them, sent as `Authorization: Bearer <token>`
 on both polled requests, provisioned through the same captive-portal config
@@ -87,7 +93,7 @@ between "today" and "closed."
 
 **Reason `Secure` is off by default on the session cookie, stated honestly
 rather than quietly making login not work.** The station is served over
-plain HTTP with no TLS component anywhere in this codebase (ADR-015's
+plain HTTP with no TLS component anywhere in this codebase ([[ADR-015]]'s
 LAN-trust premise is unchanged, not revisited here). A cookie marked `Secure`
 is refused by the browser on a non-HTTPS origin — not "less safe", simply
 never sent — which would make `POST /api/v1/auth/login` appear to succeed
@@ -95,7 +101,7 @@ never sent — which would make `POST /api/v1/auth/login` appear to succeed
 carries no credential at all. That is strictly worse than the status quo: a
 login page that appears to work and does not is a worse trap than no login
 page. `auth_cookie_secure` defaults to `false` and is documented, in both
-this ADR and `docs/operations/DEPLOYMENT_AND_OPERATIONS.md`, as something to
+this ADR and [[DEPLOYMENT_AND_OPERATIONS]], as something to
 flip to `true` only once a reverse proxy or similar terminates TLS in front
 of this station — at which point the browser's own protections start doing
 real work. `HttpOnly` and `SameSite=Lax` are unconditional regardless of
@@ -106,7 +112,7 @@ cross-site-request forgery) independent of TLS.
 **What this protects against, and what it explicitly does not — say this
 plainly rather than claim "secure".** It protects against another device or
 person on the same LAN reading or changing station state with zero
-credential, which is the exact gap ADR-015 recorded. It does **not**
+credential, which is the exact gap [[ADR-015]] recorded. It does **not**
 protect the session cookie or a bearer token from anything that can observe
 LAN traffic (no TLS exists in this codebase to prevent that), does not
 protect against a compromised device that already has a valid credential
@@ -166,10 +172,13 @@ Alembic migration is written here — `alembic/` and `db/session.py` are a
 concurrent agent's territory this session — but SQLite's existing
 `create_all()` + `_patch_sqlite_columns()` path in `db/session.py` already
 creates any new table on next startup with no migration needed for the
-SQLite developer/on-device profile (ADR-007); the PostgreSQL profile will
+SQLite developer/on-device profile ([[ADR-007]]); the PostgreSQL profile will
 need these three tables added to whatever Alembic revision that agent's work
 produces.
 
 > **Status 2026-08-08: that follow-up landed.** Revision
 > `0003_auth_tables` adds `user`, `auth_session` and `api_token`. The live
 > station reports `0003_auth_tables (head)`.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

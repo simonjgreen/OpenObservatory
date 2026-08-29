@@ -6,7 +6,7 @@ Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) — 
 YAML on the Home Assistant side. It is off by default; nothing changes for an
 existing station until you opt in.
 
-See ADR-025 in `docs/architecture/ADRS.md` for why it is built this way
+See [[ADR-025]] in [[ADRS]] for why it is built this way
 (bounded queue reused from the event bus, `aiomqtt`, no shared thread pool,
 graceful degradation). This document is the operator-facing half: what
 appears in Home Assistant, what it means, what it explicitly does not mean,
@@ -35,7 +35,7 @@ working defaults.
 
 **From the station's own web UI.** Open it, press `settings`, find *MQTT /
 Home Assistant*, tick `mqtt_enabled` and fill in the broker host, port and
-credentials. Every MQTT setting is live-tier (ADR-048): the publisher connects
+credentials. Every MQTT setting is live-tier ([[ADR-048]]): the publisher connects
 when you press save, and **no restart is needed**. Home Assistant should show a
 new device named after the station within a few seconds, with no further action
 on the HA side — MQTT Discovery is on by default in Home Assistant's MQTT
@@ -58,7 +58,7 @@ OO_MQTT_PASSWORD=change-me
 ```
 
 That file needs a restart to be picked up (`systemctl restart
-open-observatory` — see `DEPLOYMENT_AND_OPERATIONS.md`). The web UI writes the
+open-observatory` — see [[DEPLOYMENT_AND_OPERATIONS]]). The web UI writes the
 same file, preserving your comments, so the two are one configuration rather
 than two that can disagree.
 
@@ -121,7 +121,7 @@ need a separate offline detector.
 - **This integration never reads anything from Home Assistant.** It is
   publish-only. Environmental telemetry ingestion (temperature/humidity feeds
   *into* the station) and the alert rule engine are not implemented yet — see
-  `IMPLEMENTATION_PLAN.md`'s Milestone 6 scope and ADR-025.
+  [[IMPLEMENTATION_PLAN]]'s Milestone 6 scope and [[ADR-025]].
 
 ## Verifying without Home Assistant
 
@@ -162,7 +162,7 @@ retrying with backoff and reports why in that block and in
 ## Example automations
 
 **Notify on any tawny owl**, using the `event` entity's attributes rather
-than a per-species entity (there isn't one, deliberately — see ADR-025):
+than a per-species entity (there isn't one, deliberately — see [[ADR-025]]):
 
 ```yaml
 automation:
@@ -241,8 +241,8 @@ leaving them showing last-known state).
 Environmental telemetry ingestion (a temperature/humidity feed *into* the
 station over MQTT), the alert rule engine with repetition and cooldown, and
 outgoing HMAC-signed webhooks are all still scoped-but-not-built — see
-`docs/delivery/IMPLEMENTATION_PLAN.md`'s Milestone 6 entry and
-`docs/api/API_AND_INTEGRATIONS.md`.
+[[IMPLEMENTATION_PLAN]]'s Milestone 6 entry and
+[[API_AND_INTEGRATIONS]].
 
 
 ## What is deliberately NOT published

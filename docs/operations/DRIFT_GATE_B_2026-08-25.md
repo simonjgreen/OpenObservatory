@@ -1,9 +1,9 @@
 # Drift gate (b), 2026-08-25 — **DID NOT PASS**, and what it found instead
 
-The live capture-clock drift run defined in ADR-069, run for the first time at
+The live capture-clock drift run defined in [[ADR-069]], run for the first time at
 full duration. **It did not pass.** Three of six checks failed.
 
-This document records the failure as a failure. ADR-069 says a threshold chosen
+This document records the failure as a failure. [[ADR-069]] says a threshold chosen
 after seeing the numbers is not a threshold, so nothing below moves one. The
 proposal at the end is a proposal.
 
@@ -20,13 +20,13 @@ proposal at the end is a proposal.
 | duration | 3898.8 s (64.98 min) against 3600 s required |
 | samples | 1950, **0 failed**, **0 HTTP reconnects**, 3 dropped out of phase band |
 | minute points fitted | 65 |
-| declared load | post-soak; station idle apart from normal capture and detection; display connected on 0.2.5; no deploy, no ssh, no other agent. **Unprotected mains** (ADR-069 requires this be stated) |
+| declared load | post-soak; station idle apart from normal capture and detection; display connected on 0.2.5; no deploy, no ssh, no other agent. **Unprotected mains** ([[ADR-069]] requires this be stated) |
 
 The run itself was clean. It was not interrupted, not contaminated, and not
 short. Whatever this result is, it is not a measurement failure.
 
 Immediately before this run the station completed a valid 72-hour soak
-(`SOAK_2026-08-22.md`), so the clock under test is the same one that produced
+([[SOAK_2026-08-22]]), so the clock under test is the same one that produced
 99.9948% continuity.
 
 ## Result
@@ -77,7 +77,7 @@ the hour, around a mean of 46.3 ppm.
 
 **Stated as a hypothesis, because it was not measured.**
 
-ADR-069 sets the 2 ppm agreement threshold explicitly so that it sits "above the
+[[ADR-069]] sets the 2 ppm agreement threshold explicitly so that it sits "above the
 agreement actually achieved and below the thermal excursion", recording that the
 crystal moved about **3 ppm under a thermal change inside one hour**. A smooth
 single-humped ~6 ppm excursion is that phenomenon, larger.
@@ -100,13 +100,13 @@ contamination trap that made an earlier investigation unattributable. See
 Both failing numeric checks are consistent with it: a rate that swings 6 ppm
 inside an hour cannot be linear to 0.5 ms, and an hour whose mean sits 3.6 ppm
 off a **72-hour cumulative average** is exactly what a diurnally varying crystal
-produces. ADR-069 already notes these two quantities have different anchors —
+produces. [[ADR-069]] already notes these two quantities have different anchors —
 "a slope against a cumulative average" — and that they are complementary rather
 than corroborating.
 
 ## What the run does establish
 
-ADR-069 states the purpose of this gate plainly: the failed soak left ~175 s of
+[[ADR-069]] states the purpose of this gate plainly: the failed soak left ~175 s of
 unexplained deficit over 54.7 hours, **about 890 ppm if it were continuous**, and
 an hour-long run at the 2 ppm criterion "rules out a continuous mechanism of that
 size".
@@ -122,12 +122,12 @@ the criteria were written before the run.
 
 ## Proposal — not applied
 
-The linearity and step thresholds (0.5 ms) were derived from ADR-046's three
+The linearity and step thresholds (0.5 ms) were derived from [[ADR-046]]'s three
 clean segments, which measured 0.30, 0.25 and 0.44 ms. **Those segments were
 22.2 minutes and shorter.** A thermal excursion with a period of hours is
 approximately linear across 22 minutes and demonstrably is not across 65, so a
 threshold calibrated on the short window may not be transferable to the long one
-— which is the specific thing ADR-069 lengthened the window to expose.
+— which is the specific thing [[ADR-069]] lengthened the window to expose.
 
 That is an argument for a *new* ADR, decided on its own evidence, and it needs
 the temperature series to be worth anything. Until then:
@@ -177,7 +177,7 @@ differ. In attempt 2 a deploy had restarted capture 25 minutes earlier, so the
 agreed almost trivially.
 
 **So this check is close to vacuous on a young stream and close to guaranteed to
-fail on an old one.** ADR-069 anticipated the direction of this — it notes the
+fail on an old one.** [[ADR-069]] anticipated the direction of this — it notes the
 two have "different anchors, a slope against a cumulative average", and that they
 are "complementary, not corroborating" — but the threshold was still written as
 if they were comparable. On this evidence attempt 1's agreement failure is

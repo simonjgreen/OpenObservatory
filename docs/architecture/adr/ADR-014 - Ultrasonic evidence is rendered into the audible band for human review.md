@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-014
+tags:
+  - adr
+---
 # ADR-014: Ultrasonic evidence is rendered into the audible band for human review
 **Decision:** Alongside the native evidence clip, ultrasonic detections get an audible
 derivative — time-expansion or heterodyne, configurable — stored as a distinct media kind
@@ -11,3 +17,6 @@ mechanism that exists until a classifier does.
 no information about the original amplitude and must never be presented as if they did.
 Levels anywhere in this system are uncalibrated; no sound-pressure calibration procedure
 exists.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

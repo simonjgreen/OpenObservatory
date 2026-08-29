@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-017
+tags:
+  - adr
+---
 # ADR-017: BatDetect2 is evaluated as an optional adapter, and its weights are never bundled
 **Decision:** BatDetect2 may be evaluated and adapted, but its model weights and example
 recordings are **not committed to this repository**. They are acquired through the same
@@ -10,7 +16,7 @@ is not permitted. That licence *does* permit non-commercial redistribution with
 attribution, so bundling would be lawful for a non-commercial deployment — but it would
 silently bind every future user of this repository to a non-commercial restriction that
 the rest of the codebase does not carry. Keeping the weights out means the restriction
-attaches to the operator's deliberate choice, not to a `git clone`. This is ADR-006
+attaches to the operator's deliberate choice, not to a `git clone`. This is [[ADR-006]]
 applied to a model whose licence is more restrictive than BirdNET's, not a new principle.
 
 **Consequence for the fixture gate:** BatDetect2 ships three labelled UK recordings
@@ -23,7 +29,7 @@ rather than fail when the assets are absent, exactly as the BirdNET tests do.
 through the existing soxr stage rather than the library's internal path), and no primary
 source establishes a CPU inference time on ARM. The nearest precedent, `acoupi_batdetect2`
 on a Pi 4B, treats edge-CPU inference as a known bottleneck needing quantisation. It is
-therefore adopted behind the deferred-queue path of `DETECTOR_STRATEGY.md` unless a
+therefore adopted behind the deferred-queue path of [[DETECTOR_STRATEGY]] unless a
 measured on-device benchmark shows otherwise. A benchmark, not an expectation, decides.
 
 **Constraint — no claim without a passing fixture test on the target architecture**, per
@@ -48,3 +54,6 @@ no benefit, because an evidence clip is mostly pre-roll silence.
 
 This is what `DeferredDetectorWorker` was built for, and it is the only route by which
 BatDetect2 could become supported here.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

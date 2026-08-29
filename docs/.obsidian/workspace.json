@@ -11,10 +11,10 @@
             "id": "a3bf705cfd513f15",
             "type": "leaf",
             "state": {
-              "type": "empty",
+              "type": "graph",
               "state": {},
-              "icon": "lucide-file",
-              "title": "New tab"
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -182,5 +182,9 @@
     }
   },
   "active": "a3bf705cfd513f15",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "architecture/ADRS.md",
+    "architecture/adr/ADR-074 - Evidence is retained by value, not by age.md",
+    "architecture/adr/ADR-073 - What missing audio means, and five SLOs instead of one continuity number.md"
+  ]
 }

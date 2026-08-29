@@ -1,6 +1,12 @@
+---
+aliases:
+  - ADR-061
+tags:
+  - adr
+---
 # ADR-061: An operator-set keep flag replaces the computed exemplar rule
 **Status:** active. Removes `RetentionSweeper._exemplar_detection_ids()`;
-supersedes ADR-026's first/best-of-species exemption; deployment and
+supersedes [[ADR-026]]'s first/best-of-species exemption; deployment and
 on-station verification pending (Task 6 of the implementing plan is
 documentation only, by the controller's instruction).
 
@@ -21,18 +27,18 @@ could be done in a loop. Measured on the station: **2.978 s**, against a
    produced no symptom worth noticing.
 2. **~7 s of audio lost per hour**, which cost the 72-hour soak (2026-08-10 to
    2026-08-13) its continuity gate: **99.865%** against a **≥99.9%**
-   criterion (`MILESTONE_STATUS.md`, Milestone 4.5). ~3 s of GIL-holding ORM
+   criterion ([[MILESTONE_STATUS]], Milestone 4.5). ~3 s of GIL-holding ORM
    work every 300 s starved the capture event loop long enough to overrun the
    0.5 s ALSA ring. `capture_gap` rows arrive in pairs ~300 s apart, matching
-   `retention_interval_s` to the second — the same beat `HANDOVER.md` §1e
+   `retention_interval_s` to the second — the same beat [[HANDOVER]] §1e
    names.
 3. **The 2026-08-14 wedge.** Each overrun forces an `snd_pcm_prepare()`
    device restart — roughly 12 an hour — and one of those did not come back,
-   leaving the microphone deaf for **3 h 35 min** (ADR-060, `HANDOVER.md`
+   leaving the microphone deaf for **3 h 35 min** ([[ADR-060]], [[HANDOVER]]
    §1e). The coupling to this query is proven to the millisecond, not merely
    correlated: the sweep began at **02:18:19.893** with **`duration_s`
    `2.6608`**, and the first `-EIO` landed at **02:18:22.552** — 2.66 s later,
-   the length of the sweep itself. ADR-060 made the wedge survivable (bounded
+   the length of the sweep itself. [[ADR-060]] made the wedge survivable (bounded
    reads, a watchdog, a severity that no longer trusts `capture.state`); this
    ADR removes the query that was forcing the restarts in the first place.
    The self-reinforcing shape is worth naming: the query's cost scales with
@@ -75,7 +81,7 @@ genuinely exceptional recording kept the moment they hear it. The backfill
 set is therefore smaller than the ~177 recordings the old computation
 protected, which was the union of first and best.
 
-**Why kept survives the watermark, and what that costs.** ADR-026's
+**Why kept survives the watermark, and what that costs.** [[ADR-026]]'s
 watermark tier is this project's one hard safety valve: disk space wins over
 any retention preference, so that clip writes never fail outright. Making
 `kept` exempt there too means a station whose operator keeps enough evidence
@@ -89,7 +95,7 @@ as a named `/api/v1/health` `problems` entry naming the byte figure and that
 these are operator-kept recordings the sweep will not delete. The operator
 gets a loud health problem instead of a silently deleted keep, which is the
 trade this project's charter requires: a human's decision outranks the
-sweep's convenience. `held` (ADR-043) is unchanged and deliberately narrower
+sweep's convenience. `held` ([[ADR-043]]) is unchanged and deliberately narrower
 — it exempts the three age-based tiers but not the watermark, since it is a
 review-workflow marker ("needs my ear"), not a permanent keep; an operator
 who needs the watermark exemption too must mark the detection `kept`.
@@ -109,7 +115,7 @@ is renamed to `kept_detections` for the same reason, and every consumer
 in the same commit so nothing reads the old field name.
 
 **A deviation from the approved design, ruled on here.**
-`docs/superpowers/specs/2026-08-14-keep-flag-retention-design.md` specified
+[[2026-08-14-keep-flag-retention-design]] specified
 that a sweep exiting with budget unspent while candidates remain should log a
 `WARN` enriching the existing `housekeeping.retention_not_keeping_up` event.
 The implementation instead adds a **separate ERROR event**,
@@ -151,7 +157,7 @@ not rediscovered as a mystery by whoever next greps `retention.py` for
 `held_ids` before this change — a held-but-not-kept recording could be
 reclaimed at the watermark. This ADR makes `kept` exempt there; it
 deliberately leaves `held`'s narrower, unchanged behaviour alone, since
-widening ADR-043's watermark behaviour is a separate decision. An operator
+widening [[ADR-043]]'s watermark behaviour is a separate decision. An operator
 who needs a hold to survive the watermark must mark it `kept` as well.
 
 **Consequences.** A station that has never once deleted a file (nine days
@@ -225,10 +231,10 @@ do_execute (sqlalchemy/engine/default.py:941)
 ```
 
 Retention runs in the evidence executor and the housekeeping loop awaits it, so
-everything behind it stopped: stream heartbeats, the ADR-057 media audit, the
-ADR-059 disk-usage refresh. `clip_usage_age_s` climbed 1:1 with wall clock and
+everything behind it stopped: stream heartbeats, the [[ADR-057]] media audit, the
+[[ADR-059]] disk-usage refresh. `clip_usage_age_s` climbed 1:1 with wall clock and
 `housekeeping_blocking_s` was byte-identical between samples — a stopped clock,
-not a slow one. Capture was untouched, because it owns its own thread (ADR-030).
+not a slow one. Capture was untouched, because it owns its own thread ([[ADR-030]]).
 
 **Cause: `ix_detection_kept_at`, added by this ADR's own revision 0008.**
 `kept_at IS NULL` matches ~99.8% of rows (112 non-null of ~46,000), so the index
@@ -367,7 +373,7 @@ config-disable clause, by design (see the "Why kept survives the
 watermark" section above), so it is the correct place to express "never
 delete by age" rather than a configuration this ADR now blocks.
 
-This was true before ADR-026's `kept` predicate existed too, but it did not
+This was true before [[ADR-026]]'s `kept` predicate existed too, but it did not
 matter then: exemplars were exempt from the 30-day tier but not the 90-day
 one, so the two tiers protected different rows and "between 30 and 90 days,
 only exemplars survive" was a real, distinct policy. `kept` (this ADR)
@@ -426,3 +432,6 @@ statement. The live station's `runtime.env` still carries
 `OO_RETENTION_EXEMPLAR_ONLY_DAYS=90`; per the paragraph above, this deploy
 makes that line inert rather than erroring, and it should be removed by the
 operator at the same time as the deploy, not left to be rediscovered later.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

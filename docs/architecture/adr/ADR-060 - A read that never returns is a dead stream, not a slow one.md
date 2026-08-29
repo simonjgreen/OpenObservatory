@@ -1,9 +1,15 @@
+---
+aliases:
+  - ADR-060
+tags:
+  - adr
+---
 # ADR-060: A read that never returns is a dead stream, not a slow one
 **Status:** active. Bounds two loops, adds one backstop, and stops `capture.state` capping the health severity.
 
 **The incident.** On 2026-08-14 the station was deaf from 02:12 UTC and nobody
 knew until the operator looked at the indoor display at 05:47 and read `no audio
-block for 12815.893s`. Full account in `HANDOVER.md` §1e; the decision-relevant
+block for 12815.893s`. Full account in [[HANDOVER]] §1e; the decision-relevant
 part is why nothing recovered and nothing shouted.
 
 `alsa_source.py` treated any ALSA error containing `Input/output error` as a
@@ -19,7 +25,7 @@ left 0.
 brought capture straight back, which proves the PCM was reopenable the whole time
 and the supervisor would have fixed this within seconds of being given control.
 The defect was not a missing mechanism; it was one `continue` below the mechanism,
-denying it the chance to run. This is the same shape as ADR-020's incident (§3a),
+denying it the chance to run. This is the same shape as [[ADR-020]]'s incident (§3a),
 where the error string did *not* match the swallowing branch, so it propagated and
 the station degraded correctly. Whether the station recovered came down to which
 words the driver happened to put in an error message.
@@ -65,3 +71,6 @@ left the USB bus — no `dmesg` event since 8 August, autosuspend off — and
 ADR makes the station survive it, not prevent it. Related and also open: gap rows
 arrive in pairs exactly `retention_interval_s` apart, so the retention sweep is
 costing about 7 s of audio an hour (§1e).
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

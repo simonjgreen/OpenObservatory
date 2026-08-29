@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-057
+tags:
+  - adr
+---
 # ADR-057: A row that claims evidence must be checkable; reconcile the ones that lie, and keep "missing" distinct from "reclaimed"
 **Decision:** Three things, in the order they matter.
 
@@ -20,7 +26,7 @@
    correction next to the numbers being corrected.
 
 No schema change. `reclaim_reason` is already `String(32)` and `detail` is
-already JSON, so the Alembic head stays `0007_capture_pause` (ADR-042).
+already JSON, so the Alembic head stays `0007_capture_pause` ([[ADR-042]]).
 
 **The measurement.** Taken read-only against the live station on 2026-08-10,
 `data/openobservatory.sqlite` opened `mode=ro` through a URI:
@@ -39,9 +45,9 @@ overlap in either direction — a clean boundary in creation order, not a
 scatter. The operator's 2026-08-09 figure of 8,067 is confirmed unchanged;
 what changed is the denominator, because capture kept running.
 
-**What actually caused it, and what did not.** ADR-021 was the obvious suspect
+**What actually caused it, and what did not.** [[ADR-021]] was the obvious suspect
 and is the wrong one. The cause is `ClipManager.enforce_retention()`
-(`clips.py`), the pre-ADR-026 sweep: it walks the clip tree, sorts by mtime and
+(`clips.py`), the pre-[[ADR-026]] sweep: it walks the clip tree, sorts by mtime and
 unlinks oldest-first until the tree fits `max_total_bytes` — and it never
 touches the database. Three independent lines of evidence agree:
 
@@ -54,10 +60,10 @@ touches the database. Three independent lines of evidence agree:
 - **The boundary is an mtime prefix**, which is the signature of
   `sorted(entries)` unlinking oldest-first, and nothing else in the system
   produces it.
-- **ADR-021 is where it stopped, not where it started.** The SSD raised the
+- **[[ADR-021]] is where it stopped, not where it started.** The SSD raised the
   budget from 20 GB to 300 GB; the last `clips.retention` deletion is
   2026-08-08T13:07:32Z and `data/clips.sdcard-backup`'s copy finished at
-  13:06:27Z. That is why the boundary *looks* like ADR-021 — the migration is
+  13:06:27Z. That is why the boundary *looks* like [[ADR-021]] — the migration is
   the fix's timestamp. The 20 GB budget had been holding a rolling ~24-hour
   window all along, which is exactly the span that is missing.
 
@@ -85,7 +91,7 @@ stored clips later." For these events it cannot.
   what unblocks it.
 - **61 held Spotted Crake detections cannot be listened to.** All 122 of their
   media rows are in the missing set, event times 2026-08-04T18:47Z to 20:55Z,
-  inside the deleted band. A human hold (ADR-043) exempts a detection from
+  inside the deleted band. A human hold ([[ADR-043]]) exempts a detection from
   three retention tiers; it could not exempt it from a sweep that never read
   the database. The command names held detections in its output, because an
   operator writing off a hold should be told that is what they are doing.
@@ -99,20 +105,20 @@ decided anything; the file went. The charter's "withdraw, not delete" rule is
 about a record the system got wrong being evidence about the system, and the
 same applies to the system's account of its own storage: an operator, and the
 refiner, should be able to tell evidence aged out on purpose from evidence that
-vanished. `"missing"` joins `"privacy_human_audio"` (ADR-049) as a reason that
+vanished. `"missing"` joins `"privacy_human_audio"` ([[ADR-049]]) as a reason that
 is a fact about *why*, not a tier. Reconciliation is honest bookkeeping, not a
 way of pretending the clips were never there.
 
 **Why the recurring check is a rolling sample and not a census.** Statting
 every live row is cheap in isolation — 48,989 `os.path.exists` calls measured
 at **0.27 s** on the target — but 0.27 s is the same order as the ~0.30 s ORM
-sweep ADR-033 had to pace to 300 s after it starved the event loop for
+sweep [[ADR-033]] had to pace to 300 s after it starved the event loop for
 55–150 ms at a time and cost ~1.9 `capture.gap` records per minute. Capture
 always wins, and this is the third time on this project that sustained I/O next
 to the ALSA read has had to be refused. So: `batch_size` rows per 300 s tick
 (default 200, ~1 ms of the same measurement), a full pass over ~50k live rows
 in about 20 hours, on the evidence executor rather than the pool the capture
-read shares (ADR-021's fix, still the load-bearing one).
+read shares ([[ADR-021]]'s fix, still the load-bearing one).
 
 The cursor is `(created_at, id)`, not `created_at`. Three or four assets are
 written per detection within microseconds of each other, so a bare `>` would
@@ -133,7 +139,7 @@ report it, and the panel then renders nothing rather than a confident zero.
 **A note, not a `problems` entry.** Capture, detection and history are all
 correct; what is wrong is the station's account of what it holds. Degrading
 would flip `binary_sensor.<station>_station_healthy` in Home Assistant and train
-the operator to ignore it — the same reasoning ADR-055 applied to an operator
+the operator to ignore it — the same reasoning [[ADR-055]] applied to an operator
 pause. Saying nothing was not an option either: "8,067 clips" meaning "8,067
 rows, 16.5% of which have no file" is exactly a number that does not mean what
 its label says.
@@ -141,7 +147,7 @@ its label says.
 **What this ADR does not do.**
 
 - It does not delete `ClipManager.enforce_retention()`. The station has not
-  called it since ADR-026 — housekeeping drives `RetentionSweeper.sweep()` —
+  called it since [[ADR-026]] — housekeeping drives `RetentionSweeper.sweep()` —
   and it is still tested. Removing it is a separate change with its own risk;
   what this ADR adds is the check that would have caught it, and would catch
   the next thing that unlinks a clip behind the database's back.
@@ -151,12 +157,12 @@ its label says.
   removed that directory by hand on 2026-08-10**, after this ADR established
   that no live row pointed into it and that it held none of the 8,067 missing
   clips; that freed 21 GB on the SD card, where the database lives and write
-  endurance is a standing constraint. ADR-026 already made
+  endurance is a standing constraint. [[ADR-026]] already made
   that an explicit operator-triggered cleanup, and it is now *also* the only
   independent copy of 9,186 live clips.
 - It does not add a filesystem check to `/api/v1/retention/status`. That
   endpoint is polled by an always-on panel, and a census per poll is the exact
-  pattern ADR-021 and ADR-033 both had to undo.
+  pattern [[ADR-021]] and [[ADR-033]] both had to undo.
 - It does not attempt recovery. There is nothing to recover from; see above.
 
 **Rollback.** Revert the commit. `--apply` has no undo of its own, but nothing
@@ -208,3 +214,6 @@ print(db.execute(\"select count(*) from media_asset\").fetchone(),
       db.execute(\"select reclaim_reason, count(*) from media_asset where reclaimed_at is not null group by 1\").fetchall())
 "'
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

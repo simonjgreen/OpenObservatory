@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-047
+tags:
+  - adr
+---
 # ADR-047: Site parameters are runtime state, managed through the web UI; the repository ships no site
 **Decision:** Anything true of exactly one installation — coordinates, place
 names, LAN addresses, hostnames, account names, filesystem homes — is **site
@@ -78,3 +84,6 @@ curl -s -X PUT http://<station-host>:8080/api/v1/settings \
 curl -s http://<station-host>:8080/api/v1/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["notes"])'
 # expect the "restart required: latitude, longitude" note; restart, and expect it gone.
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

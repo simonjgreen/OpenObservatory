@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-026
+tags:
+  - adr
+---
 # ADR-026: NVR-style tiered clip retention; detection metadata is kept forever
 **Decision:** Evidence clip *bytes* age out in four tiers; detection *metadata* never
 does. `retention.py` (`RetentionSweeper`) implements this, driven by the database
@@ -18,13 +24,13 @@ defaulting to exactly the values above.
 
 **Reason.** This is the operator's own framing: "I do not need recordings going
 back forever — the logs of bird species etc over time is the most interesting data,
-not the noise they made." `DATA_MODEL.md` already recorded detections as
+not the noise they made." [[DATA_MODEL]] already recorded detections as
 indefinite by default; this ADR makes clip storage match that intent explicitly,
 as a CCTV NVR ages out footage while keeping its incident log.
 
 **Why the operator's own thresholds, unreviewed by us.** The tier boundaries and
 the 85% watermark were specified directly, not derived here. They are defaults
-precisely so they can be revisited: `clip_max_total_gb` (from ADR-021, now 300 GB
+precisely so they can be revisited: `clip_max_total_gb` (from [[ADR-021]], now 300 GB
 against 465.8 GB) already showed one GB-budget knob was a coarse enough proxy that
 it needed lifting once; a ratio-based watermark tracks the disk's real remaining
 headroom instead of a number someone will eventually have to update by hand.
@@ -79,7 +85,7 @@ a thousand." A rewrite in place would have entangled a filesystem-only algorithm
 with a database-driven one for no benefit; the old method is simply unused by the
 running station now.
 
-> **What that old method had already done, found 2026-08-10 (ADR-057).**
+> **What that old method had already done, found 2026-08-10 ([[ADR-057]]).**
 > Between 2026-08-05 and 2026-08-08 `enforce_retention` unlinked 8,166 clips
 > (20.84 GB) to stay inside its 20 GB budget and marked not one row, leaving
 > 8,067 `media_asset` rows asserting evidence that no longer exists. "Unused by
@@ -87,14 +93,14 @@ running station now.
 > the rows and the disk still agreed, so the divergence was invisible for five
 > days. `RetentionSweeper.audit_missing_files()` is now that check.
 
-**I/O discipline (ADR-021's lesson applied again).** `sweep()` never walks the
+**I/O discipline ([[ADR-021]]'s lesson applied again).** `sweep()` never walks the
 clip directory tree. Every tier is one bounded `LIMIT`-ed SQL query plus, at most,
 `retention_batch_size` file `unlink()` calls (default 200), and the whole call
 bails out at `retention_batch_budget_s` (default 1.5s) of wall-clock time even if
 the batch isn't exhausted — a large backlog drains across many housekeeping ticks
 rather than stalling once. It runs in the same single-thread `_evidence_executor`
 that evidence extraction already uses, never the default pool the ALSA read
-shares (ADR-021's fix, still the load-bearing one). The one read that is not
+shares ([[ADR-021]]'s fix, still the load-bearing one). The one read that is not
 batch-limited is the first-of/best-of-species computation, which is a plain read
 over the `detection` table filtered to rows with at least one live media asset —
 justified because detection metadata is, in the operator's own words, kilobytes
@@ -114,7 +120,7 @@ is treated as one of the module's primary contracts and is tested as such
 
 **What this ADR does not do.** It does not delete
 `data/clips.sdcard-backup` (~21 GB, pre-migration copy noted in
-`OPEN_INVESTIGATION_CAPTURE_GAPS.md`) — that stays an explicit, operator-triggered
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]]) — that stays an explicit, operator-triggered
 cleanup outside any automatic sweep, per instruction. It does not add an Alembic
 migration for the two new `media_asset` columns
 (`reclaimed_at`, `reclaim_reason`): this project has no Alembic migrations yet
@@ -125,9 +131,12 @@ this code runs against it, which is a deploy-time concern for whoever performs
 that deploy, not something decided here.
 
 > **Status 2026-08-08.** Two later changes amend this ADR without replacing it.
-> **ADR-035** built the Alembic environment: both `media_asset` columns are in the
+> **[[ADR-035]]** built the Alembic environment: both `media_asset` columns are in the
 > `0001_initial` baseline, and revision `0002` adds the `reclaimed_at` index that
-> `ALTER TABLE ADD COLUMN` could never have created. **ADR-033** paced the sweep:
+> `ALTER TABLE ADD COLUMN` could never have created. **[[ADR-033]]** paced the sweep:
 > it runs every `retention_interval_s` (default 300 s), not on every housekeeping
 > tick, because a ~0.30 s ORM sweep holds the GIL and starved the event loop. The
 > tiers, thresholds and "detection metadata is kept forever" rule are unchanged.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

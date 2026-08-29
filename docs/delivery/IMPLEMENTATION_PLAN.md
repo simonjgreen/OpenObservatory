@@ -9,16 +9,16 @@
 > **For what is actually delivered, read
 > [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
 > summary as of 2026-08-09: Milestones 0–3 and 5 complete; Milestone 4 delivered,
-> including the review workflow, which ADR-043 closed; Milestone 4.5 nearly
+> including the review workflow, which [[ADR-043]] closed; Milestone 4.5 nearly
 > closed as of 2026-08-25 (species fixture and `oo audio window-dump` done; the
 > 72-hour soak **passed** on continuity; drift gate (a) **passed**; only drift
 > gate (b) is still open, having run and failed on linearity); Milestone 6's publisher live but its alert
 > engine unbuilt; Milestone 7 not started; Milestone 8 has one of its six
-> deliverables done (ADR-050's display OTA, flashed and verified on hardware);
+> deliverables done ([[ADR-050]]'s display OTA, flashed and verified on hardware);
 > Milestone 9 not started, by design.
 >
 > **The 72-hour soak ran 2026-08-10 to 2026-08-13 and failed** its continuity
-> criterion (99.865% against ≥ 99.9%; see `MILESTONE_STATUS.md` §Milestone
+> criterion (99.865% against ≥ 99.9%; see [[MILESTONE_STATUS]] §Milestone
 > 4.5), and `CLAUDE.md` forbids describing the system as complete until a soak
 > passes.
 
@@ -79,7 +79,7 @@ Exit gate: known bird fixture produces expected candidate label and an aligned p
 
 ## Milestone 4 — Product dashboard and review
 
-Revised 2026-08-05 against what Milestone 3 actually built. Per ADR-016, this milestone
+Revised 2026-08-05 against what Milestone 3 actually built. Per [[ADR-016]], this milestone
 **promotes the existing UI** rather than starting a second one.
 
 Already delivered, and not to be rebuilt:
@@ -94,7 +94,7 @@ Already delivered, and not to be rebuilt:
   playback engine;
 - the diagnostic half of the health/system page.
 
-Not foundation, despite appearances — see ADR-016 for the measurements:
+Not foundation, despite appearances — see [[ADR-016]] for the measurements:
 
 - `styles.css` is a colour-token header over ad-hoc component CSS, with no spacing or
   type scale. A non-technical surface needs restyling, not just recomposition.
@@ -112,7 +112,7 @@ Deliver:
 - derivation of a detection's current status from its latest valid review;
 - retention job, plus a UI for the clip budget and what retention has removed;
 - CSV/JSON export, which the acceptance criteria require and this plan had omitted;
-- API token and authentication foundation, closing ADR-015.
+- API token and authentication foundation, closing [[ADR-015]].
 
 Exit gate: a user can operate **and** diagnose the station entirely through the local UI,
 with anonymous read access disabled by default.
@@ -148,8 +148,8 @@ Already delivered:
 
 - native high-rate window profile;
 - native-rate evidence and audible playback rendering — time expansion and heterodyne,
-  per ADR-014, which is what makes a bat detection checkable by ear;
-- `ultrasonic-pass-v1`, a pulse-train detector per ADR-013. It was never in this plan.
+  per [[ADR-014]], which is what makes a bat detection checkable by ear;
+- `ultrasonic-pass-v1`, a pulse-train detector per [[ADR-013]]. It was never in this plan.
   It detects passes, claims no species, and does **not** discharge the BatDetect2
   deliverable below.
 
@@ -160,12 +160,12 @@ tuned.
 **1. Ultrasonic detector configuration.** `station.py:424` constructs the detector as
 `UltrasonicDetector(native_sample_rate=native_rate)` with no configuration wiring at
 all, so `min_snr_db`, `min_pulses_per_pass`, the band and `pass_gap_s` cannot be set
-from `runtime.env` — despite `HANDOVER.md` instructing a successor to tune exactly
+from `runtime.env` — despite [[HANDOVER]] instructing a successor to tune exactly
 those. Everything below needs this path to exist. Defaults must equal the current
 constructor defaults exactly, so behaviour is unchanged until someone sets one.
 
 **2. Night scheduler.** Gate the ultrasonic detector to civil dusk through civil dawn
-plus a configurable margin either side, per `TECHNICAL_SPEC.md` §184.
+plus a configurable margin either side, per [[TECHNICAL_SPEC]] §184.
 
 - *Why it is not merely tidiness.* A detector that runs at two in the afternoon reports
   bat passes from wind, machinery and handling noise, and no threshold tuning can
@@ -196,7 +196,7 @@ what makes this tractable, because it bounds what can enter the queue. Build it 
 BatDetect2's benchmark shows whether it is needed, not before.
 
 > **Outcome, 2026-08-09:** `DeferredDetectorWorker` was built and is **unused**, and
-> ADR-045 decided it is the *wrong* mechanism for the BatDetect2 cascade — its
+> [[ADR-045]] decided it is the *wrong* mechanism for the BatDetect2 cascade — its
 > central safety property is dropping anything older than
 > `max_delivery_latency_s`, which is exactly what a six-hour-old stored clip is.
 > The cascade ships instead as a separate CPU-fenced process at propose-only
@@ -204,7 +204,7 @@ BatDetect2's benchmark shows whether it is needed, not before.
 > too slow to run inline, and that case has not arisen.
 
 **4. Feeding-buzz flagging.** Specified in
-`docs/design/2026-08-05-bat-feeding-buzz-and-frequency-titles-design.md`.
+[[2026-08-05-bat-feeding-buzz-and-frequency-titles-design]].
 The pulse timing is already computed and discarded; a buzz is a terminal collapse in
 inter-pulse interval. Emits `min_interval_ms` on every pass so a wrong threshold can be
 re-judged from stored data rather than from audio that no longer exists.
@@ -264,7 +264,7 @@ makes every remaining rough edge someone else's problem, and an update
 mechanism you cannot roll back is worse than no update mechanism at all.
 
 **One deliverable landed early and that is not a violation of the sequencing.**
-The display OTA (ADR-050) was justified on its own terms — every firmware change
+The display OTA ([[ADR-050]]) was justified on its own terms — every firmware change
 was otherwise a physical trip and a USB cable, forever — and it carries the
 rollback this milestone's own reasoning demands rather than deferring it. Nothing
 else here should be started before Milestone 7, and in particular not the
@@ -276,14 +276,14 @@ Deliver:
   to a working station and a reachable web UI with no SSH;
 - **first-boot provisioning over the network** — WiFi, hostname, location,
   timezone — with no keyboard or monitor attached;
-- **no configuration step that requires a terminal or a text editor.** ADR-047
-  made site parameters runtime state and ADR-048 put them in the browser; this
+- **no configuration step that requires a terminal or a text editor.** [[ADR-047]]
+  made site parameters runtime state and [[ADR-048]] put them in the browser; this
   milestone makes that a *guarantee* rather than a coverage level;
 - **remote update of the station after deployment**, versioned, staged and
   rolled back on failure. Capture must survive a failed update: the charter's
   first item does not pause for a release;
 - ~~**over-the-air update of the counter-top display, triggered from the Pi**~~ —
-  **DONE, 2026-08-09 (ADR-050).** Two OTA app slots, a digest verified before
+  **DONE, 2026-08-09 ([[ADR-050]]).** Two OTA app slots, a digest verified before
   anything becomes bootable, and a rollback the display owns. Flashed and verified
   on the operator's own unit, including a deliberate rollback drill; the station
   reports it at firmware `0.2.4` and up to date. The drill is what found that
@@ -311,7 +311,7 @@ blocks an exit gate, and nothing here should displace the 72-hour soak. The
 point of the section is that "worth doing later" is a decision with a home,
 rather than an idea that evaporates.
 
-- **Taxonomic grouping above species (ADR-053).** Browse and aggregate by family
+- **Taxonomic grouping above species ([[ADR-053]]).** Browse and aggregate by family
   or order — "show me the corvids" — instead of only by species. The detector
   offers no such layer: BirdNET's label file is 6,522 species binomials with no
   hierarchy, and our `taxonomic_group` field says bird/bat/acoustic-event, not
@@ -319,7 +319,7 @@ rather than an idea that evaporates.
   is *not* family: grouping the station's corvids by genus captures 1,044
   *Corvus* detections and silently drops the Magpie and the Jay. Family needs a
   checksummed, separately-licensed taxonomy acquired like the model assets.
-  ADR-053 records the reasoning, and refuses the hardcoded-species-list shortcut
+  [[ADR-053]] records the reasoning, and refuses the hardcoded-species-list shortcut
   in writing.
 
 - **Environmental sensors: lux and rain.** Both would make the acoustic record
@@ -342,7 +342,7 @@ rather than an idea that evaporates.
 
 - **Watch the model assets for updates.** Dependabot covers pip, npm, Docker and
   GitHub Actions, but not the detector models. BirdNET and BatDetect2 are fetched
-  by `oo models fetch` against the checksummed `models/manifest.tsv` (ADR-006)
+  by `oo models fetch` against the checksummed `models/manifest.tsv` ([[ADR-006]])
   rather than from a package index, so no Dependabot ecosystem understands them,
   and a new BirdNET release would go unnoticed indefinitely.
 

@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-042
+tags:
+  - adr
+---
 # ADR-042: `alembic upgrade head` runs in `deploy/deploy.sh`, not application startup; `create_all()`/the ALTER TABLE patcher are retired from production use
 **Decision:** `deploy/deploy.sh` runs `alembic upgrade head` against the
 station as an explicit step — after syncing source and installing Python
@@ -10,11 +16,11 @@ new `db/session.py: ensure_schema_at_head()` instead. The old
 unused. `create_all()` itself is kept, but only as a test helper (see
 below) — it is no longer reachable from any production code path.
 
-**Reason:** ADR-035 built a real Alembic migration environment but left it
+**Reason:** [[ADR-035]] built a real Alembic migration environment but left it
 decorative — nothing called `alembic upgrade head`, so `create_all()` and the
 ALTER TABLE patcher in `db/session.py` remained the schema's actual authors
 in practice. That is exactly the situation that let `media_asset.reclaimed_at`
-ship on the live station with no index (ADR-035's own motivating gap): two
+ship on the live station with no index ([[ADR-035]]'s own motivating gap): two
 things describing the schema, free to disagree, with nothing checking that
 they didn't. Wiring Alembic into the path that actually runs, and then
 deleting the alternate path, is what closes that off for good rather than
@@ -34,7 +40,7 @@ preference:
   "control plane" process to isolate a slow migration from. A `CREATE TABLE`
   or batch-mode index rebuild embedded in that same startup path is squarely
   on capture's critical path: a slow migration (SQLite batch mode rebuilds
-  the whole table on affected schema changes — `DATA_MODEL.md`'s "SQLite vs.
+  the whole table on affected schema changes — [[DATA_MODEL]]'s "SQLite vs.
   PostgreSQL" section already flags this as measurably slower on a large
   table) or a failing one would delay or crash the very process that is
   supposed to start listening to the microphone.
@@ -71,7 +77,7 @@ file needs *some* schema-bootstrap to happen, and a fresh developer checkout
 or a brand-new station needs the same thing on its very first run, before
 any deploy has ever touched it. `ensure_schema_at_head()`
 (`src/open_observatory/db/session.py`) draws the same distinction
-`docs/data/DATA_MODEL.md`'s "Which case are you in?" already documented for
+[[DATA_MODEL]]'s "Which case are you in?" already documented for
 a human operator, and automates only the safe half of it:
 
 - **A completely empty database** (no tables at all) is bootstrapped by
@@ -86,7 +92,7 @@ a human operator, and automates only the safe half of it:
   Alembic revision is read (a single fast query against `alembic_version`)
   and compared to the code's own migration head:
   - no `alembic_version` row at all → a pre-Alembic database that was never
-    adopted (`create_all()`-built, or a database that predates ADR-035
+    adopted (`create_all()`-built, or a database that predates [[ADR-035]]
     entirely) — raises, naming the exact adoption sequence
     (`alembic stamp 0001_initial && alembic upgrade head`).
   - `alembic_version` present but not equal to `head` → a migration is owed
@@ -100,7 +106,7 @@ a human operator, and automates only the safe half of it:
 
 - **Migrations vs. models agree at `head`, the most valuable check in this
   work:** `tests/test_migrations.py::test_initial_revision_matches_create_all`
-  already existed from ADR-035 and still passes with all four revisions
+  already existed from [[ADR-035]] and still passes with all four revisions
   applied — stamping a `create_all()`-built database at `head` and running
   `alembic check` reports no drift. This is re-run on every test invocation,
   not a one-time claim: models and migrations are not free to diverge again
@@ -129,7 +135,7 @@ a human operator, and automates only the safe half of it:
   findings that remain — `tests/test_migrations.py`'s pre-existing set-
   comprehension typing note and `cli.py:211`'s unrelated `CaptureBlock |
   None` narrowing — both predate this change and are untouched by it;
-  `docs/development/SETUP.md`'s "NOT clean" trap already documents that
+  [[SETUP]]'s "NOT clean" trap already documents that
   `mypy src` has pre-existing findings).
 
 ### What changes for an operator or a developer
@@ -141,10 +147,10 @@ a human operator, and automates only the safe half of it:
   command) against a database that does not exist yet still works with no
   extra step, because `ensure_schema_at_head()` bootstraps it.
 - **A developer with an old, pre-Alembic SQLite file** (built before this
-  work, or before ADR-035): the next `oo serve` now refuses to start,
+  work, or before [[ADR-035]]): the next `oo serve` now refuses to start,
   with the exact adoption command in the error message, instead of silently
   patching columns in with `ALTER TABLE`.
-- **Adding a new column or table:** unchanged from ADR-035/`DATA_MODEL.md`
+- **Adding a new column or table:** unchanged from [[ADR-035]]/[[DATA_MODEL]]
   — write an Alembic revision, not a model change relying on the patcher,
   which no longer exists to fall back on.
 
@@ -162,7 +168,7 @@ data it does not like, and re-run `deploy/deploy.sh`. Full detail and the
 one window that *is* possible on a successful deploy (old process, new
 schema, for the few seconds between the migration step and the restart —
 tolerated because every migration here is additive) is in
-`docs/data/DATA_MODEL.md` under "Rollback".
+[[DATA_MODEL]] under "Rollback".
 
 **To revert this change entirely:** `git revert` the commit. `create_all()`
 and `ensure_schema_at_head()` both remain in `db/session.py` regardless (the
@@ -184,3 +190,6 @@ ssh <user>@<station-host> "cd open-observatory && .venv/bin/python -m alembic cu
 #    the deploy proceeds; the station's /api/v1/health check at the end
 #    confirms the service came back up.
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

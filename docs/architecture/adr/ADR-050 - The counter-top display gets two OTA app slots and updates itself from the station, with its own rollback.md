@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-050
+tags:
+  - adr
+---
 # ADR-050: The counter-top display gets two OTA app slots and updates itself from the station, with its own rollback
 **Status:** active. **Written unflashed, then flashed and verified on hardware
 the same day, 2026-08-09** — including a deliberate rollback drill. The
@@ -8,7 +14,7 @@ could not is the transferable part.
 **Decision:** Replace the inside observer's single-app-slot partition table with
 two equal OTA slots, and give the station a firmware image to serve and a button
 to roll it out. The display fetches the image over the WebSocket connection it
-already has (ADR-038), verifies a SHA-256 before anything becomes bootable, and
+already has ([[ADR-038]]), verifies a SHA-256 before anything becomes bootable, and
 puts the previous build back by itself if the new one cannot reach the station.
 **NVS stays exactly where it is**, so the WiFi credentials inherited from the
 the board's previous *Aura* firmware — which nobody has ever seen and nobody can retype —
@@ -16,7 +22,7 @@ survive.
 
 ### Why this is a change worth making on a working display
 
-ADR-023 kept the stock partition table byte for byte, for two reasons that are
+[[ADR-023]] kept the stock partition table byte for byte, for two reasons that are
 both still good: NVS at `0x9000` holds credentials this project never captured,
 and a whole-image restore of the stock firmware stays a plain `write_flash 0x0`.
 What that ADR did not weigh — because the display was then on a bench next to a
@@ -74,7 +80,7 @@ ADR exists to buy out.
 
 ### Push, or check on connect? Both, and they catch different displays
 
-- **Push over the existing channel.** A new frame type on ADR-038's socket
+- **Push over the existing channel.** A new frame type on [[ADR-038]]'s socket
   (`{"t":"u","fv":…,"sha":…,"sz":…,"p":…}`, under 200 bytes). The station is
   already connected to every display it would need to tell, so the alternative —
   the display polling for an update — would put periodic requests back on a wire
@@ -355,3 +361,6 @@ once with a build pointed at a nonexistent station host:
 ```
 [ota] this build never reached the station; rolling back
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

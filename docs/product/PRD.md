@@ -12,12 +12,12 @@
 > here should be read as a claim that a requirement is met.
 >
 > Requirements known **not** to be met as of 2026-08-09, so this file is not
-> mistaken for one: FR-007's bat detector identifies no species (ADR-013);
+> mistaken for one: FR-007's bat detector identifies no species ([[ADR-013]]);
 > FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-015's
 > MCP interface does not exist; FR-017's upgrade preflight and backup guidance do
 > not exist; §10's configurable location precision does not exist; and §11's
 > 72-hour soak ran 2026-08-10 to 2026-08-13 and **failed** its continuity
-> criterion (99.865% against ≥ 99.9%; see `../delivery/MILESTONE_STATUS.md`
+> criterion (99.865% against ≥ 99.9%; see [[MILESTONE_STATUS]]
 > §Milestone 4.5).
 
 ## 1. Product name

@@ -1,7 +1,13 @@
+---
+aliases:
+  - ADR-070
+tags:
+  - adr
+---
 # ADR-070: A threshold retune is not a discovery that the past was wrong
 **Status:** accepted, 2026-08-23
 
-(A parallel session was writing what is now ADR-069 in the same working tree
+(A parallel session was writing what is now [[ADR-069]] in the same working tree
 at the same time; this one took 070 after both briefly claimed 069. Nothing
 below depends on the number.)
 
@@ -11,7 +17,7 @@ below depends on the number.)
 that matters. `plausibility_repair.find_implausible_detections` skips any row
 that already carries a `native_result.plausibility_review`, so a second run
 cannot lift a flag the first run set — by design, so a repeat pass does not
-re-flag or overwrite a review an operator has already seen. Since ADR-044 a
+re-flag or overwrite a review an operator has already seen. Since [[ADR-044]] a
 flagged row is withdrawn everywhere, immediately, with no restart.
 
 `cli.py` called that function like this:
@@ -56,7 +62,7 @@ birds, one `--apply` away from being withdrawn and not recoverable by
 re-running. The highest flagged score is the tell: 0.549992 is not a
 distribution of wrong species, it is a distribution cut off by a number.
 
-`HANDOVER.md` §6.3 item 0 was, at the time, still telling a future operator to
+[[HANDOVER]] §6.3 item 0 was, at the time, still telling a future operator to
 run exactly that command.
 
 ### The general problem, which is larger than one missing argument
@@ -75,7 +81,7 @@ not have removed it. The next time the operator raises the bar, the same command
 becomes armed again, and the dry run would look just as plausible.
 
 The deeper point: **a threshold change is a statement about what to admit next,
-not a discovery that the past was mis-decided.** ADR-032's repair exists because
+not a discovery that the past was mis-decided.** [[ADR-032]]'s repair exists because
 two *band assignments* were wrong — a near-zero prior that a score used to
 overrule, and a missing prior that got the easiest bar instead of the strictest.
 Those are correctness defects. "I have decided to be stricter from now on" is
@@ -108,7 +114,7 @@ Two changes, and they are not the same change.
    repair is actually for — a row whose **band** is different today (defect (b)),
    or one the plausibility floor now rules out at any score (defect (a)).
 
-The floor is deliberately **not** given the exemption. ADR-032's claim is that a
+The floor is deliberately **not** given the exemption. [[ADR-032]]'s claim is that a
 near-zero prior is not a higher bar but a statement that no score is admissible;
 applying today's floor to history is this command's purpose, not configuration
 drift. The exemption is keyed on the *band being unchanged* precisely so a
@@ -134,18 +140,18 @@ gone.
 
 The alternative — refusing to judge any row that does not record its own bar —
 was rejected: it makes the command silently narrower than it looks, and the rows
-it would skip are exactly the oldest ones, which are the ones ADR-032's repair
+it would skip are exactly the oldest ones, which are the ones [[ADR-032]]'s repair
 was written for.
 
 ### A false alarm, resolved: the 5,890 `non_biological` findings
 
 The same dry run reported 5,890 findings in a `non_biological` band, while
 `find_implausible_detections`'s docstring said it *"skips BirdNET's eleven
-non-taxonomic classes entirely (ADR-049)"*. That looked like a contradiction and
+non-taxonomic classes entirely ([[ADR-049]])"*. That looked like a contradiction and
 is not one; both statements were true of different things, and the docstring was
 the wrong one.
 
-ADR-049 exempts the eleven sound categories from the **occurrence prior and the
+[[ADR-049]] exempts the eleven sound categories from the **occurrence prior and the
 floor** — the range model returning 4e-06 for "Engine" is not "engines are
 absent from this garden", it is "a car is not a taxon with a distribution".
 `band_for` still sorts them into a band, `non_biological`
@@ -162,7 +168,7 @@ halves so the next reader does not have to re-derive it.
 ### Checked and clean
 
 - `apply_plausibility_flag` takes a finding, not a configuration: it re-checks
-  human review (ADR-043) and writes. It has no thresholds to get wrong.
+  human review ([[ADR-043]]) and writes. It has no thresholds to get wrong.
 - `oo detections reconcile-taxonomy` (`taxonomy_repair.py`) takes only `limit`
   and decides from the label list. No configured thresholds, no defect.
 - `oo history reconcile-streams` takes `ratio_threshold` as an explicit CLI
@@ -179,8 +185,8 @@ live detector.
 - The 61 rows flagged on the live station on 2026-08-09T15:32:03Z are untouched
   and stay withdrawn. This ADR does not un-flag anything; it changes what a
   *future* run would flag.
-- `HANDOVER.md` §6.3 item 0, `MILESTONE_STATUS.md`, `DETECTOR_STRATEGY.md` and
-  `GAP_REPORT.md` all said the command had never been run with `--apply`. All
+- [[HANDOVER]] §6.3 item 0, [[MILESTONE_STATUS]], [[DETECTOR_STRATEGY]] and
+  [[GAP_REPORT]] all said the command had never been run with `--apply`. All
   four were wrong, and had been for a fortnight. Corrected in the same change,
   with the evidence.
 - The command is safe to re-run against a station once this code is deployed.
@@ -211,7 +217,7 @@ live detector.
 Revert the `cli.py` call site and the exemption in `plausibility_repair.py`;
 nothing is persisted by either and no schema or stored row changes. The
 `admitting_threshold` key simply stops appearing in `--json` output. Rolling
-back restores the loaded gun, so the `HANDOVER.md` warning must stay whatever
+back restores the loaded gun, so the [[HANDOVER]] warning must stay whatever
 happens to the code.
 
 ### Smoke test
@@ -222,3 +228,6 @@ happens to the code.
 Second number is the rows judged without knowing the bar that admitted them —
 the class this command still cannot judge safely. Read those before applying
 anything.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

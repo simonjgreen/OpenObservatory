@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-055
+tags:
+  - adr
+---
 # ADR-055: The operator can pause recording for a chosen time — and it expires, survives a restart, and is recorded as a pause
 **Status:** active. The first implementation of the charter's privacy
 constraint as something an operator *does*, rather than something the system
@@ -6,7 +12,7 @@ refrains from.
 **Context.** The charter's privacy constraint says: *"A microphone in a garden
 records neighbours, visitors and passers-by who never consented."* Everything
 built for it so far is passive — no continuous speech retained, no clip for a
-human sound class (ADR-049), bounded evidence retention (ADR-026). All of it is
+human sound class ([[ADR-049]]), bounded evidence retention ([[ADR-026]]). All of it is
 about what the station *keeps* once something has already happened.
 
 None of it helps the case that actually arises. In the operator's words:
@@ -61,7 +67,7 @@ state before it.
 naming because it looks inconsistent. What the privacy constraint protects is
 people's speech and presence, and the eavesdropping vector is audio: a
 spectrogram is a picture of band energy, is not intelligible, and is already
-computed only while somebody is watching (ADR-040) and never stored. Keeping it
+computed only while somebody is watching ([[ADR-040]]) and never stored. Keeping it
 is also what lets an operator see, at a glance, that the station is alive and
 paused rather than dead. If a future reading of the constraint disagrees, the
 gate goes in `_handle_block` next to the audio one and costs nothing extra.
@@ -131,14 +137,14 @@ arriving.
 
 ### Why an endpoint rather than a setting
 
-ADR-048 made every setting web-editable, so routing this through
+[[ADR-048]] made every setting web-editable, so routing this through
 `PUT /api/v1/settings` was available, and was rejected. A setting describes how
 the station behaves indefinitely; this is an action with a deadline, taken
 repeatedly, not persisted to `runtime.env`, and it must be one request from a
 control on the main page. Wiring it through the settings writer would also mean
 a privacy action waiting on a file write.
 
-What *is* a setting, through ADR-048's mechanism: `pause_presets` (which
+What *is* a setting, through [[ADR-048]]'s mechanism: `pause_presets` (which
 durations the drop-down offers) and `pause_default_preset` (what is
 pre-selected before this browser has chosen). Both live-tier, in a new
 **Privacy** category. `POST /api/v1/pause` accepts any *known* preset rather
@@ -166,7 +172,7 @@ tell a paused station from a dead one is charter item 2's failure in Prometheus
 form.
 
 Suppressed detections are counted (`pause.detections_suppressed`) and surfaced
-in the station snapshot, on ADR-049's reasoning: a privacy control whose effect
+in the station snapshot, on [[ADR-049]]'s reasoning: a privacy control whose effect
 nobody can see is a promise rather than a mechanism.
 
 Persistence is best-effort and deliberately cannot block the pause: the
@@ -255,3 +261,6 @@ curl -s -X DELETE http://<station-host>:8080/api/v1/pause > /dev/null
 curl -s 'http://<station-host>:8080/api/v1/history?window=today' \
   | python3 -c 'import json,sys; c=json.load(sys.stdin)["coverage"]; print(c["seconds_paused"], c["pauses"])'
 ```
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

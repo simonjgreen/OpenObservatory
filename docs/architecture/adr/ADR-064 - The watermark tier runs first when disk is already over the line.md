@@ -1,6 +1,12 @@
+---
+aliases:
+  - ADR-064
+tags:
+  - adr
+---
 # ADR-064: The watermark tier runs first when disk is already over the line
 **Status:** accepted, 2026-08-19
-**Amends:** ADR-026, ADR-062
+**Amends:** [[ADR-026]], [[ADR-062]]
 
 ### The problem
 
@@ -14,7 +20,7 @@ the budget. That is not a rare coincidence: a native backlog and a filling disk
 have the same cause, so the tier was most likely to be skipped exactly when it
 was most needed.
 
-ADR-062's fix demonstrated it within minutes of deploying. The first healthy
+[[ADR-062]]'s fix demonstrated it within minutes of deploying. The first healthy
 sweep in two days reclaimed its full batch and reported:
 
     total_deleted=200  tier_counts={'native': 200}
@@ -22,7 +28,7 @@ sweep in two days reclaimed its full batch and reported:
 
 Correct behaviour by the old rules, and the safety valve still did not run.
 
-This also explains why the ADR-062 incident was as dangerous as it was. The
+This also explains why the [[ADR-062]] incident was as dangerous as it was. The
 narrative "the disk climbed toward an 85% watermark" quietly assumed something
 would happen at 85%. Nothing would have: the watermark tier was inside the
 sweep that was failing, and *behind* the tier that was failing.
@@ -37,7 +43,7 @@ call.
 Deliberately *not* done: giving the watermark tier its own separate budget.
 That would let a sweep do up to twice the configured work, and the whole point
 of `batch_size` and `retention_batch_budget_s` is that one sweep's cost is
-bounded — ADR-021 and ADR-033 measured what unbounded housekeeping does to
+bounded — [[ADR-021]] and [[ADR-033]] measured what unbounded housekeeping does to
 capture. Reordering changes which work a bounded sweep chooses, not how much it
 does.
 
@@ -49,9 +55,12 @@ does.
   catch up on the sweeps after the disk comes back under the line.
 - `kept` recordings remain exempt from the watermark tier, unchanged. A station
   that cannot get under the watermark without deleting kept evidence still
-  reports the problem and waits for a human (ADR-061).
+  reports the problem and waits for a human ([[ADR-061]]).
 - A sweep now calls `shutil.disk_usage` up to three times: once for
   `disk_used_ratio_before`, once for this guard, once inside
   `_watermark_reclaim`. Measured at ~20 µs each on the station; not worth
   caching, and a cache is exactly the kind of staleness that makes a safety
   valve unreliable.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

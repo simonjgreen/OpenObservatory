@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-065
+tags:
+  - adr
+---
 # ADR-065: A restart that voids a measurement must say so
 **Status:** accepted, 2026-08-19
 
@@ -44,7 +50,7 @@ run did not shut down cleanly. The method computed exactly that, logged it at
   would mean every station that has ever lost power reports itself degraded
   forever, which trains people to ignore the field.
 - `oo_station_unclean_restart` exposes it for alerting.
-- ADR-063's clock re-anchor gets a note on the same terms, for the same reason:
+- [[ADR-063]]'s clock re-anchor gets a note on the same terms, for the same reason:
   it is a disclosure about data already written, not a current fault.
 
 ### Consequences
@@ -54,8 +60,11 @@ run did not shut down cleanly. The method computed exactly that, logged it at
   void whether or not anyone has read the note yet.
 - This does not detect a restart that took the *whole* database with it, or a
   station wiped and rebuilt. Nothing in-process can.
-- Combined with ADR-063, the two failures found in this session share a shape
+- Combined with [[ADR-063]], the two failures found in this session share a shape
   worth naming: **the station's process-scoped counters all reset together, so a
   restart makes every instrument agree that everything is fine.** Anything that
   must survive a restart to stay true has to be derived from durable state — the
   `audio_stream` rows here, the wall clock there — not from a counter.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

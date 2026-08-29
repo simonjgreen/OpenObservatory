@@ -1,6 +1,12 @@
+---
+aliases:
+  - ADR-062
+tags:
+  - adr
+---
 # ADR-062: Retention walks the live assets, not the whole history
 **Status:** accepted, 2026-08-19
-**Supersedes in part:** ADR-026 (tier age is now measured on the asset), ADR-061
+**Supersedes in part:** [[ADR-026]] (tier age is now measured on the asset), [[ADR-061]]
 (revision 0001's `ix_media_asset_reclaimed_at` is dropped)
 
 ### The failure
@@ -106,7 +112,7 @@ an average of 6 rows per `reclaimed_at` value — arithmetically true and
 completely useless, because the NULL bucket holds 176,231 of them. With those
 statistics present the planner abandoned the correct plan and returned to the
 temp B-tree: 0.0004 s → 0.1215 s. This is the third time on this project a
-confidently-wrong measurement has pointed at the wrong fix; see ADR-061's
+confidently-wrong measurement has pointed at the wrong fix; see [[ADR-061]]'s
 addenda for the first two.
 
 ### Consequences
@@ -125,3 +131,6 @@ addenda for the first two.
 - Rollback: `alembic downgrade 0010_kept_at_partial_index` restores the previous
   indexes and plans; the tier code reads `created_at` regardless, which without
   the partial indexes is merely slow, not wrong.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

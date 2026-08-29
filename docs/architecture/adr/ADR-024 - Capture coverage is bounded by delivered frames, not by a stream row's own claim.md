@@ -1,3 +1,9 @@
+---
+aliases:
+  - ADR-024
+tags:
+  - adr
+---
 # ADR-024: Capture coverage is bounded by delivered frames, not by a stream row's own claim
 **Decision:** `history.coverage()` no longer trusts `audio_stream.start_utc`/`end_utc`
 as the truth of how long a stream captured for. Each row's contribution is first
@@ -6,7 +12,7 @@ to seconds at the stream's own `sample_rate`, laid down from `start_utc` (audio 
 known to begin exactly there — `StreamClock` anchors to the first block actually
 read), and `last_frame_at_utc`, a heartbeat written every ~10 s while the stream is
 open — before the existing interval-merge (ADR-era fix for the 1302% incident, see
-`HANDOVER.md` §7) ever runs. A row whose frame-derived duration falls below 90% of
+[[HANDOVER]] §7) ever runs. A row whose frame-derived duration falls below 90% of
 its claimed wall-clock span (and whose claim is at least 60 s, to avoid noise on
 trivial rows) is additionally marked `suspect` in the API response rather than
 averaged away silently. `audio_stream` gained a `last_frame_at_utc` column to make
@@ -30,7 +36,7 @@ almost certainly wedged on the same file descriptor that eventually surfaced the
 `AlsaCaptureError`, rather than erroring immediately — and nothing downstream
 noticed for 29 hours, because nothing was watching for silence, only for an explicit
 error. **This is a capture-side finding, not fixed here**: the read loop hanging
-instead of failing fast is squarely `OPEN_INVESTIGATION_CAPTURE_GAPS.md`'s territory
+instead of failing fast is squarely [[OPEN_INVESTIGATION_CAPTURE_GAPS]]'s territory
 (the capture-gap investigation), and is recorded there for reconciliation rather than
 patched in this change. What is fixed here is that a row shaped like this one can no
 longer inflate the coverage bar while the underlying hang is tracked down.
@@ -76,13 +82,16 @@ be read out of it into a stream row again.
 
 **Not yet done, and out of scope for this change:** `PostgreSQL` has no Alembic
 migration for `audio_stream.last_frame_at_utc` — no Alembic environment exists in
-this repository at all yet (ADR-007 already flags this gap for the SQLite→Postgres
+this repository at all yet ([[ADR-007]] already flags this gap for the SQLite→Postgres
 transition). `db.session.create_all()` now defensively `ALTER TABLE ADD COLUMN`s
 any column missing from an existing SQLite file, which covers the developer and
 on-device profiles this project currently runs, but a real migration is still owed
 before the PostgreSQL profile is exercised for real.
 
-> **Status 2026-08-08: superseded by ADR-035.** An Alembic environment now
+> **Status 2026-08-08: superseded by [[ADR-035]].** An Alembic environment now
 > exists, and `audio_stream.last_frame_at_utc` is included in the `0001_initial`
 > baseline. The `ALTER TABLE` patcher is deliberately retained for now; see
-> ADR-035 for why, and for what still has to change before it can be retired.
+> [[ADR-035]] for why, and for what still has to change before it can be retired.
+
+---
+Part of the [[ADRS|Architecture Decision Record index]].

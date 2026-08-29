@@ -3,7 +3,7 @@
 This document is the pre-implementation design spec, written before the pipeline existed.
 It records intent and is kept as-is below. See **"As implemented"** at the end for what was
 actually built, where it matches this spec, and where it went further. Measured figures
-(group delay, capture continuity, CPU) live in `docs/operations/TARGET_DIAGNOSTICS.md` and
+(group delay, capture continuity, CPU) live in [[TARGET_DIAGNOSTICS]] and
 are not restated here from memory.
 
 ## Objective
@@ -104,7 +104,7 @@ resampler has emitted.
 
 This exists because the resampler's output arrives in ragged chunk sizes rather than a
 constant frame count per input block, so a running-output-count clock would wander (bounded
-but non-zero drift; see the resampler timing table in `TARGET_DIAGNOSTICS.md`). Anchoring
+but non-zero drift; see the resampler timing table in [[TARGET_DIAGNOSTICS]]). Anchoring
 on stream start instead makes frame-to-time exact at every rate, including across a
 dropped block, because a gap simply advances the frame index by the missing amount.
 
@@ -123,7 +123,7 @@ that rate rather than capturing:
 > ALSA silently substituted a rate: refuse it rather than record audio whose true
 > bandwidth we cannot state.
 
-This was not a hypothetical: `TARGET_DIAGNOSTICS.md` records that `arecord -r 48000`
+This was not a hypothetical: [[TARGET_DIAGNOSTICS]] records that `arecord -r 48000`
 *appears* to succeed on the AudioMoth used for commissioning, because ALSA's `plug` layer
 silently resamples and only prints a warning. The station's own capture path takes the
 device's one native hardware profile (384 kHz mono S16_LE on the unit measured) or nothing.
@@ -146,7 +146,7 @@ than twice the FFT size. A single FFT window per output column therefore looked 
 each 9216-frame hop and ignored the remaining 5120: 55% of the audio was never inspected,
 and a 4 ms bat pulse could land entirely in the unexamined gap. Columns are now built from
 several sub-windows spread across the hop and max-combined, so no part of the hop is
-skipped. `TARGET_DIAGNOSTICS.md` records the measured cost of this: per-block hot-path CPU
+skipped. [[TARGET_DIAGNOSTICS]] records the measured cost of this: per-block hot-path CPU
 went from 9.5% to 10.9% of one core when full-hop coverage replaced single-window sampling.
 
 ### Ultrasound-to-audible rendering
@@ -155,7 +155,7 @@ went from 9.5% to 10.9% of one core when full-hop coverage replaced single-windo
 derivative for human review, by time-expansion (replay slowed by a factor, preserving call
 shape) or heterodyne (mixed against a tuned local oscillator, real-time duration, narrowband).
 This is not part of the stage list above; it exists because an ultrasonic clip is not
-checkable by ear as recorded. See ADR-014 in `docs/architecture/ADRS.md`. The rendering is
+checkable by ear as recorded. See [[ADR-014]] in [[ADRS]]. The rendering is
 peak-normalised and high-pass filtered and is explicitly not amplitude-comparable to the
 native recording — levels throughout this system are uncalibrated dBFS, never SPL.
 
@@ -164,7 +164,7 @@ native recording — levels throughout this system are uncalibrated dBFS, never 
 100 ms (`capture_block_ms = 100` in `src/open_observatory/config.py`) is a measured,
 settled default rather than the open benchmarking question this spec posed. Live-channel
 delivery measured from a real browser over Wi-Fi shows inter-arrival at p50 100 ms (one
-capture block), consistent with that setting; see `TARGET_DIAGNOSTICS.md`.
+capture block), consistent with that setting; see [[TARGET_DIAGNOSTICS]].
 
 ### What the measurements say about the stages above
 
@@ -172,7 +172,7 @@ Resampling correctness (native-rate to 48 kHz): group delay is 0 output frames, 
 output frame *n* maps exactly to native frame *8n* — with no cumulative drift over 5
 minutes of audio. Capture continuity, measured on the running systemd service, is
 0.9990–0.9997. Both figures, and the device's measured −43 ppm clock offset, are recorded
-in `docs/operations/TARGET_DIAGNOSTICS.md` and are not restated in full here.
+in [[TARGET_DIAGNOSTICS]] and are not restated in full here.
 
 An earlier version of this paragraph added "with zero gaps and overruns". That is no
 longer true and should not be restated: the live station reported 369 `capture.gap`
@@ -180,19 +180,19 @@ records and 3 ALSA overruns over 12.4 hours on 2026-08-09, at continuity 0.99990
 none of that was lost audio at the time — the real frame deficit over the same period was
 4.15 s (0.0095%) against an `estimated_missing_seconds` of 54.5 — because the pre-fix
 deficit-step estimator credited a *late* read as lost audio. See
-`docs/delivery/OPEN_INVESTIGATION_CAPTURE_GAPS.md` and ADR-033.
+[[OPEN_INVESTIGATION_CAPTURE_GAPS]] and [[ADR-033]].
 
-That estimator was corrected on 2026-08-09 (**ADR-039**): a deficit step is now
+That estimator was corrected on 2026-08-09 (**[[ADR-039]]**): a deficit step is now
 credited only once it fails to come back, `reason=overrun` is reserved for an event
 ALSA actually reported, and a late read that cost nothing increments `late_reads`
 instead of minting a gap. The fix was deployed and confirmed on target 2026-08-09.
 Since then, **judge real loss by `estimated_missing_seconds`, never by the raw
 `expected_frames - frames` deficit** — the raw deficit also carries crystal drift
 and a ±50 ms block-sampling phase artefact, and conflating the two is exactly the
-mistake ADR-039 fixed. If an earlier reading of this document told you to prefer
-the raw deficit, it predates ADR-046, which is the record of this reversal.
+mistake [[ADR-039]] fixed. If an earlier reading of this document told you to prefer
+the raw deficit, it predates [[ADR-046]], which is the record of this reversal.
 
 Note also that the one-hour no-drift test this document's "Resampling correctness" list
 asks for has been run at **five minutes**, not one hour, and the 72-hour soak ran
 2026-08-10 to 2026-08-13 and **failed** its continuity criterion (99.865% against
-≥ 99.9%; see `docs/delivery/MILESTONE_STATUS.md` §Milestone 4.5). Neither gap is closed.
+≥ 99.9%; see [[MILESTONE_STATUS]] §Milestone 4.5). Neither gap is closed.
