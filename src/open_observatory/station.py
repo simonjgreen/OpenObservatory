@@ -37,6 +37,7 @@ import structlog
 from sqlalchemy import func
 
 from . import models as model_registry
+from . import slo as slo_module
 from . import tuning
 from .audio.contracts import (
     NS_PER_S,
@@ -2059,6 +2060,7 @@ class Station:
             )
         expected_frames = None
         continuity = None
+        deficit_split = None
         if stream is not None and self.clock is not None:
             # Measured from frame zero, not from open(): priming the device takes a
             # couple of hundred milliseconds during which no audio exists to capture,
@@ -2073,6 +2075,17 @@ class Station:
                 # rather than surfaced -- the same shape of error this session's
                 # `audio_stream.frame_count` bug turned out to be (ADR-024).
                 continuity = round(min(1.0, self._stream_frames / expected_frames), 6)
+
+                # ADR-073. `continuity` above sums confirmed loss and crystal
+                # drift; this separates them. Drift is audio that exists and is
+                # merely mislabelled (ADR-072); charging it to the station is the
+                # category error ADR-073 exists to end.
+                deficit_split = slo_module.split_deficit(
+                    expected_frames=expected_frames,
+                    frames=self._stream_frames,
+                    missing_frames=self.counters.estimated_missing_frames,
+                    sample_rate=stream.fmt.sample_rate,
+                )
 
         hot_path_ratio = None
         if self.counters.frames and stream is not None:
@@ -2174,6 +2187,10 @@ class Station:
                 "frames": self.counters.frames,
                 "expected_frames": expected_frames,
                 "continuity_ratio": continuity,
+                # ADR-073: loss and drift, reported apart. See slo.py.
+                "audio_lost_seconds": deficit_split.lost_seconds if deficit_split else 0.0,
+                "drift_seconds": deficit_split.drift_seconds if deficit_split else 0.0,
+                "capture_integrity_ratio": (deficit_split.integrity_ratio if deficit_split else None),
                 "discontinuities": self.counters.discontinuities,
                 # `discontinuities` is the sum of these two. Report the split, so
                 # nobody has to infer lost recording from a count of log lines.
