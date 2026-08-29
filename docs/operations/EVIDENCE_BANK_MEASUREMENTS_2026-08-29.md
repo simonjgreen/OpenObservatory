@@ -1,7 +1,7 @@
 # Evidence-bank measurements, 2026-08-29 — on the station
 
-Every number ADR-075 argues from, measured on the Raspberry Pi 5 at
-`192.168.1.195` rather than estimated. Read-only against the live database
+Every number ADR-076 argues from, measured on the Raspberry Pi 5 at
+`<station-host>` rather than estimated. Read-only against the live database
 except where a lab copy is named.
 
 ## The shape of the archive
