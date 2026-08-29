@@ -3137,3 +3137,139 @@ class TestWatermarkPrefersUnbanked:
                 "never happened before ADR-076 and the brief required it "
                 "stay byte-identical"
             )
+
+
+class TestPartialWatermarkReclaimDoesNotUnbank:
+    """C1 (CRITICAL, final pre-merge review, 2026-08-29).
+
+    `_watermark_pass` iterates one row per media asset, but a detection
+    normally carries 2-4 live assets (`evidence_native`, `playback`,
+    sometimes `audible_ultrasonic`), and the reclaim loop breaks at the top
+    of an iteration the moment `freed >= bytes_over`, `budget <= 0`, or the
+    deadline passes -- so stopping part-way through a detection's assets is
+    the ordinary case, not an edge case. Before the fix, a banked detection
+    was added to `banked_ids` (and so had `banked_at` cleared for the whole
+    row) the moment **one** of its assets was staged, even while a sibling
+    asset was still live on disk. The next sweep's unkept-tier query
+    (`banked_at IS NULL AND kept_at IS NULL ORDER BY created_at ASC`) then
+    selects exactly that surviving clip -- the precise defect ADR-076 exists
+    to prevent, restored by a different route.
+
+    Every other watermark test in this module uses ``kinds=("evidence_native",)``
+    -- a single asset -- which is why this survived review.
+    """
+
+    @staticmethod
+    def _over_watermark_small(monkeypatch) -> None:
+        """`bytes_over` = 50 bytes: one 1024-byte asset already exceeds it,
+        so a `batch_size=1` sweep reclaims exactly one of a detection's two
+        assets."""
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+    @staticmethod
+    def _over_watermark_roomy(monkeypatch) -> None:
+        """`bytes_over` = 60,000 bytes: comfortably more than two 1024-byte
+        assets, so nothing here stops the reclaim loop early -- it only
+        stops when it runs out of candidates, which is the point of this
+        variant."""
+
+        class FakeUsage:
+            total = 1_000_000
+            free = 90_000  # 91% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+    def test_banked_at_survives_a_partial_reclaim(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native", "playback"),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark_small(monkeypatch)
+        # batch_size=1: this sweep can reclaim exactly one of this
+        # detection's two live assets -- the ordinary "detection outlives a
+        # single batch" case, not a contrived one.
+        report = _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85, batch_size=1
+        ).sweep()
+
+        assert report.tier_counts.get("watermark", 0) == 1
+        with session_scope() as session:
+            reclaimed = [
+                kind
+                for kind, asset_id in assets.items()
+                if _asset(session, asset_id).reclaimed_at is not None
+            ]
+            assert len(reclaimed) == 1, "exactly one of the two assets should be reclaimed"
+            assert session.get(orm.Detection, banked).banked_at is not None, (
+                "banked_at was cleared while a sibling asset is still live on "
+                "disk -- C1: the slot is now unprotected, and the surviving "
+                "clip is exactly what the next unkept-tier sweep will select "
+                "and delete"
+            )
+        assert report.watermark_took_banked == 0, (
+            "the detection was not genuinely emptied this sweep -- it must "
+            "not be tallied as reclaimed"
+        )
+
+    def test_banked_at_clears_once_every_asset_is_reclaimed(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native", "playback"),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark_roomy(monkeypatch)
+        report = _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85, batch_size=1000
+        ).sweep()
+
+        assert report.tier_counts.get("watermark", 0) == 2
+        with session_scope() as session:
+            for asset_id in assets.values():
+                assert _asset(session, asset_id).reclaimed_at is not None
+            assert session.get(orm.Detection, banked).banked_at is None, (
+                "once every one of the detection's assets is genuinely gone "
+                "the slot must be freed back to the species"
+            )
+        assert report.watermark_took_banked == 1
+
+

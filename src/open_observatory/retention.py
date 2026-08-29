@@ -1612,6 +1612,41 @@ class RetentionSweeper:
                     bank=bank,
                     reason=reason,
                 )
+            # C1 (final pre-merge review, 2026-08-29): `_watermark_pass` adds
+            # a detection to `banked_ids` the moment **one** of its assets is
+            # staged, but a detection normally carries 2-4 live assets
+            # (`evidence_native`, `playback`, sometimes
+            # `audible_ultrasonic`), and the loop above breaks the moment
+            # `freed >= bytes_over`, `budget <= 0`, or the deadline passes --
+            # stopping part-way through a detection's assets is the ordinary
+            # case, not an edge case. Clearing `banked_at` for the whole
+            # detection here, unconditionally, would unbank it while a
+            # sibling asset is still on disk; the next sweep's unkept-tier
+            # query (`banked_at IS NULL AND kept_at IS NULL ORDER BY
+            # created_at ASC`) would then select exactly that surviving
+            # clip -- the precise defect ADR-076 exists to prevent, restored
+            # by a different route. `session.flush()` first makes
+            # `_stage_delete`'s in-memory `reclaimed_at` visible to the
+            # query below (autoflush would do this anyway, but the read
+            # depends on it so it is made explicit); the query then asks,
+            # for exactly the bounded set of detections this pass touched,
+            # which of them still have a live asset, and only those that do
+            # not are dropped from `banked_ids` before it is used either to
+            # clear `banked_at` or to tally `watermark_took_banked`.
+            session.flush()
+            if banked_ids:
+                still_live = set(
+                    session.execute(
+                        select(orm.DetectionMedia.detection_id)
+                        .join(
+                            orm.MediaAsset,
+                            orm.MediaAsset.id == orm.DetectionMedia.media_asset_id,
+                        )
+                        .where(orm.DetectionMedia.detection_id.in_(banked_ids))
+                        .where(orm.MediaAsset.reclaimed_at.is_(None))
+                    ).scalars()
+                )
+                banked_ids -= still_live
             # The one thing that may clear `banked_at` (ADR-076 rule 1).
             # Cleared here, inside this tier's own transaction, rather than
             # lazily: a slot held by a detection with no files is a slot the
