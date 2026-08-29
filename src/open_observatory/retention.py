@@ -262,6 +262,10 @@ class _TierTally:
     bytes: int = 0
     already_missing: int = 0
     decisions: list[RetentionDecision] = field(default_factory=list)
+    #: Per-`evidence_value.Verdict` counts/bytes for this tier's own staged
+    #: decisions (ADR-074/Task 6). Empty unless `evidence_value_enabled`.
+    value_counts: dict[str, int] = field(default_factory=dict)
+    value_bytes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -290,6 +294,18 @@ class RetentionReport:
     #: Per-tier counts/bytes: keys are "native", "unkept", "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
     tier_bytes: dict[str, int] = field(default_factory=dict)
+    #: Per-`evidence_value.Verdict` counts/bytes (ADR-074, Task 6): what each
+    #: category of clip would cost, for a human to read before anything is
+    #: unlinked. Keys are `Verdict` values ("bank", "quota", "sample",
+    #: "expire") -- though `"bank"` never appears here, because a banked
+    #: candidate is excluded from the tier's own `SELECT` (see
+    #: `_EvidenceBank.exclusion`) and never reaches staging to be tallied.
+    #: Only the native/unkept age tiers populate these -- the watermark tier
+    #: is deliberately blind to value (ADR-074 rule: watermark outranks
+    #: value) -- and both stay empty while `evidence_value_enabled` is
+    #: `False`, so the flag's inertness extends to this report too.
+    value_counts: dict[str, int] = field(default_factory=dict)
+    value_bytes: dict[str, int] = field(default_factory=dict)
     decisions: list[RetentionDecision] = field(default_factory=list)
     #: False when the batch budget (count or wall-clock) was exhausted with
     #: candidate work still outstanding -- the next sweep will pick it up.
@@ -351,6 +367,8 @@ class RetentionReport:
             "already_missing": self.already_missing,
             "tier_counts": dict(self.tier_counts),
             "tier_bytes": dict(self.tier_bytes),
+            "value_counts": dict(self.value_counts),
+            "value_bytes": dict(self.value_bytes),
             "total_deleted": self.total_deleted,
             "total_bytes": self.total_bytes,
             "complete": self.complete,
@@ -746,6 +764,7 @@ class RetentionSweeper:
         deadline: float,
         budget: int,
         dry_run: bool,
+        bank: _EvidenceBank | None = None,
     ) -> int:
         """Fetch one tier's candidates, stage every decision, and commit the
         whole tier as one transaction *before* unlinking a single file.
@@ -793,6 +812,23 @@ class RetentionSweeper:
             for asset, detection_id in session.execute(query).all():
                 if time.monotonic() >= deadline or budget <= 0:
                     break
+                # ADR-074/Task 6: cheap in-memory classification, no extra
+                # query. `bank`'s exclusion already kept every BANK verdict
+                # out of `query` entirely, so a candidate that reaches this
+                # point can only be QUOTA or SAMPLE -- exactly the two
+                # branches `evidence_value.classify` falls through to once
+                # the BANK checks fail, which is why re-deriving `band` and
+                # `is_common` here would answer a question already settled
+                # upstream. `None` (no verdict tallied at all) whenever the
+                # flag is off, keeping the report's `value_counts`/
+                # `value_bytes` empty and the flag inert.
+                verdict = (
+                    evidence_value.Verdict.SAMPLE
+                    if evidence_value.sampled(
+                        str(detection_id), self.evidence_sample_permille
+                    )
+                    else evidence_value.Verdict.QUOTA
+                ).value if bank is not None else None
                 staged = self._stage_delete(
                     tally,
                     asset,
@@ -800,6 +836,7 @@ class RetentionSweeper:
                     tier=tier,
                     reason=reason,
                     dry_run=dry_run,
+                    verdict=verdict,
                 )
                 if staged is not None:
                     to_unlink.append(staged)
@@ -819,6 +856,10 @@ class RetentionSweeper:
         # only here, never earlier.
         report.tier_counts[tier] = report.tier_counts.get(tier, 0) + tally.count
         report.tier_bytes[tier] = report.tier_bytes.get(tier, 0) + tally.bytes
+        for verdict, count in tally.value_counts.items():
+            report.value_counts[verdict] = report.value_counts.get(verdict, 0) + count
+        for verdict, nbytes in tally.value_bytes.items():
+            report.value_bytes[verdict] = report.value_bytes.get(verdict, 0) + nbytes
         report.already_missing += tally.already_missing
         report.decisions.extend(tally.decisions)
         # Unlinking is pure filesystem I/O, not a database statement, so it
@@ -881,6 +922,7 @@ class RetentionSweeper:
             deadline=deadline,
             budget=budget,
             dry_run=dry_run,
+            bank=bank,
         )
 
     def _strip_unkept(
@@ -923,6 +965,7 @@ class RetentionSweeper:
             deadline=deadline,
             budget=budget,
             dry_run=dry_run,
+            bank=bank,
         )
 
     # -- what has been banked (ADR-074) -----------------------------------
@@ -1279,6 +1322,7 @@ class RetentionSweeper:
         tier: str,
         reason: str,
         dry_run: bool,
+        verdict: str | None = None,
     ) -> tuple[uuid.UUID, Path] | None:
         """Record a deletion decision and mark the row reclaimed -- but never
         touch the filesystem. Returns the asset id and path still needing an
@@ -1358,6 +1402,11 @@ class RetentionSweeper:
         tally.bytes += size if existed else 0
         if not existed:
             tally.already_missing += 1
+        if verdict is not None:
+            tally.value_counts[verdict] = tally.value_counts.get(verdict, 0) + 1
+            tally.value_bytes[verdict] = tally.value_bytes.get(verdict, 0) + (
+                size if existed else 0
+            )
 
         # Staged in-memory either way -- dry run or real -- so a later
         # tier's candidate query (`reclaimed_at IS NULL`) never re-offers,

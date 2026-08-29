@@ -1193,6 +1193,56 @@ class TestDryRun:
         assert dry.tier_bytes == real.tier_bytes
         assert dry.kept_detections == real.kept_detections
 
+    def test_a_dry_run_reports_what_each_verdict_would_cost(
+        self, db, station_and_detector
+    ) -> None:
+        """Deletion is irreversible and this policy has never run.
+
+        The first execution against real data must say, per category, how many
+        clips and how many bytes it would remove -- for a human to read BEFORE
+        anything is unlinked.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=8,
+                common_name="European Robin",  # on the operator's common list
+                byte_length=1024,
+            )
+            native_path = Path(_asset(session, assets["evidence_native"]).storage_uri)
+
+        # permille=1000 forces `evidence_value.sampled()` True for every
+        # detection id -- deterministic SAMPLE without depending on a
+        # particular uuid4() hash.
+        sampled_report = _sweeper(
+            db, evidence_value_enabled=True, evidence_sample_permille=1000
+        ).sweep(dry_run=True)
+        assert sampled_report.value_counts == {"sample": 1}
+        assert sampled_report.value_bytes == {"sample": 1024}
+
+        # permille=0 forces it False for everyone -- deterministic QUOTA.
+        # Safe to reuse the same seeded row: a dry run rolls back every
+        # staged mutation, so nothing above already reclaimed it.
+        quota_report = _sweeper(
+            db, evidence_value_enabled=True, evidence_sample_permille=0
+        ).sweep(dry_run=True)
+        assert quota_report.value_counts == {"quota": 1}
+        assert quota_report.value_bytes == {"quota": 1024}
+
+        # The flag stays inert by default: no verdict is even computed.
+        off_report = _sweeper(db).sweep(dry_run=True)
+        assert off_report.value_counts == {}
+        assert off_report.value_bytes == {}
+
+        # A dry run is a dry run, whichever verdict it reports.
+        assert native_path.exists()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+
 
 class TestDiskAndDbDisagreements:
     def test_row_present_file_already_gone(self, db, station_and_detector) -> None:

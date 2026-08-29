@@ -1563,6 +1563,33 @@ def clips_retention(
             f"{report.tier_bytes.get(tier, 0):,}",
         )
     console.print(table)
+
+    # ADR-074/Task 6: this policy deletes clips and has never run against
+    # real data, so its first execution must say, per category, how many
+    # clips and how many bytes it would remove -- before anything is
+    # unlinked. Empty (and thus not printed) whenever `evidence_value_enabled`
+    # is off, which is the flag's default and keeps this output unchanged for
+    # every station that has not turned it on.
+    if report.value_counts or report.value_bytes:
+        value_table = Table(title="Would remove, by evidence-value verdict (ADR-074)")
+        value_table.add_column("verdict")
+        value_table.add_column("files", justify="right")
+        value_table.add_column("bytes", justify="right")
+        for verdict in ("bank", "quota", "sample", "expire"):
+            if verdict not in report.value_counts and verdict not in report.value_bytes:
+                continue
+            value_table.add_row(
+                verdict,
+                str(report.value_counts.get(verdict, 0)),
+                f"{report.value_bytes.get(verdict, 0):,}",
+            )
+        console.print(value_table)
+        if dry_run:
+            console.print(
+                "[bold yellow]Nothing above has been deleted[/bold yellow] -- this is "
+                "what each verdict would cost if this sweep ran for real.\n"
+            )
+
     console.print(
         f"kept detections (operator-flagged, exempt from every tier "
         f"including the {settings.retention_audible_only_days}d expiry): "
