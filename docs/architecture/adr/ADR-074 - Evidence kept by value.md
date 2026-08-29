@@ -185,6 +185,37 @@ And it keeps *more* of what is wanted: the heron, the kingfisher and the 60 kHz
 bat pass survive as a permanent bank, instead of being lost to a 30-day timer
 while robins fill the disk.
 
+### Amendment, 2026-08-29: shipped as rarity-only, and why the flag stays off
+
+The implementation landed with **the plausibility half of this decision not
+wired**. `retention.py` sets `_ASSUMED_BAND = "in_range"` and calls `classify()`
+as though every detection were plausible, because the band lives inside
+`native_result` JSON and cannot be read inside the sweep's 1.5 s budget
+(ADR-062). **The implausible cap of three never fires.**
+
+So what is running today is *rarity alone* — which this ADR says, in terms, is
+the wrong axis: a naive rarity bias preferentially archives BirdNET's mistakes.
+A California Quail would bank 200 clips rather than three.
+
+Three things follow, and the third is the one that matters.
+
+1. **The ceiling is unaffected.** `bank_size` bounds every species at 200
+   whatever its band, so the ~44 GB worst case in the table above still holds.
+   The gap wastes bank slots on misidentifications; it cannot run away with the
+   disk.
+2. **This ADR is now ahead of its implementation, and says so here** rather than
+   continuing to promise a crossing the code does not perform.
+3. **`evidence_value_enabled` must not be turned on until the band is
+   available.** Enabling it today would fill the bank with exactly the
+   misidentifications this ADR was written to keep out — the failure mode, not
+   a lesser version of the success. This is a precondition on rollout, not a
+   preference.
+
+**The fix, deliberately out of scope here:** persist the plausibility band as an
+indexed column on `detection` at write time. The detector already computes it;
+nothing needs re-deriving. That is a migration plus a write-path change, and it
+wants its own ADR because it changes what a detection row means.
+
 ### Rules that must not be broken
 
 1. **Age tiers remain as a backstop.** Value-based selection decides what is
