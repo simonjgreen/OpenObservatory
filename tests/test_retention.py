@@ -2740,3 +2740,113 @@ class TestPromotion:
         _sweeper(db).sweep()          # flag defaults off
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is None
+
+
+class TestTheCliffIsGone:
+    """ADR-074's blocking defect, as an executable regression.
+
+    Under ADR-074, `_derive_bank` returned a set of species *names* and the
+    exclusion exempted every clip of a named species, with membership
+    recomputed each sweep and `classify()` returning BANK only while
+    `banded_already < bank_size`. So the moment a species reached its cap the
+    exemption vanished **for the entire back-catalogue at once** -- and both
+    age tiers order `created_at ASC`, which made the first-ever recording of a
+    species the first thing deleted.
+
+    The bank existed to prevent exactly that outcome and produced it.
+    """
+
+    def test_crossing_the_cap_does_not_delete_the_first_ever_recording(
+        self, db, station_and_detector
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        cap = 3
+        first, assets_of_first = None, {}
+        with session_scope() as session:
+            for days in (400, 300, 200):
+                det, assets = _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=days,
+                    common_name="Grey Heron",
+                )
+                if first is None:
+                    first, assets_of_first = det, assets
+            session.commit()
+
+        sweeper = _sweeper(db, evidence_value_enabled=True, evidence_bank_size=cap,
+                           promotion_lookback=timedelta(days=3650))
+        sweeper.sweep()
+
+        # The species is now exactly at its cap -- the ADR-074 cliff edge.
+        with session_scope() as session:
+            at_cap = session.execute(
+                sa.select(sa.func.count()).select_from(orm.Detection)
+                .where(orm.Detection.common_name == "Grey Heron")
+                .where(orm.Detection.banked_at.is_not(None))
+            ).scalar_one()
+        assert at_cap == cap
+
+        # A fourth heron arrives, taking the species past the cap.
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=100,
+                common_name="Grey Heron",
+            )
+            session.commit()
+
+        sweeper.sweep()
+        sweeper.sweep()   # and again: the cliff fired on re-derivation
+
+        with session_scope() as session:
+            assert session.get(orm.Detection, first).banked_at is not None, (
+                "the first-ever recording was unbanked by crossing the cap"
+            )
+            for asset_id in assets_of_first.values():
+                assert _asset(session, asset_id).reclaimed_at is None, (
+                    "the first-ever recording of the species was deleted -- "
+                    "ADR-074's blocking defect has returned"
+                )
+
+    def test_adding_a_banked_species_to_the_common_list_keeps_its_history(
+        self, db, station_and_detector
+    ) -> None:
+        """ADR-074's stated consequence, which its own code contradicted.
+
+        "A species moved onto the common list does not retroactively delete its
+        history; the change applies to the next sweep forward" (ADR-074,
+        Consequences). Under the species-set bank it deleted the history
+        oldest-first. Under a monotone column it cannot.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,
+                common_name="European Greenfinch",
+            )
+            session.commit()
+
+        _sweeper(db, evidence_value_enabled=True,
+                 promotion_lookback=timedelta(days=3650)).sweep()
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is not None
+
+        # The operator decides greenfinches are boring.
+        _sweeper(db, evidence_value_enabled=True,
+                 evidence_common_species=("European Greenfinch",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
+
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is not None
+            for asset_id in assets.values():
+                assert _asset(session, asset_id).reclaimed_at is None
