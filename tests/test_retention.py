@@ -2908,3 +2908,145 @@ class TestTheCliffIsGone:
             assert session.get(orm.Detection, det).banked_at is not None
             for asset_id in assets.values():
                 assert _asset(session, asset_id).reclaimed_at is None
+
+
+class TestWatermarkPrefersUnbanked:
+    """ADR-076 defect 5.
+
+    `_watermark_reclaim` orders `created_at ASC` and was never passed the bank,
+    so the emergency valve reclaimed the oldest clips on the disk -- which,
+    once the bank works, is precisely the banked set. The archive would be the
+    first thing sacrificed to protect the disk.
+    """
+
+    @staticmethod
+    def _over_watermark(monkeypatch) -> None:
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+
+    def test_unbanked_evidence_goes_first(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, banked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,                     # older: reclaimed first today
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            _unbanked, unbanked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=200,                     # newer
+                kinds=("evidence_native",),
+                common_name="European Robin",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        # batch_size=1 so exactly one asset can be reclaimed: whichever the
+        # tier chooses first is the whole assertion.
+        _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85, batch_size=1
+        ).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, unbanked_assets["evidence_native"]).reclaimed_at is not None, (
+                "the unbanked clip was not taken first"
+            )
+            assert _asset(session, banked_assets["evidence_native"]).reclaimed_at is None, (
+                "the watermark reclaimed the archive while unbanked evidence "
+                "was still available -- ADR-076 defect 5 has returned"
+            )
+
+    def test_the_watermark_still_takes_banked_evidence_when_it_must(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """ADR-074 rule 1, and ADR-076 rule 3: a preference, never an exemption.
+
+        A disk that can only be saved by deleting the archive still gets the
+        archive deleted. "The watermark may delete banked evidence" and "the
+        watermark deletes banked evidence first" are different rules, and only
+        the first was ever intended.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, banked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        report = _sweeper(
+            db, evidence_value_enabled=True, watermark_ratio=0.85
+        ).sweep()
+
+        assert report.tier_counts.get("watermark", 0) >= 1
+        with session_scope() as session:
+            assert _asset(session, banked_assets["evidence_native"]).reclaimed_at is not None, (
+                "the bank became an exemption from the watermark; it is only a "
+                "preference (ADR-074 rule 1)"
+            )
+
+    def test_reclaiming_a_banked_detection_clears_banked_at(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """The one thing that may clear `banked_at` (ADR-076 rule 1).
+
+        Without this the species' slot stays consumed by a detection with no
+        files, and because promotion is monotone it stays consumed for ever --
+        the species is locked out of the bank permanently.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, _assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        _sweeper(db, evidence_value_enabled=True, watermark_ratio=0.85).sweep()
+
+        with session_scope() as session:
+            assert session.get(orm.Detection, banked).banked_at is None, (
+                "the slot stays consumed by a detection with no files, and "
+                "promotion is monotone -- the species is locked out for ever"
+            )

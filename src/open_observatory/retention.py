@@ -274,6 +274,13 @@ class RetentionReport:
     #: the number that makes "the sweep is not deleting kept evidence" an
     #: observable fact rather than an assumption: see `_health_payload`.
     watermark_blocked_by_kept: int = 0
+    #: Banked detections (ADR-076) whose `banked_at` was cleared this sweep
+    #: because the watermark's second pass reclaimed their evidence -- the
+    #: one exception to promotion's monotonicity (ADR-076 rule 1). Without
+    #: this the species' slot stays consumed by a detection with no files,
+    #: and promotion never reconsiders it. Always 0 while the flag is off,
+    #: or on a sweep whose first pass alone freed enough.
+    watermark_took_banked: int = 0
     already_missing: int = 0
     #: Per-tier counts/bytes: keys are "native", "unkept", "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
@@ -352,6 +359,7 @@ class RetentionReport:
             "kept_detections": self.kept_detections,
             "held_detections": self.held_detections,
             "watermark_blocked_by_kept": self.watermark_blocked_by_kept,
+            "watermark_took_banked": self.watermark_took_banked,
             "already_missing": self.already_missing,
             "tier_counts": dict(self.tier_counts),
             "tier_bytes": dict(self.tier_bytes),
@@ -596,23 +604,14 @@ class RetentionSweeper:
                 # downstream of the thing it protects against is not a safety
                 # valve. Below the watermark this costs one `shutil.disk_usage`
                 # call and the ordering is unchanged.
-                if self._disk_over_watermark():
-                    current_tier = "watermark"
-                    budget = self._watermark_reclaim(
-                        session, report, deadline=deadline, budget=budget, dry_run=dry_run
-                    )
-                    watermark_ran = True
-                else:
-                    watermark_ran = False
-                current_tier = "native"
-                # ADR-074, and deliberately below the watermark tier rather
-                # than in the preamble above: value decides what is *worth*
-                # keeping, the watermark decides what the disk can *hold*, and
-                # the cheapest way to guarantee the second never waits on the
-                # first is to do the first afterwards. Inert while the flag is
-                # off -- no query is issued and the tiers below get a `None`
-                # bank, which leaves their candidate queries exactly as they
-                # were.
+                # ADR-076 reverses ADR-074's ordering here. That ordering
+                # existed because the census cost 18.32 s and must never delay
+                # the one tier that stops a full disk stopping capture. The
+                # replacement is 0.0023 s, so the reason is gone -- and the
+                # watermark now needs the bank, to reclaim unbanked material
+                # first rather than reclaiming the archive first. The safety
+                # property is kept another way: `bank` is `None` when the flag
+                # is off, and then every tier below behaves exactly as it did.
                 #
                 # Wrapped here, at the call site, rather than inside
                 # `_evidence_bank` itself (ADR-076): the method's contract is
@@ -626,6 +625,20 @@ class RetentionSweeper:
                 with self._bounded_statements(session, deadline):
                     bank = self._evidence_bank(session)
                 self.last_bank_size = bank.total() if bank is not None else 0
+                if self._disk_over_watermark():
+                    current_tier = "watermark"
+                    budget = self._watermark_reclaim(
+                        session,
+                        report,
+                        deadline=deadline,
+                        budget=budget,
+                        dry_run=dry_run,
+                        bank=bank,
+                    )
+                    watermark_ran = True
+                else:
+                    watermark_ran = False
+                current_tier = "native"
                 # ADR-076: promotion runs after the watermark tier -- the
                 # watermark is an emergency valve and must never queue behind
                 # a write -- and before the two age tiers, which must see the
@@ -698,7 +711,12 @@ class RetentionSweeper:
                     pass
                 elif budget > 0 and time.monotonic() < deadline:
                     budget = self._watermark_reclaim(
-                        session, report, deadline=deadline, budget=budget, dry_run=dry_run
+                        session,
+                        report,
+                        deadline=deadline,
+                        budget=budget,
+                        dry_run=dry_run,
+                        bank=bank,
                     )
                 else:
                     report.tiers_skipped.append("watermark")
@@ -1339,26 +1357,43 @@ class RetentionSweeper:
         ratio = self._disk_used_ratio()
         return ratio is not None and ratio > self.watermark_ratio
 
-    def _watermark_reclaim(
+    def _watermark_pass(
         self,
         session: Session,
-        report: RetentionReport,
+        tally: _TierTally,
+        to_unlink: list[tuple[uuid.UUID, Path]],
+        banked_ids: set[uuid.UUID],
         *,
         deadline: float,
         budget: int,
+        bytes_over: int,
+        freed: int,
         dry_run: bool,
-    ) -> int:
-        usage = shutil.disk_usage(self.clip_dir)
-        if usage.total == 0:
-            return budget
-        ratio = 1.0 - usage.free / usage.total
-        if ratio <= self.watermark_ratio:
-            return budget
-        bytes_over = int((ratio - self.watermark_ratio) * usage.total)
+        exclude_banked: bool,
+        bank: _EvidenceBank | None,
+        reason: str,
+    ) -> tuple[int, int]:
+        """One oldest-first reclaim loop, run once or twice by `_watermark_reclaim`.
 
-        freed = 0
+        Factored out so ADR-076's second pass (over banked material, only run
+        when the first could not free enough) is the *same* loop as the
+        first rather than a hand-copied second one that drifts from it the
+        next time either needs a fix. `exclude_banked` is the only thing that
+        differs between the two calls; everything else -- the deadline guard,
+        the byte/row bookkeeping, staging through `_stage_delete` -- is
+        shared.
+
+        Whether a reclaimed row's detection actually carries `banked_at` is
+        read off the row itself (`banked_at` in the `SELECT`), not inferred
+        from `exclude_banked`: the first pass's exclusion already guarantees
+        none of its rows are banked, but trusting the flag for the second
+        pass too would be wrong the moment the first pass stops early (budget
+        or deadline) leaving older unbanked material behind it -- the second
+        pass's oldest-first query would surface that first, and it is not
+        banked.
+        """
         query = (
-            select(orm.MediaAsset, orm.Detection.id)
+            select(orm.MediaAsset, orm.Detection.id, orm.Detection.banked_at)
             .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
             .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
             .where(orm.MediaAsset.reclaimed_at.is_(None))
@@ -1371,32 +1406,95 @@ class RetentionSweeper:
             # 0.0032 s with this line. ADR-062.
             .where(orm.MediaAsset.created_at <= self._clock())
             .where(orm.Detection.kept_at.is_(None))
-            .order_by(orm.MediaAsset.created_at.asc())
-            .limit(budget)
         )
+        if exclude_banked and bank is not None:
+            query = query.where(bank.exclusion())
+        query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
+        for asset, detection_id, banked_at in session.execute(query).all():
+            if time.monotonic() >= deadline or budget <= 0 or freed >= bytes_over:
+                break
+            staged = self._stage_delete(
+                tally,
+                asset,
+                detection_id=detection_id,
+                tier="watermark",
+                reason=reason,
+                dry_run=dry_run,
+            )
+            # Every row reaching this point has just had its `reclaimed_at`
+            # staged by `_stage_delete` above, regardless of whether it also
+            # returned something to unlink (dry run, or the file was already
+            # gone) -- so whether to clear `banked_at` is decided here, not
+            # gated on `staged`.
+            if banked_at is not None and detection_id is not None:
+                banked_ids.add(detection_id)
+            if staged is not None:
+                to_unlink.append(staged)
+            freed += asset.byte_length
+            budget -= 1
+        return budget, freed
+
+    def _watermark_reclaim(
+        self,
+        session: Session,
+        report: RetentionReport,
+        *,
+        deadline: float,
+        budget: int,
+        dry_run: bool,
+        bank: _EvidenceBank | None = None,
+    ) -> int:
+        usage = shutil.disk_usage(self.clip_dir)
+        if usage.total == 0:
+            return budget
+        ratio = 1.0 - usage.free / usage.total
+        if ratio <= self.watermark_ratio:
+            return budget
+        bytes_over = int((ratio - self.watermark_ratio) * usage.total)
+
+        freed = 0
         reason = (
             f"disk usage {ratio:.1%} exceeds watermark "
             f"{self.watermark_ratio:.0%}: oldest-first reclaim, tier "
             "ignored, but kept recordings are never reclaimed"
         )
         to_unlink: list[tuple[uuid.UUID, Path]] = []
+        banked_ids: set[uuid.UUID] = set()
         tally = _TierTally()
         with self._bounded_statements(session, deadline):
-            for asset, detection_id in session.execute(query).all():
-                if time.monotonic() >= deadline or budget <= 0 or freed >= bytes_over:
+            # ADR-076: unbanked material first, banked material only if that
+            # did not free enough. A *preference*, never an exemption --
+            # ADR-074 rule 1 is untouched, and a disk that can only be saved
+            # by deleting the archive still gets the archive deleted.
+            passes = (True, False) if bank is not None else (False,)
+            for exclude_banked in passes:
+                if freed >= bytes_over or budget <= 0 or time.monotonic() >= deadline:
                     break
-                staged = self._stage_delete(
+                budget, freed = self._watermark_pass(
+                    session,
                     tally,
-                    asset,
-                    detection_id=detection_id,
-                    tier="watermark",
-                    reason=reason,
+                    to_unlink,
+                    banked_ids,
+                    deadline=deadline,
+                    budget=budget,
+                    bytes_over=bytes_over,
+                    freed=freed,
                     dry_run=dry_run,
+                    exclude_banked=exclude_banked,
+                    bank=bank,
+                    reason=reason,
                 )
-                if staged is not None:
-                    to_unlink.append(staged)
-                freed += asset.byte_length
-                budget -= 1
+            # The one thing that may clear `banked_at` (ADR-076 rule 1).
+            # Cleared here, inside this tier's own transaction, rather than
+            # lazily: a slot held by a detection with no files is a slot the
+            # species never gets back -- promotion is monotone and would
+            # never reconsider it.
+            if banked_ids:
+                session.execute(
+                    sa_update(orm.Detection)
+                    .where(orm.Detection.id.in_(banked_ids))
+                    .values(banked_at=None)
+                )
             session.flush()
         # `commit()` runs outside the arm, same reason as `_run_tier` (see
         # its docstring): committing inside would check the captured DBAPI
@@ -1407,9 +1505,11 @@ class RetentionSweeper:
         # Merge point (C1 follow-up, see `_run_tier`'s docstring): only
         # reached once the commit above has returned (or, dry run, once
         # staging finished without an abort), so an interrupted watermark
-        # pass contributes nothing to `report`.
+        # pass -- including the `banked_at` clear, which shares this same
+        # transaction -- contributes nothing to `report`.
         report.tier_counts["watermark"] = report.tier_counts.get("watermark", 0) + tally.count
         report.tier_bytes["watermark"] = report.tier_bytes.get("watermark", 0) + tally.bytes
+        report.watermark_took_banked += len(banked_ids)
         report.already_missing += tally.already_missing
         report.decisions.extend(tally.decisions)
         if not dry_run:
