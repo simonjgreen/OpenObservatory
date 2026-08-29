@@ -5,7 +5,8 @@
 > deployed one. Substantial parts of it have not been built, and several were
 > replaced on purpose.
 >
-> **Read [`ADRS.md`](ADRS.md) alongside it.** Every deviation is recorded there,
+> **Read [`ADRS.md`](ADRS.md) alongside it.** It indexes every deviation, one file
+> per decision under [`adr/`](adr/), and each is recorded
 > numbered, with the reasoning and what would have to be true to go back.
 > [`GAP_REPORT.md`](GAP_REPORT.md) records what was uncertain before hardware
 > existed and how each item resolved.

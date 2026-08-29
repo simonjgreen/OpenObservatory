@@ -91,7 +91,7 @@ AudioMoth 384 kHz ──▶ capture ──▶ native ring (120 s) ──▶ evid
 | Know what "tested" has to mean here | [`development/TEST_PLAN.md`](development/TEST_PLAN.md) |
 | Understand *why* the product exists | [`product/PRD.md`](product/PRD.md) |
 | Understand the intended architecture | [`architecture/TECHNICAL_SPEC.md`](architecture/TECHNICAL_SPEC.md) (seed spec — see the ADRs for where reality diverged) |
-| Understand a decision, or why the code does something odd | [`architecture/ADRS.md`](architecture/ADRS.md) — every deviation is here, numbered, and referenced from source comments |
+| Understand a decision, or why the code does something odd | [`architecture/ADRS.md`](architecture/ADRS.md) — the index; each ADR is its own file under `architecture/adr/`, numbered and referenced from source comments |
 | See what was assumed before hardware existed, and how it resolved | [`architecture/GAP_REPORT.md`](architecture/GAP_REPORT.md) |
 | Know what is done and what is not | [`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) |
 | Pick up the project cold as the next engineer | [`delivery/HANDOVER.md`](delivery/HANDOVER.md) — traps, next steps, the bugs found by measuring |

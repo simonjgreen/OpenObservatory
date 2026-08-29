@@ -280,7 +280,7 @@ on the workstation, because the Pi has no Node toolchain and does not need one.
 1. [`docs/development/SETUP.md`](docs/development/SETUP.md) — get it running, and the traps
 2. [`CLAUDE.md`](CLAUDE.md) — the operating brief
 3. [`docs/delivery/MILESTONE_STATUS.md`](docs/delivery/MILESTONE_STATUS.md) — what is and is not done
-4. [`docs/architecture/ADRS.md`](docs/architecture/ADRS.md) — every decision and deviation, indexed with status
+4. [`docs/architecture/ADRS.md`](docs/architecture/ADRS.md) — the index of every decision and deviation, with status; one file per ADR under [`docs/architecture/adr/`](docs/architecture/adr/)
 5. [`docs/operations/TARGET_DIAGNOSTICS.md`](docs/operations/TARGET_DIAGNOSTICS.md) — measured hardware facts
 6. [`docs/delivery/HANDOVER.md`](docs/delivery/HANDOVER.md) — operational traps and the next-steps list
 7. [`docs/api/DEBUG_UI_TRANSPORT.md`](docs/api/DEBUG_UI_TRANSPORT.md) — the live protocol
