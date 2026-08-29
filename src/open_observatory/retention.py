@@ -1155,6 +1155,10 @@ class RetentionSweeper:
             room_by_species[species] -= 1
             promoted += 1
 
+        promoted += self._promote_bands(
+            session, bank, now=now, deadline=deadline, limit=limit - promoted
+        )
+
         # No commit in this method, on purpose: the whole call is made from
         # inside `sweep()`'s own `_bounded_statements` arming, and
         # `Session.commit()` checks the armed DBAPI connection back into the
@@ -1230,6 +1234,62 @@ class RetentionSweeper:
             .where(orm.MediaAsset.reclaimed_at.is_(None))
             .limit(1)
         ).first() is not None
+
+    def _promote_bands(
+        self,
+        session: Session,
+        bank: _EvidenceBank,
+        *,
+        now: datetime,
+        deadline: float,
+        limit: int,
+    ) -> int:
+        """Bank the oldest live passes of every sparse band, up to the cap.
+
+        A bat pass is never given a species by design (ADR-017), so rarity
+        cannot come from a name; it comes from the peak-frequency band, and a
+        band under `_BAND_SPARSE_PERMILLE` of the trailing window is the bat
+        equivalent of an uncommon species.
+
+        The cap is compared against **banked detections in that band**, not
+        against the band's pass count. ADR-074 compared a pass count to a clip
+        budget, which meant a sparse band that had ever produced more than
+        `bank_size` passes was never banked at all.
+        """
+        counts = self._band_counts(
+            session, since=now - timedelta(days=_BAND_WINDOW_DAYS)
+        )
+        sparse = evidence_value.sparse_bands(counts, permille=_BAND_SPARSE_PERMILLE)
+        promoted = 0
+        for edge in sorted(sparse):
+            if promoted >= limit or time.monotonic() >= deadline:
+                break
+            room = min(self.evidence_bank_size - bank.bands.get(edge, 0), limit - promoted)
+            if room <= 0:
+                continue
+            lo = edge * 1000
+            hi = lo + evidence_value.BAND_WIDTH_HZ
+            candidates = session.execute(
+                select(orm.Detection.id)
+                .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
+                .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
+                .where(orm.MediaAsset.reclaimed_at.is_(None))
+                .where(orm.Detection.banked_at.is_(None))
+                .where(orm.Detection.taxonomic_group == _BAT_GROUP)
+                .where(orm.Detection.peak_frequency_hz >= lo)
+                .where(orm.Detection.peak_frequency_hz < hi)
+                .group_by(orm.Detection.id)
+                .order_by(func.min(orm.Detection.event_start_utc).asc())
+                .limit(room)
+            ).scalars().all()
+            if candidates:
+                session.execute(
+                    sa_update(orm.Detection)
+                    .where(orm.Detection.id.in_(candidates))
+                    .values(banked_at=now)
+                )
+                promoted += len(candidates)
+        return promoted
 
     def _band_counts(self, session: Session, *, since: datetime) -> dict[int, int]:
         """Bat passes per 5 kHz band since `since`: one indexed aggregate.

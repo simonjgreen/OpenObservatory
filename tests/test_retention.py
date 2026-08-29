@@ -2742,6 +2742,64 @@ class TestPromotion:
             assert session.get(orm.Detection, det).banked_at is None
 
 
+class TestBandPromotion:
+    def test_a_sparse_band_is_banked_and_a_busy_one_is_not(
+        self, db, station_and_detector
+    ) -> None:
+        """ADR-074's third defect: the unit.
+
+        `classify()` was handed a *pass* count and compared it against a *clip*
+        budget, so a sparse band holding more than `bank_size` passes was never
+        banked at all -- the rarest signal the station has, excluded by an
+        arithmetic slip. Promotion counts banked detections against the cap on
+        both sides.
+
+        `age_days=2` puts every seeded pass inside both `_BAND_WINDOW_DAYS`
+        (90) and the promotion lookback, which is widened here to the whole
+        archive -- matching every other promotion test above -- because the
+        sweeper's real default (24 h) would otherwise skip these on its own.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for _ in range(200):                        # the busy 20-25 kHz band
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=2,
+                    common_name=None, taxonomic_group="bat",
+                    peak_frequency_hz=22_000.0,
+                )
+            sparse = []
+            for _ in range(2):                          # the sparse 60-65 kHz band
+                det, _assets = _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=2,
+                    common_name=None, taxonomic_group="bat",
+                    peak_frequency_hz=62_000.0,
+                )
+                sparse.append(det)
+            session.commit()
+
+        _sweeper(db, evidence_value_enabled=True,
+                 promotion_lookback=timedelta(days=3650)).sweep()
+
+        with session_scope() as session:
+            assert all(
+                session.get(orm.Detection, d).banked_at is not None for d in sparse
+            ), "the sparse band was not banked"
+            busy_banked = session.execute(
+                sa.select(sa.func.count()).select_from(orm.Detection)
+                .where(orm.Detection.peak_frequency_hz == 22_000.0)
+                .where(orm.Detection.banked_at.is_not(None))
+            ).scalar_one()
+        assert busy_banked == 0, "a busy band was banked"
+
+
 class TestTheCliffIsGone:
     """ADR-074's blocking defect, as an executable regression.
 
