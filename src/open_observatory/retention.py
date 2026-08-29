@@ -171,6 +171,18 @@ _PROMOTION_LOOKBACK = timedelta(hours=24)
 _BACKFILL_LOOKBACK = timedelta(days=365 * 100)
 _BACKFILL_LIMIT = 1_000_000
 
+#: I2 (final pre-merge review, 2026-08-29): `bank_backfill`'s periodic-commit
+#: chunk size. A single uncommitted transaction promoting the whole archive
+#: held SQLite's write lock from the first `UPDATE` to the final `ROLLBACK`
+#: for the entire run -- measured at **8.9753 s** for 7,302 promotions --
+#: against a 5000 ms `busy_timeout` (`db/session.py`). A concurrent station
+#: writer blocked longer than that gets `database is locked`, which
+#: `_persist_loop` turns into a dropped detection and an orphaned clip file.
+#: 500 keeps each held-lock window well under the timeout even at the
+#: measured promotion rate, while still leaving a 7,302-row backfill at
+#: about fifteen commits rather than thousands.
+_BACKFILL_COMMIT_CHUNK = 500
+
 
 def _band_expression() -> Any:
     """``detection.peak_frequency_hz`` bucketed into 5 kHz bands, in SQL.
@@ -686,11 +698,30 @@ class RetentionSweeper:
                 # ADR-076: promotion runs after the watermark tier -- the
                 # watermark is an emergency valve and must never queue behind
                 # a write -- and before the two age tiers, which must see the
-                # result. Re-reading the bank below is what makes that last
-                # part true: without it, a detection promoted this sweep
-                # would be deleted by the same sweep that just decided to
-                # keep it, because the age tiers' candidate queries were
-                # built from the bank read before promotion ran.
+                # result.
+                #
+                # I3 (final pre-merge review, 2026-08-29): this used to
+                # re-read the bank here, on the theory that the age tiers
+                # "must see what promotion just banked". They already do,
+                # without a re-read: `bank.exclusion()` compiles to the
+                # constant predicate `Detection.banked_at.is_(None)`
+                # (`_EvidenceBank.exclusion`), which is evaluated fresh, in
+                # SQL, against whatever rows are in the table when each
+                # tier's own candidate query runs -- and promotion's
+                # `UPDATE` has already committed by this point. The `bank`
+                # object's own `.banked`/`.bands` counts would be stale
+                # after a promotion, but nothing downstream of this line
+                # reads them: `_strip_native`/`_strip_unkept` only ever call
+                # `bank.exclusion()` and check `bank is not None`. So the
+                # re-read's result was unobservable, while its abort could
+                # (before I1's fix) discard the rest of the sweep for a
+                # query whose answer nothing used. Deleted rather than kept
+                # and made to earn its place by refreshing
+                # `self.last_bank_size`: that would need its own guard
+                # against being skipped when `report.promoted == 0`, for a
+                # number (`snapshot()["bank_size_now"]`) that is already at
+                # most one sweep interval stale and self-corrects next
+                # sweep -- not worth a second bounded statement per sweep.
                 if bank is not None:
                     with self._bounded_statements(session, deadline):
                         report.promoted = self._promote_to_bank(
@@ -702,27 +733,6 @@ class RetentionSweeper:
                     # context manager's `finally` gets to disarm it.
                     if report.promoted and not dry_run:
                         session.commit()
-                    # Re-read, guarded the same as every other statement this
-                    # sweep issues: the age tiers below must see what
-                    # promotion just banked, or a detection promoted this
-                    # sweep is deleted by the same sweep that decided to keep
-                    # it. If this read is the one that gets interrupted,
-                    # `bank` is left holding the pre-promotion snapshot --
-                    # stale, and unsafe to hand to the age tiers, because
-                    # "stale" here specifically means missing the rows just
-                    # promoted, which is exactly what would get deleted by
-                    # the tiers' `bank.exclusion()` filter failing to exempt
-                    # them. So this is deliberately left unguarded by a local
-                    # `except`: the `OperationalError` propagates to
-                    # `sweep()`'s own handler, which records `current_tier`
-                    # ("native" by this point) as interrupted and skips the
-                    # native/unkept/watermark tiers for this pass entirely --
-                    # the same "fewer deletions this pass, try again next
-                    # sweep" degrade every other interrupted statement here
-                    # gets, and the only one of the two possible responses
-                    # that cannot unbank-by-omission what was just promoted.
-                    with self._bounded_statements(session, deadline):
-                        bank = self._evidence_bank(session)
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
                         session,
@@ -886,11 +896,15 @@ class RetentionSweeper:
         archive rather than the trailing 24h `_promotion_candidates` is
         normally confined to).
 
-        `dry_run` defaults to **True** and rolls back rather than commits.
-        This is new policy deciding what survives on a disk holding a live
-        archive, and ADR-074 rule 3 requires the first run of any such policy
-        to be a dry run a human reads -- so the safe default has to be the one
-        that cannot write, not the one that happens to match `sweep()`'s.
+        `dry_run` defaults to **True** and, since I2 (2026-08-29), takes only
+        read locks: no `UPDATE` is issued at all, not merely rolled back. New
+        policy deciding what survives on a disk holding a live archive must
+        have a dry run a human can read first (ADR-074 rule 3), and a dry run
+        that writes 7,302 rows before rolling them back -- as this used to --
+        holds the same write lock a real run would, for the same 8.9753 s,
+        against a live station's other writers. The default has to be the
+        mode that cannot block anyone, not the one that happens to match
+        `sweep()`'s "stage then roll back" shape.
 
         Runs even when `evidence_value_enabled` is off, for one reason: this
         command only ever sets `detection.banked_at`, a column nothing reads
@@ -907,7 +921,6 @@ class RetentionSweeper:
         # "how far back to look" with "how long this may run".
         deadline = time.monotonic() + timedelta(days=365).total_seconds()
         by_species: dict[str, int] = {}
-        bands = 0
         with self._session_factory() as session:
             # `_evidence_bank` returns `None` when the flag is off (its own
             # early return), which would make every species read as capless
@@ -921,22 +934,24 @@ class RetentionSweeper:
                 deadline=deadline,
                 limit=_BACKFILL_LIMIT,
                 lookback=_BACKFILL_LOOKBACK,
+                dry_run=dry_run,
+                # I2: chunk the real run so it releases and re-takes the
+                # write lock every `_BACKFILL_COMMIT_CHUNK` promotions rather
+                # than holding it for the whole archive. `None` for a dry
+                # run, which never writes and so has nothing to commit.
+                commit_chunk=None if dry_run else _BACKFILL_COMMIT_CHUNK,
+                # I2: counted from the rows promoted right here, in Python,
+                # rather than read back afterwards by `banked_at == now` --
+                # a query with nothing to find in dry-run mode, since a dry
+                # run never writes `banked_at` at all.
+                by_species=by_species,
             )
-            if promoted:
-                # Reads back the rows this call just staged, by the one thing
-                # that uniquely marks them: `banked_at == now`, the single
-                # timestamp every promotion above used. Cheap and exact
-                # whether or not the transaction is about to be rolled back --
-                # the rows are visible to this session either way.
-                rows = session.execute(
-                    select(orm.Detection.common_name, orm.Detection.taxonomic_group)
-                    .where(orm.Detection.banked_at == now)
-                ).all()
-                for common_name, group in rows:
-                    if common_name is not None:
-                        by_species[common_name] = by_species.get(common_name, 0) + 1
-                    elif group == _BAT_GROUP:
-                        bands += 1
+            # `_promote_to_bank`'s return is species promotions plus band
+            # promotions; `by_species` only ever collects the former (bat
+            # passes have no `common_name` to key it by), so the remainder
+            # is exactly the bat count -- without re-deriving it from a
+            # second query or a second out-parameter.
+            bands = promoted - sum(by_species.values())
             if dry_run:
                 session.rollback()
             else:
@@ -1207,14 +1222,21 @@ class RetentionSweeper:
             ).where(orm.Detection.banked_at.is_not(None))
         ).all()
         for common_name, group, peak_hz in rows:
-            if common_name is not None:
-                banked[common_name] = banked.get(common_name, 0) + 1
+            # Minor (final pre-merge review, 2026-08-29): `elif`, not two
+            # independent `if`s. A bat detection is not supposed to carry a
+            # `common_name` (ADR-017), but if one ever does, counting it in
+            # both `banked` and `bands` double-counts it in `total()` and
+            # charges one banked detection against two species' caps.
+            # Group membership wins: a bat pass is banked by band, never by
+            # name, regardless of what stray data a detector attaches.
             if group == _BAT_GROUP:
                 # Same bucketing as the SQL `_band_expression`, and the same
                 # `None` for a missing or non-positive frequency.
                 edge = evidence_value.frequency_band(peak_hz)
                 if edge is not None:
                     bands[edge] = bands.get(edge, 0) + 1
+            elif common_name is not None:
+                banked[common_name] = banked.get(common_name, 0) + 1
         return _EvidenceBank(banked=banked, bands=bands)
 
     #: Detections promoted into the bank in one sweep. Bounded so promotion can
@@ -1232,8 +1254,36 @@ class RetentionSweeper:
         deadline: float,
         limit: int = _PROMOTE_PER_SWEEP,
         lookback: timedelta | None = None,
+        dry_run: bool = False,
+        commit_chunk: int | None = None,
+        by_species: dict[str, int] | None = None,
     ) -> int:
         """Bank the oldest live, unbanked detections of every under-cap species.
+
+        `dry_run` (I2, 2026-08-29): when set, every `UPDATE` below is skipped
+        entirely -- the candidate walk, the liveness check and the cap
+        bookkeeping still run (so the *count* and `by_species` breakdown are
+        real), but nothing is written and no lock is taken beyond the plain
+        reads. Only `bank_backfill` passes this; `sweep()` never does; a dry
+        sweep instead lets the real `UPDATE`s happen and relies on
+        `sweep()`'s own end-of-call `session.rollback()` to discard them,
+        which is unaffected by this parameter.
+
+        `commit_chunk` (I2): if given, `session.commit()` is called after
+        every `commit_chunk` real promotions, so a long backfill run holds
+        the write lock for one chunk at a time rather than for the whole
+        archive. Only `bank_backfill` passes this -- never `sweep()`, whose
+        call runs inside its own `_bounded_statements` arming, and
+        committing there would check the armed DBAPI connection back into
+        the pool before that arming's `finally` gets a chance to disarm it
+        (see the note at the end of this method).
+
+        `by_species`, when given, is filled in place with the running
+        per-species promotion count. Passed in by `bank_backfill` instead of
+        this method returning a bigger tuple, and instead of `bank_backfill`
+        re-reading the rows it just staged by `banked_at == now` -- a query
+        that has nothing to check `dry_run` promotions against, since they
+        were never written.
 
         **Oldest first, and that is the whole point.** ADR-074's bank deleted
         the first-ever recording of a species the moment that species reached
@@ -1282,6 +1332,22 @@ class RetentionSweeper:
                 policy=policy,
             )
         }
+        # Minor (final pre-merge review, 2026-08-29): not casefolded, while
+        # `cap_for` above compares casefolded. Left this way deliberately:
+        # `_promotion_candidates` compiles `skip` straight into a SQL
+        # `common_name NOT IN (...)`, and folding case there would mean
+        # comparing `lower(common_name)` against the query, which the
+        # planner cannot serve from `ix_detection_event_start_utc` -- the
+        # exact `TEMP B-TREE` regression ADR-061 and ADR-076's index note
+        # both exist to avoid. The mismatch this leaves is harmless, not
+        # silent: `skip` is only ever a pre-filter to keep the `LIMIT`ed
+        # candidate query from filling up with rows that will be skipped
+        # anyway, and `room_by_species` below still applies `cap_for` with
+        # its own casefolded comparison to every candidate that gets
+        # through -- so a config entry in different case than the archive's
+        # `common_name` wastes candidate slots (the species already at cap
+        # slips through the SQL filter and is rejected in Python instead),
+        # never over-promotes.
         skip |= set(self.evidence_common_species)
 
         room_by_species: dict[str, int] = {}
@@ -1306,20 +1372,40 @@ class RetentionSweeper:
                 continue
             if not self._has_live_evidence(session, detection_id):
                 continue
-            session.execute(
-                sa_update(orm.Detection)
-                .where(orm.Detection.id == detection_id)
-                .values(banked_at=now)
-            )
+            if not dry_run:
+                session.execute(
+                    sa_update(orm.Detection)
+                    .where(orm.Detection.id == detection_id)
+                    .values(banked_at=now)
+                )
+                promoted += 1
+                if commit_chunk and promoted % commit_chunk == 0:
+                    session.commit()
+            else:
+                promoted += 1
             room_by_species[species] -= 1
-            promoted += 1
+            if by_species is not None:
+                by_species[species] = by_species.get(species, 0) + 1
 
-        promoted += self._promote_bands(
-            session, bank, now=now, deadline=deadline, limit=limit - promoted
-        )
+        # Minor (final pre-merge review, 2026-08-29): skip the call
+        # entirely once the species loop above has already used the whole
+        # limit -- `_promote_bands` starts with `_band_counts`, an indexed
+        # aggregate that is cheap but not free, and there is nothing for it
+        # to do with a `limit` of zero or less.
+        remaining = limit - promoted
+        if remaining > 0:
+            promoted += self._promote_bands(
+                session,
+                bank,
+                now=now,
+                deadline=deadline,
+                limit=remaining,
+                dry_run=dry_run,
+                commit_chunk=commit_chunk,
+            )
 
-        # No commit in this method, on purpose: the whole call is made from
-        # inside `sweep()`'s own `_bounded_statements` arming, and
+        # No *unconditional* commit in this method: `sweep()`'s call is made
+        # from inside its own `_bounded_statements` arming, and
         # `Session.commit()` checks the armed DBAPI connection back into the
         # pool -- turning SQLAlchemy's proxy for it into a dead reference, so
         # that arming's `finally` then calls `set_progress_handler` on
@@ -1327,7 +1413,10 @@ class RetentionSweeper:
         # attribute 'set_progress_handler'`. Same failure `_run_tier`
         # documents for its own tier loop. `sweep()` commits once this call
         # returns and its arming has exited, exactly as it does for every
-        # other tier.
+        # other tier -- so `sweep()` must never pass `commit_chunk`.
+        # `bank_backfill` is the one caller that does: it never enters
+        # `_bounded_statements` (I2 -- see its own docstring), so a mid-loop
+        # `session.commit()` there has no armed connection to conflict with.
         return promoted
 
     def _promotion_candidates(
@@ -1408,6 +1497,8 @@ class RetentionSweeper:
         now: datetime,
         deadline: float,
         limit: int,
+        dry_run: bool = False,
+        commit_chunk: int | None = None,
     ) -> int:
         """Bank the oldest live passes of every sparse band, up to the cap.
 
@@ -1448,11 +1539,14 @@ class RetentionSweeper:
                 .limit(room)
             ).scalars().all()
             if candidates:
-                session.execute(
-                    sa_update(orm.Detection)
-                    .where(orm.Detection.id.in_(candidates))
-                    .values(banked_at=now)
-                )
+                if not dry_run:
+                    session.execute(
+                        sa_update(orm.Detection)
+                        .where(orm.Detection.id.in_(candidates))
+                        .values(banked_at=now)
+                    )
+                    if commit_chunk:
+                        session.commit()
                 promoted += len(candidates)
         return promoted
 

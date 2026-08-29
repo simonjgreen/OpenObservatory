@@ -3327,3 +3327,81 @@ class TestBankReadAbortDegradesToAgeOnly:
         assert report.total_deleted >= 1
 
 
+class TestBankBackfillDryRunTakesOnlyReadLocks:
+    """I2 (final pre-merge review, 2026-08-29).
+
+    `_promote_to_bank` used to execute its `UPDATE` regardless of
+    `dry_run`, relying on `session.rollback()` at the end to discard it --
+    so a dry run held SQLite's write lock for the same duration a real run
+    would (measured at 8.9753 s for the station's whole archive), which
+    ADR-074 rule 3 mandates be run *before* the flag is ever enabled, on a
+    live station, against a 5000 ms `busy_timeout`. A dry run must take
+    only a read lock.
+    """
+
+    def test_dry_run_issues_no_update_and_leaves_banked_at_null(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for i in range(3):
+                _seed_detection(
+                    session,
+                    station_id=station_id,
+                    detector_id=detector_id,
+                    clip_dir=db.clip_dir,
+                    age_days=1 + i,
+                    kinds=("evidence_native",),
+                    common_name=f"Species {i}",
+                )
+
+        updates_seen: list[object] = []
+        real_execute = Session.execute
+
+        def spying_execute(self: Session, statement, *args, **kwargs):
+            if isinstance(statement, sa.sql.dml.Update):
+                updates_seen.append(statement)
+            return real_execute(self, statement, *args, **kwargs)
+
+        monkeypatch.setattr(Session, "execute", spying_execute)
+
+        sweeper = _sweeper(db, evidence_value_enabled=True, evidence_bank_size=200)
+        result = sweeper.bank_backfill(dry_run=True)
+
+        assert result.promoted == 3
+        assert not updates_seen, "a dry run must not issue a single UPDATE statement"
+        with session_scope() as session:
+            rows = session.execute(
+                sa.select(orm.Detection.banked_at)
+            ).scalars().all()
+            assert all(b is None for b in rows), (
+                "a dry run must leave every banked_at NULL"
+            )
+
+    def test_a_real_run_still_promotes_and_commits(
+        self, db, station_and_detector
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+
+        sweeper = _sweeper(db, evidence_value_enabled=True, evidence_bank_size=200)
+        result = sweeper.bank_backfill(dry_run=False)
+
+        assert result.promoted == 1
+        assert result.by_species == {"Grey Heron": 1}
+        with session_scope() as session:
+            banked_count = session.execute(
+                sa.select(sa.func.count())
+                .select_from(orm.Detection)
+                .where(orm.Detection.banked_at.is_not(None))
+            ).scalar_one()
+            assert banked_count == 1
