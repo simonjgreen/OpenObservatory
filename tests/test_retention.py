@@ -3273,3 +3273,57 @@ class TestPartialWatermarkReclaimDoesNotUnbank:
         assert report.watermark_took_banked == 1
 
 
+class TestBankReadAbortDegradesToAgeOnly:
+    """I1 (final pre-merge review, 2026-08-29).
+
+    ADR-076: "if the census aborts or the flag is off, the bank is `None`
+    and the watermark behaves exactly as it does today." Before the fix,
+    the bank read had no `except OperationalError` around it: an abort
+    propagated with `current_tier` still `"preamble"`, which is not in
+    `_TIER_ORDER`, so `sweep()`'s handler set `start_index = 0` and recorded
+    every tier -- including the watermark -- as skipped. If the preamble
+    ever ate the whole budget (the ADR-061 incident, exactly), the disk
+    would fill and capture would stop, silently.
+    """
+
+    def test_an_aborted_bank_read_still_runs_the_tiers_and_reclaims_by_age(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=40,  # past both the native and audible-only tiers
+                kinds=("evidence_native", "playback"),
+                common_name="European Robin",
+            )
+
+        def _boom(self, session):
+            raise OperationalError("bank read", {}, Exception("interrupted (test)"))
+
+        monkeypatch.setattr(retention_module.RetentionSweeper, "_evidence_bank", _boom)
+
+        sweeper = _sweeper(db, evidence_value_enabled=True)
+        report = sweeper.sweep()
+
+        assert "watermark" not in report.tiers_skipped, (
+            "an aborted bank read must not skip the watermark tier -- that "
+            "is the ADR-061 incident recurring by a different route"
+        )
+        assert "native" not in report.tiers_skipped
+        assert "unkept" not in report.tiers_skipped
+        assert report.interrupted_tier is None, (
+            "the bank-read abort must be swallowed here, the same way every "
+            "other interrupted statement in this module is, not escape to "
+            "sweep()'s own handler"
+        )
+        # Age-only degrade: both clips are past both age tiers and unkept,
+        # so the native tier deletes the native clip and the unkept tier
+        # (finding nothing native left) leaves the audible one -- either
+        # way, real deletion work happened this sweep.
+        assert report.total_deleted >= 1
+
+

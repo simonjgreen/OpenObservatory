@@ -643,12 +643,31 @@ class RetentionSweeper:
                 # deliberately deadline-free -- it is one indexed query, not a
                 # census with its own abort/retry machinery to bound -- but
                 # every statement this sweep issues still runs under the same
-                # per-statement guard, so an unexpectedly slow bank read
-                # degrades this sweep to "native tier interrupted" (the
-                # ordinary backlog-drain path below) rather than escaping
-                # unbounded.
-                with self._bounded_statements(session, deadline):
-                    bank = self._evidence_bank(session)
+                # per-statement guard.
+                #
+                # I1 (final pre-merge review, 2026-08-29): an abort here must
+                # NOT be allowed to propagate to `sweep()`'s own handler. At
+                # this point `current_tier` is still `"preamble"`, which is
+                # not in `_TIER_ORDER` -- so the handler's
+                # `_TIER_ORDER.index(current_tier)` guard sets
+                # `start_index = 0` and every tier, including the watermark,
+                # is recorded as skipped and never runs. If the preamble ever
+                # eats the budget (the ADR-061 incident, exactly) the disk
+                # fills and capture stops. ADR-076 is explicit that this must
+                # not happen: "if the census aborts or the flag is off, the
+                # bank is `None` and the watermark behaves exactly as it does
+                # today." So the abort is caught here, the same way as every
+                # other interrupted statement in this module, and degrades to
+                # an age-only sweep instead of skipping every tier.
+                try:
+                    with self._bounded_statements(session, deadline):
+                        bank = self._evidence_bank(session)
+                except OperationalError as exc:
+                    if "interrupted" not in str(getattr(exc, "orig", exc)):
+                        raise
+                    session.rollback()
+                    bank = None
+                    log.warning("retention.bank_read_interrupted")
                 self.last_bank_size = bank.total() if bank is not None else 0
                 if self._disk_over_watermark():
                     current_tier = "watermark"
