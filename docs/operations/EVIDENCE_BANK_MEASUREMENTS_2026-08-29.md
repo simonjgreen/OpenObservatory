@@ -130,3 +130,31 @@ figures re-run read-only in seconds:
           time.perf_counter() - t)"'
 
 Nothing above writes to the station database.
+
+## What the measuring cost
+
+**It cost about 2.2 seconds of audio.** At `2026-08-29T20:32:37Z` capture
+recorded `reason=overrun`, `alsa_overrun=True`, `missing_frames=851919`,
+`seconds=2.2185` — one confirmed gap, during the window in which a paced copy
+of the 1.35 GB database was competing for the same SD card the database and
+the journal live on. It is not proven to be the cause and no other load
+changed; the honest statement is that it is very probably the cause.
+
+Recorded rather than quietly dropped, for two reasons. Read-only is not the
+same as free: every figure above was taken from a device that is also holding
+a 384 kHz capture ring, and the ADR-062 budget exists because that ring is
+what everything else is subordinate to. And ADR-073 is the ADR that says a
+consumer bird monitor should not be fixated on gaps measured in seconds over a
+week — this is one such gap, it is within every SLO ADR-073 sets, and the
+right response is to say so rather than to hide it.
+
+Two practical consequences for anyone repeating this:
+
+* the initial approach — `sqlite3`'s backup API against the live database —
+  **never converges.** SQLite restarts a backup whenever the source is written,
+  and capture writes continuously; the copy crawled at about 8 MB/min and was
+  abandoned. The narrow one-pass `SELECT`-and-`INSERT` above copied 903,240
+  rows in 51.3 s instead;
+* prefer the narrow copy to a full one. It is 150 MB rather than 1.35 GB
+  because it omits the wide `native_result` JSON, and every query measured here
+  is index-only or PK-driven and never reads that column.
