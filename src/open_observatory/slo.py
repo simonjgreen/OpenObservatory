@@ -21,7 +21,9 @@ and the station still read 99.9943% "complete".
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 __all__ = ["DeficitSplit", "split_deficit"]
 
@@ -74,4 +76,67 @@ def split_deficit(
         lost_seconds=round(lost / rate, 4),
         drift_seconds=round(drift / rate, 4),
         integrity_ratio=round(integrity, 9),
+    )
+
+
+__all__ += ["Coverage", "coverage"]
+
+
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """SLO A. What fraction of a window the microphone was actually recording."""
+
+    span_seconds: float
+    covered_seconds: float
+    ratio: float
+    #: (when the outage began, how long it lasted). Reported, because "99.5%"
+    #: says nothing about whether that was one bad hour or a thousand blips.
+    outages: list[tuple[datetime, float]]
+
+
+def coverage(
+    intervals: Sequence[tuple[datetime, datetime]],
+    *,
+    start: datetime,
+    end: datetime,
+) -> Coverage:
+    """Coverage of ``[start, end]`` given the intervals capture was running.
+
+    Every interval is **clipped** to the window rather than filtered by whether
+    it starts inside it. That is not a detail: filtering by ``start >= window``
+    drops a stream that spans the window edge, and on 2026-08-29 that mistake
+    reported 72.857% for a station that had not stopped once. A stream running
+    since last week still covers this morning.
+
+    Overlapping intervals are merged, so a reopen that writes two overlapping
+    rows cannot produce more than 100%.
+    """
+    span = max(0.0, (end - start).total_seconds())
+    if span <= 0:
+        return Coverage(0.0, 0.0, 0.0, [])
+
+    clipped = sorted((max(s, start), min(e, end)) for s, e in intervals if min(e, end) > max(s, start))
+    merged: list[tuple[datetime, datetime]] = []
+    for s, e in clipped:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    covered = sum((e - s).total_seconds() for s, e in merged)
+
+    outages: list[tuple[datetime, float]] = []
+    cursor = start
+    for s, e in merged:
+        if (s - cursor).total_seconds() > 1.0:
+            outages.append((cursor, (s - cursor).total_seconds()))
+        cursor = max(cursor, e)
+    if (end - cursor).total_seconds() > 1.0:
+        outages.append((cursor, (end - cursor).total_seconds()))
+
+    return Coverage(
+        span_seconds=round(span, 3),
+        covered_seconds=round(covered, 3),
+        ratio=round(covered / span, 6),
+        outages=[(w, round(d, 3)) for w, d in outages],
     )

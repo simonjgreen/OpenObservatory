@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from open_observatory import slo
@@ -93,3 +95,79 @@ def test_a_zero_length_stream_does_not_divide_by_zero() -> None:
     s = slo.split_deficit(expected_frames=0, frames=0, missing_frames=0, sample_rate=RATE)
     assert s.integrity_ratio == 1.0
     assert s.drift_seconds == 0.0
+
+
+def _dt(day: int, hour: int = 0, minute: int = 0) -> datetime:
+    return datetime(2026, 8, day, hour, minute, tzinfo=UTC)
+
+
+def test_full_coverage_when_one_stream_spans_the_window() -> None:
+    c = slo.coverage([(_dt(1), _dt(4))], start=_dt(2), end=_dt(3))
+    assert c.ratio == 1.0
+    assert c.outages == []
+
+
+def test_a_stream_that_straddles_the_window_edge_is_clipped_not_excluded() -> None:
+    """The bug I made by hand on 2026-08-29.
+
+    Filtering streams by `start >= cutoff` drops a stream that *spans* the
+    cutoff and reports 72.857% uptime for a station that never stopped.
+    Intervals must be clipped to the window, never filtered by their start.
+    """
+    c = slo.coverage([(_dt(1), _dt(10))], start=_dt(5), end=_dt(6))
+    assert c.ratio == 1.0
+    assert c.covered_seconds == 86_400.0
+
+
+def test_the_gap_between_two_streams_is_an_outage() -> None:
+    c = slo.coverage(
+        [(_dt(1), _dt(2, 0)), (_dt(2, 1), _dt(3))],
+        start=_dt(1),
+        end=_dt(3),
+    )
+    assert len(c.outages) == 1
+    when, seconds = c.outages[0]
+    assert when == _dt(2, 0)
+    assert seconds == 3600.0
+    assert c.ratio == pytest.approx(1 - 3600 / 172_800)
+
+
+def test_overlapping_streams_are_not_double_counted() -> None:
+    """Coverage is of the window, not the sum of stream lengths.
+
+    A reopen can write overlapping rows; summing them would report >100%.
+    """
+    c = slo.coverage(
+        [(_dt(1), _dt(3)), (_dt(2), _dt(4))],
+        start=_dt(1),
+        end=_dt(4),
+    )
+    assert c.ratio == 1.0
+    assert c.covered_seconds == 3 * 86_400.0
+
+
+def test_an_outage_at_the_end_of_the_window_still_counts() -> None:
+    c = slo.coverage([(_dt(1), _dt(2))], start=_dt(1), end=_dt(3))
+    assert c.ratio == pytest.approx(0.5)
+    assert len(c.outages) == 1
+
+
+def test_no_streams_at_all_is_zero_coverage_not_a_crash() -> None:
+    c = slo.coverage([], start=_dt(1), end=_dt(2))
+    assert c.ratio == 0.0
+    assert c.covered_seconds == 0.0
+
+
+def test_the_measured_steady_state_meets_the_slo() -> None:
+    """The real figure from 2026-08-19 to 29: three outages, 1.9 minutes."""
+    start = _dt(19)
+    end = start + timedelta(days=9.8)
+    intervals = [
+        (start, start + timedelta(days=2.66)),
+        (start + timedelta(days=2.66, seconds=105), start + timedelta(days=5.74)),
+        (start + timedelta(days=5.74, seconds=4), start + timedelta(days=9.07)),
+        (start + timedelta(days=9.07, seconds=6), end),
+    ]
+    c = slo.coverage(intervals, start=start, end=end)
+    assert c.ratio > 0.995  # SLO A
+    assert len(c.outages) == 3
