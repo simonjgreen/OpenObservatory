@@ -139,6 +139,28 @@ class PrometheusExporter:
             "Frames captured divided by frames expected from elapsed monotonic time",
             capture["continuity_ratio"],
         )
+        # ADR-073. `capture_integrity_ratio` is present-but-None before any
+        # stream has opened (there is nothing yet to measure loss against), so
+        # a plain `.get(key, default)` would not catch it -- the key is
+        # present, just carrying None. Report 1.0 in that case ("nothing lost
+        # because nothing recorded"), but preserve a genuine 0.0 (total loss)
+        # rather than folding it into the same default with `or`.
+        integrity_ratio = capture.get("capture_integrity_ratio")
+        self._set(
+            "oo_capture_integrity_ratio",
+            "SLO B: fraction of recorded audio not dropped. Blind to crystal drift (ADR-073)",
+            1.0 if integrity_ratio is None else integrity_ratio,
+        )
+        self._set(
+            "oo_capture_audio_lost_seconds",
+            "Confirmed lost audio this stream. Drift is NOT counted here (ADR-073)",
+            capture.get("audio_lost_seconds") or 0.0,
+        )
+        self._set(
+            "oo_capture_drift_seconds",
+            "Timestamp error from crystal drift. Accepted, not loss (ADR-072, ADR-073)",
+            capture.get("drift_seconds") or 0.0,
+        )
         self._set(
             "oo_capture_block_age_seconds",
             "Age of the most recent capture block",

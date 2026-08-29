@@ -426,6 +426,52 @@ class TestStationEndpoints:
         ):
             assert metric in body, f"missing metric {metric}"
 
+    def test_metrics_render_when_no_stream_has_opened(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ADR-073: `capture_integrity_ratio` is present but None before any
+
+        stream opens. A naive `capture.get("capture_integrity_ratio", 1.0)`
+        would not catch that -- the key is present -- and would try to render
+        `None`, producing a malformed metrics line at exactly the moment
+        someone is scraping to find out why the station looks dead.
+        """
+        station = client.app.state.station
+        real_snapshot = station.status_snapshot
+
+        def no_stream() -> dict:
+            snapshot = real_snapshot()
+            snapshot["capture"] = {
+                **snapshot["capture"],
+                "capture_integrity_ratio": None,
+                "audio_lost_seconds": 0.0,
+                "drift_seconds": 0.0,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", no_stream)
+        body = client.get("/metrics").text
+        assert "oo_capture_integrity_ratio 1.0" in body
+        assert "oo_capture_audio_lost_seconds 0.0" in body
+        assert "oo_capture_drift_seconds 0.0" in body
+        # And a genuine zero ratio (total loss) must not be folded into the
+        # same "nothing to report" default as the no-stream case.
+
+        def total_loss() -> dict:
+            snapshot = real_snapshot()
+            snapshot["capture"] = {
+                **snapshot["capture"],
+                "capture_integrity_ratio": 0.0,
+                "audio_lost_seconds": 12.5,
+                "drift_seconds": 0.0,
+            }
+            return snapshot
+
+        monkeypatch.setattr(station, "status_snapshot", total_loss)
+        body = client.get("/metrics").text
+        assert "oo_capture_integrity_ratio 0.0" in body
+        assert "oo_capture_audio_lost_seconds 12.5" in body
+
     def test_birdnet_plausibility_metric_is_exposed_per_reason(self, settings) -> None:
         """ADR-032: `/metrics` must carry the suppression counters even before
 
