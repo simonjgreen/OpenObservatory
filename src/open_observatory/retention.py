@@ -1600,7 +1600,19 @@ class RetentionSweeper:
             # lazily: a slot held by a detection with no files is a slot the
             # species never gets back -- promotion is monotone and would
             # never reconsider it.
-            if banked_ids:
+            #
+            # Gated on `bank is not None`: with the flag off (or the census
+            # aborted) the watermark tier must behave exactly as it did
+            # before ADR-076 -- one pass, no exclusion, and no side effect on
+            # `banked_at`. The candidate query above still projects
+            # `Detection.banked_at` regardless of `bank` (it is the same
+            # query either way), so `banked_ids` can be non-empty here purely
+            # from rows banked while the flag was on and never unbanked since.
+            # Without this guard, turning the flag off would silently null
+            # `banked_at` on those rows the next time the watermark fired --
+            # a divergence from "flag off behaves exactly as before" that
+            # causes no extra deletions but is real and was untested.
+            if bank is not None and banked_ids:
                 session.execute(
                     sa_update(orm.Detection)
                     .where(orm.Detection.id.in_(banked_ids))
