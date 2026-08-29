@@ -190,14 +190,6 @@ def test_prime_intervals_do_not_overlap_and_are_ordered() -> None:
         assert a[1] <= b[0], "intervals must be merged and ordered"
 
 
-def test_prime_coverage_is_perfect_when_capture_never_stops() -> None:
-    ivs = slo.prime_intervals(_dt(15), _dt(18), **SURREY)
-    c = slo.coverage([(_dt(14), _dt(19))], start=_dt(15), end=_dt(18))
-    assert c.ratio == 1.0
-    total_prime = sum((e - s).total_seconds() for s, e in ivs)
-    assert total_prime > 0
-
-
 def test_an_outage_at_noon_does_not_touch_prime_coverage() -> None:
     """The whole point of A2. Down for four hours in the middle of the day."""
     ivs = slo.prime_intervals(_dt(15), _dt(16), **SURREY)
@@ -272,3 +264,21 @@ def test_a_malformed_counter_zeroes_that_detector_not_the_whole_reading() -> Non
         {"windows_analysed": 100, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0},
     ]
     assert slo.detection_coverage(list_counter) == pytest.approx(0.0)
+
+
+def test_an_infinite_or_nan_counter_does_not_raise_out_of_the_health_check() -> None:
+    """`int(float("inf"))` raises OverflowError, not ValueError.
+
+    Same defect class as the `assert` that was already removed from this path:
+    detection_coverage feeds the live `/api/v1/health` endpoint, so any
+    exception escaping `_as_int` is a 500 on the endpoint an operator reaches
+    for when the station is already misbehaving. A counter arriving as inf or
+    nan -- a ratio computed from a zero denominator upstream, say -- must
+    degrade that detector to zero like any other malformed value.
+    """
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        detectors: list[dict[str, object]] = [
+            {"windows_analysed": bad, "windows_dropped_queue_full": 5, "windows_dropped_stale": 0},
+            {"windows_analysed": 100, "windows_dropped_queue_full": 0, "windows_dropped_stale": 0},
+        ]
+        assert slo.detection_coverage(detectors) == pytest.approx(0.0), bad

@@ -91,6 +91,10 @@ class Coverage:
     ratio: float
     #: (when the outage began, how long it lasted). Reported, because "99.5%"
     #: says nothing about whether that was one bad hour or a thousand blips.
+    #: **These do not sum to the uncovered time.** Only gaps longer than one
+    #: second are recorded here, while ``ratio`` is computed from the exact
+    #: intervals with no such threshold, so ``sum(d for _, d in outages)`` is
+    #: at most -- and usually less than -- ``span_seconds - covered_seconds``.
     outages: list[tuple[datetime, float]]
 
 
@@ -110,6 +114,12 @@ def coverage(
 
     Overlapping intervals are merged, so a reopen that writes two overlapping
     rows cannot produce more than 100%.
+
+    **Precondition (ADR-024).** Callers must bound each interval's end with
+    ``history._honest_stream_end()`` (or an equivalent frame-derived cap)
+    before passing it here, because this function carries no such bound of its
+    own and would otherwise report the coverage a stream *claimed* rather than
+    the coverage its delivered frames support.
     """
     span = max(0.0, (end - start).total_seconds())
     if span <= 0:
@@ -160,6 +170,11 @@ def prime_intervals(
     in December costs almost nothing. Both are the same number to SLO A, which
     is why A2 is measured apart from it rather than instead of it.
 
+    **This is half of A2.** ADR-073 defines A2 as civil twilight +/- 2 h *and*
+    the ultrasonic night window; only the twilight half is implemented here.
+    The night window is not included yet, so a bat-side outage does not count
+    against A2 as computed from these intervals.
+
     Imported lazily so this module stays free of the scheduler's own imports
     and can be reasoned about (and tested) on its own.
 
@@ -206,12 +221,18 @@ def _as_int(value: object) -> int:
     counter must degrade that detector to zero, not raise out of the health
     check and take every detector's reading down with it. Falsy and
     non-numeric values are both zero.
+
+    ``OverflowError`` is caught alongside the obvious two because
+    ``int(float("inf"))`` raises *that* rather than ``ValueError`` -- the same
+    defect class as the bare ``assert`` already removed from this path, and it
+    would have been a 500 on the endpoint an operator reaches for precisely
+    when the station is already misbehaving.
     """
     if not value:
         return 0
     try:
         return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

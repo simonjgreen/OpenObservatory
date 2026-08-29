@@ -25,6 +25,8 @@ from open_observatory.audio.contracts import (
     StreamClock,
     StreamInfo,
 )
+from open_observatory.config import Settings
+from open_observatory.station import Station
 
 
 def test_the_health_keys_decompose_the_deficit_exactly() -> None:
@@ -98,9 +100,7 @@ def test_the_health_payload_carries_loss_drift_and_integrity_alongside_continuit
 # -- the stream-scoped loss counter (ADR-073 / the CaptureCounters docstring) --
 
 
-def _station(settings):
-    from open_observatory.station import Station
-
+def _station(settings: Settings) -> Station:
     station = Station(settings)
     # These three write rows, want a live engine, and none of them is what
     # these tests are about: the subject is which counter reaches
@@ -123,7 +123,7 @@ def _stream(rate: int) -> StreamInfo:
     )
 
 
-def _anchor(station, info: StreamInfo, *, seconds_ago: float, frames: int) -> None:
+def _anchor(station: Station, info: StreamInfo, *, seconds_ago: float, frames: int) -> None:
     """Put the station on `info` as though capture had been running that long."""
     station.stream = info
     station.clock = StreamClock(
@@ -149,7 +149,7 @@ def _gap(missing_frames: int, rate: int) -> CaptureBlock:
 
 
 async def test_a_reopened_stream_does_not_inherit_the_previous_streams_loss(
-    settings,
+    settings: Settings,
 ) -> None:
     """C1. The device re-enumerates; the process does not restart.
 
@@ -196,7 +196,7 @@ async def test_a_reopened_stream_does_not_inherit_the_previous_streams_loss(
 
 
 async def test_a_dead_stream_reports_no_integrity_rather_than_a_rising_one(
-    settings,
+    settings: Settings,
 ) -> None:
     """I1. Between a capture failure and the next open, nothing is captured.
 
