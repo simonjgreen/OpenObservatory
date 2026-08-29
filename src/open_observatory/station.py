@@ -211,6 +211,12 @@ class Station:
         #: used for that.
         self._stream_frames: int = 0
         self._stream_discontinuities: int = 0
+        #: Confirmed loss for *this* stream (ADR-073's SLO B). The twin of
+        #: `counters.estimated_missing_frames`, which is process lifetime and
+        #: must stay that way: it is compared against `_stream_frames`, which
+        #: resets on reopen, so mixing the two charges a spotless new stream
+        #: with a dead one's loss and simultaneously clamps drift to zero.
+        self._stream_missing_frames: int = 0
         #: UTC time of the most recently delivered block for the current stream,
         #: from the block's own frame-derived timestamp -- not `datetime.now()` --
         #: so it reflects when audio was actually flowing, not when this line
@@ -603,6 +609,7 @@ class Station:
         self.clock = None
         self._stream_frames = 0
         self._stream_discontinuities = 0
+        self._stream_missing_frames = 0
         self._stream_last_frame_utc = None
         self.native_ring = RingBuffer(rate, self.settings.native_ring_seconds)
         self.audible_ring = RingBuffer(
@@ -1118,6 +1125,7 @@ class Station:
         self.counters.discontinuities += 1
         self.counters.estimated_missing_frames += block.missing_frames
         self._stream_discontinuities += 1
+        self._stream_missing_frames += block.missing_frames
         lost_audio = block.missing_frames > 0
         if lost_audio:
             self.counters.gaps_with_loss += 1
@@ -2080,12 +2088,28 @@ class Station:
                 # drift; this separates them. Drift is audio that exists and is
                 # merely mislabelled (ADR-072); charging it to the station is the
                 # category error ADR-073 exists to end.
-                deficit_split = slo_module.split_deficit(
-                    expected_frames=expected_frames,
-                    frames=self._stream_frames,
-                    missing_frames=self.counters.estimated_missing_frames,
-                    sample_rate=stream.fmt.sample_rate,
-                )
+                #
+                # Guarded on capture actually being *live*, not merely on a
+                # stream object existing. `_on_stream_close` clears only
+                # `self.source`; `self.stream` and `self.clock` survive until a
+                # successful reopen, so across a backoff of up to 30 s the dead
+                # stream's anchor keeps `expected_frames` growing while
+                # `_stream_frames` is frozen. Left ungated, the entire outage
+                # lands in `drift_seconds` and integrity *rises* towards 1.0 the
+                # longer capture stays dead -- a real outage reported as the
+                # crystal, which is ADR-073's failure mode inverted. Better to
+                # report nothing than to report the opposite.
+                if self.capture_state == "capturing":
+                    deficit_split = slo_module.split_deficit(
+                        expected_frames=expected_frames,
+                        frames=self._stream_frames,
+                        # Stream-scoped, never `counters.estimated_missing_frames`:
+                        # that one is process lifetime and would charge this
+                        # stream with a previous stream's loss, exactly as
+                        # `CaptureCounters`' docstring forbids.
+                        missing_frames=self._stream_missing_frames,
+                        sample_rate=stream.fmt.sample_rate,
+                    )
 
         hot_path_ratio = None
         if self.counters.frames and stream is not None:
