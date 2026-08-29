@@ -2754,14 +2754,39 @@ class TestBandPromotion:
         arithmetic slip. Promotion counts banked detections against the cap on
         both sides.
 
+        The regression this test exists to catch only shows up when the
+        sparse band's *pass count* exceeds `bank_size`: comparing the raw pass
+        count against the cap (the bug) and comparing the *banked* count
+        against the cap (the fix) agree whenever passes <= bank_size, so a
+        band of 2 passes -- the previous seeding -- cannot tell them apart and
+        would stay green with the bug back. `evidence_bank_size` is overridden
+        to 5 and the sparse band seeds 8 passes, comfortably above it, so the
+        assertion below (exactly 5 banked, not 0 and not all 8) can only pass
+        under the fix.
+
+        Arithmetic for staying sparse: a band is sparse when
+        `n * 1000 < total * _BAND_SPARSE_PERMILLE` (10), i.e. `n < total /
+        100`. With the sparse band's `n = 8`, `total` must exceed 800, so the
+        busy band is seeded with 900 passes: `total = 908`, and
+        `8 * 1000 = 8000 < 908 * 10 = 9080` holds with room to spare. The busy
+        band (`900`) is nowhere near its own 1% line (`9`), so it stays busy
+        under either the buggy or the fixed comparison -- the busy-side
+        assertion alone would not distinguish them, which is why this test
+        needs the sparse-side count too.
+
         `age_days=2` puts every seeded pass inside both `_BAND_WINDOW_DAYS`
         (90) and the promotion lookback, which is widened here to the whole
         archive -- matching every other promotion test above -- because the
         sweeper's real default (24 h) would otherwise skip these on its own.
+        `write_files=False` skips the per-row file I/O `_seed_detection`
+        would otherwise do for every one of the 908 rows -- irrelevant here,
+        since band promotion only reads `peak_frequency_hz` and
+        `taxonomic_group`, not the files themselves.
         """
+        bank_size = 5
         station_id, detector_id = station_and_detector
         with session_scope() as session:
-            for _ in range(200):                        # the busy 20-25 kHz band
+            for _ in range(900):                        # the busy 20-25 kHz band
                 _seed_detection(
                     session,
                     station_id=station_id,
@@ -2770,9 +2795,10 @@ class TestBandPromotion:
                     age_days=2,
                     common_name=None, taxonomic_group="bat",
                     peak_frequency_hz=22_000.0,
+                    write_files=False,
                 )
             sparse = []
-            for _ in range(2):                          # the sparse 60-65 kHz band
+            for _ in range(8):                          # the sparse 60-65 kHz band
                 det, _assets = _seed_detection(
                     session,
                     station_id=station_id,
@@ -2781,22 +2807,30 @@ class TestBandPromotion:
                     age_days=2,
                     common_name=None, taxonomic_group="bat",
                     peak_frequency_hz=62_000.0,
+                    write_files=False,
                 )
                 sparse.append(det)
             session.commit()
 
-        _sweeper(db, evidence_value_enabled=True,
+        _sweeper(db, evidence_value_enabled=True, evidence_bank_size=bank_size,
                  promotion_lookback=timedelta(days=3650)).sweep()
 
         with session_scope() as session:
-            assert all(
-                session.get(orm.Detection, d).banked_at is not None for d in sparse
-            ), "the sparse band was not banked"
+            sparse_banked = session.execute(
+                sa.select(sa.func.count()).select_from(orm.Detection)
+                .where(orm.Detection.id.in_(sparse))
+                .where(orm.Detection.banked_at.is_not(None))
+            ).scalar_one()
             busy_banked = session.execute(
                 sa.select(sa.func.count()).select_from(orm.Detection)
                 .where(orm.Detection.peak_frequency_hz == 22_000.0)
                 .where(orm.Detection.banked_at.is_not(None))
             ).scalar_one()
+        assert sparse_banked == bank_size, (
+            "expected exactly bank_size banked -- 0 means the cap was never "
+            "reached (or the bug is back and compared against the raw pass "
+            "count), and 8 means the cap was not enforced at all"
+        )
         assert busy_banked == 0, "a busy band was banked"
 
 
@@ -3049,4 +3083,57 @@ class TestWatermarkPrefersUnbanked:
             assert session.get(orm.Detection, banked).banked_at is None, (
                 "the slot stays consumed by a detection with no files, and "
                 "promotion is monotone -- the species is locked out for ever"
+            )
+
+    def test_flag_off_does_not_clear_a_stale_banked_at(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        """Review finding: `bank is None` must be byte-identical to pre-ADR-076.
+
+        The brief required that with `evidence_value_enabled` off (or the
+        census aborted) the watermark tier behaves exactly as it did before
+        this ADR: one pass, no exclusion. The shared candidate query still
+        projects `Detection.banked_at` regardless of `bank`, so if an operator
+        bans a detection while the flag is on and later turns the flag off,
+        the next watermark reclaim of that detection's evidence would --
+        without the `bank is not None` guard -- still see a non-null
+        `banked_at` and null it out, something that never happened before
+        ADR-076 existed. It causes no extra deletions, but it is a real,
+        previously-untested divergence in exactly the case specified to be
+        identical.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            banked, banked_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=300,
+                kinds=("evidence_native",),
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == banked)
+                .values(banked_at=FIXED_NOW - timedelta(days=1))
+            )
+            session.commit()
+
+        self._over_watermark(monkeypatch)
+        # Flag off: `bank` is `None` inside `_watermark_reclaim`, so this
+        # detection's own asset is squarely a watermark candidate (oldest on
+        # disk) and gets reclaimed -- but `banked_at`, stamped while the flag
+        # was on, must survive.
+        _sweeper(db, evidence_value_enabled=False, watermark_ratio=0.85).sweep()
+
+        with session_scope() as session:
+            assert _asset(session, banked_assets["evidence_native"]).reclaimed_at is not None, (
+                "the asset should still be reclaimed -- the flag being off "
+                "must not create a new exemption from the watermark"
+            )
+            assert session.get(orm.Detection, banked).banked_at is not None, (
+                "the flag being off must not clear a stale banked_at -- that "
+                "never happened before ADR-076 and the brief required it "
+                "stay byte-identical"
             )
