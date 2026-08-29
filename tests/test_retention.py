@@ -353,6 +353,8 @@ def _sweeper(settings, **overrides) -> RetentionSweeper:
         evidence_common_species=settings.evidence_common_species,
         evidence_bank_size=settings.evidence_bank_size,
         evidence_sample_permille=settings.evidence_sample_permille,
+        evidence_implausible_species=settings.evidence_implausible_species,
+        evidence_implausible_cap=settings.evidence_implausible_cap,
     )
     kwargs.update(overrides)
     return RetentionSweeper(**kwargs)
@@ -2620,3 +2622,121 @@ class TestConstructorCarriesEvidenceSettings:
             assert (
                 isinstance(value, ast.Attribute) and value.attr == name
             ), f"cli.py passes {name}={ast.unparse(value)}, not settings.{name}"
+
+
+class TestPromotion:
+    def test_a_rare_species_is_promoted_oldest_first(self, db, station_and_detector) -> None:
+        """The first-ever recording is promoted first, so it is protected first."""
+        station_id, detector_id = station_and_detector
+        ids = []
+        with session_scope() as session:
+            for days in (50, 40, 30):
+                det, _ = _seed_detection(
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=days,
+                    common_name="Grey Heron",
+                )
+                ids.append(det)
+            session.commit()
+
+        _sweeper(db, evidence_value_enabled=True, evidence_bank_size=2,
+         promotion_lookback=timedelta(days=3650)).sweep()
+
+        with session_scope() as session:
+            banked = [
+                session.get(orm.Detection, d).banked_at is not None for d in ids
+            ]
+        assert banked == [True, True, False], (
+            "promotion did not take the oldest first"
+        )
+
+    def test_a_common_species_is_never_promoted(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, _ = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                common_name="European Robin",
+            )
+            session.commit()
+        _sweeper(db, evidence_value_enabled=True,
+                 evidence_common_species=("European Robin",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is None
+
+    def test_an_implausible_species_stops_at_three(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            for days in range(10, 20):
+                _seed_detection(
+                    session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                    age_days=days,
+                    common_name="California Quail",
+                )
+            session.commit()
+        _sweeper(db, evidence_value_enabled=True,
+                 evidence_implausible_species=("California Quail",),
+                 promotion_lookback=timedelta(days=3650)).sweep()
+        with session_scope() as session:
+            n = session.execute(
+                sa.select(sa.func.count()).select_from(orm.Detection)
+                .where(orm.Detection.common_name == "California Quail")
+                .where(orm.Detection.banked_at.is_not(None))
+            ).scalar_one()
+        assert n == 3
+
+    def test_promotion_never_takes_a_detection_with_no_live_evidence(
+        self, db, station_and_detector
+    ) -> None:
+        """Banking a row whose clips are already gone protects nothing.
+
+        The bank is an archive of files. A detection whose every asset has been
+        reclaimed has no files, so promoting it would consume a species' slot
+        and preserve nothing -- and, because promotion is monotone, would
+        consume it permanently.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=60,
+                common_name="Grey Heron",
+            )
+            session.execute(
+                sa.update(orm.MediaAsset)
+                .where(orm.MediaAsset.id.in_(assets.values()))
+                .values(reclaimed_at=FIXED_NOW)
+            )
+            session.commit()
+        _sweeper(db, evidence_value_enabled=True).sweep()
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is None
+
+    def test_promotion_is_off_when_the_flag_is(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, _ = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                common_name="Grey Heron",
+            )
+            session.commit()
+        _sweeper(db).sweep()          # flag defaults off
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is None

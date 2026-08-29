@@ -287,6 +287,8 @@ class Station:
             evidence_common_species=settings.evidence_common_species,
             evidence_bank_size=settings.evidence_bank_size,
             evidence_sample_permille=settings.evidence_sample_permille,
+            evidence_implausible_species=settings.evidence_implausible_species,
+            evidence_implausible_cap=settings.evidence_implausible_cap,
         )
 
         #: The operator's privacy pause (ADR-055). Owned here because every

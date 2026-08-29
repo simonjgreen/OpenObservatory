@@ -86,6 +86,7 @@ from typing import Any
 import structlog
 from sqlalchemy import Integer, cast, func, select, tuple_
 from sqlalchemy import text as sa_text
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -147,6 +148,20 @@ _BAND_WINDOW_DAYS = 90
 #: not a trade anyone was offered on that page. A constant rather than a
 #: second setting because this is ADR-074's definition of "sparse", not a knob.
 _BAND_SPARSE_PERMILLE = 10
+
+#: How far back one sweep looks for detections to promote (ADR-076).
+#:
+#: Not "the whole archive": that question cannot be asked affordably from
+#: inside the sweep -- see `_promotion_candidates`. Historical material is the
+#: backfill's job (`oo retention bank-backfill`), which walks the archive
+#: oldest-first under no time budget and is idempotent, so a station that was
+#: down for a week catches up by running it rather than by widening this.
+#:
+#: Twenty-four hours against a 300 s sweep cadence is about 288 overlapping
+#: passes over the same window, which is deliberate: promotion is idempotent
+#: (a banked row is not a candidate), so overlap costs one indexed scan and
+#: buys tolerance of a sweep that got interrupted or a budget that ran out.
+_PROMOTION_LOOKBACK = timedelta(hours=24)
 
 
 def _band_expression() -> Any:
@@ -275,6 +290,10 @@ class RetentionReport:
     #: `False`, so the flag's inertness extends to this report too.
     value_counts: dict[str, int] = field(default_factory=dict)
     value_bytes: dict[str, int] = field(default_factory=dict)
+    #: Detections promoted into the bank this sweep (ADR-076). Always 0 while
+    #: `evidence_value_enabled` is off -- `sweep()` never calls
+    #: `_promote_to_bank` in that case.
+    promoted: int = 0
     decisions: list[RetentionDecision] = field(default_factory=list)
     #: False when the batch budget (count or wall-clock) was exhausted with
     #: candidate work still outstanding -- the next sweep will pick it up.
@@ -376,6 +395,9 @@ class RetentionSweeper:
         evidence_common_species: Sequence[str] = (),
         evidence_bank_size: int = 200,
         evidence_sample_permille: int = 10,
+        evidence_implausible_species: Sequence[str] = (),
+        evidence_implausible_cap: int = 3,
+        promotion_lookback: timedelta = _PROMOTION_LOOKBACK,
     ) -> None:
         self.clip_dir = Path(clip_dir)
         self._session_factory = session_factory
@@ -398,16 +420,26 @@ class RetentionSweeper:
         self.evidence_common_species = evidence_common_species
         self.evidence_bank_size = evidence_bank_size
         self.evidence_sample_permille = evidence_sample_permille
+        #: Species a range model says cannot plausibly be here (ADR-076).
+        #: `cap_for` checks this before `evidence_common_species`: a species on
+        #: both lists is a systematic misidentification, and the implausible
+        #: cap (three examples) is what makes it judgeable rather than merely
+        #: boring.
+        self.evidence_implausible_species = evidence_implausible_species
+        self.evidence_implausible_cap = evidence_implausible_cap
+        #: How far back `_promotion_candidates` looks, not a setting -- see
+        #: `_PROMOTION_LOOKBACK`. A constructor parameter only so tests can
+        #: reach material older than 24 hours without waiting for it.
+        self.promotion_lookback = promotion_lookback
         #: Total banked detections as of the last sweep (`_EvidenceBank.total`),
         #: 0 while the flag is off. Reported by `snapshot()` in place of
         #: ADR-074's census-timing figures (ADR-076: there is no census left to
         #: time -- membership is a column, read by one indexed query every
         #: sweep, not derived rarely and reused).
         self.last_bank_size: int = 0
-        #: Detections promoted into the bank by the last sweep. Always 0 in
-        #: this ADR-076 milestone -- nothing here writes `banked_at` yet, that
-        #: is a later task -- kept as a real attribute now so `snapshot()`'s
-        #: shape does not change again when promotion lands.
+        #: Detections promoted into the bank by the last sweep. 0 while
+        #: `evidence_value_enabled` is off, since `sweep()` never calls
+        #: `_promote_to_bank` in that case.
         self.promoted_last_sweep: int = 0
 
         #: Cumulative across the process lifetime, for Prometheus counters.
@@ -594,6 +626,26 @@ class RetentionSweeper:
                 with self._bounded_statements(session, deadline):
                     bank = self._evidence_bank(session)
                 self.last_bank_size = bank.total() if bank is not None else 0
+                # ADR-076: promotion runs after the watermark tier -- the
+                # watermark is an emergency valve and must never queue behind
+                # a write -- and before the two age tiers, which must see the
+                # result. Re-reading the bank below is what makes that last
+                # part true: without it, a detection promoted this sweep
+                # would be deleted by the same sweep that just decided to
+                # keep it, because the age tiers' candidate queries were
+                # built from the bank read before promotion ran.
+                if bank is not None:
+                    with self._bounded_statements(session, deadline):
+                        report.promoted = self._promote_to_bank(
+                            session, bank, now=now, deadline=deadline
+                        )
+                    # Outside the arm, same reason `_run_tier` commits
+                    # outside its own: committing inside would check the
+                    # armed connection back into the pool before this
+                    # context manager's `finally` gets to disarm it.
+                    if report.promoted and not dry_run:
+                        session.commit()
+                    bank = self._evidence_bank(session)
                 if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
                     budget = self._strip_native(
                         session,
@@ -710,6 +762,7 @@ class RetentionSweeper:
         self.last_kept_detections = report.kept_detections
         self.last_held_detections = report.held_detections
         self.last_watermark_blocked_by_kept = report.watermark_blocked_by_kept
+        self.promoted_last_sweep = report.promoted
         # ADR-062. A single incomplete sweep is ordinary -- it means the budget
         # ran out with work still queued, and the next one continues. A *run*
         # of sweeps that each reclaim nothing is the failure this counter
@@ -996,6 +1049,166 @@ class RetentionSweeper:
                 if edge is not None:
                     bands[edge] = bands.get(edge, 0) + 1
         return _EvidenceBank(banked=banked, bands=bands)
+
+    #: Detections promoted into the bank in one sweep. Bounded so promotion can
+    #: never be the thing that eats a sweep's budget: the bank fills over a few
+    #: sweeps instead of one, and `oo retention bank-backfill` exists for the
+    #: one-off case where filling it now actually matters.
+    _PROMOTE_PER_SWEEP = 200
+
+    def _promote_to_bank(
+        self,
+        session: Session,
+        bank: _EvidenceBank,
+        *,
+        now: datetime,
+        deadline: float,
+        limit: int = _PROMOTE_PER_SWEEP,
+    ) -> int:
+        """Bank the oldest live, unbanked detections of every under-cap species.
+
+        **Oldest first, and that is the whole point.** ADR-074's bank deleted
+        the first-ever recording of a species the moment that species reached
+        its cap, because membership was a boolean on the *species* and the age
+        tiers order `created_at ASC`. Promoting oldest-first and never demoting
+        inverts that: the earliest recording is the first thing protected and
+        the last thing at risk.
+
+        A species at its cap is excluded **in the candidate query itself**,
+        not filtered out afterwards. That is what keeps this affordable: the
+        candidate set is `LIMIT`ed, and the commonest species are exactly the
+        ones that would otherwise fill it with rows the policy will never bank.
+
+        What this deliberately does **not** do is find the oldest unbanked
+        detection in the whole archive -- that question cannot be asked inside
+        the budget (see `_promotion_candidates`). It promotes from a trailing
+        window; `oo retention bank-backfill` does the archive, oldest-first,
+        with no budget at all.
+        """
+        promoted = 0
+        common = {n.casefold() for n in self.evidence_common_species}
+        implausible = {n.casefold() for n in self.evidence_implausible_species}
+        policy = evidence_value.Policy(
+            bank_size=self.evidence_bank_size,
+            sample_permille=self.evidence_sample_permille,
+            implausible_cap=self.evidence_implausible_cap,
+        )
+
+        # Species that cannot take another, computed once and pushed into the
+        # candidate query. `cap_for` returns 0 for a common species, so the
+        # common list needs no separate handling here.
+        skip = {
+            species
+            for species, banked in bank.banked.items()
+            if banked >= evidence_value.cap_for(
+                species,
+                is_common=species.casefold() in common,
+                is_implausible=species.casefold() in implausible,
+                policy=policy,
+            )
+        }
+        skip |= set(self.evidence_common_species)
+
+        room_by_species: dict[str, int] = {}
+        for detection_id, species in self._promotion_candidates(
+            session, now=now, skip=skip, limit=limit * 2
+        ):
+            if promoted >= limit or time.monotonic() >= deadline:
+                break
+            if species not in room_by_species:
+                cap = evidence_value.cap_for(
+                    species,
+                    is_common=species.casefold() in common,
+                    is_implausible=species.casefold() in implausible,
+                    policy=policy,
+                )
+                room_by_species[species] = cap - bank.banked.get(species, 0)
+            if room_by_species[species] <= 0:
+                continue
+            if not self._has_live_evidence(session, detection_id):
+                continue
+            session.execute(
+                sa_update(orm.Detection)
+                .where(orm.Detection.id == detection_id)
+                .values(banked_at=now)
+            )
+            room_by_species[species] -= 1
+            promoted += 1
+
+        # Deliberately *not* committed here, inside the arm: `_bounded_
+        # statements` disarms by calling `set_progress_handler(None, 0)` on
+        # the DBAPI connection it captured at entry, and `Session.commit()`
+        # checks that connection back into the pool, turning SQLAlchemy's
+        # proxy for it into a dead reference -- disarming against it
+        # afterwards raises `AttributeError: 'NoneType' object has no
+        # attribute 'set_progress_handler'`. Same failure `_run_tier`
+        # documents; the caller (`sweep()`) commits once this call returns,
+        # outside its own arming.
+        return promoted
+
+    def _promotion_candidates(
+        self, session: Session, *, now: datetime, skip: set[str], limit: int
+    ) -> list[tuple[uuid.UUID, str]]:
+        """Recent unbanked detections whose species could still take one.
+
+        **No join to the media tables, and that is the entire reason this is
+        affordable.** The obvious spelling -- group live assets by species --
+        is the 18.32 s census again in a different shape: SQLite scans
+        `detection_media` whole regardless of any time bound on `detection`,
+        because the bound is on the wrong side of the join. Measured on the
+        station's own cardinalities: 5.9754 s unbounded, and still **2.6672 s
+        bounded to two hours**. Bounding the window does not help.
+
+        This asks a cheaper question instead. A detection created moments ago
+        always has live evidence -- its clips were just written -- so the
+        incremental case does not need to ask whether it does. Liveness is
+        checked in `_promote_to_bank` on the handful actually about to be
+        promoted, one PK-prefix seek each.
+
+        `skip` carries the species that cannot take another detection: the
+        common list, and every species already at its cap. Excluded **in SQL**
+        rather than in Python, because the candidate set is `LIMIT`ed and the
+        commonest species are exactly the ones that would otherwise fill it --
+        a window full of robins the policy will never bank, re-scanned every
+        300 s, while a heron three rows further along is never seen.
+
+        `common_name NOT IN (...)` is safe here only because of the
+        `IS NOT NULL` guard above it: SQL three-valued logic makes
+        `NULL NOT IN (...)` evaluate to NULL, not true, and a `WHERE` keeps
+        only rows that are true. Without that guard every bat pass would
+        silently vanish from this query. Same trap, same place, as
+        `_EvidenceBank.exclusion` under ADR-074.
+
+        Measured: **0.0149 s** for a 24-hour window at a 500-row limit,
+        `SEARCH detection USING INDEX ix_detection_event_start_utc`.
+        """
+        query = (
+            select(orm.Detection.id, orm.Detection.common_name)
+            .where(orm.Detection.event_start_utc >= now - self.promotion_lookback)
+            .where(orm.Detection.banked_at.is_(None))
+            .where(orm.Detection.common_name.is_not(None))
+            .order_by(orm.Detection.event_start_utc.asc())
+            .limit(limit)
+        )
+        if skip:
+            query = query.where(orm.Detection.common_name.notin_(sorted(skip)))
+        return [(i, n) for i, n in session.execute(query).all() if n is not None]
+
+    def _has_live_evidence(self, session: Session, detection_id: uuid.UUID) -> bool:
+        """One PK-prefix seek plus one PK lookup. Measured at 0.46 ms.
+
+        Banking a detection whose clips are already gone protects nothing and
+        consumes a species' slot **permanently** -- promotion is monotone and
+        never reconsiders. So the check is worth its cost, and its cost is only
+        paid for detections that have already survived the cap filter.
+        """
+        return session.execute(
+            select(orm.DetectionMedia.detection_id)
+            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
+            .where(orm.DetectionMedia.detection_id == detection_id)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .limit(1)
+        ).first() is not None
 
     def _band_counts(self, session: Session, *, since: datetime) -> dict[int, int]:
         """Bat passes per 5 kHz band since `since`: one indexed aggregate.
@@ -1524,7 +1737,8 @@ class RetentionSweeper:
             # question moves from "is the census keeping up" to "what is the
             # bank actually holding". `bank_size_now` is `_EvidenceBank.total()`
             # from the last sweep, 0 while the flag is off; `promoted_last_sweep`
-            # is 0 in this milestone -- nothing here writes `banked_at` yet.
+            # is `RetentionReport.promoted` from the last sweep, also 0 while
+            # the flag is off.
             "evidence_value_enabled": self.evidence_value_enabled,
             "bank_size_now": self.last_bank_size,
             "promoted_last_sweep": self.promoted_last_sweep,

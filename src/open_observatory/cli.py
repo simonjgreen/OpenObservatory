@@ -1550,6 +1550,8 @@ def clips_retention(
         evidence_common_species=settings.evidence_common_species,
         evidence_bank_size=settings.evidence_bank_size,
         evidence_sample_permille=settings.evidence_sample_permille,
+        evidence_implausible_species=settings.evidence_implausible_species,
+        evidence_implausible_cap=settings.evidence_implausible_cap,
     )
     report = sweeper.sweep(dry_run=dry_run)
 
