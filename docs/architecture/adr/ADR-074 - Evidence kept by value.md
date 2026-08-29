@@ -6,6 +6,8 @@ tags:
 ---
 # ADR-074: Evidence is retained by value, not by age
 **Status:** accepted, 2026-08-29
+**Implementation plans:** [[2026-08-29-evidence-value-retention]], then
+[[2026-08-29-evidence-bank-redesign]]
 **Supersedes:** age-only retention as the sole policy ([[ADR-026 - Tiered clip retention|ADR-026]]'s tiers remain as
 the backstop)
 **Relates to:** [[ADR-049 - Sound categories are not species|ADR-049]] (plausibility bands), [[ADR-026 - Tiered clip retention|ADR-026]] (the age tiers and the
@@ -282,6 +284,37 @@ a rank per species, the N oldest or best kept — rather than a boolean on the
 species. As written, "up to 200 clips exempt from age expiry" is not what the
 code does. That redesign goes back through design rather than being improvised
 on a code path that deletes files.
+
+### Amendment 3, 2026-08-29: the mechanism is replaced, and there were five defects
+
+Superseded in mechanism by [[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]]. **Every word of the policy above stands.**
+What changes is how the bank is represented: a persisted, indexed
+`detection.banked_at` column instead of a set of species names recomputed from
+scratch each sweep. The cliff described immediately above is a property of the
+recomputation, and disappears once membership is a monotone fact about a row.
+
+Measured on the station while fixing it, and recorded here because three of
+these are not described anywhere above:
+
+* the census costs **18.3219 s** against a 1.5 s budget — not marginal, and the
+  900 s TTL does not rescue a statement that blocks for eighteen seconds when
+  it does run;
+* the bat bank compares a **pass** count against a **clip** budget, so a sparse
+  band holding more than `bank_size` passes is never banked at all;
+* **the policy as implemented cannot save a single byte.** The bank is applied
+  only as a `WHERE` exclusion on the two age tiers, so it can only ever
+  *narrow* what is deleted. Every figure in the "Expected effect" table above
+  depends on the daily quota and the bat 1% sample, and **neither is
+  implemented** — `Verdict.QUOTA` and `Verdict.SAMPLE` are tallied in the
+  dry-run and are otherwise identical to `EXPIRE`. That table describes a
+  policy nobody has written yet, and it should be read as an intention rather
+  than a projection until one is;
+* `_watermark_reclaim` orders `created_at ASC` and never sees the bank, so
+  under disk pressure the emergency valve reclaims **the archive first**.
+
+[[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]] fixes the first, second, fourth and fifth. It deliberately does
+**not** build the quota, so it does not deliver this ADR's savings — it makes
+the bank correct, affordable and safe to enable.
 
 ### Rules that must not be broken
 
