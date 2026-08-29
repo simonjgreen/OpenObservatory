@@ -27,7 +27,6 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
-from structlog.testing import capture_logs
 
 import open_observatory.retention as retention_module
 from open_observatory.config import REPO_ROOT
@@ -2713,8 +2712,7 @@ class TestCensusFailureDegradesToAgeOnly:
         sweeper = _sweeper(db, evidence_value_enabled=True)
         monkeypatch.setattr(sweeper, "_banked_counts", self._interrupted)
 
-        with capture_logs() as cap:
-            report = sweeper.sweep()
+        report = sweeper.sweep()
 
         assert report.complete is True, report.to_dict()
         assert report.interrupted_tier is None, report.to_dict()
@@ -2729,12 +2727,17 @@ class TestCensusFailureDegradesToAgeOnly:
         # ...and the report must not claim a value verdict for a deletion the
         # policy never actually classified.
         assert report.value_counts == {}, report.value_counts
-        warnings = [
-            entry
-            for entry in cap
-            if entry["log_level"] == "warning" and "census" in entry["event"]
-        ]
-        assert warnings, [entry["event"] for entry in cap]
+        # The failure is *reported*, and asserted on the durable counter rather
+        # than on a captured log line. `structlog.testing.capture_logs` is
+        # global state this repo's CLI tests reconfigure out from under it
+        # (`cli.configure_logging` installs cached filtering bound loggers), so
+        # the same assertion passed alone and captured nothing in a full-suite
+        # run. `snapshot()` is what an operator actually reads, which is the
+        # whole point of F4 -- and it is deterministic.
+        snap = sweeper.snapshot()
+        assert snap["census_aborts"] == 1, snap
+        assert snap["census_age_s"] is None, snap
+        assert snap["last_census_duration_s"] is not None, snap
 
     def test_a_failed_census_is_not_re_attempted_on_the_very_next_sweep(
         self, db, station_and_detector
