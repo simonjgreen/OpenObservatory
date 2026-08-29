@@ -216,6 +216,73 @@ indexed column on `detection` at write time. The detector already computes it;
 nothing needs re-deriving. That is a migration plus a write-path change, and it
 wants its own ADR because it changes what a detection row means.
 
+### Amendment 2, 2026-08-29: three corrections from the final review
+
+Recorded because the review disproved reasoning that appears above, and an ADR
+carrying arguments its own review demolished is worse than one that says so.
+
+**The ceiling arithmetic is wrong by a factor of about 2.3.** `bank_size`
+bounds **detections**, not assets — `_banked_counts` says so explicitly — but
+the `143 × 200 × 1.53 MB ≈ 44 GB` figure above uses a per-*asset* size. Each
+clipped detection carries two assets (bird: native + playback) or three (bat:
++ audible rendering). The real ceiling is nearer **100 GB**, and the "≤70 GB at
+the ceiling" total in the Expected-effect table does not survive the
+correction. Still bounded by construction, still far better than 388.8 GB, but
+the number was flattering.
+
+**And the missing plausibility gate inflates the term the ceiling is linear
+in.** Amendment 1 said the gap "wastes bank slots on misidentifications; it
+cannot run away with the disk". Too strong. The multiplicand is the *species
+count*, and that grows precisely because the gate is missing: every novel
+BirdNET false positive opens a fresh 200-detection bank. The five bogus species
+this ADR names go from one clip each to roughly **3.5 GB of pure garbage**, and
+nothing bounds how many more appear. Slow, not unbounded — but not contained
+either.
+
+**There is a far cheaper way to get the plausibility gate, and Amendment 1
+proposed the expensive one.** It called for persisting the band as an indexed
+column: a migration, a write-path change and an ADR of its own. Unnecessary.
+The cheapest correct answer is an **`evidence_implausible_species` operator
+list, mirroring `evidence_common_species`** — zero schema change, zero
+migration, zero extra query. This ADR's own principle makes the case: *which
+birds are boring is a list a person edits, not a threshold a machine picks*, and
+that argument applies word for word to which birds are **impossible here**. The
+species involved number five and hold one clip each. The suggestion mechanism
+designed above can seed it.
+
+(Two further options, if a list ever proves insufficient: have
+`oo detections reconcile-plausibility`, which already walks `native_result`
+under no time budget, publish a ~143-row per-species verdict the sweep reads for
+free; or recompute the band in-process, since `_band_for` is a pure function of
+the cached per-week occurrence vector and needs no stored column at all.)
+
+### Blocking defect: the bank is a per-species cliff, not a bank
+
+**This is why `evidence_value_enabled` cannot be turned on, and it is a larger
+problem than the plausibility gap.**
+
+`_derive_bank` produces a set of species *names*, and the exclusion exempts
+**every clip of that species**. Membership is recomputed from scratch each
+sweep, and `classify()` returns `BANK` only while `banded_already < bank_size`.
+So the moment a species reaches 200 live detections the exemption vanishes **for
+the entire back-catalogue at once** — and both age tiers order `created_at ASC`.
+
+**The first-ever recording of a species would be the first thing deleted.** That
+is the exact outcome this ADR was written to prevent, arrived at by the
+mechanism meant to prevent it.
+
+The same cliff fires on two other triggers: adding a banked species to the
+common list drops it out of the bank and deletes its history oldest-first —
+directly contradicting this ADR's stated consequence that doing so "does not
+retroactively delete its history" — and a sparse bat band holding 200+ passes is
+never banked at all, because a *pass* count is compared against a *clip* budget.
+
+**The fix is not a patch.** Bank membership has to be a property of a **clip** —
+a rank per species, the N oldest or best kept — rather than a boolean on the
+species. As written, "up to 200 clips exempt from age expiry" is not what the
+code does. That redesign goes back through design rather than being improvised
+on a code path that deletes files.
+
 ### Rules that must not be broken
 
 1. **Age tiers remain as a backstop.** Value-based selection decides what is
