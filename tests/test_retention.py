@@ -3327,6 +3327,116 @@ class TestBankReadAbortDegradesToAgeOnly:
         assert report.total_deleted >= 1
 
 
+class TestPreambleAbortDegradesToWatermarkOnly:
+    """ADR-076 "Still outstanding": a preamble abort -- the `kept_detections`
+    count or `held_detection_ids(session)` interrupted by the deadline guard
+    -- used to propagate with `current_tier == "preamble"`, which is not in
+    `_TIER_ORDER`, so `sweep()`'s handler set `start_index = 0` and recorded
+    every tier, including the watermark, as skipped. That is the ADR-061
+    incident recurring on a path ADR-061 did not fix: if the preamble ever
+    ate the whole budget, the disk would fill and capture would stop, every
+    sweep, silently.
+
+    The fix cannot simply run every tier anyway: `held_ids` (the ADR-043
+    human-hold set) is the very thing the interrupted statement was
+    computing, and `_strip_native`/`_strip_unkept` are only safe because
+    they exempt it. Running them with a missing or empty stand-in would
+    delete evidence a person explicitly asked to keep -- worse than the bug.
+    `_watermark_reclaim` never reads `held_ids` (it exempts via
+    `kept_at`, which it reads itself), so it is the one tier that can and
+    must still run.
+    """
+
+    @staticmethod
+    def _boom(session):
+        raise OperationalError("preamble", {}, Exception("interrupted (test)"))
+
+    def test_a_preamble_abort_still_runs_the_watermark_and_it_reclaims(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                kinds=("evidence_native",),
+            )
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        monkeypatch.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+        monkeypatch.setattr(
+            retention_module.review_queries, "held_detection_ids", self._boom
+        )
+
+        report = _sweeper(db, watermark_ratio=0.85).sweep()
+
+        assert report.interrupted_tier == "preamble"
+        assert "watermark" not in report.tiers_skipped, (
+            "a preamble abort must not skip the watermark tier -- that is "
+            "the ADR-061 incident recurring by a different route"
+        )
+        assert report.tier_counts.get("watermark", 0) >= 1
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None, (
+                "the watermark must actually reclaim, not merely run without "
+                "raising"
+            )
+
+    def test_a_preamble_abort_skips_both_age_tiers_and_touches_no_held_detection(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, held_assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=40,  # past both the native and audible-only tiers
+                kinds=("evidence_native", "playback"),
+                held=True,
+            )
+
+        monkeypatch.setattr(
+            retention_module.review_queries, "held_detection_ids", self._boom
+        )
+
+        report = _sweeper(db).sweep()
+
+        assert report.interrupted_tier == "preamble"
+        assert "native" in report.tiers_skipped
+        assert "unkept" in report.tiers_skipped
+        assert report.total_deleted == 0, (
+            "held_ids is untrustworthy on a preamble abort, so neither age "
+            "tier may run at all -- not even against detections that are "
+            "not held"
+        )
+        with session_scope() as session:
+            assert _asset(session, held_assets["evidence_native"]).reclaimed_at is None
+            assert _asset(session, held_assets["playback"]).reclaimed_at is None
+
+    def test_a_genuine_preamble_error_still_propagates(
+        self, db, station_and_detector, monkeypatch
+    ) -> None:
+        def _real_error(session):
+            raise OperationalError("preamble", {}, Exception("disk I/O error"))
+
+        monkeypatch.setattr(
+            retention_module.review_queries, "held_detection_ids", _real_error
+        )
+
+        with pytest.raises(OperationalError, match="disk I/O error"):
+            _sweeper(db).sweep()
+
+
 class TestBankBackfillDryRunTakesOnlyReadLocks:
     """I2 (final pre-merge review, 2026-08-29).
 

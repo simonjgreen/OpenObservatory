@@ -596,30 +596,82 @@ class RetentionSweeper:
         with self._session_factory() as session:
             current_tier = "preamble"
             aborted = False
+            # Set only when the preamble's own statement(s) are interrupted --
+            # see the `except OperationalError` immediately below. Distinct
+            # from `aborted`, which the *outer* handler sets for an abort in
+            # any later tier: this sweep must keep running (to reach the
+            # watermark) after a preamble abort, where `aborted` means the
+            # rest of the function is skipped entirely.
+            preamble_aborted = False
+            held_ids: set[uuid.UUID] | None = None
             try:
-                with self._bounded_statements(session, deadline):
-                    # A plain indexed count, not the materialised-into-Python
-                    # scan this replaces (ADR-061): `ix_detection_kept_at_partial`
-                    # (migration 0010; it replaced the plain `ix_detection_kept_at`
-                    # dropped by migration 0009) makes this an index-only
-                    # count, not a table scan, and nothing here reads
-                    # `native_result` or any other wide column.
-                    report.kept_detections = session.execute(
-                        select(func.count()).select_from(orm.Detection).where(
-                            orm.Detection.kept_at.is_not(None)
-                        )
-                    ).scalar_one()
-                    held_ids = review_queries.held_detection_ids(session)
-                    report.held_detections = len(held_ids)
+                try:
+                    with self._bounded_statements(session, deadline):
+                        # A plain indexed count, not the materialised-into-Python
+                        # scan this replaces (ADR-061): `ix_detection_kept_at_partial`
+                        # (migration 0010; it replaced the plain `ix_detection_kept_at`
+                        # dropped by migration 0009) makes this an index-only
+                        # count, not a table scan, and nothing here reads
+                        # `native_result` or any other wide column.
+                        report.kept_detections = session.execute(
+                            select(func.count()).select_from(orm.Detection).where(
+                                orm.Detection.kept_at.is_not(None)
+                            )
+                        ).scalar_one()
+                        held_ids = review_queries.held_detection_ids(session)
+                        report.held_detections = len(held_ids)
 
-                    # Everything above this line is the preamble that,
-                    # unbounded, caused the nine-day incident (ADR-061):
-                    # recorded *before* the first tier guard so a preamble
-                    # that alone ate the budget shows up as a large
-                    # `preamble_s` next to an empty `tiers_skipped`-causing
-                    # deadline, rather than being indistinguishable from a
-                    # fast one.
-                    report.preamble_s = round(time.monotonic() - start_perf, 4)
+                        # Everything above this line is the preamble that,
+                        # unbounded, caused the nine-day incident (ADR-061):
+                        # recorded *before* the first tier guard so a preamble
+                        # that alone ate the budget shows up as a large
+                        # `preamble_s` next to an empty `tiers_skipped`-causing
+                        # deadline, rather than being indistinguishable from a
+                        # fast one.
+                        report.preamble_s = round(time.monotonic() - start_perf, 4)
+                except OperationalError as exc:
+                    if "interrupted" not in str(getattr(exc, "orig", exc)):
+                        # A genuine database error, not our deadline guard --
+                        # never swallow it as if it were a bounded timeout.
+                        raise
+                    session.rollback()
+                    # ADR-076 "Still outstanding": an interrupted preamble
+                    # used to fall through to the shared handler below with
+                    # `current_tier == "preamble"`, which is not in
+                    # `_TIER_ORDER` -- so `_TIER_ORDER.index` fell back to 0
+                    # and skipped *every* tier, watermark included. That is
+                    # the ADR-061 incident recurring on a path ADR-061 did
+                    # not fix: the disk fills and capture stops.
+                    #
+                    # `held_ids` is the set of ADR-043 human holds, and it is
+                    # what makes `_strip_native`/`_strip_unkept` safe to run
+                    # at all -- without it (or with a stale/empty stand-in)
+                    # those tiers could delete evidence a person explicitly
+                    # asked to keep, which is worse than skipping a sweep.
+                    # This statement is exactly the one that failed, so
+                    # `held_ids` cannot be trusted this pass: both age tiers
+                    # are skipped below (`preamble_aborted`), not run with a
+                    # missing safety set.
+                    #
+                    # `_watermark_reclaim` never reads `held_ids` -- it
+                    # exempts via `Detection.kept_at.is_(None)` (the ADR-061
+                    # operator keep flag), which it reads itself -- so it is
+                    # unaffected by this abort and still runs below, which is
+                    # the entire point: it is the safety valve that stops a
+                    # full disk stopping capture, and it must not go missing
+                    # just because an earlier, unrelated read was slow.
+                    preamble_aborted = True
+                    held_ids = None
+                    report.interrupted_tier = "preamble"
+                    report.interrupted_after_s = round(
+                        time.monotonic() - start_perf, 4
+                    )
+                    report.complete = False
+                    log.warning(
+                        "retention.preamble_interrupted",
+                        after_s=report.interrupted_after_s,
+                        batch_budget_s=self.batch_budget_s,
+                    )
 
                 # C1 (2026-08-14): each tier below arms its own
                 # `_bounded_statements` (inside `_run_tier` for native/unkept,
@@ -733,7 +785,16 @@ class RetentionSweeper:
                     # context manager's `finally` gets to disarm it.
                     if report.promoted and not dry_run:
                         session.commit()
-                if self.native_days > 0 and budget > 0 and time.monotonic() < deadline:
+                # `not preamble_aborted` guards both age tiers: they are the
+                # only two callers of `held_ids`, which is `None` (untrusted)
+                # on a preamble abort -- see the comment at the abort site.
+                # The watermark tier below is never gated on this flag.
+                if (
+                    not preamble_aborted
+                    and self.native_days > 0
+                    and budget > 0
+                    and time.monotonic() < deadline
+                ):
                     budget = self._strip_native(
                         session,
                         report,
@@ -747,7 +808,12 @@ class RetentionSweeper:
                 else:
                     report.tiers_skipped.append("native")
                 current_tier = "unkept"
-                if self.audible_only_days > 0 and budget > 0 and time.monotonic() < deadline:
+                if (
+                    not preamble_aborted
+                    and self.audible_only_days > 0
+                    and budget > 0
+                    and time.monotonic() < deadline
+                ):
                     budget = self._strip_unkept(
                         session,
                         report,
