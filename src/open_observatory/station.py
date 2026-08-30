@@ -289,6 +289,7 @@ class Station:
             evidence_sample_permille=settings.evidence_sample_permille,
             evidence_implausible_species=settings.evidence_implausible_species,
             evidence_implausible_cap=settings.evidence_implausible_cap,
+            retain_acoustic_event_clips=settings.retain_acoustic_event_clips,
         )
 
         #: The operator's privacy pause (ADR-055). Owned here because every

@@ -2672,55 +2672,99 @@ class TestEvidenceValueExemptions:
             assert sweeper._evidence_bank(session) is None
 
 
-class TestConstructorCarriesEvidenceSettings:
-    """Commit 0170be1: `station.py` and `cli.py` both built `RetentionSweeper`
-    without the four `evidence_*` keyword arguments. `apply_tuning` only
-    pushes settings that changed in a given request, so a value already
-    persisted in `config/runtime.env` -- including a previously-toggled
-    `evidence_value_enabled=True` -- reported as "applied" while the
-    constructor's own defaults (`False`, `()`, `200`, `10`) silently won at
-    the next process restart, because nothing read `Settings` for these four
-    at construction time.
+def _bumped(value):
+    """A value guaranteed to differ from `value`, keeping its type.
 
-    These tests therefore go through the **real** construction paths rather
-    than repeating the keyword list inline: an inline `RetentionSweeper(...)`
-    with the four kwargs present asserts only that Python passes arguments,
-    and passes untouched while `station.py` drops every one of them, which is
-    precisely the regression that shipped.
+    Used to prove a setting was actually threaded through, not just present
+    at its default on both sides of the wiring by coincidence -- a bool
+    default of `False` matching a never-wired sweeper default of `False`
+    would pass a same-value comparison for the wrong reason.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, float):
+        return value + 0.01
+    if isinstance(value, tuple):
+        return (*value, "Sentinel Species")
+    raise TypeError(f"no bump rule for {value!r} ({type(value)})")
+
+
+class TestConstructorCarriesEveryLiveRetentionSetting:
+    """Commit 0170be1 dropped the four `evidence_*` keywords from both
+    `RetentionSweeper(...)` call sites; ADR-077 then dropped a fifth,
+    `retain_acoustic_event_clips`, the same way. Both times the enumerated
+    keyword list in this test was the reason the gap wasn't caught -- a
+    list of names existing settings happened to need says nothing about a
+    setting added afterwards. `retain_acoustic_event_clips` in particular
+    reached this state through `tuning.py`'s `LIVE_TARGETS`, which claims it
+    is pushed live, and through `site_settings.py`, which persists it to
+    `config/runtime.env` -- so the checkbox looked live and *survived a
+    restart* in the UI while the sweeper silently reclaimed acoustic-event
+    clips the operator had asked to keep. `LIVE_TARGETS` is therefore the
+    source of truth this test walks, not a hand-kept list: any new retention
+    entry added there is exercised automatically, with no second edit here.
     """
 
-    def test_the_sweeper_station_builds_carries_the_evidence_settings(
+    def _retention_targets(self):
+        from open_observatory.tuning import LIVE_TARGETS
+
+        return {
+            name: target
+            for name, target in LIVE_TARGETS.items()
+            if target.kind == "retention"
+        }
+
+    def test_every_retention_target_parameter_exists_on_the_sweeper(self) -> None:
+        """(a) The name `tuning.py` promises to push must be a real kwarg."""
+        import inspect
+
+        params = inspect.signature(RetentionSweeper.__init__).parameters
+        for name, target in self._retention_targets().items():
+            assert target.parameter in params, (
+                f"LIVE_TARGETS[{name!r}] names parameter {target.parameter!r}, "
+                "which RetentionSweeper.__init__ does not accept"
+            )
+
+    def test_the_sweeper_station_builds_carries_every_live_retention_setting(
         self, db
     ) -> None:
-        """`Station.__init__` is the call site the running station uses."""
+        """(b) `Station.__init__` is the call site the running station uses.
+
+        Each retention setting is bumped to a value that differs from
+        whatever `RetentionSweeper.__init__`'s own default is, so a dropped
+        keyword (silently falling back to that default) is distinguishable
+        from a genuinely-threaded value.
+        """
         from open_observatory.station import Station
 
-        db.evidence_value_enabled = True
-        db.evidence_common_species = ("Grey Heron",)
-        db.evidence_bank_size = 55
-        db.evidence_sample_permille = 250
+        targets = self._retention_targets()
+        expected = {}
+        for name, target in targets.items():
+            bumped = _bumped(getattr(db, name))
+            setattr(db, name, bumped)
+            expected[target.parameter] = bumped
 
         sweeper = Station(db).retention
 
-        assert sweeper.evidence_value_enabled is True
-        assert sweeper.evidence_common_species == ("Grey Heron",)
-        assert sweeper.evidence_bank_size == 55
-        assert sweeper.evidence_sample_permille == 250
-        # The settings around them still arrive too, so a future edit that
-        # reorders or truncates the keyword list is caught whichever half of
-        # it it damages.
-        assert sweeper.native_days == db.retention_native_days
-        assert sweeper.batch_budget_s == db.retention_batch_budget_s
+        for parameter, value in expected.items():
+            assert getattr(sweeper, parameter) == value, (
+                f"Station built a RetentionSweeper whose {parameter!r} did not "
+                "receive the settings value -- a live-tier setting that will "
+                "not survive a restart"
+            )
 
-    def test_the_cli_call_site_passes_the_same_four_settings(self) -> None:
+    def test_the_cli_call_site_passes_the_same_settings(self) -> None:
         """The other call site from 0170be1, `open-observatory retention-sweep`.
 
         Read off the source rather than executed: the command opens the real
         engine and runs migrations before it constructs anything, which is not
-        something this test wants to do to get at one keyword list. Each of the
-        four must be passed, and must be passed *its own* setting -- a
-        copy-paste that wires `evidence_bank_size=settings.evidence_sample_permille`
-        would be silent otherwise.
+        something this test wants to do to get at one keyword list. Every
+        retention entry in `LIVE_TARGETS` must be passed, and must be passed
+        *its own* setting -- a copy-paste that wires
+        `evidence_bank_size=settings.evidence_sample_permille` would be
+        silent otherwise.
         """
         import ast
         import inspect
@@ -2737,17 +2781,17 @@ class TestConstructorCarriesEvidenceSettings:
         ]
         assert len(calls) == 1, f"{len(calls)} RetentionSweeper call sites in cli.py"
         passed = {kw.arg: kw.value for kw in calls[0].keywords if kw.arg is not None}
-        for name in (
-            "evidence_value_enabled",
-            "evidence_common_species",
-            "evidence_bank_size",
-            "evidence_sample_permille",
-        ):
-            assert name in passed, f"cli.py builds RetentionSweeper without {name}="
-            value = passed[name]
+        for name, target in self._retention_targets().items():
+            assert target.parameter in passed, (
+                f"cli.py builds RetentionSweeper without {target.parameter}="
+            )
+            value = passed[target.parameter]
             assert (
                 isinstance(value, ast.Attribute) and value.attr == name
-            ), f"cli.py passes {name}={ast.unparse(value)}, not settings.{name}"
+            ), (
+                f"cli.py passes {target.parameter}={ast.unparse(value)}, "
+                f"not settings.{name}"
+            )
 
 
 class TestPromotion:

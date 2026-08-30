@@ -1521,7 +1521,7 @@ def _build_retention_sweeper(settings: Settings) -> Any:
     the identical set of evidence-bank settings -- a second, separately
     typed-out call site is exactly how `evidence_bank_size=
     settings.evidence_sample_permille` would slip in unnoticed, the copy-paste
-    a repo-hygiene test (`test_the_cli_call_site_passes_the_same_four_settings`)
+    a repo-hygiene test (`test_the_cli_call_site_passes_the_same_settings`)
     exists to catch by asserting there is only one call site to check.
     """
     from .db.session import session_scope
@@ -1541,6 +1541,7 @@ def _build_retention_sweeper(settings: Settings) -> Any:
         evidence_sample_permille=settings.evidence_sample_permille,
         evidence_implausible_species=settings.evidence_implausible_species,
         evidence_implausible_cap=settings.evidence_implausible_cap,
+        retain_acoustic_event_clips=settings.retain_acoustic_event_clips,
     )
 
 
