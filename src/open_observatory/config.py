@@ -437,35 +437,32 @@ class Settings(BaseSettings):
     evidence_value_enabled: bool = False
     #: Species whose clips go straight to the daily quota, skipping the bank.
     #: An operator list, not a computed threshold -- which birds are boring is a
-    #: matter of taste and place. Pre-populated with the original six species
-    #: that are 86% of this station's bird evidence, plus the high-volume
-    #: garden birds that reached the 200-clip bank cap in the station's first
-    #: live `oo clips bank-backfill --dry-run` (measured 2026-08-30).
-    #: Deliberately **not** extended with Tawny Owl or Spotted Flycatcher, both
-    #: of which also reached volume in that dry run: the owl is exactly the
-    #: kind of recording an operator wants kept, and the flycatcher is a
-    #: declining species (ADR-074's own reason this is a list a person edits
-    #: rather than a threshold a machine picks -- a purely volumetric rule
-    #: would have swept up both).
-    evidence_common_species: Annotated[tuple[str, ...], NoDecode] = (
-        "Common Woodpigeon",
-        "European Robin",
-        "Eurasian Jackdaw",
-        "Eurasian Blue Tit",
-        "Rook",
-        "Collared Dove",
-        "Barn Swallow",
-        "Canada Goose",
-        "Carrion Crow",
-        "Common Chaffinch",
-        "Common Magpie",
-        "Common Pheasant",
-        "Dunnock",
-        "Eurasian Blackbird",
-        "Rock Dove",
-        "Stock Dove",
-        "Western House Martin",
-    )
+    #: matter of taste and place (ADR-074), and that is a fact about a garden,
+    #: not about the software. **Ships empty.** No station can know in advance
+    #: which of its birds are the common ones; that only becomes visible once
+    #: it has recorded some. An empty list is safe on its own terms: with
+    #: nothing marked common, `cap_for` treats every species as eligible for
+    #: the bank up to `evidence_bank_size`, which is still a hard ceiling, not
+    #: unbounded retention. The operator fills this in from
+    #: `GET /api/v1/retention/suggestions` (surfaced as rows in the retention
+    #: settings panel), which proposes species from what *this* station has
+    #: actually recorded, rather than by editing the config file blind.
+    #:
+    #: Worked example, so the shape of a real list is visible: one station in
+    #: Charter Alley, Surrey measured its bird evidence on 2026-08-30 and,
+    #: after its first live `oo clips bank-backfill --dry-run`, an operator
+    #: there set this to the six species that were 86% of its evidence plus
+    #: the further garden birds that had reached the 200-clip bank cap --
+    #: Common Woodpigeon, European Robin, Eurasian Jackdaw, Eurasian Blue Tit,
+    #: Rook, Collared Dove, Barn Swallow, Canada Goose, Carrion Crow, Common
+    #: Chaffinch, Common Magpie, Common Pheasant, Dunnock, Eurasian Blackbird,
+    #: Rock Dove, Stock Dove, Western House Martin -- deliberately leaving out
+    #: Tawny Owl and Spotted Flycatcher, which also reached volume in that dry
+    #: run: the owl is exactly the kind of recording that operator wanted
+    #: kept, and the flycatcher is a declining species there. That editorial
+    #: judgement is the operator's to make for their own place, which is
+    #: exactly why the setting cannot ship pre-made.
+    evidence_common_species: Annotated[tuple[str, ...], NoDecode] = ()
     #: Species the range model says cannot occur here (ADR-049 bands, ADR-076).
     #: They are banked to `evidence_implausible_cap` examples rather than
     #: `evidence_bank_size`: three examples are enough to judge a systematic
@@ -476,30 +473,31 @@ class Settings(BaseSettings):
     #: sweep's preamble goes out of its way never to touch (ADR-062's 1.5 s
     #: budget). ADR-074's own principle -- which birds are boring is a list a
     #: person edits, not a threshold a machine picks -- applies word for word
-    #: to which birds are impossible here.
+    #: to which birds are impossible here, and "impossible" is itself a
+    #: function of where the station is. **Ships empty**, for the same reason
+    #: `evidence_common_species` does: a name that is impossible in one
+    #: station's garden (California Quail in Surrey) is an everyday bird in
+    #: another's (California), so a pre-populated list would be actively wrong
+    #: for most deployments, not merely unhelpful. With nothing marked
+    #: implausible, `cap_for` never takes the three-example branch, so it
+    #: returns `evidence_bank_size` for every plausible species -- no clip is
+    #: capped at three by default. The operator populates this from the
+    #: plausibility band ADR-049/ADR-032 already computes per location from
+    #: the occurrence prior: it shows which of this station's own detections
+    #: the range model doubts.
     #:
-    #: Pre-populated with the original five this station had recorded, one
-    #: detection each, none of which can occur in a Surrey garden, plus the
-    #: further range-implausible species the station's first live
-    #: `oo clips bank-backfill --dry-run` (measured 2026-08-30) showed being
-    #: archived.
-    evidence_implausible_species: Annotated[tuple[str, ...], NoDecode] = (
-        "Chestnut-backed Chickadee",
-        "California Quail",
-        "Asian Brown Flycatcher",
-        "Eastern Screech-Owl",
-        "Grey-winged Inca-Finch",
-        "Barred Owl",
-        "Bay-breasted Warbler",
-        "Bohemian Waxwing",
-        "Buff-bellied Pipit",
-        "Dusky Flycatcher",
-        "Painted Redstart",
-        "Northern Rough-winged Swallow",
-        "White-crowned Sparrow",
-        "Western Screech-Owl",
-        "Black-crowned Night Heron",
-    )
+    #: Worked example, so the shape of a real list is visible: one station in
+    #: Charter Alley, Surrey, measured on 2026-08-30, had recorded five
+    #: species one detection each that cannot occur in that garden, plus
+    #: further range-implausible species its first live
+    #: `oo clips bank-backfill --dry-run` showed being archived -- Chestnut-
+    #: backed Chickadee, California Quail, Asian Brown Flycatcher, Eastern
+    #: Screech-Owl, Grey-winged Inca-Finch, Barred Owl, Bay-breasted Warbler,
+    #: Bohemian Waxwing, Buff-bellied Pipit, Dusky Flycatcher, Painted
+    #: Redstart, Northern Rough-winged Swallow, White-crowned Sparrow, Western
+    #: Screech-Owl, Black-crowned Night Heron. Every one of those is a
+    #: perfectly ordinary bird somewhere else in the world.
+    evidence_implausible_species: Annotated[tuple[str, ...], NoDecode] = ()
     #: Species an operator has declined to add to `evidence_common_species`
     #: (ADR-074, "Suggesting additions, without nagging"). A dismissal is
     #: permanent until the operator edits this list themselves: "a prompt

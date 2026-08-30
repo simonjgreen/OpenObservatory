@@ -244,7 +244,10 @@ class TestTheAuditIsComplete:
         )
         assert entry.category == "retention"
         assert entry.tier == "live"
-        assert "California Quail" in get_settings().evidence_implausible_species
+        # Ships empty -- which birds are impossible is a property of where the
+        # station is, not something the software can know in advance -- but
+        # the field is still a live, editable operator list.
+        assert get_settings().evidence_implausible_species == ()
 
 
 class TestValidation:
