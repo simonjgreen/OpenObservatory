@@ -412,6 +412,22 @@ class TestSettingsEndpoints:
             encoding="utf-8"
         )
 
+    def test_put_persists_a_value_identical_to_the_current_default(
+        self, api_client: TestClient, settings: Settings
+    ) -> None:
+        """An operator explicitly pinning today's default must not be a
+        no-op: `changed` (current value vs proposed) was previously used to
+        decide what reaches runtime.env, so a PUT that happened to match the
+        default was silently dropped -- persisted nowhere, and free to drift
+        out from under the operator on a later release that changes the
+        default. Persistence must key off what was explicitly sent, not off
+        whether it differs from the value already in effect."""
+        assert settings.evidence_bank_size == 200
+        response = api_client.put("/api/v1/settings", json={"evidence_bank_size": 200})
+        assert response.status_code == 200
+        content = settings.runtime_env_path.read_text(encoding="utf-8")
+        assert "OO_EVIDENCE_BANK_SIZE=200" in content
+
 
 class TestTuningOverHttp:
     """The operator's immediate need: change a detector threshold or a

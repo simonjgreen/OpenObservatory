@@ -846,10 +846,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except SettingValueError as exc:
             raise HTTPException(status_code=422, detail={"errors": exc.errors}) from exc
 
+        # Persist every field the operator explicitly sent, not only the ones
+        # that differ from the current value: an equality check here would
+        # silently drop a PUT that happens to pin today's default (nothing
+        # reaches runtime.env, and a later release changing that default
+        # would move the operator's "choice" out from under them without
+        # warning). `changed` still exists, and still gates the live-apply /
+        # restart-notification logic below -- re-running that machinery for
+        # a field whose value did not move would be pointless work, not a
+        # correctness fix -- but it must never gate what gets written to disk.
         changed = {
             name: value for name, value in updates.items() if getattr(settings, name) != value
         }
-        await asyncio.to_thread(env_store.apply, changed)
+        await asyncio.to_thread(env_store.apply, updates)
         for name, value in changed.items():
             setattr(settings, name, value)
 
