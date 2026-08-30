@@ -61,7 +61,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import display_channel as display_state
-from .. import firmware_store, plausibility
+from .. import evidence_suggestions, firmware_store, plausibility
 from .. import history as history_queries
 from .. import models as model_registry
 from .. import review as review_queries
@@ -1339,6 +1339,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # affordance, never a server mode, so this is always False here.
             "dry_run": False,
             "enabled": settings.retention_enabled,
+        }
+
+    @app.get(f"{API_PREFIX}/retention/suggestions")
+    def get_evidence_suggestions(session: Session = Depends(get_session)) -> dict[str, Any]:
+        """Species that quietly became worth adding to the common list (ADR-074).
+
+        Thin adapter: `evidence_suggestions.compute_suggestions` does the
+        query and the threshold arithmetic; this just shapes the result.
+        Nothing is written here -- adding a species or dismissing one both go
+        through `PUT /settings`, appending to `evidence_common_species` or
+        `evidence_suggestion_dismissed` respectively, so there is exactly one
+        write path for either list.
+        """
+        suggestions = evidence_suggestions.compute_suggestions(
+            session,
+            common_species=settings.evidence_common_species,
+            implausible_species=settings.evidence_implausible_species,
+            dismissed_species=settings.evidence_suggestion_dismissed,
+        )
+        return {
+            "suggestions": [
+                {
+                    "common_name": s.common_name,
+                    "detection_count": s.detection_count,
+                    "byte_total": s.byte_total,
+                    "window_days": s.window_days,
+                }
+                for s in suggestions
+            ]
         }
 
     @app.get(f"{API_PREFIX}/system")

@@ -795,6 +795,9 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
     _e("evidence_implausible_species", "retention", label="impossible species",
        help="Birds the range model says cannot occur here. Kept as a handful "
             "of examples to judge the misidentification, not archived."),
+    _e("evidence_suggestion_dismissed", "retention", label="never suggest again",
+       help="Species declined from the common-species suggestion prompt. "
+            "Remove one here to let the station suggest it again."),
     _e("evidence_implausible_cap", "retention", label="examples of an impossible species",
        minimum=0, maximum=1000),
     _e("evidence_bank_size", "retention", label="clips banked per species",

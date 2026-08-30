@@ -500,6 +500,15 @@ class Settings(BaseSettings):
         "Western Screech-Owl",
         "Black-crowned Night Heron",
     )
+    #: Species an operator has declined to add to `evidence_common_species`
+    #: (ADR-074, "Suggesting additions, without nagging"). A dismissal is
+    #: permanent until the operator edits this list themselves: "a prompt
+    #: that returns after being declined is a prompt that gets ignored along
+    #: with everything else on the page." Same `tuple[str, ...]` / `NoDecode`
+    #: shape as `evidence_common_species` on purpose -- it is the identical
+    #: kind of list, just the negative case. UI-editable so a species declined
+    #: in error can be un-dismissed without a config file edit.
+    evidence_suggestion_dismissed: Annotated[tuple[str, ...], NoDecode] = ()
     #: Examples kept of an implausible species, ever (ADR-074).
     evidence_implausible_cap: int = 3
     #: Clips a species may bank before falling back to the quota (ADR-074).
@@ -782,6 +791,7 @@ class Settings(BaseSettings):
         "pause_presets",
         "evidence_common_species",
         "evidence_implausible_species",
+        "evidence_suggestion_dismissed",
         mode="before",
     )
     @classmethod
