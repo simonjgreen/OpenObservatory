@@ -65,6 +65,47 @@ on and the ordinary age tiers apply to them again from that moment. Recordings
 already reclaimed do not come back, which is why this is a setting a person
 sets rather than a default nobody noticed.
 
+### The first implementation could not finish, and took the watermark with it
+
+Recorded because the failure was invisible to every test and only appeared
+against the station's real cardinalities.
+
+The tier's candidate query was copied from `_strip_native`, which orders by
+`media_asset.created_at`. That ordering cannot be served by any index reachable
+from this join, so SQLite materialised **every** acoustic-event detection's
+assets and sorted them before returning a row — and there are **761,589** such
+detections. The `LIMIT` never bit. Observed on the station:
+
+    retention.statement_interrupted  after_s=1.5003  batch_budget_s=1.5  tier=acoustic_event
+    tier_counts={'native': 18, 'unkept': 0}
+    tiers_skipped=['acoustic_event', 'watermark']
+
+Two failures, and the second is the serious one. The tier reclaimed nothing, so
+this ADR did nothing. And because `acoustic_event` precedes `watermark` in
+`_TIER_ORDER`, its abort marked the watermark skipped **every sweep** — the
+valve that stops a full disk stopping capture, disabled by a policy tier.
+
+The fix is one line of ordering. `ix_detection_group_start` is
+`(taxonomic_group, event_start_utc)`, so bounding and ordering on
+`event_start_utc` turns the equality and the range into a single seek and an
+ordered walk:
+
+| | plan |
+|---|---|
+| ordering by `media_asset.created_at` | three index seeks, then `USE TEMP B-TREE FOR ORDER BY` |
+| ordering by `detection.event_start_utc` | `SEARCH detection USING INDEX ix_detection_group_start (taxonomic_group=? AND event_start_utc<?)`, **no temp b-tree** |
+
+Measured after: **0.5223 s**, `interrupted_tier=None`, 196 assets reclaimed in
+one sweep, against 1.5003 s and zero before.
+
+The ordering now means "oldest event" rather than "oldest clip file". This tier
+has no age policy at all, so that changes nothing anyone can observe beyond
+which 200 go first.
+
+The regression test asserts on `EXPLAIN QUERY PLAN`, not on the outcome,
+because a test with a handful of seeded rows cannot feel a temp B-tree — which
+is exactly why the original passed.
+
 ### Rules that must not be broken
 
 1. **`kept_at` still outranks this.** An operator who explicitly kept an
