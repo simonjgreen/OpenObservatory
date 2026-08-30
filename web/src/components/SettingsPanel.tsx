@@ -37,6 +37,7 @@ import {
   type SettingsCategory,
   type SettingsField,
   type SettingsPayload,
+  type TaxaSuggestion,
   type Draft,
   SettingField,
   changedBody,
@@ -97,6 +98,7 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set())
   const [open, setOpen] = useState<string | null>(initialCategory ?? 'station')
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [taxaSuggestions, setTaxaSuggestions] = useState<TaxaSuggestion[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -127,6 +129,33 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
       })
       // Not available, or nothing to say: either way this must not nag, so
       // silently rendering no rows is the correct outcome, not an error.
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** Autocomplete data for every `csv` field's chip editor, fetched once and
+   *  shared -- there are three species-list fields on this page, and this
+   *  page would otherwise fire the same request three times. A failed fetch
+   *  (station reachable, endpoint erroring) leaves `taxaSuggestions` empty,
+   *  which degrades each field to a plain add-by-typing box rather than
+   *  breaking it. */
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/v1/taxa/activity?hours=168')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const body = (await response.json()) as {
+          entries: Array<{ taxonomic_group: string; common_name: string | null; detections: number }>
+        }
+        if (cancelled) return
+        setTaxaSuggestions(
+          body.entries
+            .filter((entry) => entry.taxonomic_group === 'bird' && entry.common_name != null)
+            .map((entry) => ({ common_name: entry.common_name as string, detections: entry.detections })),
+        )
+      })
       .catch(() => undefined)
     return () => {
       cancelled = true
@@ -261,6 +290,7 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
       value={draft[field.name]}
       error={errors[field.name]}
       acknowledged={acknowledged.has(field.name)}
+      taxaSuggestions={taxaSuggestions}
       onChange={(value) => setDraft((d) => ({ ...d, [field.name]: value }))}
       onAcknowledge={(on) =>
         setAcknowledged((current) => {

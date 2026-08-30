@@ -157,17 +157,28 @@ const suggestionsResponse = (suggestions: unknown[] = []) => ({
   json: async () => ({ suggestions }),
 })
 
-/** `SettingsPanel` fetches `/api/v1/retention/suggestions` on mount alongside
- *  `/api/v1/settings`. Every test below routes that request to a fixed,
- *  always-empty response so it never disturbs a sequence of `/settings`
- *  GET/PUT responses a test has queued up -- and `settingsCalls` strips it
- *  back out before a test indexes into `fetchMock.mock.calls`, so the rest of
- *  this file can keep asserting call order the way it already did. */
+const taxaActivityResponse = (entries: unknown[] = []) => ({
+  ok: true,
+  json: async () => ({ entries }),
+})
+
+const SIDE_ENDPOINTS = ['/retention/suggestions', '/taxa/activity']
+
+/** `SettingsPanel` fetches `/api/v1/retention/suggestions` and
+ *  `/api/v1/taxa/activity` on mount alongside `/api/v1/settings`. Every test
+ *  below routes those requests to a fixed, always-empty response so they
+ *  never disturb a sequence of `/settings` GET/PUT responses a test has
+ *  queued up -- and `settingsCalls` strips them back out before a test
+ *  indexes into `fetchMock.mock.calls`, so the rest of this file can keep
+ *  asserting call order the way it already did. */
 function stubSequenced(responses: unknown[]) {
   let next = 0
   const fetchMock = vi.fn((url: string) => {
     if (String(url).includes('/retention/suggestions')) {
       return Promise.resolve(suggestionsResponse())
+    }
+    if (String(url).includes('/taxa/activity')) {
+      return Promise.resolve(taxaActivityResponse())
     }
     const response = responses[Math.min(next, responses.length - 1)]
     next += 1
@@ -179,7 +190,7 @@ function stubSequenced(responses: unknown[]) {
 
 function settingsCalls(fetchMock: ReturnType<typeof vi.fn>) {
   return fetchMock.mock.calls.filter(
-    (call: any[]) => !String(call[0]).includes('/retention/suggestions'),
+    (call: any[]) => !SIDE_ENDPOINTS.some((endpoint) => String(call[0]).includes(endpoint)),
   )
 }
 
@@ -218,9 +229,9 @@ describe('SettingsPanel', () => {
     const fetchMock = stubSequenced([{ ok: true, json: async () => basePayload }])
     render(<SettingsPanel onClose={() => {}} />)
     await expand('Evidence clips')
-    fireEvent.change(screen.getByLabelText(/detectors that produce clips/), {
-      target: { value: 'birdnet-v2.4,activity-v1' },
-    })
+    const input = screen.getByLabelText(/detectors that produce clips/)
+    fireEvent.change(input, { target: { value: 'activity-v1' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
     expect(screen.getByText(/will fill any disk/)).toBeInTheDocument()
     fireEvent.click(screen.getByText(/^save/))
     await waitFor(() =>
@@ -233,7 +244,7 @@ describe('SettingsPanel', () => {
     fireEvent.click(screen.getByText(/^save/))
     await waitFor(() => expect(settingsCalls(fetchMock)).toHaveLength(2))
     expect(JSON.parse(settingsCalls(fetchMock)[1][1].body)).toEqual({
-      clip_plugins: 'birdnet-v2.4,activity-v1',
+      clip_plugins: 'birdnet-v2.4,ultrasonic-pass-v1,activity-v1',
     })
   })
 
@@ -343,6 +354,9 @@ describe('SettingsPanel evidence suggestions (ADR-074)', () => {
           ]),
         )
       }
+      if (url.includes('/taxa/activity')) {
+        return Promise.resolve({ ok: true, json: async () => ({ entries: [] }) })
+      }
       return Promise.resolve({ ok: true, json: async () => basePayload })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -371,6 +385,9 @@ describe('SettingsPanel evidence suggestions (ADR-074)', () => {
             },
           ]),
         )
+      }
+      if (url.includes('/taxa/activity')) {
+        return Promise.resolve({ ok: true, json: async () => ({ entries: [] }) })
       }
       return Promise.resolve({ ok: true, json: async () => basePayload })
     })
@@ -410,6 +427,9 @@ describe('SettingsPanel evidence suggestions (ADR-074)', () => {
           ]),
         )
       }
+      if (url.includes('/taxa/activity')) {
+        return Promise.resolve({ ok: true, json: async () => ({ entries: [] }) })
+      }
       return Promise.resolve({ ok: true, json: async () => basePayload })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -430,5 +450,131 @@ describe('SettingsPanel evidence suggestions (ADR-074)', () => {
     await waitFor(() =>
       expect(screen.queryByText(/European Greenfinch produced/)).not.toBeInTheDocument(),
     )
+  })
+})
+
+describe('SettingsPanel csv chip editor', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const stubWithTaxa = (entries: unknown[]) =>
+    vi.fn((url: string) => {
+      if (url.includes('/retention/suggestions')) return Promise.resolve(suggestionsResponse())
+      if (url.includes('/taxa/activity')) return Promise.resolve({ ok: true, json: async () => ({ entries }) })
+      return Promise.resolve({ ok: true, json: async () => basePayload })
+    })
+
+  it('renders each entry as a removable chip, in order, not a comma-joined string', async () => {
+    const fetchMock = stubWithTaxa([])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Evidence clips')
+
+    expect(screen.queryByText('birdnet-v2.4,ultrasonic-pass-v1')).not.toBeInTheDocument()
+    const chips = document.querySelectorAll('.csv-chip')
+    expect(Array.from(chips).map((chip) => chip.textContent?.replace('×', ''))).toEqual([
+      'birdnet-v2.4',
+      'ultrasonic-pass-v1',
+    ])
+    expect(screen.getByRole('button', { name: 'remove birdnet-v2.4' })).toBeInTheDocument()
+  })
+
+  it('removing a chip updates the field value, ready to save', async () => {
+    const fetchMock = stubWithTaxa([])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Evidence clips')
+
+    fireEvent.click(screen.getByRole('button', { name: 'remove ultrasonic-pass-v1' }))
+    // clip_plugins is a `danger` field -- the existing acknowledgement gate
+    // applies here exactly as it would to a hand-typed edit.
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText(/^save/))
+
+    await waitFor(() => expect(settingsCalls(fetchMock)).toHaveLength(2))
+    expect(JSON.parse(settingsCalls(fetchMock)[1][1].body)).toEqual({
+      clip_plugins: 'birdnet-v2.4',
+    })
+  })
+
+  it('adding a name on Enter appends it, trimmed', async () => {
+    const fetchMock = stubWithTaxa([])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Evidence clips')
+
+    const input = screen.getByLabelText(/detectors that produce clips/)
+    fireEvent.change(input, { target: { value: '  activity-v1  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByRole('button', { name: 'remove activity-v1' })).toBeInTheDocument()
+    expect((input as HTMLInputElement).value).toBe('')
+  })
+
+  it('rejects a duplicate, case-insensitively, and leaves the list unchanged', async () => {
+    const fetchMock = stubWithTaxa([])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Evidence clips')
+
+    const input = screen.getByLabelText(/detectors that produce clips/)
+    fireEvent.change(input, { target: { value: 'BIRDNET-V2.4' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(document.querySelectorAll('.csv-chip')).toHaveLength(2)
+    // Nothing changed, so there is nothing to save.
+    expect(screen.getByText(/^save$/)).toBeDisabled()
+  })
+
+  it('shows an empty list plainly instead of a bare box', async () => {
+    const fetchMock = stubWithTaxa([])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Retention')
+
+    expect(await screen.findByLabelText(/never suggest again/)).toBeInTheDocument()
+    expect(screen.getByText(/Empty — with nothing listed, this has no effect\./)).toBeInTheDocument()
+  })
+
+  it('offers suggestions from what the station has heard, excluding species already listed', async () => {
+    const fetchMock = stubWithTaxa([
+      { taxonomic_group: 'bird', common_name: 'Common Chaffinch', detections: 1204 },
+      { taxonomic_group: 'bird', common_name: 'Common Woodpigeon', detections: 40 },
+      { taxonomic_group: 'bat', common_name: 'Common Pipistrelle', detections: 12 },
+      { taxonomic_group: 'bird', common_name: null, detections: 3 },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Retention')
+
+    await screen.findByLabelText(/common species/)
+    const options = Array.from(document.querySelectorAll('#set-evidence_common_species-options option'))
+    // Chaffinch (bird, not yet listed) is offered; Woodpigeon is already on
+    // the list so it is not offered again; the bat and the null-named row
+    // are not species this field takes.
+    expect(options.map((option) => (option as HTMLOptionElement).value)).toEqual([
+      'Common Chaffinch',
+    ])
+    expect((options[0] as HTMLOptionElement).label).toBe('1,204 detections')
+  })
+
+  it('degrades to a plain add-by-typing box when the taxa endpoint errors', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/retention/suggestions')) return Promise.resolve(suggestionsResponse())
+      if (url.includes('/taxa/activity')) return Promise.resolve({ ok: false, status: 500 })
+      return Promise.resolve({ ok: true, json: async () => basePayload })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Evidence clips')
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const input = screen.getByLabelText(/detectors that produce clips/)
+    expect(document.querySelector('datalist')).toBeNull()
+
+    fireEvent.change(input, { target: { value: 'activity-v1' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByRole('button', { name: 'remove activity-v1' })).toBeInTheDocument()
   })
 })

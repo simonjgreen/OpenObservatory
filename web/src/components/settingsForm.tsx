@@ -14,7 +14,7 @@
  *  message is what the operator is shown when they disagree.
  */
 
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 export type Tier = 'live' | 'restart'
 export type FieldKind = 'bool' | 'int' | 'float' | 'enum' | 'csv' | 'text'
@@ -120,6 +120,25 @@ export function fieldLabel(field: SettingsField): string {
   return field.label ?? field.name.replace(/_/g, ' ')
 }
 
+/** One row this station has actually heard, offered as an autocomplete
+ *  suggestion for a `csv` field -- shape matches the bird-relevant part of
+ *  `GET /api/v1/taxa/activity`'s entries, trimmed to what the chip editor
+ *  needs. */
+export interface TaxaSuggestion {
+  common_name: string
+  detections: number
+}
+
+/** The list a `csv` field's wire string represents: trimmed, non-empty
+ *  entries, in the order the operator entered them. Used both to render the
+ *  chips and to rebuild the string after an add or a remove. */
+function splitCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
 interface FieldProps {
   field: SettingsField
   value: string | boolean
@@ -127,6 +146,104 @@ interface FieldProps {
   acknowledged: boolean
   onChange: (value: string | boolean) => void
   onAcknowledge: (value: boolean) => void
+  /** What this station has heard, for `csv` fields' autocomplete. Fetched
+   *  once by the page and shared across every `csv` field on it -- one
+   *  request, not one per field. Omitted (or empty) leaves the control a
+   *  plain add-by-typing box, which is also what a failed fetch degrades to. */
+  taxaSuggestions?: TaxaSuggestion[]
+}
+
+/** A `csv` field, rendered as removable chips plus an add box, instead of a
+ *  single text input holding an unreadable comma-joined string. The wire
+ *  value stays exactly that comma-joined string -- this only changes how an
+ *  operator edits it. Duplicates are rejected case-insensitively, matching
+ *  the backend's own `casefold` comparison. */
+function CsvListEditor({
+  field,
+  value,
+  onChange,
+  taxaSuggestions,
+}: {
+  field: SettingsField
+  value: string
+  onChange: (value: string) => void
+  taxaSuggestions?: TaxaSuggestion[]
+}) {
+  const [draftText, setDraftText] = useState('')
+  const items = splitCsv(value)
+  const listId = `set-${field.name}-options`
+
+  const add = (raw: string) => {
+    const name = raw.trim()
+    if (!name) return
+    if (items.some((existing) => existing.toLowerCase() === name.toLowerCase())) {
+      setDraftText('')
+      return
+    }
+    onChange([...items, name].join(','))
+    setDraftText('')
+  }
+
+  const remove = (name: string) => {
+    onChange(items.filter((existing) => existing !== name).join(','))
+  }
+
+  const suggestions = (taxaSuggestions ?? []).filter(
+    (suggestion) => !items.some((existing) => existing.toLowerCase() === suggestion.common_name.toLowerCase()),
+  )
+
+  return (
+    <div className="csv-list-editor">
+      {items.length === 0 ? (
+        <p className="settings-help csv-list-empty">
+          Empty — with nothing listed, this has no effect.
+        </p>
+      ) : (
+        <ul className="csv-chip-list">
+          {items.map((name) => (
+            <li className="csv-chip" key={name}>
+              <span>{name}</span>
+              <button type="button" aria-label={`remove ${name}`} onClick={() => remove(name)}>
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="csv-add">
+        <input
+          id={`set-${field.name}`}
+          type="text"
+          list={suggestions.length > 0 ? listId : undefined}
+          value={draftText}
+          placeholder="add a name…"
+          onChange={(event) => setDraftText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              add(draftText)
+            } else if (event.key === 'Backspace' && draftText === '' && items.length > 0) {
+              remove(items[items.length - 1])
+            }
+          }}
+        />
+        <button type="button" className="linklike" disabled={!draftText.trim()} onClick={() => add(draftText)}>
+          add
+        </button>
+        {suggestions.length > 0 && (
+          <datalist id={listId}>
+            {suggestions.map((suggestion) => (
+              <option
+                key={suggestion.common_name}
+                value={suggestion.common_name}
+                label={`${suggestion.detections.toLocaleString()} detections`}
+              />
+            ))}
+          </datalist>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function tierTag(field: SettingsField): ReactNode {
@@ -147,6 +264,7 @@ export function SettingField({
   acknowledged,
   onChange,
   onAcknowledge,
+  taxaSuggestions,
 }: FieldProps) {
   const label = fieldLabel(field)
   const changed = !field.secret && value !== currentValue(field)
@@ -160,6 +278,16 @@ export function SettingField({
           type="checkbox"
           checked={value}
           onChange={(event) => onChange(event.target.checked)}
+        />
+      )
+    }
+    if (field.kind === 'csv') {
+      return (
+        <CsvListEditor
+          field={field}
+          value={value as string}
+          onChange={onChange}
+          taxaSuggestions={taxaSuggestions}
         />
       )
     }
@@ -208,15 +336,27 @@ export function SettingField({
       <div className="settings-control">
         {control()}
         {!field.secret && field.default != null && field.default !== '' && (
-          <button
-            type="button"
-            className="linklike settings-reset"
-            title={`Shipped default: ${String(field.default)}`}
-            disabled={isAtDefault(field, value)}
-            onClick={() => onChange(defaultDraftValue(field))}
-          >
-            default: {String(field.default)}
-          </button>
+          field.kind === 'csv' ? (
+            <button
+              type="button"
+              className="linklike settings-reset"
+              title={`Shipped default: ${String(field.default)}`}
+              disabled={isAtDefault(field, value)}
+              onClick={() => onChange(defaultDraftValue(field))}
+            >
+              reset to shipped default
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="linklike settings-reset"
+              title={`Shipped default: ${String(field.default)}`}
+              disabled={isAtDefault(field, value)}
+              onClick={() => onChange(defaultDraftValue(field))}
+            >
+              default: {String(field.default)}
+            </button>
+          )
         )}
       </div>
       {field.help && <p className="settings-help">{field.help}</p>}

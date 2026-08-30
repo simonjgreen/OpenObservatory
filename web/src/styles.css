@@ -1281,6 +1281,26 @@ code {
 .settings-non-editable { font-size: 11px; color: var(--text-dim); }
 .settings-non-editable ul { margin: 6px 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
 
+/* A `csv` field (a species list, or the clip-plugin list): each entry a
+   removable chip in entry order, plus an add box -- not a single text input
+   holding an unreadable comma-joined string. */
+.csv-list-editor { display: flex; flex-direction: column; gap: 6px; max-width: 62ch; }
+.csv-list-empty { margin: 0; }
+.csv-chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.csv-chip {
+  display: flex; align-items: center; gap: 3px;
+  background: var(--line-strong); color: var(--text);
+  border-radius: 999px; padding: 2px 3px 2px 10px; font-size: 11.5px;
+}
+.csv-chip button {
+  background: none; border: none; color: var(--text-dim);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 3px 6px;
+  border-radius: 999px;
+}
+.csv-chip button:hover { color: var(--danger); background: rgba(248, 113, 113, 0.15); }
+.csv-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.csv-add input { max-width: 220px; }
+
 /* ADR-074: "suggesting additions, without nagging" -- a dismissible row per
    species, never an empty state. Bordered like `.settings-danger` because
    both are "the station noticed something, decide what to do about it". */
