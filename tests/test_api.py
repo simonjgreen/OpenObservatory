@@ -508,6 +508,26 @@ class TestStationEndpoints:
             assert asset["licence"]
             assert asset["source_url"].startswith("http")
 
+    def test_both_model_acquisition_routes_reach_the_endpoint(self, client) -> None:
+        """A pip-installed model has a licence too, and it has to surface here.
+
+        ADR-017 promises BatDetect2's CC-BY-NC-4.0 terms appear in
+        `/api/v1/models`; it arrives as `pip install batdetect2==1.3.1`, not as
+        a checksummed file, so it is tagged `kind: package` rather than given a
+        manifest row it could never honour.
+        """
+        payload = client.get("/api/v1/models").json()
+        by_kind: dict[str, list[dict]] = {}
+        for asset in payload["assets"]:
+            by_kind.setdefault(asset["kind"], []).append(asset)
+        assert set(by_kind) == {"file", "package"}
+        assert all("expected_sha256" in asset for asset in by_kind["file"])
+
+        batdetect2 = next(a for a in by_kind["package"] if a["name"] == "batdetect2")
+        assert batdetect2["licence"] == "CC-BY-NC-4.0"
+        assert batdetect2["install_command"] == "pip install batdetect2==1.3.1"
+        assert "expected_sha256" not in batdetect2
+
     def test_system_report(self, client) -> None:
         payload = client.get("/api/v1/system").json()
         assert "host" in payload
@@ -1483,6 +1503,111 @@ class TestRetentionStatus:
         assert any("not on disk" in note for note in payload["notes"])
         assert not any("not on disk" in problem for problem in payload["problems"])
         assert all("missing" not in problem for problem in payload["problems"])
+
+
+class TestEvidenceSuggestions:
+    """`GET /api/v1/retention/suggestions` (ADR-074).
+
+    A thin route over `evidence_suggestions.compute_suggestions` -- the
+    threshold logic itself is exercised directly against a session in
+    `tests/test_evidence_suggestions.py`. These tests pin the HTTP shape and
+    that the route reads live settings (common/implausible/dismissed) rather
+    than a stale copy.
+    """
+
+    @staticmethod
+    def _seed_greenfinch(settings, *, count: int, byte_length: int) -> None:
+        import uuid as _uuid
+        from datetime import UTC, datetime, timedelta
+
+        from open_observatory.db import models as orm
+        from open_observatory.db.session import session_scope
+
+        event_start = datetime.now(UTC) - timedelta(days=1)
+        with session_scope() as session:
+            station = session.query(orm.Station).first()
+            detector = session.query(orm.Detector).first()
+            for _ in range(count):
+                detection_id = _uuid.uuid4()
+                session.add(
+                    orm.Detection(
+                        id=detection_id,
+                        station_id=station.id,
+                        detector_id=detector.id,
+                        stream_id=_uuid.uuid4(),
+                        window_id=_uuid.uuid4(),
+                        event_start_utc=event_start,
+                        event_end_utc=event_start + timedelta(seconds=3),
+                        source_start_frame=0,
+                        source_end_frame=1,
+                        detector_label="European Greenfinch",
+                        common_name="European Greenfinch",
+                        scientific_name="Chloris chloris",
+                        taxonomic_group="bird",
+                        score=0.8,
+                    )
+                )
+                asset_id = _uuid.uuid4()
+                session.add(
+                    orm.MediaAsset(
+                        id=asset_id,
+                        kind="evidence_native",
+                        storage_uri=f"/tmp/{detection_id}.wav",
+                        mime_type="audio/wav",
+                        byte_length=byte_length,
+                        sha256="0" * 64,
+                        created_at=event_start,
+                    )
+                )
+                session.add(
+                    orm.DetectionMedia(
+                        detection_id=detection_id, media_asset_id=asset_id, role="evidence"
+                    )
+                )
+
+    def test_no_suggestions_is_an_empty_list_not_an_error(self, client) -> None:
+        payload = client.get("/api/v1/retention/suggestions").json()
+        assert payload == {"suggestions": []}
+
+    def test_a_qualifying_burst_is_suggested_with_the_adr_shape(self, client) -> None:
+        from open_observatory.evidence_suggestions import MIN_DETECTIONS
+
+        count = MIN_DETECTIONS + 704
+        self._seed_greenfinch(client.app.state.settings, count=count, byte_length=2_000)
+
+        payload = client.get("/api/v1/retention/suggestions").json()
+        assert len(payload["suggestions"]) == 1
+        suggestion = payload["suggestions"][0]
+        assert suggestion["common_name"] == "European Greenfinch"
+        assert suggestion["detection_count"] == count
+        assert suggestion["byte_total"] == count * 2_000
+        assert suggestion["window_days"] == 30
+
+    def test_a_species_already_on_the_common_list_is_not_suggested(self, client) -> None:
+        from open_observatory.evidence_suggestions import MIN_DETECTIONS
+
+        self._seed_greenfinch(
+            client.app.state.settings, count=MIN_DETECTIONS + 704, byte_length=2_000
+        )
+        client.app.state.settings.evidence_common_species = ("European Greenfinch",)
+        try:
+            payload = client.get("/api/v1/retention/suggestions").json()
+        finally:
+            client.app.state.settings.evidence_common_species = ()
+        assert payload["suggestions"] == []
+
+    def test_a_dismissed_species_is_not_suggested(self, client) -> None:
+        from open_observatory.evidence_suggestions import MIN_DETECTIONS
+
+        self._seed_greenfinch(
+            client.app.state.settings, count=MIN_DETECTIONS + 704, byte_length=2_000
+        )
+        client.app.state.settings.evidence_suggestion_dismissed = ("European Greenfinch",)
+        try:
+            payload = client.get("/api/v1/retention/suggestions").json()
+        finally:
+            client.app.state.settings.evidence_suggestion_dismissed = ()
+        assert payload["suggestions"] == []
 
 
 class TestOperatorPause:
