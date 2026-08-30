@@ -1442,13 +1442,32 @@ class RetentionSweeper:
         """ADR-077: an acoustic event keeps no clip, at any age.
 
         Deliberately no age predicate -- that is the entire point of this
-        tier, unlike `_strip_native`/`_strip_unkept` above. But the upper
-        bound on `created_at` stays, for the same reason `_watermark_pass`
-        keeps one on an otherwise ageless scan: without a range predicate the
-        planner has no reason to enter `ix_media_asset_live_created` and
-        instead scans `detection_media` whole and sorts the result -- 1.8048 s
-        against 0.0032 s with the bound in place (ADR-062). "Now" excludes
-        nothing real, since nothing here is stamped in the future.
+        tier, unlike `_strip_native`/`_strip_unkept` above. But the query
+        still needs a bound, and which column it goes on matters: the range
+        predicate has to land on a column an index reachable from this join
+        actually orders by, or `LIMIT` cannot stop the scan early.
+
+        `ix_detection_group_start` is `(taxonomic_group, event_start_utc)`.
+        Bounding and ordering on `detection.event_start_utc` turns the
+        equality plus the range into one seek and an already-ordered walk --
+        `EXPLAIN QUERY PLAN` shows no `USE TEMP B-TREE FOR ORDER BY`, and the
+        `LIMIT` bites on the first `budget` rows. Bounding and ordering on
+        `media_asset.created_at` instead -- as `_strip_native`/`_strip_unkept`
+        correctly do, and as this tier used to -- is not servable by any
+        index reachable from this join order, so SQLite must materialise and
+        sort *every* acoustic-event detection's assets before returning a
+        single row. Measured against the production schema: 761,589
+        acoustic-event detections, sweep aborts on `after_s=1.5003` against
+        `batch_budget_s=1.5` every time, reclaiming nothing -- and because
+        this tier precedes `watermark` in `_TIER_ORDER`, the abort marks
+        `watermark` skipped too, taking the disk-safety valve down with it.
+
+        Ordering by event start instead of clip creation time changes which
+        200 rows go first ("oldest event" vs. "oldest clip file"), not
+        whether any given row is eventually reclaimed -- there is no age
+        policy on this tier for that ordering to interact with, so this is
+        not an observable behavioural change beyond selection order within a
+        batch.
 
         `kept_at IS NULL` and `held_ids` are exactly `_strip_native`'s two
         exemptions, in the same order they matter: an operator's explicit
@@ -1461,16 +1480,16 @@ class RetentionSweeper:
         """
         query = (
             select(orm.MediaAsset, orm.Detection.id)
-            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
-            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
-            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
+            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
             .where(orm.Detection.taxonomic_group == _ACOUSTIC_EVENT_GROUP)
-            .where(orm.MediaAsset.created_at <= now)
+            .where(orm.Detection.event_start_utc <= now)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
             .where(orm.Detection.kept_at.is_(None))
         )
         if held_ids:
             query = query.where(orm.Detection.id.notin_(held_ids))
-        query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
+        query = query.order_by(orm.Detection.event_start_utc.asc()).limit(budget)
         return self._run_tier(
             session,
             report,

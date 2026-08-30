@@ -2174,6 +2174,65 @@ class TestCandidateQueryPlans:
         assert not any("TEMP B-TREE" in step for step in plan), plan
         assert any("ix_detection_media_asset" in step for step in plan), plan
 
+    def test_acoustic_event_tier_orders_by_event_start_not_asset_created(
+        self, db, station_and_detector, tmp_path
+    ):
+        """The fourth index incident, and the one that mattered most.
+
+        `_strip_acoustic_events` used to bound and order by
+        `media_asset.created_at`, copied from `_strip_native`/`_strip_unkept`
+        without noticing those two tiers reach `media_asset.created_at`
+        through a join order `ix_media_asset_live_created` can serve, while
+        this tier's join is anchored on `detection.taxonomic_group` and has
+        no such index for `created_at`. The result was invisible to every
+        seeded-row test in `TestAcousticEventTier`, because with a handful of
+        rows a temp B-tree sort costs nothing -- exactly the blind spot this
+        class exists to close. On the station's 761,589 acoustic-event
+        detections it meant `EXPLAIN QUERY PLAN` showing `USE TEMP B-TREE FOR
+        ORDER BY`, which forces SQLite to materialise and sort every one of
+        them before `LIMIT` can bite, which blew the whole 1.5 s statement
+        budget every sweep and reclaimed nothing (`after_s=1.5003`). Because
+        `acoustic_event` precedes `watermark` in `_TIER_ORDER`, that abort
+        also marked `watermark` skipped -- the disk-safety valve went down
+        with a tier that was never actually deleting anything. Ordering by
+        `detection.event_start_utc` instead is served by
+        `ix_detection_group_start` (`taxonomic_group, event_start_utc`): the
+        equality and the range become one seek and an ordered walk, with no
+        sort at all. A wall-clock or outcome-based assertion ("some clips
+        were reclaimed") would pass on this file's small fixtures exactly as
+        it did before the regression was found -- only the plan itself
+        proves the fix, so the plan is what is asserted.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=tmp_path / "clips",
+                age_days=1,
+                taxonomic_group="acoustic_event",
+                common_name=None,
+            )
+        query = (
+            sa.select(orm.MediaAsset, orm.Detection.id)
+            .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
+            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
+            .where(orm.Detection.taxonomic_group == retention_module._ACOUSTIC_EVENT_GROUP)
+            .where(orm.Detection.event_start_utc <= FIXED_NOW)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.Detection.kept_at.is_(None))
+            .order_by(orm.Detection.event_start_utc.asc())
+            .limit(200)
+        )
+        with session_scope() as session:
+            plan = self._plan(session, query)
+        assert any(
+            "ix_detection_group_start" in step and "event_start_utc" in step
+            for step in plan
+        ), plan
+        assert not any("TEMP B-TREE" in step for step in plan), plan
+
     def test_an_empty_bank_still_returns_the_predicate(self, db) -> None:
         """ADR-076: unlike ADR-074's set-based exclusion, `exclusion()` is
         never `None` -- it is always `banked_at IS NULL`, whether or not
