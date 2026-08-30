@@ -242,6 +242,25 @@ SQLite's write lock for ~9 s against a 5 s `busy_timeout` on a station that
 *drops* detections rather than retrying them: the safety step ADR-074 rule 3
 mandates was itself unsafe. Both fixed.
 
+### One pacing trade, recorded rather than left implicit
+
+The watermark tier now runs **before** the sweep's preamble, and on one narrow
+path — an interrupted evidence-bank read, reachable only when
+`evidence_value_enabled` is on — it is granted a **fresh, bounded** deadline of
+one extra `batch_budget_s`. So that sweep can occupy about **twice** the pacing
+bound, 3.0 s at the default, of GIL-holding ORM work.
+
+That exceeds what ADR-033 was written to enforce, and it is deliberate. It is
+ADR-064's own trade taken to its conclusion: *"a safety valve downstream of the
+thing it protects against is not a safety valve."* A sweep that overruns its
+pacing budget costs a few late reads; a watermark tier that never runs costs a
+full disk, and a full disk stops capture altogether. The overrun is bounded (one
+extra budget, no loop, no reset), applies to no healthy sweep, and cannot occur
+at all while the flag ships `False`.
+
+Recorded here because it was found in review and would otherwise be an
+undocumented violation of ADR-033 sitting in the hot path.
+
 ### Still outstanding
 
 - **The backfill dry-run has not been run on the station.** ADR-074 rule 3
