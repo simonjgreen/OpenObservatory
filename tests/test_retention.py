@@ -355,6 +355,9 @@ def _sweeper(settings, **overrides) -> RetentionSweeper:
         evidence_sample_permille=settings.evidence_sample_permille,
         evidence_implausible_species=settings.evidence_implausible_species,
         evidence_implausible_cap=settings.evidence_implausible_cap,
+        # ADR-077: same reasoning as the ADR-074 settings above -- built off
+        # the same `Settings` object as the running station, shipping off.
+        retain_acoustic_event_clips=settings.retain_acoustic_event_clips,
     )
     kwargs.update(overrides)
     return RetentionSweeper(**kwargs)
@@ -798,6 +801,129 @@ class TestKeptFlag:
         _sweeper(db, watermark_ratio=0.85).sweep()
         with session_scope() as session:
             assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+
+
+class TestAcousticEventTier:
+    """ADR-077: an acoustic event (Engine, Dog, Power tools, Siren, Human
+    vocal -- `taxonomic_group == "acoustic_event"`) keeps no clip, at any
+    age, while `retain_acoustic_event_clips` is off (the default)."""
+
+    def test_reclaims_a_fresh_acoustic_event_regardless_of_age(
+        self, db, station_and_detector
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=0.01,
+                taxonomic_group="acoustic_event",
+                common_name="Siren",
+                kinds=("evidence_native", "playback"),
+            )
+        report = _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None
+            assert _asset(session, assets["playback"]).reclaimed_at is not None
+            # The detection row -- the log entry -- survives.
+            assert session.get(orm.Detection, detection_id) is not None
+        assert report.tier_counts.get("acoustic_event", 0) == 2
+
+    def test_a_kept_acoustic_event_survives(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                taxonomic_group="acoustic_event",
+                common_name="Siren",
+                kept=True,
+                kinds=("evidence_native",),
+            )
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None, (
+                "a kept siren recording was deleted"
+            )
+
+    def test_a_held_acoustic_event_survives(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                taxonomic_group="acoustic_event",
+                common_name="Engine",
+                held=True,
+                kinds=("evidence_native",),
+            )
+        _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+
+    def test_does_not_touch_a_bird(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=0.01,
+                taxonomic_group="bird",
+                common_name="European Robin",
+                kinds=("evidence_native",),
+            )
+        report = _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+        assert report.tier_counts.get("acoustic_event", 0) == 0
+
+    def test_does_not_touch_a_bat(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=0.01,
+                taxonomic_group="bat",
+                common_name=None,
+                kinds=("evidence_native",),
+            )
+        report = _sweeper(db).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+        assert report.tier_counts.get("acoustic_event", 0) == 0
+
+    def test_setting_off_stops_the_tier_entirely(self, db, station_and_detector) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            detection_id, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                taxonomic_group="acoustic_event",
+                common_name="Dog",
+                kinds=("evidence_native",),
+            )
+        report = _sweeper(db, retain_acoustic_event_clips=True).sweep()
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is None
+            assert session.get(orm.Detection, detection_id) is not None
+        assert report.tier_counts.get("acoustic_event", 0) == 0
+        assert "acoustic_event" in report.tiers_skipped
 
 
 def _seed_pre_migration_detection(
@@ -1406,7 +1532,7 @@ class TestReportInvariants:
     @given(
         tiers_and_bytes=st.lists(
             st.tuples(
-                st.sampled_from(["native", "unkept", "watermark"]),
+                st.sampled_from(["native", "unkept", "acoustic_event", "watermark"]),
                 st.integers(min_value=0, max_value=10_000_000),
                 st.booleans(),  # existed_on_disk
             ),
@@ -1469,7 +1595,7 @@ class TestPreambleVisibility:
         monkeypatch.setattr(sweeper, "batch_budget_s", 0.0)
         report = sweeper.sweep()
         assert report.complete is False
-        assert report.tiers_skipped == ["native", "unkept", "watermark"]
+        assert report.tiers_skipped == ["native", "unkept", "acoustic_event", "watermark"]
         assert report.preamble_s >= 0.0
 
     def test_a_healthy_sweep_with_nothing_to_delete_skips_no_tier(
@@ -1495,7 +1621,7 @@ class TestPreambleVisibility:
     ) -> None:
         """Running out of batch mid-sweep is normal and self-correcting: it
         skips only whichever tiers come after the one that used up the
-        budget, never all three."""
+        budget, never all four."""
         station_id, detector_id = station_and_detector
         with session_scope() as session:
             for index in range(5):
@@ -1511,7 +1637,7 @@ class TestPreambleVisibility:
         report = _sweeper(db, batch_size=2, batch_budget_s=30.0).sweep()
         assert report.complete is False
         assert report.tiers_skipped != []
-        assert len(report.tiers_skipped) < 3
+        assert len(report.tiers_skipped) < 4
 
 
 class TestStatementTimeout:

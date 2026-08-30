@@ -101,10 +101,19 @@ log = structlog.get_logger(__name__)
 #: derivative and is what the 7-30 day tier is trying to keep.
 NATIVE_KINDS = frozenset({"evidence_native"})
 
-#: Order the four tiers run in `sweep()`, used to expand "interrupted here"
-#: into "skipped from here on", the same shape a batch/deadline backlog
-#: drain already produces (see `RetentionReport.tiers_skipped`).
-_TIER_ORDER = ("native", "unkept", "watermark")
+#: Order the tiers run in `sweep()`, used to expand "interrupted here" into
+#: "skipped from here on", the same shape a batch/deadline backlog drain
+#: already produces (see `RetentionReport.tiers_skipped`). "acoustic_event"
+#: (ADR-077) sits after the two age tiers and before the watermark: it is a
+#: policy tier, not an emergency one -- like "native"/"unkept" it can simply
+#: wait for the next sweep if the batch runs out -- so it belongs with the
+#: other policy tiers, not hoisted ahead of them the way the watermark is
+#: when disk is already over the line. It runs after "unkept" rather than
+#: before it because it has no age predicate at all: an unkept acoustic event
+#: a day old is exactly as reclaimable as one a year old, which makes it the
+#: most aggressive of the three age-independent-of-emergency tiers, and the
+#: existing two already run oldest-tier-boundary-first.
+_TIER_ORDER = ("native", "unkept", "acoustic_event", "watermark")
 
 #: SQLite VM instructions between `sqlite3.Connection.set_progress_handler`
 #: callbacks (ADR-061's statement-timeout addendum). Chosen small enough to
@@ -140,6 +149,16 @@ _BAT_GROUP = "bat"
 #: existing tiers`. Spelled out here rather than imported for the same
 #: reason as `_BAT_GROUP` above.
 _BIRD_GROUP = "bird"
+
+#: ``detection.taxonomic_group`` for a non-taxon label (``Engine``, ``Dog``,
+#: ``Power tools``, ``Siren``, ``Human vocal`` -- ``detectors/birdnet.py``).
+#: ADR-077: this station is a wildlife monitor, and keeping the *recording* of
+#: a car or a person talking near the microphone was never argued for; it was
+#: inherited. `_strip_acoustic_events`, below, reclaims this group's media
+#: regardless of age while `retain_acoustic_event_clips` is off. Spelled out
+#: here rather than imported, for the same reason as `_BAT_GROUP`/
+#: `_BIRD_GROUP` above.
+_ACOUSTIC_EVENT_GROUP = "acoustic_event"
 
 #: Trailing window over which a bat band's share of passes is measured
 #: (ADR-074: "a band holding < 1% of the trailing-90-day passes is sparse").
@@ -334,7 +353,8 @@ class RetentionReport:
     #: or on a sweep whose first pass alone freed enough.
     watermark_took_banked: int = 0
     already_missing: int = 0
-    #: Per-tier counts/bytes: keys are "native", "unkept", "watermark".
+    #: Per-tier counts/bytes: keys are "native", "unkept", "acoustic_event",
+    #: "watermark".
     tier_counts: dict[str, int] = field(default_factory=dict)
     tier_bytes: dict[str, int] = field(default_factory=dict)
     #: Per-`evidence_value.Verdict` counts/bytes (ADR-074, Task 6): what each
@@ -469,6 +489,7 @@ class RetentionSweeper:
         evidence_implausible_species: Sequence[str] = (),
         evidence_implausible_cap: int = 3,
         promotion_lookback: timedelta = _PROMOTION_LOOKBACK,
+        retain_acoustic_event_clips: bool = False,
     ) -> None:
         self.clip_dir = Path(clip_dir)
         self._session_factory = session_factory
@@ -478,6 +499,12 @@ class RetentionSweeper:
         self.batch_size = batch_size
         self.batch_budget_s = batch_budget_s
         self._clock = clock or (lambda: datetime.now(UTC))
+        #: ADR-077. A plain attribute, exactly like `native_days` above: this
+        #: is how a live-tier setting reaches this object -- `tuning.py` maps
+        #: it here and `Station.apply_tuning` assigns it. Ships `False`: an
+        #: acoustic event keeps no clip by default, and this is the one
+        #: checkbox that changes that.
+        self.retain_acoustic_event_clips = retain_acoustic_event_clips
 
         # -- value-based retention (ADR-074) --------------------------------
         #: All four are plain attributes because that is how a live-tier
@@ -925,6 +952,29 @@ class RetentionSweeper:
                     )
                 else:
                     report.tiers_skipped.append("unkept")
+                current_tier = "acoustic_event"
+                # ADR-077: gated on `not preamble_aborted` for the same
+                # reason as the two age tiers above -- `held_ids` cannot be
+                # trusted on a preamble abort, and running this tier with a
+                # missing hold set would delete evidence a human explicitly
+                # asked to keep looking at.
+                if (
+                    not preamble_aborted
+                    and not self.retain_acoustic_event_clips
+                    and budget > 0
+                    and time.monotonic() < deadline
+                ):
+                    budget = self._strip_acoustic_events(
+                        session,
+                        report,
+                        now=now,
+                        deadline=deadline,
+                        budget=budget,
+                        dry_run=dry_run,
+                        held_ids=held_ids,
+                    )
+                else:
+                    report.tiers_skipped.append("acoustic_event")
                 current_tier = "watermark"
                 if watermark_ran:
                     pass
@@ -1376,6 +1426,60 @@ class RetentionSweeper:
             budget=budget,
             dry_run=dry_run,
             bank=bank,
+        )
+
+    def _strip_acoustic_events(
+        self,
+        session: Session,
+        report: RetentionReport,
+        *,
+        now: datetime,
+        deadline: float,
+        budget: int,
+        dry_run: bool,
+        held_ids: set[uuid.UUID] | None = None,
+    ) -> int:
+        """ADR-077: an acoustic event keeps no clip, at any age.
+
+        Deliberately no age predicate -- that is the entire point of this
+        tier, unlike `_strip_native`/`_strip_unkept` above. But the upper
+        bound on `created_at` stays, for the same reason `_watermark_pass`
+        keeps one on an otherwise ageless scan: without a range predicate the
+        planner has no reason to enter `ix_media_asset_live_created` and
+        instead scans `detection_media` whole and sorts the result -- 1.8048 s
+        against 0.0032 s with the bound in place (ADR-062). "Now" excludes
+        nothing real, since nothing here is stamped in the future.
+
+        `kept_at IS NULL` and `held_ids` are exactly `_strip_native`'s two
+        exemptions, in the same order they matter: an operator's explicit
+        keep (ADR-061) outranks every tier, including this one, and an
+        ADR-043 human hold is why this method is never called at all when
+        `held_ids` could not be trusted this sweep (`preamble_aborted`,
+        checked at the call site) -- a falsy `held_ids` would otherwise
+        silently disable that protection, exactly as it would for the two
+        age tiers.
+        """
+        query = (
+            select(orm.MediaAsset, orm.Detection.id)
+            .join(orm.DetectionMedia, orm.DetectionMedia.media_asset_id == orm.MediaAsset.id)
+            .join(orm.Detection, orm.Detection.id == orm.DetectionMedia.detection_id)
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .where(orm.Detection.taxonomic_group == _ACOUSTIC_EVENT_GROUP)
+            .where(orm.MediaAsset.created_at <= now)
+            .where(orm.Detection.kept_at.is_(None))
+        )
+        if held_ids:
+            query = query.where(orm.Detection.id.notin_(held_ids))
+        query = query.order_by(orm.MediaAsset.created_at.asc()).limit(budget)
+        return self._run_tier(
+            session,
+            report,
+            tier="acoustic_event",
+            query=query,
+            reason="acoustic event: no recording retained by policy (ADR-077)",
+            deadline=deadline,
+            budget=budget,
+            dry_run=dry_run,
         )
 
     # -- what has been banked (ADR-076) -------------------------------------
@@ -2410,6 +2514,8 @@ class RetentionSweeper:
             "native_days": self.native_days,
             "audible_only_days": self.audible_only_days,
             "watermark_ratio": self.watermark_ratio,
+            # ADR-077: whether the acoustic-event tier is currently running.
+            "retain_acoustic_event_clips": self.retain_acoustic_event_clips,
             "batch_size": self.batch_size,
             "batch_budget_s": self.batch_budget_s,
             "last_sweep_at": self.last_sweep_at.isoformat() if self.last_sweep_at else None,

@@ -112,6 +112,10 @@ LIVE_TARGETS: dict[str, LiveTarget] = {
     "retention_watermark_ratio": LiveTarget("retention", "watermark_ratio"),
     "retention_batch_size": LiveTarget("retention", "batch_size"),
     "retention_batch_budget_s": LiveTarget("retention", "batch_budget_s"),
+    # ADR-077: a plain attribute, pushed the same way as `native_days` above --
+    # without this entry the settings page would report the checkbox "live"
+    # while an edit did nothing until a restart.
+    "retain_acoustic_event_clips": LiveTarget("retention", "retain_acoustic_event_clips"),
     # -- evidence kept by value (ADR-074) ------------------------------------
     # The sweeper holds these the same way it holds `native_days`: copied in at
     # construction, so an edit reaches it only by being pushed here. Without

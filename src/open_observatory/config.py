@@ -413,6 +413,24 @@ class Settings(BaseSettings):
     #: any plausible fill rate -- so the sweep is paced instead.
     retention_interval_s: float = 300.0
 
+    #: ADR-077. A detection whose `taxonomic_group` is `acoustic_event`
+    #: (Engine, Dog, Power tools, Siren, Human vocal -- see
+    #: `detectors/birdnet.py`) keeps no clip: its media is reclaimed on sight,
+    #: regardless of age, by every sweep while this is `False`. The detection
+    #: row itself is never touched -- only `retention.py`'s age/watermark
+    #: tiers ever delete media, and this is one more of them, not a second
+    #: deletion path. Measured on the station 2026-08-30: 7,790 such
+    #: detections held 9,356 live assets and 12.07 GB, none of it wildlife
+    #: evidence (ADR-049: an acoustic event is a correct detection of
+    #: something that is not a taxon, but its *recording* was never argued
+    #: for -- see ADR-077). Turning this on stops that reclaim from this
+    #: point forward; it does not restore anything the sweep already
+    #: unlinked, which is why this is a setting an operator sets deliberately
+    #: rather than a default nobody noticed. Live and UI-editable
+    #: (`site_settings.py`) on purpose: whether to keep audio of a siren is a
+    #: policy an operator sets, not a decision to bury in code.
+    retain_acoustic_event_clips: bool = False
+
     #: ADR-074. Value-based evidence retention. **Off by default**: this policy
     #: deletes clips, it has never run against real data, and its first run must
     #: be a dry-run a human reads.

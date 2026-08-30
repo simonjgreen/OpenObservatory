@@ -773,6 +773,19 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
        minimum=10, maximum=86400,
        help="Rounded up to the nearest 10 s housekeeping tick. Sweeping every "
             "tick measured 1.6 false capture-gap records a minute."),
+    _e("retain_acoustic_event_clips", "retention", label="keep acoustic-event recordings",
+       help="Off by default (ADR-077). An acoustic event (Engine, Dog, Power "
+            "tools, Siren, Human vocal) keeps no recording -- its media is "
+            "reclaimed on sight, at any age, while this stays off; the "
+            "detection log entry itself is never deleted. Turning this on "
+            "only stops future reclaims: recordings the sweep already "
+            "unlinked do not come back.",
+       danger="Leaving this off deletes acoustic-event audio irreversibly, "
+            "including any recording of a human voice the detector labelled "
+            "'Human vocal'. Turning it on resumes archiving that audio under "
+            "the ordinary age tiers below.",
+       note="Measured on the station 2026-08-30: 12.07 GB across 9,356 live "
+            "assets, none of it wildlife evidence."),
     _e("evidence_value_enabled", "retention", label="value-based retention",
        help="Keep clips by how interesting they are, not only by age (ADR-074). "
             "Off until a dry-run has been read."),
