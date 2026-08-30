@@ -437,9 +437,16 @@ class Settings(BaseSettings):
     evidence_value_enabled: bool = False
     #: Species whose clips go straight to the daily quota, skipping the bank.
     #: An operator list, not a computed threshold -- which birds are boring is a
-    #: matter of taste and place. Pre-populated with the six species that are
-    #: 86% of this station's bird evidence; a purely volumetric rule would also
-    #: have swept up Spotted Flycatcher, which is declining.
+    #: matter of taste and place. Pre-populated with the original six species
+    #: that are 86% of this station's bird evidence, plus the high-volume
+    #: garden birds that reached the 200-clip bank cap in the station's first
+    #: live `oo clips bank-backfill --dry-run` (measured 2026-08-30).
+    #: Deliberately **not** extended with Tawny Owl or Spotted Flycatcher, both
+    #: of which also reached volume in that dry run: the owl is exactly the
+    #: kind of recording an operator wants kept, and the flycatcher is a
+    #: declining species (ADR-074's own reason this is a list a person edits
+    #: rather than a threshold a machine picks -- a purely volumetric rule
+    #: would have swept up both).
     evidence_common_species: Annotated[tuple[str, ...], NoDecode] = (
         "Common Woodpigeon",
         "European Robin",
@@ -447,6 +454,17 @@ class Settings(BaseSettings):
         "Eurasian Blue Tit",
         "Rook",
         "Collared Dove",
+        "Barn Swallow",
+        "Canada Goose",
+        "Carrion Crow",
+        "Common Chaffinch",
+        "Common Magpie",
+        "Common Pheasant",
+        "Dunnock",
+        "Eurasian Blackbird",
+        "Rock Dove",
+        "Stock Dove",
+        "Western House Martin",
     )
     #: Species the range model says cannot occur here (ADR-049 bands, ADR-076).
     #: They are banked to `evidence_implausible_cap` examples rather than
@@ -460,14 +478,27 @@ class Settings(BaseSettings):
     #: person edits, not a threshold a machine picks -- applies word for word
     #: to which birds are impossible here.
     #:
-    #: Pre-populated with the five this station has actually recorded, one
-    #: detection each, none of which can occur in a Surrey garden.
+    #: Pre-populated with the original five this station had recorded, one
+    #: detection each, none of which can occur in a Surrey garden, plus the
+    #: further range-implausible species the station's first live
+    #: `oo clips bank-backfill --dry-run` (measured 2026-08-30) showed being
+    #: archived.
     evidence_implausible_species: Annotated[tuple[str, ...], NoDecode] = (
         "Chestnut-backed Chickadee",
         "California Quail",
         "Asian Brown Flycatcher",
         "Eastern Screech-Owl",
         "Grey-winged Inca-Finch",
+        "Barred Owl",
+        "Bay-breasted Warbler",
+        "Bohemian Waxwing",
+        "Buff-bellied Pipit",
+        "Dusky Flycatcher",
+        "Painted Redstart",
+        "Northern Rough-winged Swallow",
+        "White-crowned Sparrow",
+        "Western Screech-Owl",
+        "Black-crowned Night Heron",
     )
     #: Examples kept of an implausible species, ever (ADR-074).
     evidence_implausible_cap: int = 3
