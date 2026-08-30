@@ -983,6 +983,63 @@ code {
   font-size: var(--text-xs);
 }
 
+/* ---------- models & licences (ADR-006) ----------
+ * Built from the token layer above, per ADR-027: no one-off pixel value and
+ * no literal colour — tone comes from --ok/--warn/--danger/--text-faint,
+ * which are the same three tones the operator cards already use. */
+
+.models {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.model-asset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.model-asset-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.model-asset-name {
+  font-size: var(--text-base);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.model-asset-version { font-size: var(--text-xs); }
+.model-asset-state {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.model-asset-state.tone-ok { color: var(--ok); }
+.model-asset-state.tone-warn { color: var(--warn); }
+.model-asset-state.tone-danger { color: var(--danger); }
+.model-asset-state.tone-dim { color: var(--text-faint); }
+.model-asset-line {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--line-height-base);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.model-asset-line code { font-size: var(--text-xs); color: var(--text); }
+.model-asset-licence { color: var(--text); font-weight: 650; }
+.models-note { margin: 0; padding: 0 var(--space-3) var(--space-3); }
+
 /* ==========================================================================
    Responsive (ADR-054)
    --------------------------------------------------------------------------
@@ -1223,6 +1280,17 @@ code {
 }
 .settings-non-editable { font-size: 11px; color: var(--text-dim); }
 .settings-non-editable ul { margin: 6px 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ADR-074: "suggesting additions, without nagging" -- a dismissible row per
+   species, never an empty state. Bordered like `.settings-danger` because
+   both are "the station noticed something, decide what to do about it". */
+.evidence-suggestions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.evidence-suggestion {
+  font-size: 12px; border-left: 2px solid var(--accent); padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 6px; max-width: 62ch;
+}
+.evidence-suggestion p { margin: 0; }
+.evidence-suggestion .settings-actions { margin-top: 0; }
 
 .first-run-steps { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0; padding: 0; list-style: none; font-size: 12px; }
 .first-run-steps li.current button { font-weight: 700; }

@@ -53,6 +53,25 @@ interface Props {
   initialCategory?: string
 }
 
+/** One row of `GET /api/v1/retention/suggestions` (ADR-074). */
+interface Suggestion {
+  common_name: string
+  detection_count: number
+  byte_total: number
+  window_days: number
+}
+
+/** Matches the ADR's own example rendering ("3.1 GB"), not `FirmwarePanel`'s
+ *  binary-prefix `bytes()` -- disk usage here is being compared against a
+ *  percent-of-archive threshold computed in decimal, so the display should
+ *  agree with the number that drove the suggestion. */
+function formatBytes(value: number): string {
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)} GB`
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} MB`
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} kB`
+  return `${value} B`
+}
+
 /** Categories the server did not describe still have to render somewhere,
  *  rather than silently swallowing their fields. */
 function categoriesFor(payload: SettingsPayload): SettingsCategory[] {
@@ -77,6 +96,7 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
   const [query, setQuery] = useState('')
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set())
   const [open, setOpen] = useState<string | null>(initialCategory ?? 'station')
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -92,6 +112,22 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
       .catch(() => {
         if (!cancelled) setState('unavailable')
       })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/v1/retention/suggestions')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const body = (await response.json()) as { suggestions: Suggestion[] }
+        if (!cancelled) setSuggestions(body.suggestions)
+      })
+      // Not available, or nothing to say: either way this must not nag, so
+      // silently rendering no rows is the correct outcome, not an error.
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -181,6 +217,43 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
     }
   }
 
+  /** Add or dismiss one suggested species, through the *existing* settings
+   *  write path -- appending to `evidence_common_species` or
+   *  `evidence_suggestion_dismissed` and PUTting, exactly as a hand-typed
+   *  edit to either field would. There is no second write path for either
+   *  list. Reads the field's just-saved value, not the in-progress `draft`,
+   *  so an unrelated unsaved edit elsewhere on the page cannot be dragged
+   *  along by this button. */
+  const actOnSuggestion = async (
+    commonName: string,
+    fieldName: 'evidence_common_species' | 'evidence_suggestion_dismissed',
+  ) => {
+    const field = payload.fields.find((f) => f.name === fieldName)
+    const existing = String(field?.value ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (existing.some((s) => s.toLowerCase() === commonName.toLowerCase())) {
+      setSuggestions((current) => current.filter((s) => s.common_name !== commonName))
+      return
+    }
+    try {
+      const response = await apiFetch('/api/v1/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ [fieldName]: [...existing, commonName].join(',') }),
+      })
+      if (!response.ok) return
+      const saved = (await response.json()) as SettingsPayload
+      setPayload(saved)
+      setDraft(draftFrom(saved))
+      setSuggestions((current) => current.filter((s) => s.common_name !== commonName))
+    } catch {
+      // Station unreachable -- the row stays, exactly like any other failed
+      // save on this page, so the operator can just try again.
+    }
+  }
+
   const renderField = (field: SettingsField) => (
     <SettingField
       key={field.name}
@@ -256,6 +329,39 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
               <div className="settings-category-body">
                 {category.description && (
                   <p className="settings-help">{category.description}</p>
+                )}
+                {category.id === 'retention' && suggestions.length > 0 && (
+                  <div className="evidence-suggestions">
+                    {suggestions.map((suggestion) => (
+                      <div className="evidence-suggestion" key={suggestion.common_name}>
+                        <p>
+                          {suggestion.common_name} produced{' '}
+                          {suggestion.detection_count.toLocaleString()} clips (
+                          {formatBytes(suggestion.byte_total)}) in the last{' '}
+                          {suggestion.window_days} days. Add to the common list?
+                        </p>
+                        <div className="settings-actions">
+                          <button
+                            onClick={() =>
+                              actOnSuggestion(suggestion.common_name, 'evidence_common_species')
+                            }
+                          >
+                            Add to common list
+                          </button>
+                          <button
+                            onClick={() =>
+                              actOnSuggestion(
+                                suggestion.common_name,
+                                'evidence_suggestion_dismissed',
+                              )
+                            }
+                          >
+                            Never suggest this species
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
                 {fields.map(renderField)}
               </div>
