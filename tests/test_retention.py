@@ -334,6 +334,68 @@ def _bulk_seed_unkept_candidates(
     session.execute(sa.insert(orm.DetectionMedia), links)
 
 
+def _bulk_seed_reviewed_detections(
+    session, station_id: uuid.UUID, detector_id: uuid.UUID, *, count: int
+) -> None:
+    """`count` detections, each with one non-held `Review`, and **no media
+    asset at all**.
+
+    This exists to make `review.held_detection_ids`'s `GROUP BY` + self-join
+    genuinely slow (the same technique `_bulk_seed_native_candidates` uses
+    for `_strip_native`'s join), without creating anything any tier --
+    watermark included, which candidates via a `DetectionMedia` join this
+    helper never inserts -- could treat as a reclaim candidate. A test using
+    this can seed a *separate*, real, reclaimable clip and know only that
+    one can possibly be touched.
+    """
+    event_start = FIXED_NOW - timedelta(days=8)
+    detections = []
+    reviews = []
+    for i in range(count):
+        detection_id = uuid.uuid4()
+        detections.append(
+            dict(
+                id=detection_id,
+                station_id=station_id,
+                detector_id=detector_id,
+                stream_id=uuid.uuid4(),
+                window_id=uuid.uuid4(),
+                event_start_utc=event_start - timedelta(seconds=i),
+                event_end_utc=event_start - timedelta(seconds=i) + timedelta(seconds=3),
+                source_start_frame=0,
+                source_end_frame=1,
+                detector_label="event",
+                common_name="Robin",
+                scientific_name="Erithacus rubecula",
+                canonical_taxon_id=None,
+                rank=None,
+                taxonomic_group="bird",
+                score=0.5,
+                calibrated_probability=None,
+                peak_frequency_hz=None,
+                native_result={},
+                kept_at=None,
+                kept_by=None,
+            )
+        )
+        reviews.append(
+            dict(
+                id=uuid.uuid4(),
+                detection_id=detection_id,
+                actor="op",
+                status="accepted",
+                corrected_taxon_id=None,
+                corrected_common_name=None,
+                corrected_scientific_name=None,
+                note="",
+                supersedes_review_id=None,
+                created_at=event_start,
+            )
+        )
+    session.execute(sa.insert(orm.Detection), detections)
+    session.execute(sa.insert(orm.Review), reviews)
+
+
 def _sweeper(settings, **overrides) -> RetentionSweeper:
     kwargs = dict(
         clip_dir=settings.clip_dir,
@@ -3435,6 +3497,77 @@ class TestPreambleAbortDegradesToWatermarkOnly:
 
         with pytest.raises(OperationalError, match="disk I/O error"):
             _sweeper(db).sweep()
+
+    def test_a_genuinely_expired_deadline_still_lets_the_watermark_reclaim(
+        self, db, station_and_detector
+    ) -> None:
+        """The two tests above monkeypatch `held_detection_ids` to raise
+        instantly, with `batch_budget_s`'s full ~30 s still on the clock.
+        That exercises the *exception*, never the *expired deadline* that is
+        its only real cause: `_past_deadline` (~line 578) raises
+        `"interrupted"` only when `time.monotonic() >= deadline`, which
+        means an aborted preamble has, by definition, already spent the
+        whole budget by the time it aborts. A test that fakes the exception
+        without genuinely spending the budget cannot tell a fixed ordering
+        from a broken one, because the deadline `_watermark_reclaim` checks
+        is still hours away regardless of what ran first.
+
+        Reproduced here with a real, slow `held_detection_ids` statement --
+        20,000 real `Review` rows forcing its `GROUP BY` + self-join to take
+        measurable wall-clock time, the same technique `TestStatementTimeout`
+        uses for `_strip_native` -- against a `batch_budget_s` too small to
+        survive it. The deadline genuinely passes inside the preamble's own
+        statement, exactly ADR-064's "a safety valve downstream of the thing
+        it protects against is not a safety valve" scenario.
+        """
+        station_id, detector_id = station_and_detector
+        n = 20000
+        with session_scope() as session:
+            _bulk_seed_reviewed_detections(session, station_id, detector_id, count=n)
+            # The only detection with any live media asset at all -- old
+            # enough and unkept, so the watermark (and only the watermark:
+            # the age tiers are skipped outright on a preamble abort) is the
+            # sole tier that could ever reclaim it.
+            _, assets = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1,
+                kinds=("evidence_native",),
+            )
+
+        class FakeUsage:
+            total = 1000
+            free = 100  # 90% used > 85% watermark
+
+        import shutil as shutil_module
+
+        import pytest as _pytest
+
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setattr(shutil_module, "disk_usage", lambda _path: FakeUsage())
+            sweeper = _sweeper(
+                db, watermark_ratio=0.85, batch_budget_s=0.02, batch_size=n
+            )
+            report = sweeper.sweep()
+
+        assert report.interrupted_tier == "preamble", (
+            "the deadline must genuinely have expired inside the preamble's "
+            "own statement (proof this test exercises the real cause, not a "
+            "faked exception)"
+        )
+        assert "watermark" not in report.tiers_skipped, (
+            "a genuinely expired deadline must not skip the watermark tier "
+            "either -- a safety valve downstream of the thing it protects "
+            "against is not a safety valve (ADR-064)"
+        )
+        assert report.tier_counts.get("watermark", 0) >= 1
+        with session_scope() as session:
+            assert _asset(session, assets["evidence_native"]).reclaimed_at is not None, (
+                "the watermark must actually reclaim, not merely run "
+                "without raising"
+            )
 
 
 class TestBankBackfillDryRunTakesOnlyReadLocks:
