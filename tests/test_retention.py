@@ -2741,6 +2741,100 @@ class TestPromotion:
         with session_scope() as session:
             assert session.get(orm.Detection, det).banked_at is None
 
+    def test_an_acoustic_event_is_never_promoted(self, db, station_and_detector) -> None:
+        """ADR-076: the species bank is for birds, not for BirdNET's noise labels.
+
+        BirdNET stamps `taxonomic_group="acoustic_event"` on non-bird labels
+        ("Dog", "Engine", "Power tools", "Siren"), which still carry a
+        `common_name` exactly like a bird does -- so the
+        `common_name IS NOT NULL` guard alone does not exclude them, and on
+        the station's own archive a dry run promoted 200 each of four such
+        labels: 800 permanently-banked slots of noise, against ADR-074's own
+        table listing `acoustic_event` as untouched (`13.2 GB -> 13.2 GB`).
+        However old and however few "Engine" detections exist, none may be
+        promoted.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, _ = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=50,
+                taxonomic_group="acoustic_event",
+                common_name="Engine",
+            )
+            session.commit()
+        _sweeper(
+            db, evidence_value_enabled=True, promotion_lookback=timedelta(days=3650)
+        ).sweep()
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is None
+
+    def test_a_bird_of_the_same_age_and_count_is_promoted(
+        self, db, station_and_detector
+    ) -> None:
+        """Sibling of `test_an_acoustic_event_is_never_promoted`.
+
+        Same age, same solitary count, only the group differs -- so this
+        discriminates the new `taxonomic_group` predicate rather than passing
+        because promotion found nothing to do at all.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            det, _ = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=50,
+                taxonomic_group="bird",
+                common_name="Grey Heron",
+            )
+            session.commit()
+        _sweeper(
+            db, evidence_value_enabled=True, promotion_lookback=timedelta(days=3650)
+        ).sweep()
+        with session_scope() as session:
+            assert session.get(orm.Detection, det).banked_at is not None
+
+    def test_a_banked_acoustic_event_does_not_consume_a_bird_species_cap(
+        self, db, station_and_detector
+    ) -> None:
+        """`_evidence_bank`'s species tally must count only birds (ADR-076).
+
+        However an acoustic event ended up with `banked_at` set (a stray
+        write, a since-corrected classification, anything), it must not be
+        tallied under its `common_name` and charged against a bird species'
+        cap -- `_promotion_candidates` never selects one going forward, but
+        the tally has to independently exclude one that is already there.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            noise_det, _ = _seed_detection(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                clip_dir=db.clip_dir,
+                age_days=1.0,
+                taxonomic_group="acoustic_event",
+                common_name="Engine",
+            )
+            session.execute(
+                sa.update(orm.Detection)
+                .where(orm.Detection.id == noise_det)
+                .values(banked_at=FIXED_NOW)
+            )
+            session.commit()
+
+        sweeper = _sweeper(db, evidence_value_enabled=True)
+        with session_scope() as session:
+            bank = sweeper._evidence_bank(session)
+
+        assert bank.banked == {}, "a banked acoustic event must not be tallied by species"
+        assert bank.total() == 0
+
 
 class TestBandPromotion:
     def test_a_sparse_band_is_banked_and_a_busy_one_is_not(

@@ -126,6 +126,21 @@ _PROGRESS_HANDLER_INSTRUCTIONS = 1000
 #: the retention sweep should be dragging in.
 _BAT_GROUP = "bat"
 
+#: ``detection.taxonomic_group`` for a bird call (``detectors/birdnet.py``).
+#: ADR-076: the species bank is the rare-*wildlife* archive -- a heron, a
+#: kingfisher -- not a permanent record of the neighbour's power tools.
+#: BirdNET also emits non-bird labels ("Dog", "Engine", "Power tools",
+#: "Siren") stamped `taxonomic_group="acoustic_event"`; those carry a
+#: `common_name` just like a bird does, so the `common_name IS NOT NULL`
+#: guard alone does not exclude them. Measured on the station's own archive
+#: (dry-run, 2026-08-29): without this predicate `bank-backfill` promoted 200
+#: each of Dog, Engine, Power tools and Siren -- 800 permanently-banked
+#: slots of noise, out of 751,754 acoustic-event detections that ADR-074's
+#: "Expected effect" table lists as `13.2 GB -> 13.2 GB (untouched) |
+#: existing tiers`. Spelled out here rather than imported for the same
+#: reason as `_BAT_GROUP` above.
+_BIRD_GROUP = "bird"
+
 #: Trailing window over which a bat band's share of passes is measured
 #: (ADR-074: "a band holding < 1% of the trailing-90-day passes is sparse").
 #: A window rather than all history because sparseness is a claim about what
@@ -1417,7 +1432,16 @@ class RetentionSweeper:
                 edge = evidence_value.frequency_band(peak_hz)
                 if edge is not None:
                     bands[edge] = bands.get(edge, 0) + 1
-            elif common_name is not None:
+            elif group == _BIRD_GROUP and common_name is not None:
+                # ADR-076: this is a Python-side condition on a column
+                # already selected by the query above, not a new SQL
+                # predicate -- see this method's own docstring on why
+                # `WHERE ... AND taxonomic_group = ...` is not put back into
+                # that `SELECT`. A banked acoustic event (however it got
+                # `banked_at` -- see the promotion-side guard in
+                # `_promotion_candidates`) must not consume a bird species'
+                # cap; it belongs to neither bank and simply isn't tallied
+                # here, leaving it to the ordinary age tiers.
                 banked[common_name] = banked.get(common_name, 0) + 1
         return _EvidenceBank(banked=banked, bands=bands)
 
@@ -1640,6 +1664,23 @@ class RetentionSweeper:
         silently vanish from this query. Same trap, same place, as
         `_EvidenceBank.exclusion` under ADR-074.
 
+        `taxonomic_group == _BIRD_GROUP` (ADR-076): the species bank is the
+        rare-*wildlife* archive, not a record of everything BirdNET can
+        attach a `common_name` to. BirdNET stamps `taxonomic_group=
+        "acoustic_event"` on non-bird labels ("Dog", "Engine", "Power
+        tools", "Siren") that carry a `common_name` exactly like a bird
+        does, so the `IS NOT NULL` guard alone let 800 slots go to noise on
+        the station's own archive (measured, 2026-08-29 dry run) --
+        ADR-074's own table lists `acoustic_event` as untouched by this
+        policy. Safe to add here, unlike in `_evidence_bank`'s `SELECT`:
+        this query is already bounded to a `lookback` window by a range
+        seek on `ix_detection_event_start_utc`, so `taxonomic_group` is
+        just a residual filter evaluated on that already-small row set, not
+        a second index the planner could switch to and pay for with a
+        per-row lookup across the whole archive (that failure mode is
+        `_evidence_bank`'s, over the unbounded bank, not this method's,
+        over a 24-hour slice).
+
         Measured: **0.0149 s** for a 24-hour window at a 500-row limit,
         `SEARCH detection USING INDEX ix_detection_event_start_utc`.
         """
@@ -1648,6 +1689,7 @@ class RetentionSweeper:
             .where(orm.Detection.event_start_utc >= now - lookback)
             .where(orm.Detection.banked_at.is_(None))
             .where(orm.Detection.common_name.is_not(None))
+            .where(orm.Detection.taxonomic_group == _BIRD_GROUP)
             .order_by(orm.Detection.event_start_utc.asc())
             .limit(limit)
         )
