@@ -342,15 +342,26 @@ class RetentionReport:
     #: False when the batch budget (count or wall-clock) was exhausted with
     #: candidate work still outstanding -- the next sweep will pick it up.
     complete: bool = True
-    #: Monotonic seconds from sweep start to just before the first tier
-    #: guard. ADR-061: the incident this exists to catch was a preamble
-    #: query alone (2.978 s) eating the entire 1.5 s budget before any tier
-    #: guard was reached, for nine days, with no symptom besides a zero
-    #: deletion count that looked identical to "nothing to delete". A
-    #: healthy sweep's preamble is a couple of indexed queries and should
-    #: read as a small fraction of `batch_budget_s`; a preamble that is
-    #: itself close to (or past) the budget is the nine-day failure
-    #: recurring.
+    #: Monotonic seconds spent in the preamble itself -- the
+    #: `kept_detections` count and `held_detection_ids` read -- from just
+    #: before the first of those statements to just before the first age-tier
+    #: guard. ADR-061: the incident this exists to catch was a preamble query
+    #: alone (2.978 s) eating the entire 1.5 s budget before any tier guard
+    #: was reached, for nine days, with no symptom besides a zero deletion
+    #: count that looked identical to "nothing to delete". A healthy sweep's
+    #: preamble is a couple of indexed queries and should read as a small
+    #: fraction of `batch_budget_s`; a preamble that is itself close to (or
+    #: past) the budget is the nine-day failure recurring.
+    #:
+    #: Finding 2 (2026-08-30): deliberately **not** measured from sweep
+    #: start. The watermark-first reclaim and the evidence-bank read both
+    #: now run ahead of the preamble (see `sweep`'s hoist, above), and
+    #: folding an entire tier's own work into this number would make a
+    #: 200-file watermark reclaim -- healthy, expected, sometimes slow --
+    #: register as the same symptom this field exists to catch. Compare
+    #: `interrupted_after_s`, which *does* mean "since sweep start", because
+    #: it answers a different question ("how far into the whole sweep did
+    #: this abort happen") that the hoist does not change.
     preamble_s: float = 0.0
     #: Name of every tier ("native", "unkept", "watermark") whose guard
     #: evaluated False, in evaluation order -- appended whether the cause
@@ -594,12 +605,27 @@ class RetentionSweeper:
         report.disk_used_ratio_before = self._disk_used_ratio()
 
         with self._session_factory() as session:
-            # Starts as "watermark", not "preamble": the hoisted block below
-            # (evidence-bank read, then the watermark-first reclaim) now runs
-            # before the preamble does, so an abort inside *it* must map to
-            # the right name if it ever escapes to the outer handler below,
-            # the same way every other tier's `current_tier` assignment does.
-            current_tier = "watermark"
+            # Starts as "watermark_first", not "watermark": the hoisted
+            # watermark-first reclaim below now runs before the bank read and
+            # the preamble, so an abort inside *it* must map to the right
+            # name if it ever escapes to the outer handler below, the same
+            # way every other tier's `current_tier` assignment does -- but it
+            # must map to a *different* name than the later, deferred
+            # watermark attempt (plain "watermark", assigned further down),
+            # because the two need different answers to "what does this
+            # abort mean for `tiers_skipped`". `_TIER_ORDER.index("watermark")
+            # == 2`, so an abort recorded under that name only marks
+            # "watermark" itself skipped -- correct for the deferred call,
+            # which only runs after native/unkept have already run or been
+            # skipped for their own reasons, but wrong here: an abort in the
+            # hoisted call means *nothing* has run yet, native and unkept
+            # included. "watermark_first" is deliberately absent from
+            # `_TIER_ORDER`, so the lookup below falls through to its
+            # `else 0` branch and marks all three tiers skipped, and
+            # `report.interrupted_tier` is normalised back to "watermark" at
+            # the point it is assigned, below, so nothing downstream ever
+            # sees the sentinel name.
+            current_tier = "watermark_first"
             aborted = False
             # Set only when the preamble's own statement(s) are interrupted --
             # see the `except OperationalError` around it, further down.
@@ -608,51 +634,79 @@ class RetentionSweeper:
             # preamble abort, where `aborted` means the rest of the function
             # is skipped entirely.
             preamble_aborted = False
+            # Finding 3 (2026-08-30): set only once the preamble's own
+            # `kept_detections`/`held_detections` reads finish without being
+            # interrupted -- see where it is assigned `True`, below, and
+            # where it gates `last_kept_detections`/`last_held_detections`,
+            # further down. Guarding that gauge publish on `not
+            # preamble_aborted` was not the same thing: an abort in the
+            # *hoisted* watermark call (or the bank read ahead of it) raises
+            # out to the *outer* `except OperationalError` instead, which
+            # never touches `preamble_aborted` at all -- it stays `False` --
+            # while `report.kept_detections`/`held_detections` are still
+            # sitting at their dataclass default of `0`, because the
+            # preamble that would have set them never ran. A positive flag,
+            # set only on success, is the guard that is actually correct for
+            # every path that can reach this point without the preamble
+            # having completed, not only the one path (a preamble abort)
+            # that happened to be the one under review before.
+            preamble_completed = False
             held_ids: set[uuid.UUID] | None = None
             try:
-                # This review's finding (2026-08-30): a preamble abort's own
-                # fix (I1/ADR-076, directly below in blame) let control reach
-                # the watermark tier but did not make it *do* anything. An
-                # "interrupted" `OperationalError` is produced by exactly one
-                # thing -- `_past_deadline` above, which fires only when
-                # `time.monotonic() >= deadline` -- so if the preamble ever
-                # aborts, the shared `deadline` has *already* passed, by
-                # definition, at the moment it does. A watermark that only
-                # runs after that finds `_watermark_reclaim`'s own guard
-                # (`time.monotonic() >= deadline`, checked before it issues a
-                # single candidate query) already true and reclaims nothing --
-                # "every tier skipped" became "watermark reached, does
-                # nothing", which is worse: `watermark_ran` still reads
-                # `True`, so it was not even reported as skipped.
+                # This review's finding (2026-08-30): the previous fix
+                # (I1/ADR-076) hoisted the evidence-bank read and the
+                # watermark-first reclaim together, in that order, above the
+                # preamble -- but left the bank read *first*. With
+                # `evidence_value_enabled` off that is inert (`_evidence_bank`
+                # returns `None` before issuing a statement), which is
+                # exactly why the previous fix's own tests never caught it.
+                # With the flag on, an interrupted bank read leaves the
+                # shared `deadline` already blown, and `_watermark_reclaim`'s
+                # own guard (`time.monotonic() >= deadline`, checked before
+                # its first candidate query) is then already true -- the
+                # defect this whole hoist exists to remove, reappearing one
+                # statement later, live only once the feature it is meant to
+                # gate is switched on.
                 #
-                # ADR-064's own argument, carried one step further: it moved
-                # the watermark ahead of the age tiers because "a safety
-                # valve downstream of the thing it protects against is not a
-                # safety valve". The preamble is one more thing upstream of
-                # it. So the evidence-bank read and the watermark-first check
-                # are hoisted here, above the preamble entirely -- both
-                # consume only `report`, `deadline`, `budget` and `bank`, none
-                # of which the preamble produces -- so the watermark always
-                # gets first claim on the whole, unspent `batch_budget_s`,
-                # whatever the preamble goes on to do to it.
-                #
-                # The evidence-bank read moves with it (ADR-076): the
-                # watermark takes `bank` to prefer unbanked material, and the
-                # read is cheap enough not to matter where it sits -- measured
-                # 0.0023 s, against a preamble this hoist can no longer let
-                # spend the whole budget before the watermark sees it. It
-                # keeps its own interrupt handling, degrading to `bank = None`
-                # exactly as before: the watermark then behaves exactly as it
-                # does with the flag off.
+                # Two fixes were considered. Unconditionally running the
+                # watermark before the bank is even read, passing `bank=None`
+                # for that call, was the simpler one and was tried first --
+                # but it fails `test_unbanked_evidence_goes_first` and
+                # `test_the_watermark_still_takes_banked_evidence_when_it_must`,
+                # both of which set up disk already over the watermark (the
+                # common case for this tier) and check the ADR-076
+                # unbanked-first preference. Forcing `bank=None` on every
+                # over-the-line sweep -- not just the rare one where the bank
+                # read itself aborts -- would throw away that preference far
+                # more often than the defect being fixed ever occurs. So:
+                # the bank read stays *first*, exactly as before, and only
+                # its own interrupt changes anything -- `_watermark_reclaim`
+                # is then given a **fresh** bounded deadline instead of the
+                # one the interrupted bank read already exhausted, so it is
+                # never starved by upstream work the way the preamble used
+                # to starve it. Every other sweep -- bank read fast, flag
+                # off, or disk not over the line at all -- is unaffected:
+                # `watermark_deadline` is just `deadline` and `bank` is
+                # whatever `_evidence_bank` actually returned.
                 try:
                     with self._bounded_statements(session, deadline):
                         bank = self._evidence_bank(session)
+                    watermark_deadline = deadline
                 except OperationalError as exc:
                     if "interrupted" not in str(getattr(exc, "orig", exc)):
                         raise
                     session.rollback()
                     bank = None
                     log.warning("retention.bank_read_interrupted")
+                    # The shared `deadline` is, by construction, already in
+                    # the past the moment `_bounded_statements` raises
+                    # "interrupted" for it (see `_past_deadline`) -- handing
+                    # it to `_watermark_reclaim` would make its own guard
+                    # true before a single candidate query, reclaiming
+                    # nothing while `watermark_ran` still read `True`. A
+                    # fresh deadline gives it its own full `batch_budget_s`,
+                    # exactly as if the bank read had never run at all.
+                    watermark_deadline = time.monotonic() + self.batch_budget_s
                 self.last_bank_size = bank.total() if bank is not None else 0
 
                 # ADR-064. The watermark tier goes **first** whenever disk is
@@ -671,7 +725,7 @@ class RetentionSweeper:
                     budget = self._watermark_reclaim(
                         session,
                         report,
-                        deadline=deadline,
+                        deadline=watermark_deadline,
                         budget=budget,
                         dry_run=dry_run,
                         bank=bank,
@@ -681,6 +735,19 @@ class RetentionSweeper:
                     watermark_ran = False
 
                 current_tier = "preamble"
+                # Finding 2 (2026-08-30): `preamble_s`'s own docstring says it
+                # measures "sweep start to just before the first tier guard",
+                # but with the watermark (and, above, the bank read) now
+                # hoisted ahead of it, measuring from `start_perf` folds an
+                # entire tier's work into a number whose whole purpose is to
+                # be recognisable as the ADR-061 nine-day failure -- a
+                # 200-file watermark reclaim taking a fraction of a second
+                # would read as a preamble blowing the budget. `preamble_s`
+                # is measured from here instead; `interrupted_after_s` below
+                # deliberately keeps measuring from `start_perf`, since its
+                # own meaning ("how far into the sweep did this abort
+                # happen") is unaffected by where the preamble starts.
+                preamble_start = time.monotonic()
                 try:
                     with self._bounded_statements(session, deadline):
                         # A plain indexed count, not the materialised-into-Python
@@ -697,14 +764,17 @@ class RetentionSweeper:
                         held_ids = review_queries.held_detection_ids(session)
                         report.held_detections = len(held_ids)
 
-                        # Everything above this line is the preamble that,
-                        # unbounded, caused the nine-day incident (ADR-061):
-                        # recorded *before* the first tier guard so a preamble
-                        # that alone ate the budget shows up as a large
-                        # `preamble_s` next to an empty `tiers_skipped`-causing
-                        # deadline, rather than being indistinguishable from a
-                        # fast one.
-                        report.preamble_s = round(time.monotonic() - start_perf, 4)
+                        # Everything above this line (within the preamble
+                        # itself) is what, unbounded, caused the nine-day
+                        # incident (ADR-061): recorded *before* the first
+                        # tier guard so a preamble that alone ate the budget
+                        # shows up as a large `preamble_s` next to an empty
+                        # `tiers_skipped`-causing deadline, rather than being
+                        # indistinguishable from a fast one. Measured from
+                        # `preamble_start`, not `start_perf` -- see the
+                        # comment where `preamble_start` is set.
+                        report.preamble_s = round(time.monotonic() - preamble_start, 4)
+                    preamble_completed = True
                 except OperationalError as exc:
                     if "interrupted" not in str(getattr(exc, "orig", exc)):
                         # A genuine database error, not our deadline guard --
@@ -736,8 +806,14 @@ class RetentionSweeper:
                     )
                     # Reviewer finding: this used to keep its `0.0` default,
                     # reading as a suspiciously fast preamble in exactly the
-                    # case `preamble_s`'s own docstring exists to catch.
-                    report.preamble_s = report.interrupted_after_s
+                    # case `preamble_s`'s own docstring exists to catch. Now
+                    # measured from `preamble_start`, not copied from
+                    # `interrupted_after_s`: the two answer different
+                    # questions once the watermark and bank read run ahead of
+                    # the preamble (Finding 2) -- `interrupted_after_s` is
+                    # "how far into the whole sweep", `preamble_s` is "how
+                    # long did the preamble itself run before aborting".
+                    report.preamble_s = round(time.monotonic() - preamble_start, 4)
                     report.complete = False
                     log.warning(
                         "retention.preamble_interrupted",
@@ -853,7 +929,14 @@ class RetentionSweeper:
                     # A genuine database error, not our deadline guard --
                     # never swallow it as if it were a bounded timeout.
                     raise
-                report.interrupted_tier = current_tier
+                # "watermark_first" is this method's own private name for
+                # the hoisted, pre-preamble watermark attempt (see where
+                # `current_tier` is first assigned, above) -- never a name
+                # the rest of the codebase, `RetentionReport`, or Prometheus
+                # should see. Normalised back to "watermark" here, at the
+                # one point it becomes externally visible.
+                reported_tier = "watermark" if current_tier == "watermark_first" else current_tier
+                report.interrupted_tier = reported_tier
                 report.interrupted_after_s = round(time.monotonic() - start_perf, 4)
                 report.complete = False
                 aborted = True
@@ -863,6 +946,15 @@ class RetentionSweeper:
                 # already does, so the report reads as "fewer deletions this
                 # pass", the entire point of `batch_budget_s`, not as a
                 # crash.
+                #
+                # `current_tier` (not `reported_tier`) drives this lookup on
+                # purpose: "watermark_first" is deliberately absent from
+                # `_TIER_ORDER`, so an abort inside the hoisted watermark
+                # call falls through to `start_index = 0` and marks native,
+                # unkept *and* watermark all skipped -- correct, since none
+                # of the three has run yet at that point in the sweep. The
+                # later, deferred watermark attempt uses the plain
+                # "watermark" name and correctly marks only itself.
                 start_index = (
                     _TIER_ORDER.index(current_tier) if current_tier in _TIER_ORDER else 0
                 )
@@ -871,7 +963,7 @@ class RetentionSweeper:
                         report.tiers_skipped.append(tier)
                 log.error(
                     "retention.statement_interrupted",
-                    tier=current_tier,
+                    tier=reported_tier,
                     after_s=report.interrupted_after_s,
                     batch_budget_s=self.batch_budget_s,
                 )
@@ -925,16 +1017,22 @@ class RetentionSweeper:
         self.last_interrupted_tier = report.interrupted_tier
         self.last_interrupted_after_s = report.interrupted_after_s
         self.last_disk_used_ratio = report.disk_used_ratio_after
-        # Reviewer finding: a preamble abort leaves `report.kept_detections`/
-        # `held_detections` at their dataclass default of `0` -- the count
-        # query that would have set them is exactly the one that was
-        # interrupted. Assigning unconditionally used to publish that `0`
-        # straight to `oo_retention_kept_detections`/`_held_detections`
+        # Reviewer finding, and Finding 3 (2026-08-30) on top of it: any path
+        # that reaches this point without the preamble having *completed*
+        # leaves `report.kept_detections`/`held_detections` at their
+        # dataclass default of `0` -- the count query that would have set
+        # them either was interrupted (`preamble_aborted`) or never ran at
+        # all (an abort in the hoisted watermark call or the bank read ahead
+        # of it, which raises straight to the outer handler and never sets
+        # `preamble_aborted`). Assigning unconditionally used to publish that
+        # `0` straight to `oo_retention_kept_detections`/`_held_detections`
         # (`api/metrics.py`), so an operator watching the gauge saw their 112
         # protected detections apparently vanish on a sweep that touched
-        # none of them. Guarding on `preamble_aborted` leaves the previous,
-        # still-accurate values in place instead.
-        if not preamble_aborted:
+        # none of them. Guarding on the positive `preamble_completed`
+        # instead of the negative `preamble_aborted` covers both cases with
+        # one flag, and leaves the previous, still-accurate values in place
+        # on every path that isn't a clean preamble finish.
+        if preamble_completed:
             self.last_kept_detections = report.kept_detections
             self.last_held_detections = report.held_detections
         self.last_watermark_blocked_by_kept = report.watermark_blocked_by_kept
