@@ -215,5 +215,55 @@ bearer token no longer describes the whole state: the firmware still sends no
 the follow-up is still unbuilt), and clearing the list outright would now also
 disable OTA.
 
+**Reviewed 2026-08-30: the regression test named for this risk covers three of
+the five credential-free paths, not five.** The Verification paragraph above
+says "the ESP32-dependent paths ... stay reachable under the gate by a dedicated
+regression test named for exactly that risk."
+`tests/test_auth.py::TestAuthEnabledBlanketGate::test_esp32_counter_top_display_endpoints_stay_public`
+asserts `/api/v1/health`, `GET /api/v1/detections` and `/metrics`, and its
+docstring still says "these two paths". It does not touch `/api/v1/display` —
+[[ADR-038 - Display push channel|ADR-038]]'s push channel, which has been the display's *primary* transport
+since 2026-08-09 — and it does not touch `/api/v1/firmware/image`. No test in
+this repository opens either with `auth_enabled` true. No test anywhere asserts
+a 4401 close: all three WebSocket gates (`/api/v1/live`, `/api/v1/live/audio`,
+`/api/v1/display`) have no automated coverage at all, and the 4401 behaviour
+recorded above was seen once in a browser and never since. `test_api.py`'s
+`test_keep_is_not_a_public_read_path` asserts only that `/api/v1/detections` is
+in the default list, so deleting either of the other two entries from
+`auth_public_read_paths` would fail no test and take the display's socket or its
+update path down silently.
+
+**Reviewed 2026-08-30: the exemption is one path short of what the display
+needs.** Building the real application with `auth_enabled: true` and requesting
+every path the display uses, with no credential: on the shipped three-path
+default, `/api/v1/health`, `GET /api/v1/detections`, `/metrics`,
+`WS /api/v1/display` and `GET /api/v1/firmware/image` all answer, and
+`GET /api/v1/history?window=today` returns **401**. The inside-observer's HTTP
+fallback fetches that path (`firmware/inside-observer/src/station_source.cpp`)
+for its species-today count and for the station's real UTC offset, and treats
+the failure as non-fatal — so the fallback screen keeps a stale count and drops
+back to the firmware's configured offset constant. The exemption therefore does
+not fully hold even at its own defaults; it holds for the push channel and
+breaks a corner of the fallback. Recorded, not fixed: this ADR's territory does
+not extend to changing the default. The same run confirms what
+`config/example.env`'s one-path value costs — `WS /api/v1/display` closed with
+4401 and `GET /api/v1/firmware/image` 401 — which [[DEPLOYMENT_AND_OPERATIONS]]
+now describes for an operator.
+
+**Reviewed 2026-08-30: still never exercised on a station.** `GET
+/api/v1/health` reports `auth: {"enabled": false}` on the live station, as at
+every review since this ADR landed on 2026-08-08, and nothing in `results/` or
+the delivery documents records `auth_enabled: true` ever having run on the Pi.
+The whole of this feature's evidence is 27 cases in `tests/test_auth.py` (the
+count above says 26; it has grown by one), 19 web cases, and the one manual
+Chromium session described under Verification, which ran against a developer
+machine. Two smaller corrections: the line numbers in the first 2026-08-29 note
+(`config.py:521`, `config.py:552`, `api/app.py:2612`) no longer resolve — the
+anchors are the `auth_enabled` and `auth_public_read_paths` field definitions in
+`config.py` and the `display_socket` handler's allow-list check in
+`api/app.py`, and no line number is quoted here because those files move under
+one. `api/app.py:146` (`_ALWAYS_PUBLIC_PATHS`) and `api/app.py`'s
+`_enforce_auth` middleware are still where that note says they are.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

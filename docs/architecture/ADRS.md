@@ -24,16 +24,23 @@ Every material deviation from [[TECHNICAL_SPEC]] is recorded as an ADR.
   written out of numeric order — 016 between 011 and 012; 034 after 035; 043
   after 044; 046 after 047; 053 between 050 and 051; 056 after 059 — and the
   filenames now make that irrelevant. The table below is sorted properly.
-- **Refer to an ADR as `[[ADR-045 - Refinement runner|ADR-045]]` in prose.** Each file carries an
-  `aliases: [ADR-NNN]` property, so the short form resolves in Obsidian without
-  repeating a 90-character filename; the table below uses ordinary relative links
-  so it also renders on GitHub.
+- **Refer to an ADR as `[[ADR-045 - Refinement runner|ADR-045]]` in prose** — the
+  full filename, with the number as the display text. **A bare `[[ADR-045]]` does
+  not resolve here.** Each file does carry an `aliases: [ADR-NNN]` property and it
+  is kept for the search box, but Obsidian did not match it when this was tried on
+  2026-08-29: the short form produced 75 dead nodes in the graph. Nothing may depend
+  on it. This bullet claimed the opposite until 2026-08-30.
 - New ADRs get a new file **and** a row here. **Adding a body without adding an
   index row is the failure mode that actually happens** — 037, 038 and 040 were
   missing until 2026-08-09, and **062 through 074 were missing until this split**.
   Check with:
 
-      ls docs/architecture/adr/ | wc -l    # 72 files = 74 index rows - 031 and 036, which are reserved gaps with no body
+      ls docs/architecture/adr/ | wc -l          # files
+      grep -c '^| \[\[ADR-' docs/architecture/ADRS.md  # rows; must equal the file count
+
+  Both read **75** on 2026-08-30. The two reserved gaps, 031 and 036, have a row
+  each and no file, so they are counted separately in the table and not by either
+  command above.
 
 ## Index
 
@@ -127,5 +134,6 @@ split swept it into ADR-006's file, where "the following ADRs" referred to nothi
 | [[ADR-072 - Accepted crystal drift\|072]] | Capture timestamps drift with the microphone's crystal, and that is accepted | accepted, 2026-08-25 |
 | [[ADR-073 - Five capture SLOs\|073]] | What "missing audio" means, and five SLOs instead of one continuity number | accepted, 2026-08-29 |
 | [[ADR-074 - Evidence kept by value\|074]] | Evidence is retained by value, not by age | accepted, 2026-08-29 |
+| [[ADR-075 - Window rate, not stream age\|075]] | The slope-agreement check must compare like intervals, and the next linearity bar is set before the run | accepted, 2026-08-29. Fixes one of [[ADR-069 - Two drift gates\|ADR-069]] gate (b)'s six checks — it was comparing an hour's slope against a cumulative average and reporting stream age. The ±2 ppm bar is unchanged, the other five checks are untouched, and neither 2026-08-25 run is re-scored. The linearity decision is written **before** the evening run it governs |
 | [[ADR-076 - The evidence bank is a column, not a recomputed set\|076]] | The evidence bank is a persisted column, not a set recomputed every sweep | accepted, 2026-08-29. Replaces [[ADR-074 - Evidence kept by value\|ADR-074]]'s *mechanism*, keeps its policy. Fixes the per-species cliff that would have deleted the first-ever recording of a species first, and an 18.32 s census measured against a 1.5 s budget. Records two further defects [[ADR-074 - Evidence kept by value\|ADR-074]] does not: the policy as implemented can only *reduce* deletions, so it delivers none of the promised savings; and the watermark reclaims oldest-first, which is the archive. The quota remains unbuilt |
 | [[ADR-077 - Acoustic events keep no recordings\|077]] | A detection of a car keeps no recording of the car | accepted, 2026-08-30. Acoustic events (`Engine`, `Dog`, `Power tools`, `Siren`, `Human vocal`) keep their detection rows forever per [[ADR-026 - Tiered clip retention\|ADR-026]] and their **clips not at all**, behind a live UI setting shipping off. Measured 12.07 GB across 9,356 live assets. Surfaced by [[ADR-076 - The evidence bank is a column, not a recomputed set\|ADR-076]]'s first live dry-run, which proposed banking 200 permanent recordings each of Dog, Engine, Power tools and Siren. Also moves `Human vocal` off disk by default, toward the charter's privacy position |

@@ -127,5 +127,91 @@ is exactly why the original passed.
 - An operator who wants this audio has one checkbox to change, and the setting
   is live — no restart.
 
+**Reviewed 2026-08-30:** the tier is deployed, it worked, and it has stopped.
+Read from the station between 19:43Z and 20:01Z, 7.8 h into a run:
+`acoustic_event_deleted` **2,174** assets / **1.27 GB** — so the ordering fix
+above did reclaim, and the "196 assets reclaimed in one sweep" figure was real.
+It is no longer what the tier does. Every sweep now ends
+`last_interrupted_tier: "acoustic_event"`, `last_interrupted_after_s: 1.5005`,
+`last_tiers_skipped: ["acoustic_event", "watermark"]`, and the counter did not
+move across four consecutive sweeps (19:48:44Z, 19:55:07Z, 20:01:34Z, 20:07:00Z).
+Those four sweeps reclaimed **28 assets and 93.8 MB between them** — all of it in
+the `native` tier, none in this one.
+
+**The fix is the ADR-062 failure, one index along.** `ix_detection_group_start`
+is a plain index, not a partial one, so a reclaimed acoustic-event detection
+**never leaves it** — and the tier must walk everything it has already done, plus
+the ~99% of acoustic-event detections that never had a clip at all, to reach the
+next live asset. That is [[ADR-062 - Retention walks live assets|ADR-062]]'s root
+cause verbatim: *"the query got slower every single time it succeeded."*
+Reproduced on a database built from the ORM metadata at this station's
+cardinalities (761,589 acoustic-event detections, 7,790 of them clipped, 240,000
+bird/bat detections, no `ANALYZE`), best of three, `LIMIT 200`:
+
+| acoustic assets already reclaimed | rows returned | time |
+|---|---|---|
+| 0 | 200 | 0.0095 s |
+| 2,000 | 200 | 0.1305 s |
+| 4,000 | 200 | 0.3133 s |
+| 8,000 | 200 | 0.6968 s |
+| all 8,573 | **0** | 0.7286 s |
+
+The plan is byte-identical at every row of that table — `SEARCH detection USING
+INDEX ix_detection_group_start`, no temp B-tree — which is exactly what
+`tests/test_retention.py:2177` asserts. **The plan was right and the query still
+cannot finish**, so the regression test is the same class of blind spot its own
+docstring claims to have closed: it pins the plan and says nothing about how far
+the scan has to walk. The last row matters most: once the tier has finished its
+work the query still costs most of the budget and returns nothing, for ever. This
+is a permanent tax, not a backlog that drains.
+
+Three consequences follow, and none of them is visible to an operator.
+
+- **The watermark tier is marked skipped on every single sweep.** Below the line
+  that is harmless — the hoist in
+  [[ADR-064 - Watermark tier first|ADR-064]] runs it first when the disk is over
+  the line, ahead of this tier — but it means `tiers_skipped` has carried the
+  same two names for hours and says nothing when the condition changes.
+- **`/api/v1/health` reports `status: "ok"`, `problems: []`.**
+  `consecutive_barren_sweeps` is 0 because the `native` tier still deletes a
+  handful, so [[ADR-062 - Retention walks live assets|ADR-062]]'s barren-sweep
+  escalation cannot fire for a sweep that aborts in the same tier every time
+  while another tier deletes seven files.
+- **The tier is invisible to Prometheus.** `api/metrics.py:461` iterates
+  `("native", "unkept", "watermark")`, so
+  `oo_retention_files_deleted_total{tier="acoustic_event"}` and its bytes
+  counterpart are not published at all. The 2,174 assets this tier did reclaim
+  appear only in `/api/v1/station`.
+
+The privacy consequence in the Consequences list is therefore **half true**.
+2,174 of the 9,356 live acoustic-event assets measured above were reclaimed; the
+remaining ~7,200, plus everything written since, are still on disk, and the tier
+is no longer removing them. `retain_acoustic_event_clips` gates the *reclaim*,
+not the *write*, so `Human vocal` audio is still being written and is now not
+being taken away again. "About 12 GB is freed on first application" reads as
+1.27 GB and stopped.
+
+**Confirmed 2026-08-31, on a second and third process, and the evidence is now
+much sharper.** The station restarted at 2026-08-30 20:12:24Z and again at
+2026-08-31 14:04:47Z. In the **7.0 hours** since that second restart the tier has
+reclaimed **exactly 200 assets — one batch, 116,899,200 bytes — and then
+nothing**, while every sweep since has ended `last_interrupted_tier:
+"acoustic_event"`, `last_interrupted_after_s: 1.5003`, `last_tiers_skipped:
+["acoustic_event", "watermark"]`. `preamble_s` is 0.0108 s, so the preamble is
+again not the cause.
+
+"One batch, then never again" is the degradation curve above read off the
+station: the candidate query sits close enough to the 1.5 s budget that it
+succeeds occasionally and aborts the rest of the time, and each success moves it
+further the wrong way, because the 200 rows it just reclaimed stay in
+`ix_detection_group_start` in front of everything it has not done. A restart does
+not help — the reclaimed rows are in the database, not in the process.
+
+Meanwhile `native` reclaimed **908 assets / 3.92 GB** over the same 7.0 hours, so
+the sweep as a whole is working and only this tier is stuck; `unkept` is still
+**0** and `eligible_for_deletion` still **0 clips**, 26 days into the archive; and
+`/api/v1/health` still reports `status: "ok"`, `problems: []`, with
+`retention_sweep_keeping_up: false` inside the payload and nothing escalating it.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

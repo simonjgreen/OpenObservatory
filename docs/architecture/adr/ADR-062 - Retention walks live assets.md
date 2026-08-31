@@ -160,5 +160,29 @@ otherwise get wrong:
   mechanism decision 1 rests on — would silently not hold. The same dialect gap
   as the `_bounded_statements` one recorded above.
 
+**Reviewed again 2026-08-30: this ADR's own failure has recurred on a fourth
+index, and the partial `WHERE` is why.** The Consequences above call the
+low-selectivity index the recurring shape; the more useful generalisation, on
+this evidence, is the one decision 1 already made and did not name as the
+lesson: **a reclaimed row must leave the index the sweep walks.**
+[[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s tier bounds and orders
+on `ix_detection_group_start`, which is a plain index, so every acoustic-event
+detection the tier has already reclaimed — and the ~99% that never had a clip —
+stays in front of the next live one for ever. Measured at this station's
+cardinalities, the candidate query goes from 0.0095 s at zero reclaimed to
+0.6968 s at 8,000 and 0.7286 s once there is nothing left to find; on the station
+it aborts at 1.5 s every sweep. That is "the query got slower every single time
+it succeeded", verbatim, four indexes later. The plan is correct throughout and a
+regression test asserts it — which is the part worth carrying forward: a plan
+assertion pins the plan, not how far the scan has to walk to reach its first row.
+
+One smaller thing found the same day: `last_sweep_complete` initialises to
+**`True`** (`src/open_observatory/retention.py:547`), so for the first sweep
+interval after every restart `/api/v1/health` publishes
+`retention_sweep_keeping_up: true` and its watermark problem cannot fire, on a
+station that has swept zero times. The station restarted at 20:12:24Z during
+this review and reported exactly that. Six minutes is short; it is also the
+window in which a station that failed to start its sweep at all looks healthiest.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

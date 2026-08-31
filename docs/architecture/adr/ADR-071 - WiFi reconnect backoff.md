@@ -221,5 +221,24 @@ Expect one `[wifi] link lost` line, then attempts at roughly 5, 10, 20, 40 and
 60 s, then `[wifi] link restored after Nms` within a minute of the AP returning.
 Anything printing faster than once a second is this bug back again.
 
+**Reviewed 2026-08-30: still not exercised on hardware, and the search for a record
+was made rather than assumed.** `GET /api/v1/firmware` reported the connected
+display at `0.2.5` and up to date, so this ADR's policy is the code on the glass —
+that part is unchanged from the note above. What has not happened is the drill.
+`docs/operations/` holds eleven files and none of them is a WiFi record: the
+directory contains the AudioMoth firmware note, the deployment and operations page,
+four drift gates, the evidence-bank measurements, the Home Assistant page, two soak
+reports and the target diagnostics. A repository-wide search for an AP-down record
+returns only this ADR's own admission, its smoke-test recipe, and the matching row
+in [[ADRS]]. Nobody has taken the access point down and watched the backoff bring
+the display back, and nothing has been written down that would let a successor
+believe otherwise.
+
+The host tests remain what they were: `pio test -e native` passed 100 cases today
+across `test_ota`, `test_wifi`, `test_feed` and `test_push`, with nine in
+`test/test_wifi/test_wifi.cpp`. That is the same evidence this ADR already declined
+to call verification. The smoke test at the end of this ADR is still the whole
+procedure and still takes about three minutes.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

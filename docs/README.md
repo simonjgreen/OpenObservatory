@@ -12,8 +12,10 @@ four are the ones to read before touching anything.
 | **[delivery/HANDOVER.md](delivery/HANDOVER.md)** | Picks up where the last session left off: traps, next steps, and the bugs that were only found by measuring. |
 
 Verified against the code and the live station on **2026-08-09**, after that
-day's 87 commits ([[ADR-041 - Ultrasonic spectrogram range|ADR-041]] through [[ADR-053 - Grouping above species|ADR-053]]) merged to `main`. Where a document has
-not been re-verified since it was written, it says so in its own header.
+day's 87 commits ([[ADR-041 - Ultrasonic spectrogram range|ADR-041]] through [[ADR-053 - Grouping above species|ADR-053]]) merged to `main`, and **re-checked on 2026-08-30**, when
+every ADR was reviewed one at a time against the code and the station and the
+founding documents were audited. Where a document has not been re-verified since
+it was written, it says so in its own header.
 
 ---
 
@@ -28,10 +30,17 @@ control plane, a React debug/operator UI, an optional MQTT publisher and an
 ESP32 counter-top display.
 
 It is **not complete**. `CLAUDE.md` forbids that word until the acceptance
-criteria pass a continuous 72-hour soak on the Pi. That soak ran 2026-08-10 to
-2026-08-13 and **failed** its continuity criterion (99.865% against ≥ 99.9%).
-See [`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) for an
-honest account of what works.
+criteria pass a continuous 72-hour soak on the Pi. **A soak has since passed on
+continuity — attempt 4, 2026-08-25: 72.107 restart-free hours, 99.9948%, 0.597 s
+of audio lost against a 259.2 s budget** ([[SOAK_2026-08-22]]). Attempt 1 ran
+2026-08-10 to 2026-08-13 and failed the same criterion at 99.865%, which is what
+this paragraph said until 2026-08-30. **That closes one box, not the gate**: no
+other acceptance criterion was exercised during the window, drift gate (b) has
+now failed three times on linearity ([[DRIFT_GATE_B_2026-08-29]]), and
+[[ADR-073 - Five capture SLOs|ADR-073]] has since replaced the single continuity
+number with five separately measured SLOs. See
+[`delivery/MILESTONE_STATUS.md`](delivery/MILESTONE_STATUS.md) for an honest
+account of what works.
 
 ### The repository ships no site (ADR-047)
 
@@ -135,7 +144,7 @@ cross-references between documents are links, not prose — see
 | `development/` | working on the code | [[SETUP]] · [[TEST_PLAN]] |
 | `delivery/` | plan, status and the engineering record | [[IMPLEMENTATION_PLAN]] · [[MILESTONE_STATUS]] · [[HANDOVER]] · [[ACCEPTANCE_CRITERIA]] · [[OPEN_INVESTIGATION_CAPTURE_GAPS]] |
 | `design/` | dated design specs, kept as a record | [[2026-08-05-bat-feeding-buzz-and-frequency-titles-design]] |
-| `superpowers/` | implementation plans and specs written for agent sessions | [[2026-08-14-keep-flag-retention]] · [[2026-08-14-keep-flag-retention-design]] · [[2026-08-29-capture-slos]] |
+| `superpowers/` | implementation plans and specs written for agent sessions | [[2026-08-14-keep-flag-retention]] · [[2026-08-14-keep-flag-retention-design]] · [[2026-08-29-capture-slos]] · [[2026-08-29-evidence-value-retention]] · [[2026-08-29-evidence-bank-redesign]] |
 | `screenshots/` | UI images referenced from the project README | *(not documents)* |
 
 Outside `docs/`: `../README.md` (project overview),
@@ -221,4 +230,6 @@ Breaking one of these is a correctness bug, not a style disagreement.
   `GET /api/v1/detections` flagged `withdrawn`, and disappears from the surfaces
   that assert something — species aggregates, MQTT, the display ([[ADR-044 - Withdrawn detections|ADR-044]]).
 - **Human speech is not kept.** `clip_human_audio` defaults off ([[ADR-049 - Sound categories are not species|ADR-049]]).
-- **The system is not complete** until the 72-hour soak passes.
+- **The system is not complete** until the acceptance criteria pass. A soak
+  passed on continuity on 2026-08-25; that is one criterion of many, and
+  [[ADR-073 - Five capture SLOs|ADR-073]] split even that one into five.

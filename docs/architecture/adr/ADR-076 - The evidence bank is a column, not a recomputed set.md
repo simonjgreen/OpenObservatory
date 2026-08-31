@@ -69,7 +69,7 @@ Everything [[ADR-074 - Evidence kept by value|ADR-074]] wants then falls out of 
 monotone.** Once set it is never cleared except by the watermark tier actually
 reclaiming that detection's evidence.
 
-| [[ADR-074 - Evidence kept by value|ADR-074]] wanted | how it now follows |
+| [[ADR-074 - Evidence kept by value\|ADR-074]] wanted | how it now follows |
 |---|---|
 | "up to K clips per species that never age out" | the K rows carrying `banked_at`; the cap is enforced at *promotion*, once, not re-litigated per sweep |
 | no cliff at the cap | reaching the cap stops *promotion*; it unbanks nothing |
@@ -315,6 +315,45 @@ undocumented violation of ADR-033 sitting in the hot path.
 - [[ADR-074 - Evidence kept by value|ADR-074]]'s `_banked_counts`, `_derive_bank`, `_EvidenceBank.species` and
   `_EvidenceBank.bands` are deleted, along with `_EVIDENCE_CENSUS_TTL_S`,
   `_ASSUMED_BAND` and the census-abort machinery built to survive them.
+
+### Reviewed 2026-08-30
+
+**The "Still outstanding" list is one item out of date, and it is the item it
+called the most consequential.** The pre-existing hole — an abort in the sweep's
+first preamble block propagating with `current_tier == "preamble"` and skipping
+all three tiers including the watermark — **is fixed in the tree**. `sweep()`
+now hoists the evidence-bank read and the watermark tier above the preamble
+(`src/open_observatory/retention.py:766`) and wraps the preamble in its own
+`except OperationalError` that sets `preamble_aborted`, skips only the tiers that
+depend on `held_ids`, and lets the sweep continue. The watermark is never gated
+on that flag. The commits are `f2b4210`, `9b2ec66` and `17165be`; the "One pacing
+trade" section above was added for the same work and the outstanding list was not
+revised alongside it.
+
+**The other two items are still outstanding, and one of them now has a
+deadline.** `evidence_value_enabled` is `false` on the station, `bank_size_now`
+is `0`, and `oo clips bank-backfill` has not been run — so nothing carries
+`banked_at`. That is rule 5 being honoured, and it means defect 5's fix is inert:
+`_watermark_reclaim`'s unbanked-first preference has no banked material to
+prefer. The disk is filling at ~2.14 GB/h and is about **7.7 hours** from the
+85% watermark (measured 2026-08-30 20:01Z; see the 2026-08-30 note on
+[[ADR-064 - Watermark tier first|ADR-064]]). When the valve fires it will reclaim
+oldest-first across the whole archive, which is exactly the first-ever recordings
+this ADR exists to protect. **Running the backfill before the watermark is
+reached is the difference between defect 5 being fixed and being fixed on
+paper.**
+
+**A fourth index has now been added to a hot path without the plan check this
+ADR's rule 2 requires.** [[ADR-077 - Acoustic events keep no recordings|ADR-077]]
+put a tier's range predicate and `ORDER BY` on `ix_detection_group_start`, which
+is **not partial** — so a reclaimed acoustic-event detection never leaves it, and
+the tier's candidate query degrades with every sweep that succeeds. Its
+regression test asserts the plan, exactly as rule 2 asks, and the plan is right
+and unchanged the whole way down. Measured degradation is in that ADR's own
+2026-08-30 note. The generalisation worth adding to rule 2: **a plan assertion
+pins the plan, not the length of the scan**, and
+[[ADR-062 - Retention walks live assets|ADR-062]]'s partial-index mechanism was
+about the second.
 
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -242,5 +242,44 @@ Second number is the rows judged without knowing the bar that admitted them —
 the class this command still cannot judge safely. Read those before applying
 anything.
 
+**Reviewed 2026-08-30: the deployment question is settled, positively, and the
+standing warning is now wrong.** The 2026-08-29 note could only offer indirect
+evidence. There is direct evidence today: the station answers
+`GET /api/v1/retention/suggestions` with `200 {"suggestions": []}`. That endpoint
+was introduced by commit `7241055` at 2026-08-30T12:47:57+01:00 ([[ADR-074 - Evidence kept by value|ADR-074]]),
+and `debba2d` — the commit carrying this ADR's fix — is an ancestor of it. A build
+serving that route therefore contains this change; there is no ordering in which it
+could not. **`oo detections reconcile-plausibility --apply` is safe to run on the
+station**, subject to reading the dry run first as this ADR has always required.
+[[HANDOVER]] §6.3 item 0, [[MILESTONE_STATUS]], [[GAP_REPORT]] and
+[[ADR-032 - Plausibility bands|ADR-032]] all still carry the standing instruction not to run it, each hedged with
+"confirm the revision on the station first". The revision is now confirmed and the
+instruction has been overtaken in all four; correcting them is the delivery
+documents' business, not this ADR's, and is proposed rather than done here.
+
+**The 32,660 would not be proposed today, for two independent reasons.** The
+station still runs `birdnet_threshold_in_range = 0.35` — read from
+`GET /api/v1/settings` on 2026-08-30, `pending_restart: []`, and confirmed in force
+on the detector itself by `GET /api/v1/detectors/near-misses`, whose `in_range` and
+`unfiltered` bands both report `threshold: 0.35`. `Settings` reads
+`config/runtime.env`, the same file [[ADR-048 - Web-configurable settings|ADR-048]]'s settings writer persists to, so the CLI
+in a separate process sees the same 0.35. First reason: the repair pass now judges
+the in-range band at 0.35, and every row in the old 0.35–0.55 gap clears its bar at
+line 264 of `plausibility_repair.py` before the exemption is even consulted.
+Second reason: were the operator to raise that bar again through the settings
+panel — it is a live-tier, web-editable field, so this is one form submission away —
+the exemption added by this ADR is what holds, because those rows carry
+`threshold_applied` and their band is unchanged. Both were reasoned from the code
+and the station's configuration, not measured: running the dry run means starting a
+process on the station, which a read-only audit may not do.
+
+**The `admitting_threshold: null` class is still expected to be empty, and now has
+a sample behind it rather than only an argument.** `native_result.threshold_applied`
+is present on the oldest rows checked: detection `db705f62` of
+2026-08-04T18:44:17Z (*Barred Owl*, `threshold_applied: 0.55`, band `unfiltered`)
+and `c2d60a09` of 2026-08-05T21:31:53Z (*Spotted Crake*, `threshold_applied: 0.9`,
+band `out_of_range`). Two rows are not a census, but they are the era the class was
+supposed to threaten.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

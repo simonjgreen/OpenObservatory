@@ -57,5 +57,18 @@ Two corrections to the note above, which was accurate when written and is no lon
 Neither changes the decision. The constraint still binds every station that has not
 opted in, which is still the default one.
 
+**Reviewed 2026-08-30:** the constraint still binds, and it has bound every day since
+[[ADR-034 - Authentication foundation|ADR-034]] closed this. The live station reports `auth: {"enabled": false}` from
+`GET /api/v1/health`, and nothing in `results/` or the delivery documents records
+`auth_enabled: true` ever having run on the Pi — so this ADR describes the real station
+today exactly as it did before it was closed. The closing mechanism exists and is tested;
+it has never been switched on outside a test process. Two path corrections: the note above
+cites `src/open_observatory/config.py:521` for the default, which no longer resolves — the
+anchor is the `auth_enabled` field definition, and the file moves under a line number often
+enough that quoting one is not worth doing. And the exemption is one path short of what the
+display actually needs: its HTTP fallback also fetches `GET /api/v1/history?window=today`,
+which is on neither list and returns 401 with auth on.
+See [[ADR-034 - Authentication foundation|ADR-034]]'s 2026-08-30 notes and [[DEPLOYMENT_AND_OPERATIONS]].
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

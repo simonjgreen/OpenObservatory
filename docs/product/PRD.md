@@ -13,12 +13,52 @@
 >
 > Requirements known **not** to be met as of 2026-08-09, so this file is not
 > mistaken for one: FR-007's bat detector identifies no species ([[ADR-013 - ultrasonic-pass-v1|ADR-013]]);
-> FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-015's
+> FR-010's alert rules and FR-011's telemetry correlation do not exist; FR-014's evidence bundle does not exist (the CSV/JSON half of
+> that requirement ships; the documented directory bundle with a manifest does
+> not — added to this list 2026-08-30); FR-015's
 > MCP interface does not exist; FR-017's upgrade preflight and backup guidance do
 > not exist; §10's configurable location precision does not exist; and §11's
 > 72-hour soak ran 2026-08-10 to 2026-08-13 and **failed** its continuity
 > criterion (99.865% against ≥ 99.9%; see [[MILESTONE_STATUS]]
 > §Milestone 4.5).
+>
+> **Reviewed 2026-08-30.** The paragraph above is kept as written. Five of its six
+> items are still true; the soak line is not, and is corrected below rather than
+> edited away. The specification itself remains unedited: the two notes added under
+> §7 and §10 on this date sit beneath those lists as annotations, and change
+> nothing above them.
+>
+> Still not met, re-checked against the code: FR-007 — `ultrasonic-pass-v1` still
+> claims no species, and [[ADR-045 - Refinement runner|ADR-045]]'s runner writes
+> species *proposals* only, which reach no API, MQTT, UI or display consumer;
+> FR-010 and FR-011 — no alert engine and no telemetry ingestion exist under
+> `src/open_observatory/`; FR-015 — the repository contains no MCP server;
+> FR-017 — migrations are versioned and run in `deploy/deploy.sh`
+> ([[ADR-042 - Migrations run in deploy.sh|ADR-042]]), but that script still has no
+> preflight check and no backup step; §10's location precision — no such setting
+> exists, and the local settings API returns exact coordinates to an
+> unauthenticated client on the LAN, because authentication ships off
+> ([[ADR-034 - Authentication foundation|ADR-034]]).
+>
+> **The 72-hour soak has since passed.** Attempt 1's failure stands on the record
+> exactly as written above; attempts 2 and 3 were void on mains power. **Attempt 4
+> passed on 2026-08-25** — 72.107 restart-free hours, continuity 99.9948% against
+> ≥ 99.9%, 0.597 s of audio lost against a 259.2 s budget ([[SOAK_2026-08-22]]).
+> Nobody staged that run; it was recognised as a soak candidate 41 hours in, and it
+> ticks one box rather than the acceptance gate.
+>
+> **§11's continuity criterion has also been decomposed.**
+> [[ADR-073 - Five capture SLOs|ADR-073]] replaced the single ratio with five SLOs,
+> because that ratio summed coverage, integrity and crystal drift, and drift was
+> 96% of the passing soak's reported shortfall and 100% of the next one's. §11's
+> first metric is inherited by SLO B alone; the current boxes are in
+> [[ACCEPTANCE_CRITERIA]], where A and B pass and A2, C, D and E are not yet
+> measured over a month. The one-hour drift run was split by
+> [[ADR-069 - Two drift gates|ADR-069]]: gate (a) passed on the target, gate (b) has
+> failed three times on linearity ([[DRIFT_GATE_B_2026-08-29]]), and gate (c) was
+> aborted 35.6 minutes in because a second station beside the live one cost the live
+> station 2.2 s of audio ([[DRIFT_GATE_C_2026-08-29]]). None of this makes the
+> system complete.
 
 ## 1. Product name
 
@@ -97,6 +137,28 @@ Make frogs, insects, generic sound events and environmental telemetry feasible a
 6. **Models are replaceable.** Their licences and output taxonomies differ; the platform must not pretend otherwise.
 7. **Raw confidence is not probability.** The UI must not overstate model scores.
 8. **Privacy by minimisation.** Keep short wildlife evidence clips, not an indefinite ambient surveillance archive.
+
+**Reviewed 2026-08-30.** Seven of these eight have code behind them rather than
+only prose. 2 — a detection carries model, version, score, interval and source, and
+[[ADR-057 - Evidence rows must be checkable|ADR-057]] made a row that claims
+evidence checkable against the file it names. 3 — `NON_TAXONOMIC_GROUPS` in
+`normaliser.py` keeps `acoustic_event`, `noise` and `unknown` as outcomes rather
+than discarding them. 4 — gaps are written as `capture_gap` rows and health events
+([[ADR-039 - Confirmed loss, not deficit|ADR-039]]), and an unclean restart is now
+reported ([[ADR-065 - Unclean restart is reported|ADR-065]]). 5 — `mqtt_enabled`
+ships false. 6 — model licences are served by `/api/v1/models` and shown in the
+pipeline view ([[ADR-006 - Model install and licensing|ADR-006]]). 7 —
+[[ADR-032 - Plausibility bands|ADR-032]]'s bands, plus the normaliser's shape check
+that stops a detector stamping `rank="species"` onto "Engine" or "Human vocal".
+8 — `clip_max_s` 12 s, `clip_human_audio` false, and evidence now kept by value
+([[ADR-074 - Evidence kept by value|ADR-074]],
+[[ADR-077 - Acoustic events keep no recordings|ADR-077]]).
+
+**Principle 1 is the exception, and should be read as a design that holds rather
+than a rule the code enforces.** [[ADR-001 - Single capture owner|ADR-001]]'s own
+2026-08-29 review records that exclusivity rests on ALSA refusing a second open
+plus two call-site guards: there is no lock file, and no automated test asserts the
+invariant.
 
 ## 8. Functional requirements
 
@@ -213,6 +275,30 @@ Configuration and schema migrations must be versioned. Upgrades must provide pre
 - Clearly warn that outdoor microphones may capture neighbours and conversations.
 - Publishing adapters must be disabled until explicitly configured.
 - Location precision exposed through APIs must be configurable; external integrations should default to coarse location.
+
+**Reviewed 2026-08-30.** Three of these six hold in code, a fourth partly, one has
+been overtaken and one is not implemented.
+
+Holding: there is no continuous raw-archive path in the repository at all;
+`clip_max_s` defaults to 12.0 with `clip_pre_roll_s` and `clip_post_roll_s` at 3.0
+each; and `mqtt_enabled` ships false, so no publishing adapter runs until it is
+configured.
+
+Partly: the neighbour warning exists as the help and danger text on the
+`clip_human_audio` setting, so an operator meets it when changing that setting.
+There is no standing warning on the dashboard or in first-run setup.
+
+Overtaken, in the useful direction:
+[[ADR-049 - Sound categories are not species|ADR-049]] suppresses evidence for
+BirdNET's human sound classes by class rather than by a voice-likelihood
+classifier, so the effect shipped without the classifier being built.
+
+**Not implemented, and today the station does the opposite:** no
+location-precision setting exists, and the local settings API returns exact
+latitude and longitude to any unauthenticated client on the LAN, because
+authentication ships off ([[ADR-034 - Authentication foundation|ADR-034]]). The one
+mitigation is that nothing external carries the coordinates — the MQTT publisher
+publishes none.
 
 ## 11. Success metrics
 

@@ -345,9 +345,13 @@ called "not started" is done: `scripts/benchmark_batdetect2.py`,
 2026-08-05 ([[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]). The `results/batdetect2-pi5.json` this sentence cites
 **did not exist for three weeks and now does** — regenerated on the Pi and
 committed 2026-08-25. Its timings differ from the 2026-08-05 figures by a factor
-of 1.6-1.85 for reasons nobody has established; both are kept in
-[[BATDETECT2_EVALUATION]], and the not-adopted verdict is unchanged either way
-(p95 realtime 0.96x). **Whether to
+of 1.6-1.85; both are kept in [[BATDETECT2_EVALUATION]], and the not-adopted verdict
+is unchanged either way. **Settled 2026-08-30: quote 0.52x, not the 0.96x this
+sentence used to give.** The benchmark was re-run three times on the target —
+unfenced, CPU-fenced as the refiner runs, and with recording paused so nothing
+competed — and all three landed at 0.38-0.51x p95, the unfenced run reproducing
+2026-08-05 to within about 1%. The 2026-08-25 artefact has never reproduced under
+any condition, and detector contention was tested and refuted as the explanation. **Whether to
 promote the offline cascade was the open question here until 2026-08-09; it is now closed
 by [[ADR-045 - Refinement runner|ADR-045]]** — see "The refinement runner" below.
 
@@ -535,8 +539,10 @@ two surfaces that cannot render a caveat show nothing instead. The repair comman
 against the live station on 2026-08-09T15:32:03Z: 61 rows carry
 `native_result.plausibility_review`, and detection `a233415f3f72406f9e67769e972c5e62`
 (*Flammulated Owl*, 0.8756) comes back from the live API `withdrawn: true`. What remains is
-the opposite of an operator action: **do not run it again until [[ADR-070 - Threshold retune is not a defect|ADR-070]] is deployed** (as of
-2026-08-29 it appears to be — see [[HANDOVER]] §6.3 item 0 for the evidence and the caveat) — the
+the opposite of an operator action: it was **not to be run again until
+[[ADR-070 - Threshold retune is not a defect|ADR-070]] was deployed. As of 2026-08-30 it provably is**, by commit
+ancestry against an endpoint the station serves, so that prohibition is lifted —
+see [[HANDOVER]] §6.3 item 0. The reason it existed: the
 CLI did not pass the station's configured band thresholds through, so a 2026-08-23 dry run
 proposed 32,660 withdrawals of ordinary garden birds. Tracked in [[HANDOVER]] §6.3 item 0.
 

@@ -433,6 +433,21 @@ their own for backing up `data/` (SQLite database, clips) and their private
 `config/runtime.env`. This should be treated as a gap, not a documented
 procedure, until something is built and tested.
 
+**Reviewed 2026-08-30:** the gap is sharper than "no tooling", because the two
+obvious ways to take the backup this page asks for elsewhere are both known to
+be unsound on a station that is capturing. `sqlite3.Connection.backup` against
+the live database **never converges** — SQLite restarts the copy whenever the
+source is written and capture writes continuously; it crawled at about
+8 MB/min and was abandoned on 2026-08-29 ([[EVIDENCE_BANK_MEASUREMENTS_2026-08-29]]).
+It did converge on 2026-08-09, on a smaller database
+([[ADR-042 - Migrations run in deploy.sh|ADR-042]]), so this is a condition that
+arrived rather than a mistake in that record. And copying the `.sqlite`,
+`-wal` and `-shm` files while writes are in flight is not a consistent
+snapshot. No procedure in this repository has been shown to produce a usable
+copy of the live database without stopping the service first, so "back this up
+before you migrate" is currently an instruction with no verified method behind
+it.
+
 ## Database: SQLite by default, Alembic migrations exist
 
 Per [[ADR-007 - SQLite in developer mode|ADR-007]], the default and only database in the current deployment is
@@ -806,6 +821,42 @@ Generated from the code — regenerate with
 | `retention_batch_budget_s` | live (pushed) | `1.5` s | sweep time budget |
 | `retention_interval_s` | live | `300.0` s | sweep interval |
 
+**Reviewed 2026-08-30.** Four corrections to the two tables above, from the
+station.
+
+- **`clip_max_total_gb` and `clip_retention_days` enforce nothing.** Both are
+  live and settable, both appear in the settings UI as budgets, and both are read
+  only by `ClipManager.enforce_retention()`, which nothing outside the test suite
+  calls — [[ADR-026 - Tiered clip retention|ADR-026]]'s sweep replaced it and
+  [[ADR-021 - Clips on their own device|ADR-021]]'s index entry says so. The
+  station is running `clip_max_total_gb` at 300 GB while holding 395.6 GB of
+  clips, and reports `budget_deleted: 0` beside it. `clip_retention_days` sets
+  `media_asset.expires_at` at write time and is otherwise inert. Changing either
+  has no effect on what is deleted; `retention_watermark_ratio` is the only disk
+  budget in force.
+- **Eight live settings are missing from these tables.**
+  `retain_acoustic_event_clips` (default `False`,
+  [[ADR-077 - Acoustic events keep no recordings|ADR-077]]) and the seven
+  `evidence_*` settings — `evidence_value_enabled` (default `False`),
+  `evidence_common_species`, `evidence_implausible_species`,
+  `evidence_suggestion_dismissed`, `evidence_implausible_cap` (`3`),
+  `evidence_bank_size` (`200`) and `evidence_sample_permille` (`10`)
+  ([[ADR-074 - Evidence kept by value|ADR-074]],
+  [[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]]).
+  All are `live` and all are on the station.
+- **The sweep runs every ~365 s on average, not 300 s.** Four consecutive
+  sweeps were 382.9 s, 387.0 s and 326.1 s apart. `retention_interval_s` is
+  honoured as a tick count; the housekeeping tick is no longer 10 s at this
+  archive size. Every per-sweep bound is therefore ~18% weaker per hour than
+  these defaults suggest.
+- **Do not open the settings page on a station that is capturing.**
+  `GET /api/v1/retention/suggestions`, which `SettingsPanel` fetches on mount,
+  took **19.9 s** on the station and two calls cost **41.4 s of recorded audio**
+  (46 ALSA overruns, 49 gaps). It is an unbounded aggregate over the whole
+  archive and it is not gated on `evidence_value_enabled`. Until that is fixed,
+  treat the settings page the way [[TARGET_DIAGNOSTICS]] treats any second
+  process on the box.
+
 #### Overnight refinement
 
 | setting | tier | default | notes |
@@ -1036,7 +1087,9 @@ is enabled — `/api/v1/health` and `/metrics` unconditionally, and
 `auth_public_read_paths` setting — whose default is **three** paths as of
 [[ADR-050 - Display OTA slots|ADR-050]]: `/api/v1/detections`, `/api/v1/display` and
 `/api/v1/firmware/image`, the last so the display can fetch its own OTA image
-(`src/open_observatory/config.py:552`). Note that `config/example.env` still
+(the `auth_public_read_paths` default in `src/open_observatory/config.py` — a
+line number is not quoted here because the file moves under it). Note that
+`config/example.env` still
 sets that variable to the single `/api/v1/detections`, which **overrides** the
 default: an operator who copies it and turns auth on takes the display's push
 channel and its OTA path dark. `/api/v1/display`
@@ -1050,6 +1103,53 @@ coordinates, not history/export/anything else) remain readable by anything
 on the LAN even with auth turned on, until a future firmware update adds
 bearer-token support and `auth_public_read_paths` is cleared. See [[ADR-034 - Authentication foundation|ADR-034]]
 for the full trade-off and the firmware follow-up this implies.
+
+**Reviewed 2026-08-30: what turning it on actually does, measured rather than
+reasoned about.** The real application was built twice with `auth_enabled: true`
+— once with the shipped three-path default and once with the single path
+`config/example.env` sets — and every path the display and the measurement
+scripts use was requested with no credential. With the **default** list:
+`/api/v1/health`, `GET /api/v1/detections`, `/metrics`, `WS /api/v1/display`
+(hello frame received) and `GET /api/v1/firmware/image` all answer;
+`GET /api/v1/history?window=today`, `GET /api/v1/station`,
+`GET /api/v1/debug/pipeline`, `GET /api/v1/auth/me` return 401 and
+`WS /api/v1/live` is closed with 4401. With the **`example.env`** list, the
+display socket is closed with 4401 and the OTA image returns 401 as well. Three
+consequences that were not written down anywhere before today:
+
+- **The exemption is one path short of what the display needs.** The
+  inside-observer's HTTP fallback fetches `GET /api/v1/history?window=today`
+  (`firmware/inside-observer/src/station_source.cpp`) for the species-today
+  count and the station's real UTC offset. That path is not in the allow-list
+  under any configuration and is not hardcoded public, so it 401s the moment
+  auth is on. The firmware treats that one failure as non-fatal — it logs
+  `history failed (count unchanged)` — so the screen keeps a stale species
+  count and falls back to the configured `fallbackUtcOffsetMinutes` instead of
+  the station's own offset. Degraded silently, on the glass, with nothing on
+  the station saying so. Add `/api/v1/history` to `OO_AUTH_PUBLIC_READ_PATHS`
+  before enabling auth on a station with a display attached, or accept that.
+- **With the `example.env` value the display does not go dark, it goes
+  backwards.** The push channel is refused, the socket reconnect-loops every
+  5 s (`push_station_source.cpp`), and after 60 s the poller wakes and the
+  display runs on the ~127 kB/20 s HTTP transport [[ADR-038 - Display push channel|ADR-038]] was built to
+  remove. OTA fails permanently: `ota.cpp` sees a non-200 and returns
+  `kFetchFailed`, so the update path that must work on the day it matters is
+  exactly the one that stops.
+- **Nothing under `scripts/` can carry a credential.** `measure_live_cost.py`,
+  `probe_display_channel.py`, `watch_display_channel.py` and
+  `measure_ultrasonic_contrast.py` all poll `/api/v1/station`,
+  `/api/v1/debug/pipeline` or `WS /api/v1/live` with no header, and every one
+  of them stops working with auth on. `deploy/deploy.sh` and the `oo` CLI are
+  unaffected — the first polls only `/api/v1/health`, the second reads the
+  database directly rather than the API.
+
+**Reviewed 2026-08-30: this has never been turned on outside a test process.**
+`GET /api/v1/health` on the live station reports `auth: {"enabled": false}`, as
+it has at every review since [[ADR-034 - Authentication foundation|ADR-034]] landed on 2026-08-08. Nothing in
+`results/` or the delivery documents records `auth_enabled: true` ever having
+run on the Pi. The evidence behind this section is 27 Python cases
+(`tests/test_auth.py`), 19 web cases, one manual browser session against a
+developer machine, and the probe described above — not a station.
 
 **`deploy/deploy.sh` is unaffected.** Its health-check loop polls
 `http://127.0.0.1:8080/api/v1/health` with no credential; that endpoint is
@@ -1121,10 +1221,14 @@ which `/var/run/reboot-required` will tell you about.
 
 The acceptance criteria require a continuous 72-hour soak test on the target
 device before the system may be described as complete (see
-[[ACCEPTANCE_CRITERIA]]). [[TARGET_DIAGNOSTICS]] records
-that one was run 2026-08-10 to 2026-08-13 and **failed** its continuity
-criterion (99.865% against ≥ 99.9%); a re-run is needed once [[ADR-060 - A stalled read is a dead stream|ADR-060]] and
-[[ADR-061 - Operator keep flag|ADR-061]] are deployed and verified. Capture the following over the run:
+[[ACCEPTANCE_CRITERIA]]). Attempt 1 ran 2026-08-10 to 2026-08-13 and **failed**
+its continuity criterion (99.865% against ≥ 99.9%). **Updated 2026-08-30:** the
+re-run this paragraph asked for has happened. [[ADR-060 - A stalled read is a dead stream|ADR-060]] and
+[[ADR-061 - Operator keep flag|ADR-061]] were deployed, and **attempt 4 passed on
+2026-08-25** — 72.107 restart-free hours, 99.9948%, 0.597 s lost against a 259.2 s
+budget ([[SOAK_2026-08-22]]). That closed one box, not the gate:
+[[ADR-073 - Five capture SLOs|ADR-073]] has since replaced the single continuity
+number with five SLOs, of which two are ticked. Capture the following over a run:
 
 - frame continuity and gaps (frames captured ÷ frames elapsed time implies);
 - USB disconnect/reconnect behaviour;
@@ -1154,3 +1258,11 @@ Regenerate the machine-readable portion with
 `oo audio probe --json --write docs/operations/probe.json` and update the
 prose sections by hand against a fresh run of `oo audio test-capture`,
 `oo audio resample-check` and `oo system-report`.
+
+**Reviewed 2026-08-30:** this section describes a document a person maintains by
+hand, and should not be read as Milestone 7's "setup wizard/commissioning
+report" deliverable. No command produces a commissioning report: there is no
+`oo commission`, no report endpoint, and nothing under `src/` that assembles
+one. What does exist is `GET /api/v1/setup` and the browser's first-run panel
+([[ADR-048 - Web-configurable settings|ADR-048]]), which asks four configuration
+questions and explicitly probes and calibrates nothing.

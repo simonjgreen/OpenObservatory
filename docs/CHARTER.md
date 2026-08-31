@@ -2,6 +2,12 @@
 
 What this system is for, in the order that settles arguments.
 
+**Reviewed 2026-08-30.** The priority order and the overriding constraints are
+unchanged. The dated figures in "Precedent" and in "Decided: retention does not
+preserve the merely uncertain" were re-checked against the code,
+[[MILESTONE_STATUS]] and the live station on that date; where one has been
+overtaken, a dated note follows it rather than a rewrite.
+
 ## How to use this
 
 This is a **conflict-resolution order**. When two things genuinely cannot both
@@ -46,6 +52,21 @@ consented.
 - Evidence retention is bounded and configurable.
 
 No efficiency, accuracy or feature gain justifies relaxing this.
+
+**Reviewed 2026-08-30:** three shipped mechanisms now carry this, and none of
+them relaxes it. No clip is written for a human sound class (`clip_human_audio`,
+default **False** — [[ADR-049 - Sound categories are not species|ADR-049]]). An acoustic-event detection — the group
+`Human vocal` belongs to — keeps its detection row and no recording at all
+(`retain_acoustic_event_clips`, default **False** — [[ADR-077 - Acoustic events keep no recordings|ADR-077]]). And the operator
+can pause recording for a chosen time, which expires by itself, survives a
+restart, and is recorded as a pause rather than read later as a gap
+([[ADR-055 - Timed recording pause|ADR-055]]). All three defaults were confirmed on the live station on
+2026-08-30. The 48 clips (125 MB, 24 detections) written before the first of
+them became the default have never been purged with `--apply`
+([[MILESTONE_STATUS]], Milestone 3). [[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s tier is what should now
+reclaim them, and on 2026-08-30 it had not yet: two consecutive sweeps spent the
+whole 1.5 s budget in the 7-day tier and reported `acoustic_event` skipped, so
+that audio is still on the disk.
 
 ---
 
@@ -195,7 +216,27 @@ The daily-cadence argument above governs steady state, once the timer has
 been running long enough to have caught up; it does not yet describe this
 station's backlog.
 
+**Reviewed 2026-08-30:** the 15,704 above is the 2026-08-12 reading and has not
+been re-measured. The runner has run nightly since — 16,586 `refinement` rows on
+2026-08-23, the last pass exiting 0 ([[MILESTONE_STATUS]], Milestone 5) — so the
+backlog is smaller and may be gone, but the never-examined count is only
+readable through `oo refine status` on the station and nobody has read it since.
+Treat the figure as dated, not as current.
+
 So the tiers stand as they are. Passive uncertainty does not earn storage.
+
+**Reviewed 2026-08-30: the tiers did not stand.** The 90-day boundary the
+argument above rests on no longer exists. [[ADR-061 - Operator keep flag|ADR-061]]'s third addendum
+(2026-08-14) retired the 90-day tier as dead code: it issued a query identical to
+the 30-day one, so it could never reach a row the 30-day tier had not already
+offered. What runs on the station today is 7 days (native), 30 days (audible
+only), an acoustic-event tier that keeps no clip at any age
+([[ADR-077 - Acoustic events keep no recordings|ADR-077]]), and the watermark. A value dimension — rarity crossed with
+plausibility, plus a blind sample ([[ADR-074 - Evidence kept by value|ADR-074]], its mechanism replaced by
+[[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]]) — is built, but it shipped rarity-only and `evidence_value_enabled`
+is **False** on the station, so none of it is running. The conclusion below
+holds: passive uncertainty still earns no storage. What has gone is the tier the
+operator's "if we haven't refined by 90 days" named. Nothing now waits 90 days.
 
 Two safeguards keep that rule honest rather than weakening it:
 
@@ -209,4 +250,19 @@ Two safeguards keep that rule honest rather than weakening it:
   as of [[ADR-043 - Taxon correction|ADR-043]] (2026-08-09), is written to: the live station's `review` table
   holds 65+ rows. Someone marking something as needing their ear is a
   positive act, and is not the same thing as passive uncertainty.
+
+**Reviewed 2026-08-30: the first safeguard is not in force, and the second
+shipped narrower than it is written here.** `retention.py` reads no refinement
+column, so the age tiers still delete on age alone and a clip can be reclaimed
+having never been examined once — the exact failure the safeguard names. The
+schema carries what it would need (`detection.refined_at` /
+`refinement_version` / `refinement_outcome`, [[ADR-045 - Refinement runner|ADR-045]]) and
+`oo refine status` reports the never-examined count, but nothing gates a
+deletion on either; the gap is recorded as open in [[DATA_MODEL]] and
+[[HANDOVER]], and closing it changes a live station's deletion policy, so it is
+the operator's call. On the hold: a `held` review exempts an item from the two
+age tiers but **not** from the watermark reclaim, deliberately
+([[ADR-043 - Taxon correction|ADR-043]], [[ADR-061 - Operator keep flag|ADR-061]]). The mark that survives everything, disk pressure
+included, is the operator-set `kept` flag ([[ADR-061 - Operator keep flag|ADR-061]]) — 112 detections
+carried it on the station on 2026-08-30.
 

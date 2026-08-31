@@ -324,7 +324,13 @@ per 2-second native window, still comfortably inside the 2 s budget.
 The last full run *on the Pi* was 197 Python tests on 2026-08-08. For the current
 suite size see [[SETUP]], measured on the development laptop.
 BatDetect2's own benchmark on this hardware *is* a target measurement and is
-recorded in [[BATDETECT2_EVALUATION]].
+recorded in [[BATDETECT2_EVALUATION]]. **Re-measured three times on 2026-08-29**
+(unfenced, CPU-fenced as the refiner runs, and with recording paused): p50
+763–818 ms, p95 977–1321 ms, realtime **0.61–0.66× (p50) and 0.38–0.51× (p95)**.
+That reproduces the 2026-08-05 figures within about 1% and does not reproduce the
+faster 2026-08-25 artefact under any of the three conditions, so **0.52× is the
+figure to quote**. Detector contention and the CPU fence were both tested as
+explanations and neither is one — the paused run was the *slower* of the three.
 
 ## Live channel delivery, measured from a real browser over Wi-Fi
 

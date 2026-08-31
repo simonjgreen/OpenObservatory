@@ -8,11 +8,17 @@
 >
 > **For what is actually delivered, read
 > [`MILESTONE_STATUS.md`](MILESTONE_STATUS.md), which is the authority.** In
-> summary as of 2026-08-09: Milestones 0–3 and 5 complete; Milestone 4 delivered,
-> including the review workflow, which [[ADR-043 - Taxon correction|ADR-043]] closed; Milestone 4.5 nearly
-> closed as of 2026-08-25 (species fixture and `oo audio window-dump` done; the
-> 72-hour soak **passed** on continuity; drift gate (a) **passed**; only drift
-> gate (b) is still open, having run and failed on linearity); Milestone 6's publisher live but its alert
+> summary as of 2026-08-30: Milestones 0–3 and 5 complete; Milestone 4 delivered,
+> including the review workflow, which [[ADR-043 - Taxon correction|ADR-043]] closed, though its exit gate's
+> second clause was traded away rather than met — see the note under that
+> milestone; Milestone 4.5 part closed (species fixture and `oo audio
+> window-dump` done; the 72-hour soak **passed** on continuity at the fourth
+> attempt, 2026-08-25; drift gate (a) **passed**). **Two drift gates are open,
+> not one.** Gate (b), the live capture clock, has now run three times — twice on
+> 2026-08-25 and again on 2026-08-29 — and failed every time on linearity and
+> step; the third run refuted the thermal explanation the first two suggested
+> ([[DRIFT_GATE_B_2026-08-29]]). Gate (c) is Milestone 1's own exit gate, attempted
+> and aborted on 2026-08-29; see that milestone below. Milestone 6's publisher live but its alert
 > engine unbuilt; Milestone 7 not started; Milestone 8 has one of its six
 > deliverables done ([[ADR-050 - Display OTA slots|ADR-050]]'s display OTA, flashed and verified on hardware);
 > Milestone 9 not started, by design.
@@ -21,6 +27,18 @@
 > criterion (99.865% against ≥ 99.9%; see [[MILESTONE_STATUS]] §Milestone
 > 4.5), and `CLAUDE.md` forbids describing the system as complete until a soak
 > passes.
+>
+> **Reviewed 2026-08-30:** that paragraph is the record of attempt 1 and stands.
+> Attempts 2 and 3 were void on mains power; **attempt 4 passed on 2026-08-25** —
+> 72.107 restart-free hours, continuity 99.9948%, 0.597 s of audio lost
+> ([[SOAK_2026-08-22]]). So the reason given above for withholding the word
+> "complete" is spent, and the word still does not apply: [[ACCEPTANCE_CRITERIA]]
+> has 38 boxes still unticked, the capture-continuity one being the only
+> criterion any run has formally passed. The criterion itself has since been
+> superseded — [[ADR-073 - Five capture SLOs|ADR-073]] decomposed the single continuity ratio into five
+> SLOs, because most of what that ratio measured was the crystal rather than lost
+> audio. Wherever this plan says "capture continuity", read SLO A (coverage) and
+> SLO B (capture integrity).
 
 ## Milestone 0 — Repository and target diagnostics
 
@@ -49,6 +67,21 @@ Deliver:
 - Prometheus health endpoint.
 
 Exit gate: one-hour generated/replayed stream shows no timestamp drift or unexplained gaps.
+
+> **Still open as drift gate (c), 2026-08-29.** [[ADR-069 - Two drift gates|ADR-069]]
+> split "the one-hour drift run" into three and found that this one — the gate as
+> literally written here — had never been run: (a) is the synthetic *resampler*
+> check and (b) the live capture clock. It needs no microphone:
+> `OO_SOURCE=synthetic` with its own `OO_DATA_DIR` and port opens no ALSA device.
+> The pass criterion is fixed in advance in [[MILESTONE_STATUS]].
+>
+> **The paragraph above said "so it cannot disturb capture" until 2026-08-29, and
+> that was wrong.** The first attempt ran as a second station on the live Pi, fenced to
+> cores 2–3 at `nice 19`, and ten minutes in the *live* station took an overrun and
+> lost 2.2 s of audio. Opening no ALSA device is not the same as not competing for
+> four cores and one disk. The run was stopped at 35.6 minutes; see
+> [[DRIFT_GATE_C_2026-08-29]] for the reading it had reached and the three ways
+> the hour can honestly be bought.
 
 ## Milestone 2 — Derivation, windows and job transport
 
@@ -117,6 +150,15 @@ Deliver:
 Exit gate: a user can operate **and** diagnose the station entirely through the local UI,
 with anonymous read access disabled by default.
 
+> **Reviewed 2026-08-30: the second clause was traded away, not met.**
+> [[ADR-034 - Authentication foundation|ADR-034]] built the authentication foundation this milestone asked for and
+> then shipped it **off** by default, with a public-read allow-list, on the
+> grounds that an upgrade must not lock an operator out of their own station.
+> Anonymous read is therefore *enabled* on a fresh station; the live one reports
+> `auth: {"enabled": false}` from `GET /api/v1/health`. [[MILESTONE_STATUS]]
+> records this milestone as delivered on the strength of the first clause, and
+> nothing recorded the second clause being given up.
+
 ## Milestone 4.5 — Close the Milestone 1–3 exit gates
 
 Split out because these are unfinished gates, not new scope, and two of them are bounded
@@ -137,6 +179,21 @@ deploy while it runs.
 
 Exit gate: the acceptance criteria for capture continuity pass over 72 continuous hours,
 and a detector fixture test passes in CI on the target architecture.
+
+> **Reviewed 2026-08-30: first clause met, second clause not met and not
+> currently meetable as written.** The 72 hours were passed on 2026-08-25 by soak
+> attempt 4, under the continuity criterion [[ADR-073 - Five capture SLOs|ADR-073]] has since replaced with
+> SLOs A and B. The fixture test passes on the target Pi 5 —
+> `tests/test_birdnet_fixture.py`, 3 passed in 6.83 s on aarch64, 2026-08-08 —
+> but it was run by hand. **There is no CI**: `.github/` holds `dependabot.yml`
+> and no workflows have ever existed, so there is no aarch64 runner for a test to
+> pass on. That is a Milestone 0 deliverable ("CI, linting, typing and test
+> commands") which was never built and is not on the deferred list below.
+>
+> **And "the drift test at its full one-hour duration" above is three tests, not
+> one** ([[ADR-069 - Two drift gates|ADR-069]]): gate (a) passed 2026-08-25, gate (b) has failed three
+> times, and gate (c) — Milestone 1's own exit gate — was aborted on 2026-08-29.
+> Two of the three are open.
 
 ## Milestone 5 — Ultrasonic and bat support
 
@@ -165,7 +222,7 @@ those. Everything below needs this path to exist. Defaults must equal the curren
 constructor defaults exactly, so behaviour is unchanged until someone sets one.
 
 **2. Night scheduler.** Gate the ultrasonic detector to civil dusk through civil dawn
-plus a configurable margin either side, per [[TECHNICAL_SPEC]] §184.
+plus a configurable margin either side, per [[TECHNICAL_SPEC]] §6.
 
 - *Why it is not merely tidiness.* A detector that runs at two in the afternoon reports
   bat passes from wind, machinery and handling noise, and no threshold tuning can
@@ -189,7 +246,7 @@ plus a configurable margin either side, per [[TECHNICAL_SPEC]] §184.
   and whether the detector is gated must be visible in the API and the UI, and the
   transition logged. A detector that is off must be visibly off, not absent.
 
-**3. Deferred mode.** Specified at `DETECTOR_STRATEGY.md:32` for when real-time
+**3. Deferred mode.** Specified at `DETECTOR_STRATEGY.md:47` for when real-time
 inference is not sustainable: queue night windows to a bounded queue and process them
 after capture, reporting lag honestly rather than dropping silently. The scheduler is
 what makes this tractable, because it bounds what can enter the queue. Build it when
@@ -289,7 +346,12 @@ Deliver:
   reports it at firmware `0.2.4` and up to date. The drill is what found that
   `arduino-esp32` was disarming the rollback net before `setup()` ran, making the
   whole mechanism unreachable code — which is the argument for doing these on
-  hardware rather than in a test suite;
+  hardware rather than in a test suite. **Reviewed 2026-08-30:** the `0.2.4`
+  reading is the 2026-08-09 one. The mechanism has since carried a real change
+  end to end and unattended — firmware `0.2.5` on 2026-08-25, no cable and nobody
+  at the shelf — which is the evidence for this bullet's own "every firmware
+  change afterwards is free" justification. The station reports `0.2.5`, up to
+  date, today;
 - **backup and restore of a station's identity and history**, so replacing the
   hardware does not lose the record;
 - a signed, checksummed release process for images and firmware, with model

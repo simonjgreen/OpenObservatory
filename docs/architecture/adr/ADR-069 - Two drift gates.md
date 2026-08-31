@@ -7,7 +7,10 @@ tags:
 # ADR-069: "The one-hour drift run" is two different tests, and this is the criterion each must meet
 **Status:** accepted, 2026-08-23. Written **before** either run, deliberately.
 **Run records:** [[DRIFT_GATE_A_2026-08-25]] (gate (a), passed),
-[[DRIFT_GATE_B_2026-08-25]] (gate (b), failed on linearity).
+[[DRIFT_GATE_B_2026-08-25]] (gate (b), failed on linearity),
+[[DRIFT_GATE_C_2026-08-29]] (gate (c), attempted and stopped early).
+**Amended by:** [[ADR-075 - Window rate, not stream age|ADR-075]], which fixes one
+of gate (b)'s six checks and sets the next linearity bar in advance.
 
 ### The problem: one line item, two tests, five documents
 
@@ -162,6 +165,16 @@ asks for. It is achievable without touching the microphone — `OO_SOURCE=synthe
 is **left open here rather than retired**, because retiring a written exit gate
 by not mentioning it is how this line item came to mean two things in the first
 place.
+
+**Reviewed 2026-08-29, after the first attempt.** "Achievable without touching the
+microphone" is true and was read as "harmless to capture", which it is not. Run as a
+second station on the live Pi — fenced to cores 2–3 at `nice 19`, the refiner's own
+fence — it cost the live station an overrun and 2.2 s of audio ten minutes in, and
+the run was stopped at 35.6 of 60 minutes. A synthetic station still resamples, runs
+three detectors, writes clips and drives a database on the same four cores and the
+same disk. Gate (c) therefore needs capture stopped, a second machine, or a declared
+pause ([[ADR-055 - Timed recording pause|ADR-055]]) — see [[DRIFT_GATE_C_2026-08-29]].
+The gate itself is unchanged and still open.
 
 ### Consequence: the instrument had to be fixed before it could be used
 

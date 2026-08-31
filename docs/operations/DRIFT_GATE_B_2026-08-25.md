@@ -1,5 +1,12 @@
 # Drift gate (b), 2026-08-25 — **DID NOT PASS**, and what it found instead
 
+> **Answered 2026-08-29 ([[DRIFT_GATE_B_2026-08-29]]).** The thermal reading this
+> file proposes does not survive a third run. Over a *falling* ramp the residual got
+> worse (3.7796 ms) and `residual_vs_temperature_r` went to −0.2194, against the
+> +0.693 and +0.706 recorded here. Both runs below shared a morning warming ramp,
+> which is what made temperature look like the mechanism. The figures below stand;
+> the inference drawn from them does not.
+
 The live capture-clock drift run defined in [[ADR-069 - Two drift gates|ADR-069]], run for the first time at
 full duration. **It did not pass.** Three of six checks failed.
 
@@ -37,7 +44,13 @@ Immediately before this run the station completed a valid 72-hour soak
 | points fitted | ≥ 10 | 65 | **PASS** |
 | no confirmed loss | deltas unchanged | all 0 | **PASS** |
 | slope vs station figure | ≤ 2 ppm | **3.563 ppm** | **FAIL** |
-| linearity | ≤ 0.5 ms | **3.156 ms** | **FAIL** |
+| linearity | ≤ 0.5 ms | **3.147 ms** | **FAIL** |
+
+**Corrected 2026-08-29:** this table read **3.156 ms** until today. The archived
+artefact says `max_abs_residual_ms: 3.1472` (`results/drift-2026-08-25.log:29`),
+and the step is 0.6626 ms, not 0.664. The verdict is untouched — both figures fail
+a 0.5 ms bar by the same order — but a run record that disagrees with its own log
+is exactly the kind of drift this file exists to prevent.
 | no step | ≤ 0.5 ms | **0.663 ms** | **FAIL** |
 
 - Theil–Sen slope: **+46.287 ppm**, 95% CI **[45.576, 47.269]**
@@ -157,7 +170,7 @@ station's `/metrics` on the connection it already holds open.
 | Theil–Sen slope | +46.287 ppm [45.58, 47.27] | **+50.865 ppm [50.28, 51.30]** |
 | station `rate_offset_ppm` | −49.85 | −50.72 |
 | **slope agreement** | 3.563 ppm — **FAIL** | **0.145 ppm — PASS** |
-| **linearity** | 3.156 ms — **FAIL** | **2.743 ms — FAIL** |
+| **linearity** | 3.147 ms — **FAIL** | **2.743 ms — FAIL** |
 | **step** | 0.663 ms — **FAIL** | **0.664 ms — FAIL** |
 | confirmed loss | none | none |
 | SoC temperature | not recorded | **42.45 → 45.75 °C** (per-minute medians) |
@@ -188,7 +201,7 @@ That is a defect in the gate's design, not in the station. It needs an ADR.
 
 ### Linearity failed both times, at the same size and the same shape
 
-2.743 ms and 3.156 ms against a 0.5 ms threshold, with a step of 0.664 ms and
+2.743 ms and 3.147 ms against a 0.5 ms threshold, with a step of 0.663 ms and
 0.663 ms — the two step figures agree to a thousandth of a millisecond, which is
 either a coincidence or a hint that the same mechanism produced both. **This is
 reproducible, not a one-off.**

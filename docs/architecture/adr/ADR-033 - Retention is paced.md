@@ -104,5 +104,33 @@ rather than from the sweeper. Two things a reader should not carry forward:
   under `capture`, but not the phase breakdown; `snapshot_phase_s` appears nowhere in
   `src/open_observatory/api/app.py`.
 
+**Reviewed again 2026-08-30: the pace is not 300 s, it averages ~365 s.**
+Four consecutive sweeps on the station started at 19:48:44.560Z, 19:55:07.426Z,
+20:01:34.409Z and 20:07:00.469Z — **382.9 s**, **387.0 s** and **326.1 s** apart,
+a mean of **365 s** against `retention_interval_s: 300.0`. The setting is honoured as written
+(`ticks % max(1, round(300/10)) == 0`, i.e. every 30 ticks); it is the *tick*
+that is no longer 10 s. `_housekeeping_loop` sleeps 10.0 s and then does its
+work (`src/open_observatory/station.py:1900`), so the period is 10 s plus
+whatever the tick body costs, and on a 245,786-file archive the
+[[ADR-059 - Clip archive measured off-loop|ADR-059]] chunked walk alone now
+spans tens of seconds of wall clock every third tick. Nothing is wrong here —
+the walk yields, `housekeeping_blocking_s` reads 0.0055 and `snapshot_phase_s`
+gives `storage` 0.0001 s — but two documents describe a cadence the station does
+not run: this ADR's 300 s, and `retention_interval_s`'s own help text ("rounded
+up to the nearest 10 s housekeeping tick"). The consequence is arithmetical and
+matters at the watermark: every per-sweep bound — `retention_batch_size`, and so
+the maximum bytes the disk-pressure valve can reclaim per unit time — is ~18%
+weaker than the settings imply, and the interval is not stable enough to derive
+a rate from a single pair of sweeps.
+
+**Amended 2026-08-31.** Two more intervals, from a different process: sweeps at
+20:50:30.507Z, 20:56:01.982Z and 21:01:34.740Z, **331.5 s** and **332.8 s** apart.
+Across the five intervals now measured (382.9, 387.0, 326.1, 331.5, 332.8 s) the
+mean is **352 s** and the spread is 61 s. So the correction stands — the sweep
+does not run at `retention_interval_s` — but "~365 s" was one run's average, not a
+constant, and the honest statement is a **mean of ~352 s with the interval
+varying by about 20%**. Every per-sweep bound is therefore ~15% weaker per hour
+than the settings imply, not 18%, and the figure moves with archive size.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -241,10 +241,11 @@ in a garden that is usually noisy says something a blank screen would not.
 `/api/v1/station` reported one connected display, 2,990 frames sent, none dropped,
 `mean_frame_bytes: 43.4` — the headline figure above, still checkable from the
 counter this ADR put there (`src/open_observatory/display_channel.py:481`). The
-socket (`src/open_observatory/api/app.py:2580`), the frame vocabulary, the 64-frame
+socket (`display_socket`, `src/open_observatory/api/app.py:2629`), the frame vocabulary, the 64-frame
 queue that sheds the oldest *detection* first, the single-writer rule
 (`src/open_observatory/display_channel.py:441,465`) and the default public-read
-exemption (`src/open_observatory/config.py:554`) are all as described. Four things
+exemption (`Settings.auth_public_read_paths`, `src/open_observatory/config.py:653`) are
+all as described. Four things
 have moved since:
 
 - The wire carries **four** frame types now, not three: [[ADR-050 - Display OTA slots|ADR-050]] added `u`, the
@@ -261,6 +262,36 @@ have moved since:
   read-only "Feed" transport report (`firmware/inside-observer/src/display.cpp:804`).
   The provisioning portal is a different surface and still offers a "24-hour clock"
   checkbox that decides nothing (`firmware/inside-observer/src/portal.cpp:96`).
+
+**Reviewed 2026-08-30:** the channel is still up and the wire is still score-free.
+`/api/v1/station`'s `display_channel` reported one client, 3,587 frames sent, 0
+dropped, 153,703 bytes, `mean_frame_bytes: 42.9`, `firmware_version: "0.2.5"`. The
+no-score rule holds on both transports and is enforced structurally on each:
+`wire_item` returns a mapping whose whole vocabulary is `n`/`at`/`b`/`k`/`r`
+(`src/open_observatory/display_channel.py:148`), and on the polled fallback
+`FeedItem` still has no field that could carry a score, guarded by
+`test_no_feed_item_ever_carries_a_score`
+(`firmware/inside-observer/test/test_feed/test_feed.cpp:228`). Withdrawal is
+suppressed on both wires and on both barriers: in the snapshot SQL
+(`src/open_observatory/api/app.py:2580`, `is_not_withdrawn()`), again in `wire_item`
+(`src/open_observatory/display_channel.py:179`), and in the fallback's own parser
+(`firmware/inside-observer/src/model/detection_feed.cpp:59`) with the streaming
+filter taught to keep the field (`:176`). 145 station-side tests and 100 firmware
+host cases (`pio test -e native`) passed. Two claims above are weaker than they
+read:
+
+- **The 64-frame drop policy has never fired on this station.** `dropped: 0` across
+  3,587 frames. That the oldest *detection* is shed first, and never a status frame,
+  is unit-tested and has never been observed under load on the device.
+- **"HTTP polling stays in the firmware as a real, exercised fallback" has no dated
+  hardware record.** The switch-over logic is host-tested and the poller is genuinely
+  woken after 60 s of a dead socket
+  (`firmware/inside-observer/src/main.cpp:804`), and polling was the primary
+  transport on this board before this ADR, so the code has run on hardware. What has
+  not been recorded anywhere is the *fallback engaging* — no serial capture, no
+  operations note, nothing in `docs/operations/`. The firmware README's "A fallback
+  nobody ever runs is not a fallback" (`firmware/inside-observer/README.md:417`) is
+  an argument for the design, not evidence that this one ran.
 
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

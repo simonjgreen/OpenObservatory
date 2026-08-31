@@ -362,5 +362,41 @@ once with a build pointed at a nonexistent station host:
 [ota] this build never reached the station; rolling back
 ```
 
+**Reviewed 2026-08-30:** the mechanism is running and the gap this ADR named is
+still open. `GET /api/v1/firmware` reported version `0.2.5` published
+2026-08-24T11:43:45Z, 1,138,832 bytes, one connected display at `0.2.5` and
+`up_to_date: true`, `offer_on_connect: true`, `app_slot_bytes: 2031616` — so both
+delivery paths this ADR argued for are configured and the last image reached the
+glass over the air. `tests/test_firmware.py` and the display tests pass (145 cases
+across the station-side files, none skipped); `pio test -e native` is 100 cases,
+including `test_ota`.
+
+**Image signing is still not implemented, and the search for it is now recorded
+rather than assumed.** Nothing under `src/open_observatory/` matches `signature`,
+`signing`, `ed25519`, `pubkey` or `public_key`; the only hit anywhere in
+`firmware/inside-observer/src/` is the comment in `ota.h:75` that repeats this
+ADR's own admission. `validate_image`
+(`src/open_observatory/firmware_store.py:106`) is still the 0xE9 / chip-id /
+`esp_app_desc_t` mistake-check it says it is, and its docstring still says
+"Not security". The mitigation this ADR shipped is intact: the offer carries a path
+and the firmware refuses one that does not begin with `/`
+(`firmware/inside-observer/src/model/ota_policy.cpp:121`).
+
+**What that combines with, stated plainly.** `auth_enabled` defaults to `false`
+([[ADR-034 - Authentication foundation|ADR-034]]) and is `false` on the live station — `GET /api/v1/health` reports
+`auth: {"enabled": false}`. While it is off the gate is inert for **every** method,
+not only GET, so `POST /api/v1/firmware`, `POST /api/v1/firmware/rollout` and
+`DELETE /api/v1/firmware` are all reachable by anything on the LAN with no
+credential. The end-to-end consequence is that an unauthenticated device on this
+network can publish an ESP32 image that passes `validate_image`, trigger a rollout,
+and have the display install it — the digest check will pass, because the attacker
+supplies both the image and the digest. This is the substitution case this ADR
+already described; what is new in this note is that no credential is required to
+*reach* the publish endpoint either, so the "anyone who can already answer for the
+station's address" precondition is not currently the binding one. Turning
+`auth_enabled` on closes the publish and rollout half — those paths are gated, and
+only `GET /api/v1/firmware/image` is exempt — which makes the switch, not signing,
+the cheapest available mitigation today. Signing remains the fix for the rest.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

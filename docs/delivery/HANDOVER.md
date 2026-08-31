@@ -72,6 +72,43 @@ engine, Milestone 7 entirely, and most of Milestone 8.
 (The review workflow is no longer on that list — [[ADR-043 - Taxon correction|ADR-043]] closed it on 2026-08-09,
 and the live station's `review` table holds 65 rows.)
 
+## 1a-urgent. Two things measured on 2026-08-30 that need a decision, not a reader
+
+**Do not open the web UI's settings page until `/api/v1/retention/suggestions` is
+fixed. It destroys recorded audio.** It is a documented, read-only `GET`, and
+`SettingsPanel` fetches it on mount. Measured on the live station on 2026-08-30:
+two calls took ~20 s each and cost **41.4 s of audio** — 46 ALSA overruns, 49 gaps,
+continuity 0.999947 → 0.998518. `compute_suggestions`' second aggregate has no
+`taxonomic_group` filter and its `WINDOW_DAYS = 30` bounds nothing on a 25-day
+archive, so it joins detection → detection_media → media_asset across ~1M rows on
+the capture box. This is the same query shape
+[[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]] measured
+at 5.97 s the day before and deleted, with its own conclusion attached: "bounding
+the window is not the fix; not joining is." Gate it on `evidence_value_enabled`,
+stop the panel fetching it on mount, or both.
+
+**The disk is not being managed, and the watermark is hours away.** 396 GB of a
+491 GB filesystem, **83.44%** against an 85% watermark. **Corrected 2026-08-31:**
+this paragraph first said "growing ~2.2 GB/h … about seven hours of headroom", from a
+**nine-minute evening window** — clip volume here is strongly diurnal, so that
+sampled the peak and called it a rate. Measured over **24.75 hours** against
+`disk_free` (a filesystem figure, so it survives the two restarts in between): the
+real net fill is **0.338 GB/h**, wrong by 6.5×, and the watermark is **7.69 GB and
+about 23 hours away** — the evening of 2026-09-01, not the morning of 08-30. The
+error is worth keeping visible: it is "measure the instrument" failing inside the
+review that exists to catch it. The station
+reports `status: ok`, no problems, no notes, `eligible_for_deletion: 0` and
+`retention_sweep_keeping_up: true`, which is what "looks managed and is not" reads
+like from the outside. What crosses the line will be the watermark valve, and four
+things are true of it at once: it has **never run** on this station; `banked_at`
+protects nothing because `oo clips bank-backfill` was never run, so
+[[ADR-074 - Evidence kept by value|ADR-074]]'s protection of the interesting tail
+is inert; `held` detections are not exempt from it; and it reclaims oldest-first,
+so the first thing it destroys is the earliest evidence this station ever recorded.
+Its `freed` accounting is also unconditional, so rows whose files are already gone
+let it declare itself satisfied having freed nothing. Run the backfill before the
+line is crossed, or decide deliberately what is lost.
+
 ## 1a. The cascade finding — the most reusable idea from Milestone 5
 
 BatDetect2 cannot follow a live 384 kHz stream (0.52x realtime, [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]), but it does
@@ -747,7 +784,7 @@ unless noted.
    group delay 0.0 frames, deficit trend −0.044 against a limit of 820, seam step
    ratio 1.527× against 25×, peak RSS 124 MB. **Gate (b)** (live capture clock)
    **did not pass**: a clean, uninterrupted 64.98-minute segment, but linearity
-   3.156 ms against a 0.5 ms threshold and slope agreement 3.563 ppm against
+   3.147 ms against a 0.5 ms threshold and slope agreement 3.563 ppm against
    2 ppm.
    The residual is a single smooth hump — the mechanism with a longer-than-22-minute
    period that this item existed to look for, and it *was* found. Leading
@@ -941,7 +978,21 @@ useful addition and is not currently planned.
      the question.
 
    **Do not run this command with `--apply` again until [[ADR-070 - Threshold retune is not a defect|ADR-070]] is deployed to
-   the station.** **Updated 2026-08-29: that condition now appears to be met, but check before you act on it.** The fix shipped in `debba2d` (2026-08-24) together with the `UtcQueryDatetime` repair in `api/app.py`, and the station now answers `GET /api/v1/history?since=…&until=…` with 200 where the pre-`debba2d` build raised a 500 — so the deployed build is at or after that commit. That evidence is indirect: the repair pass is CLI-only and cannot be seen over HTTP. Confirm the deployed revision on the station, then run `--apply` **dry first** and read the findings count before letting it write. A dry run on 2026-08-23 returned **32,660 findings** — led by
+   the station.**
+
+   **Settled 2026-08-30: it is deployed, and the command is safe to run.** The
+   station serves `GET /api/v1/retention/suggestions`, an endpoint introduced by
+   commit `7241055` (2026-08-30), and `debba2d` — which carries ADR-070's fix — is
+   an ancestor of it, so the running build contains the fix. (On 2026-08-29 this
+   said only that the condition "appears to be met", on the indirect evidence that
+   `GET /api/v1/history?since=…&until=…` had stopped returning 500; the ancestry is
+   the proof that evidence was standing in for.) The 32,660 findings below would
+   not be proposed today either: the station still runs
+   `birdnet_threshold_in_range = 0.35`, so those rows clear their own admitting
+   bar, and if the bar is raised again ADR-070's exemption is what holds. Run
+   `--apply` dry first and read the count, as always.
+
+   A dry run on 2026-08-23 returned **32,660 findings** — led by
    *Common Woodpigeon* ×9,168, *European Robin* ×7,434 and *Collared Dove*
    ×2,477, highest flagged score **0.549992** — and not one of them was a
    genuinely implausible species. The station has run

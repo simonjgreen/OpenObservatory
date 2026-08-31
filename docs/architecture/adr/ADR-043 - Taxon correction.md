@@ -173,5 +173,90 @@ exporting the clip: [[ADR-061 - Operator keep flag|ADR-061]]'s operator-set `kep
 watermark, and an operator who needs a hold to survive disk pressure should
 mark the detection `kept` as well.
 
+**Reviewed 2026-08-30.** The decision holds. Three corrections, four findings and
+one thing this ADR turns out to have already done on the station; none of them
+changes what was decided.
+
+*Corrections to the note above.* The two line numbers are stale:
+`held_ids` is applied at `src/open_observatory/retention.py:1367`
+(`_strip_native`) and `:1414` (`_strip_unkept`). There is now a **third** tier
+that honours the hold, added after that note was written — `_strip_acoustic_events`
+(`:1491`, [[ADR-077 - Acoustic events keep no recordings|ADR-077]]), so `_TIER_ORDER` is `("native", "unkept",
+"acoustic_event", "watermark")`. `_watermark_reclaim` still does not check
+`held_ids` (`:2025`), so the second known limitation above is unchanged. The
+same "two age tiers" count is carried by [[ADR-061 - Operator keep flag|ADR-061]]'s own correction, by
+`retention.py`'s module docstring and by [[CHARTER]]; all three are one tier
+behind, in the safe direction.
+
+*Exercised on the station, and this is the strongest evidence this ADR has.*
+Read-only over the API on 2026-08-30, across 17,694 detections of 2026-08-04 to
+2026-08-10 scoring 0.70 or better: **31 `held` and 3 `confirmed` reviews**, every
+one written by actor `local` (auth is off). All 31 holds are *Spotted Crake*, and
+they were written at 2026-08-09T15:31:44Z — **19 seconds before** the
+`oo detections reconcile-plausibility --apply` run of 15:32:03Z recorded in
+[[ADR-044 - Withdrawn detections|ADR-044]]. One of them, `c2d60a09`, carries
+`native_result.occurrence_probability` 0.000414, below the 0.0005 plausibility
+floor, so today's `band_for` puts it in `implausible` at an unreachable bar: it
+would have been a finding of that pass, and it comes back `withdrawn: false`
+today. Point 5 — a human's ear outranks a machine's — is not merely unit-tested;
+it stopped 31 withdrawals on the live station. Whether those 31 identifications
+were right is not settled by any of this, and the hold does not claim it is: what
+the hold did was stop an automated pass deciding the question. Spotted Crake is a
+scarce but genuine British species, so a near-zero occurrence prior is exactly
+what it should have, which is the case the floor cannot tell apart from an
+American owl.
+
+*Finding: `corrected` appears never to have been used.* Across the same 17,694
+rows and a second read of 20,000 rows scoring 0.95 or better spanning
+2026-08-11 to 2026-08-30, every review is `held` or `confirmed`, every row reports
+`identification_source: "model"`, and the most recent review of any kind is
+2026-08-10T09:02:44Z. Both reads are samples, not a census — there is no endpoint
+or CLI command that lists reviews, so a census is not available read-only — but
+the headline action of this ADR has no observed use on the station in three weeks,
+and the confirm/reject/hold half predates it.
+
+*Finding: the web UI never reads the correction.* `effective_common_name`,
+`effective_scientific_name` and `identification_source` are declared in
+`web/src/types.ts:347-351` and referenced nowhere in `web/src` except a test
+fixture. `formatDetectionTitle` (`web/src/components/detectionTitle.ts:45`)
+composes every title from `display_name`, which the API derives from the
+detector's untouched `common_name`, so the list, the history view, the
+spectrogram labels and the drawer's own `<h2>` all keep showing the original name
+after a correction. The only rendering of a correction anywhere in the UI is the
+"Corrected to …" line inside the open drawer's review controls
+(`DetectionDrawer.tsx:428-434`). Point 3 above is true of the API and of the
+export; it is not true of the dashboard. A *withdrawal* gets a title marker and a
+full explanatory block in the same drawer, so the machine's retraction is louder
+on screen than the human's correction.
+
+*Finding: two of the four statuses do nothing at all.* `CORRECTED_STATUS` is read
+by `_detection_payload` (`api/app.py:2927`) and `HELD_STATUS` by `retention.py`
+and `media_repair.py`; `CONFIRMED_STATUS` and `REJECTED_STATUS` are read by no
+consumer anywhere in `src/`. A reviewer who rejects a detection changes nothing
+on any surface: it stays in `history.species_summary`, in
+`GET /api/v1/taxa/activity`, on MQTT and in the counter-top display's connect
+snapshot, unmarked. The only effect of any review is the one point 5 describes —
+`plausibility_repair` skips the row.
+
+*Finding: the append-only chain has no reader.* `supersedes_review_id` is written
+at `api/app.py:1876` and read by nothing — not `_review_payload`, not the CLI, not
+`web/`, not a test. `tests/test_api.py::TestReviewWorkflow::test_confirm_then_reject_supersedes`
+asserts only that the *latest* review is the second one; it never asserts that the
+first row survived or that the second points at it. The chain is a claim the tests
+do not check.
+
+The third known limitation above is also narrower than the endpoint list warrants:
+`GET /api/v1/taxa/activity` (`api/app.py:1955`) groups by the detection's own
+`common_name`/`scientific_name` with no `Review` join, exactly as
+`history.species_summary` does, and is subject to the same gap.
+
+*Correction to point 1.* `review.STATUSES` (`src/open_observatory/review.py:50`)
+documents itself as "the single source of truth for the API's Pydantic pattern
+(`api/app.py: ReviewIn`) so the two never drift". It is not: `ReviewIn.status`
+carries the literal `Field(pattern="^(confirmed|rejected|corrected|held)$")`
+(`api/app.py:165`), `Review.status` is a plain `String(24)` with no check
+constraint, and `STATUSES` is referenced by nothing in `src/`, `tests/` or
+`web/`. The two agree today by hand, not by construction.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

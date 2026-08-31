@@ -7,7 +7,7 @@ tags:
 # ADR-029: Retention UI built against an assumed API shape; review workflow shipped minimally
 **Status:** active as the record of why the retention panel is read-only and fails
 safe; both of its provisional parts are now closed. The assumed endpoint exists
-(`GET /api/v1/retention/status`, `src/open_observatory/api/app.py:1231`) and
+(`GET /api/v1/retention/status`, `src/open_observatory/api/app.py:1240`) and
 `RetentionPanel` was reconciled with the shape that actually shipped. The deferred
 `corrected_taxon_id` is delivered by [[ADR-043 - Taxon correction|ADR-043]], which took `Review.status` from
 `{confirmed, rejected}` to `{confirmed, rejected, corrected, held}`. The tiering
@@ -48,6 +48,16 @@ agreed to. Whoever lands the retention backend should either match it or tell th
 maintainer what actually shipped; `RetentionPanel`'s degrade-gracefully path means a shape
 mismatch fails safe (shows "not available") rather than silently, but it will still need a
 one-time reconciliation pass.
+
+**Reviewed 2026-08-30:** both closures still hold. The line number above was
+`1231` and is now `1240`; corrected in place, since it is a pointer rather than a
+claim. `RetentionPanel` still reads the shape the endpoint actually serves —
+`tiers`, `eligible_for_deletion` (including [[ADR-057 - Evidence rows must be checkable|ADR-057]]'s `bytes_verified_present`),
+`missing_files`, `disk_reclaim_threshold`, `dry_run` — verified against the live
+response on 2026-08-30, and still exposes no control that would trigger a run. The
+minimal review round trip this ADR shipped is what the station has actually used:
+of the 34 reviews found on it, every one is `confirmed` or `held`, both of which
+were available before [[ADR-043 - Taxon correction|ADR-043]]. See that ADR's 2026-08-30 note.
 
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

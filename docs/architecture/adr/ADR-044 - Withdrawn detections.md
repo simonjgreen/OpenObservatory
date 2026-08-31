@@ -196,5 +196,55 @@ python scripts/watch_display_channel.py --seconds 60 --label "post-withdrawal"
 python scripts/birdnet_week_audit.py
 ```
 
+**Reviewed 2026-08-30 — the two suppression surfaces this ADR added are correct in
+code and unexercised on the station.** Both barriers on the display channel are
+present as described: the connect snapshot filters in SQL
+(`src/open_observatory/api/app.py:2580`) and `wire_item` checks the flag again for
+the live delta path (`src/open_observatory/display_channel.py:179`). The ESP32
+fallback still refuses a withdrawn row
+(`firmware/inside-observer/src/model/detection_feed.cpp:59`) and the streaming
+filter still keeps the field (`:176`), asserted by
+`test_the_streaming_filter_keeps_the_withdrawn_flag`. The MQTT check is where this
+ADR predicted it would be, and its counter has not moved.
+
+What none of that shows is any of it running. On the live station,
+`oo_mqtt_suppressed_withdrawn_total` is `0`, the display channel has dropped no
+frames, and `/api/v1/history` reported `excluded_withdrawn_count: 0` for
+`last-hour`, `last-24h` and `last-7d`, with no withdrawn row in the most recent 200
+detections. **This does not contradict the note above**, and should not be read as
+doing so: the 61 rows flagged on 2026-08-09 are three weeks behind the longest
+window `/api/v1/history/windows` offers (`last-7d`), and `GET /api/v1/detections`
+caps at 500 rows, so six four-hour slices of 2026-08-09 each hit the cap without
+reaching them. A CSV export over 2026-08-01 to 2026-08-15 would settle it; it was
+not run, because that query timed out at 8 s and this review was read-only against a
+station that was capturing. **Someone should confirm the flagged rows are still
+marked before treating the 2026-08-29 note as current** — the claim is unverified
+today rather than shown to be wrong.
+
+**Reviewed 2026-08-30: one of the eight surfaces above has had no running test
+for nineteen days.** `tests/test_plausibility_consumers.py::TestApiSurfaces::test_taxa_activity_excludes_it_and_says_how_many`
+is the only automated check that `GET /api/v1/taxa/activity` excludes a withdrawn
+detection and reports `excluded_withdrawn_count`. It computes its look-back from
+`NIGHT = datetime(2026, 8, 4, ...)` to now and calls `pytest.skip` when that
+exceeds the endpoint's 168-hour cap, which it has done since 2026-08-11. The suite
+reports it as one skip among 61 passes, so the row in the table above that reads
+"`GET /api/v1/taxa/activity` — Excluded, `excluded_withdrawn_count` reported" is
+presently asserted by nothing that runs. The same 168-hour cap is why [[ADR-070 - Threshold retune is not a defect|ADR-070]]
+recorded the live cross-check as unfulfillable, and the two combine badly: this
+surface has neither a passing test nor a station observation. The station's only
+withdrawn rows are the 61 of 2026-08-09, all older than seven days, so the check
+cannot be made there either until a new withdrawal lands. Proposed fix: seed the
+fixture relative to `datetime.now(UTC)` rather than at a fixed date, so the test
+runs instead of aging out.
+
+The rest of the chain was re-checked read-only on 2026-08-30 and is intact.
+Detection `a233415f3f72406f9e67769e972c5e62` (*Flammulated Owl*, 0.875556) comes
+back from the station with `withdrawn: true` and a populated `withdrawal` block
+naming occurrence 9.806e-06 against the 0.0005 floor, reviewed
+2026-08-09T15:32:03Z. A CSV export of 17,694 rows over 2026-08-04 to 2026-08-10
+carries the `withdrawn` column with 42 rows set. `oo_mqtt_suppressed_withdrawn_total`
+reads 0, which is what a healthy station should show — the counter exists to move
+only if something starts republishing history onto the bus.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

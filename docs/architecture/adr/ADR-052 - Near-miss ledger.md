@@ -231,5 +231,24 @@ curl -s http://<station-host>:8080/metrics | grep oo_birdnet_candidates
 curl -s http://<station-host>:8080/metrics | grep oo_detections_persisted_total
 ```
 
+**Reviewed 2026-08-30:** re-read on the station after 7 h 40 m of uptime
+(18,902 windows analysed, `range_model_loaded: true`). The ledger is behaving as
+designed and honestly: the `implausible` band reports `threshold: null` with
+`threshold_unreachable: true` and a `null` shortfall on every species in it, and
+all seven bands are present including `unfiltered` and `no_prior` at explicit
+zeroes. The cross-check of the previous note repeats exactly —
+`oo_birdnet_candidates_rejected_total{band="implausible"}` and
+`oo_birdnet_suppressed_total{reason="suppressed_implausible_prior"}` both read
+2,017 — while the 1,176 `in_range` rejections are carried by the new series alone,
+which is the scope argument this ADR was written for.
+
+The 512-entry species bound is confirmed tight rather than generous, and the
+previous note's "the table is full" is a property of uptime, not of the station:
+after a restart the count starts again, and this read caught it mid-climb at
+`species_tracked: 466`, `species_omitted: 0`. It will reach the cap within a day of
+every restart. `max_species` itself is not in the payload — only `species_tracked`
+and `species_omitted` are — so an operator watching the omission count has no
+denominator to read it against.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

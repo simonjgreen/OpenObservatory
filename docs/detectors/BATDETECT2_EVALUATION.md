@@ -243,6 +243,40 @@ Measured on the Raspberry Pi 5 on **2026-08-05**, by
 > in both cases, and "in isolation" below has always meant "no other *detector*",
 > never "an idle machine". That is a hypothesis, not a finding.
 >
+> **Resolved 2026-08-29: 0.52× is the reproducible figure, and the 2026-08-25 run
+> is the outlier.** The example corpus had been deleted from the Pi, so it was
+> re-fetched from BatDetect2's own repository and the benchmark run three times on
+> the target, same clips, same `--threads 2 --runs 20`, same torch 2.13.0+cpu,
+> same kernel 6.8.0-1061-raspi, governor `ondemand` at 2.4 GHz and
+> `vcgencmd get_throttled` = `0x0` throughout:
+>
+> | Run, 2026-08-29 | p50 | p95 | realtime p50 / p95 |
+> |---|---|---|---|
+> | station capturing and detecting, unfenced | 763.1 ms | 977.2 ms | 0.66× / 0.51× |
+> | fenced to cores 2–3, `nice 19` — the refiner's own systemd conditions | 793.9 ms | 1320.5 ms | 0.63× / 0.38× |
+> | recording paused, so no detector competed | 817.8 ms | 1060.9 ms | 0.61× / 0.47× |
+>
+> The first row reproduces 2026-08-05 (755 / 968 ms) to within about 1%. Nothing
+> tried reproduces 2026-08-25.
+>
+> **Two hypotheses were tested and both failed.** Detector contention does not
+> explain it: pausing recording under [[ADR-055 - Timed recording pause|ADR-055]]
+> removed every competing detector and the run came out *slower*, not faster. Nor
+> does the refiner's CPU fence flatter it — fencing is the worst of the three, as
+> it should be. Run-to-run spread at this sample size (3 clips × 20 runs) is
+> wider than the effect either hypothesis predicted, which is itself worth
+> knowing before anyone designs a fourth run.
+>
+> So the honest reading inverts what the two-column table below implies: the newer
+> run is not the better measurement, it is the one that has never happened again.
+> Treat **0.52×** as the figure, keep 0.96× recorded, and do not quietly average
+> them. The verdict was never in doubt at either value.
+>
+> The re-fetched clips live at `models/batdetect2/example_data/` on the station
+> and are gitignored, as [[ADR-006 - Model install and licensing|ADR-006]] requires.
+> A future re-run should record the corpus alongside the timings, since its absence
+> is what made this question expensive to answer.
+>
 > **The verdict is unchanged and does not depend on which set is right.** At
 > p95 the 2026-08-25 run measures a realtime factor of **0.96×** — still slower
 > than the audio it analyses, in a run with no other detector competing, against

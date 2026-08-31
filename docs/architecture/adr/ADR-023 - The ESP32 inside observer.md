@@ -193,5 +193,22 @@ framebuffer was allocated. One constraint has been added since, by
 [[ADR-044 - Withdrawn detections|ADR-044]] rather than here: a detection the station has marked withdrawn never
 reaches the screen.
 
+**Reviewed 2026-08-30:** the honesty rules were re-checked on both transports and
+all of them hold. On the push wire the score is absent by construction — `wire_item`
+can only return `n`, `at`, `b`, `k` and `r`
+(`src/open_observatory/display_channel.py:148`) — and on the polled fallback
+`FeedItem` still has no field for one, guarded by
+`test_no_feed_item_ever_carries_a_score`
+(`firmware/inside-observer/test/test_feed/test_feed.cpp:228`). The threshold is
+still the five named steps with no figure attached
+(`firmware/inside-observer/src/display.cpp:118`), a bat pass still carries a peak
+frequency and no name, and both polling queries still send `include_synthetic=false`
+explicitly (`firmware/inside-observer/src/station_source.cpp:122,146`). Every
+`path:line` in the 2026-08-29 note above was followed and every one of them still
+lands on what it claims. `pio test -e native` passed 100 cases.
+
+The device is on firmware `0.2.5` and connected: `/api/v1/station` reported one
+display client, 3,587 frames sent, none dropped, `mean_frame_bytes: 42.9`.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -26,6 +26,7 @@ delivery state, this one is meant to win — tell whoever wrote the other one.
 |---|---|
 | Python monorepo scaffolding | done (`src/open_observatory`, `web/`, `tests/`) |
 | Lint/type/test commands | done (`ruff`, `mypy`, `pytest` configured in `pyproject.toml`) |
+| Continuous integration | **not done, and this row was missing until 2026-08-30.** The plan's deliverable is "CI, linting, typing and test commands"; this table listed only the second half and marked the milestone complete. `.github/` holds `dependabot.yml` and no workflows — which also means Milestone 9's "Dependabot covers Actions" covers an empty set, and Milestone 4.5's exit gate ("a fixture test passes in CI on the target architecture") has no mechanism. Either build a workflow or move CI to the plan's Explicitly deferred list with a reason; it should not stay silently renamed |
 | `oo` CLI skeleton | done |
 | `oo audio probe` | done, and used to produce [[TARGET_DIAGNOSTICS]] |
 | `oo system report` | done as `oo system-report` |
@@ -178,17 +179,26 @@ single surface with two depths.
 | BirdNET near-miss ledger | done ([[ADR-052 - Near-miss ledger\|ADR-052]]) — `GET /api/v1/detectors/near-misses` records what BirdNET proposed and refused, with per-band score histograms, so a threshold can be tuned on evidence instead of on a bare counter. A bounded in-memory ring at ~2 µs per candidate; **persists nothing**, by design |
 | Every setting web-editable | done ([[ADR-048 - Web-configurable settings\|ADR-048]]) — `GET`/`PUT /api/v1/settings` and `GET /api/v1/setup`, in three declared tiers (live, restart, excluded) with the exclusions named. The service writes its own `config/runtime.env`. Confirmed working on the live station, which now carries an `OO_BIRDNET_THRESHOLD_IN_RANGE` line written by the settings page |
 
-## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture, window-dump and 72-hour soak gates closed; drift gate (b) run and failed on linearity**
+## Milestone 4.5 — Close the Milestone 1–3 exit gates — **fixture, window-dump and 72-hour soak gates closed; drift gate (b) has failed three times; gate (c) attempted and aborted**
 
 Unfinished gates rather than new scope: the 72-hour soak, a committed species fixture
 test, the full-hour drift run, and `oo audio window-dump`. A soak and a deploy are
 mutually exclusive, because deploying restarts capture and voids the run.
 
-**State as of 2026-08-25:** species fixture and `oo audio window-dump` done; the
+**State as of 2026-08-30:** species fixture and `oo audio window-dump` done; the
 72-hour soak **passed** on continuity; drift gate (a) **passed** on the target
-device; drift gate (b) **ran and did not pass**, failing on linearity. Only gate
-(b) is still open, and what it needs is instrumentation rather than another
-identical run — see below.
+device; drift gate (b) has now **failed three times** — twice on 2026-08-25 over a
+morning warming ramp, and again on 2026-08-29 over a falling one, at 3.7796 ms
+against a 0.5 ms bar. **Two gates are open, not one.** Gate (b)'s third run bought
+something: it refuted the thermal explanation the first two suggested
+(`residual_vs_temperature_r` −0.219, against +0.693 and +0.706), and it established
+that the bar is not the problem — the sampler's own noise floor predicts a max
+residual near 0.50 ms, so the measured value is 7.5× it
+([[DRIFT_GATE_B_2026-08-29]]). Gate (c), Milestone 1's generated hour, was
+attempted on 2026-08-29 and aborted at 35.6 of 60 minutes because it cost the live
+station 2.2 s of audio ([[DRIFT_GATE_C_2026-08-29]]). What gate (b) needs now is
+not instrumentation and not another identical run, but an explanation for ~4 ms of
+hourly structure that is neither temperature nor sampling noise — see below.
 
 **Committed species fixture test: done, and passing on the target Pi 5**
 (`tests/test_birdnet_fixture.py`; 3 passed in 6.83 s on aarch64, 2026-08-08). See the
@@ -292,7 +302,7 @@ Still outstanding in this milestone:
   DID NOT PASS.** One unbroken 64.98-minute segment, 1950 samples, 0 failed and
   0 HTTP reconnects — a clean run, not a contaminated one. Three of six checks
   failed: slope vs the station's own figure 3.563 ppm against a ≤ 2 ppm
-  threshold, linearity 3.156 ms against ≤ 0.5 ms, and one 0.663 ms step against
+  threshold, linearity 3.147 ms against ≤ 0.5 ms, and one 0.663 ms step against
   ≤ 0.5 ms. Restart-free duration, points fitted and no-confirmed-loss all
   passed.
   **The linearity failure is the finding.** The residual is a single smooth
@@ -320,8 +330,13 @@ Still outstanding in this milestone:
 
 This milestone's own exit gate ("the acceptance criteria for capture continuity
 pass over 72 continuous hours, and a detector fixture test passes in CI on the
-target architecture") is still **not met** — closing the window-dump line item
-does not close the gate, since the 72-hour soak is unaffected by it.
+target architecture") is still **not met**, but for a different reason than when
+this paragraph was written. **Updated 2026-08-30:** the first clause is met —
+attempt 4 passed on 2026-08-25 — and [[ADR-073 - Five capture SLOs|ADR-073]] has
+since replaced "capture continuity" with five separately measured SLOs, of which
+two are ticked. The second clause is **not met and cannot currently be met**:
+there is no CI. `.github/` contains `dependabot.yml` and no workflows, so the
+fixture test passes on the target only when a person runs it there.
 
 ## Milestone 5 — Ultrasonic and bat support — **complete**
 
@@ -347,6 +362,15 @@ BatDetect2 at 0.52x realtime, below the threshold, and [[ADR-017 - BatDetect2 as
 > other detector competing, against 36-40x for the detectors that run live. The
 > "0.52x realtime" quoted immediately above this note is the 2026-08-05 figure
 > and should be read as one of two measurements, not as settled.
+>
+> **Settled 2026-08-30: 0.52x is the figure.** The corpus had been deleted from the
+> Pi, so it was re-fetched and the benchmark run three times on the target —
+> unfenced, CPU-fenced as the refiner runs, and with recording paused so no detector
+> competed. All three land at 0.38–0.51x p95, and the unfenced run reproduces
+> 2026-08-05 to within about 1%. Nothing reproduces the 2026-08-25 run, which has
+> never happened again. Detector contention was the obvious explanation and is
+> refuted: the paused run was the *slower* of the three. Keep both recorded, quote
+> 0.52x, do not average them ([[BATDETECT2_EVALUATION]]).
 
 | Deliverable | State |
 |---|---|
@@ -428,7 +452,12 @@ and no alert has been sent because the alert engine does not exist yet.
 
 ## Milestone 7 — MCP, export and hardening — **not started**
 
-Partial credit only: the systemd unit applies privilege reduction
+Partial credit only: a **guided first-run flow** ships — `GET /api/v1/setup` and
+the `FirstRun` panel, delivered under [[ADR-048 - Web-configurable settings|ADR-048]]
+in Milestone 4 — which is deliberately *not* this milestone's commissioning wizard
+and report, but does mean "no first-run guidance exists" would be wrong (added
+2026-08-30; its completion path has never run on the station, which still reports
+`setup_completed: false`). Beyond that: the systemd unit applies privilege reduction
 (`NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome=read-only`, a memory cap and
 an explicit writable path), model licences are surfaced through
 `/api/v1/models` and in the UI, and media paths are validated against the clip
@@ -543,19 +572,63 @@ deleted, so the record of what was outstanding when survives:
   above for the full account and the re-run condition;
 - ~~**the one-hour drift run at full duration**~~ — **run 2026-08-25.** [[ADR-069 - Two drift gates|ADR-069]]
   split it in two: gate (a) (synthetic resampler) **passed** on the Pi; gate (b)
-  (live capture clock) **did not pass**, failing linearity at 3.156 ms against a
+  (live capture clock) **did not pass**, failing linearity at 3.147 ms against a
   0.5 ms threshold with a residual shaped like a thermal excursion. **Attempt 2
   the same day carried the temperature series and also failed**, at 2.743 ms,
   with `residual_vs_temperature_r` +0.693 — so the instrument the previous version
-  of this bullet asked for exists, and the thermal reading survived it. What is
-  still open is a run over a *falling* temperature, and the defect attempt 2
-  exposed in the gate's own slope-agreement check, which compares an hour's slope
-  against a whole-stream cumulative average and so measures stream age
-  ([[DRIFT_GATE_B_2026-08-25]], [[ADR-069 - Two drift gates|ADR-069]]);
+  of this bullet asked for exists, and the thermal reading survived it. **Attempt 3 ran the same
+  evening over a *falling* ramp (60.05 → 44.65 °C) and failed again at 3.7796 ms —
+  and refuted the thermal reading: the temperature correlation flipped sign and
+  collapsed to −0.219, against +0.693 and +0.706 on the two warming ramps.** The bar
+  itself is sound — it sits at the sampler's own noise floor, and the residual is
+  7.5× that — so what is open is no longer "run it when it is cooling" but "what has
+  ~4 ms of structure over an hour that is neither temperature nor sampling noise"
+  ([[DRIFT_GATE_B_2026-08-29]]). The slope-agreement defect attempt 2 exposed is
+  fixed by [[ADR-075 - Window rate, not stream age|ADR-075]] and passed its first
+  live use at 0.794 ppm;
+- **[[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s acoustic-event tier
+  is not running on the station.** Observed 2026-08-30 at 17:56Z and again at
+  18:01Z: `GET /api/v1/retention/status` reports
+  `last_tiers_skipped: ["acoustic_event", "watermark"]` on consecutive sweeps and
+  `eligible_for_deletion` 0. **Corrected 2026-08-30, later the same day:** this entry
+  first said the budget was "spent in the `native` tier's 95,220-clip backlog" and
+  that the tier was starved behind it. Both halves were wrong. The native tier
+  completes on every observed sweep (7–14 assets); 95,220 was the 0–7-day live-asset
+  count, not a backlog; and the budget is consumed *inside the acoustic-event tier's
+  own statement* — `last_interrupted_tier: "acoustic_event"` at 1.5005 s. The cause is
+  an index: `ix_detection_group_start` is plain rather than partial, so reclaimed
+  detections never leave it and the query gets monotonically slower as the tier
+  works — measured at station cardinalities as 0.0095 s at 0 reclaimed, 0.6968 s at
+  8,000, and 0.7286 s to return zero rows once done. It is the [[ADR-062 - Retention walks live assets|ADR-062]]
+  failure again, on a fourth index, and it will not drain on its own. This is privacy-relevant, not just
+  housekeeping: the recordings it exists to remove include BirdNET's `Human vocal`
+  class, and [[CHARTER]]'s privacy constraint assumes they go. ADR-077 records "196
+  assets reclaimed in one sweep" after its fix; that is not what the station is
+  doing today;
+- **drift gate (c) — Milestone 1's generated/replayed hour**, which neither (a)
+  nor (b) exercises. [[ADR-069 - Two drift gates|ADR-069]] required it to be
+  "recorded as a distinct open item rather than quietly absorbed", and until
+  2026-08-29 it was recorded nowhere but inside that ADR. It touches no
+  microphone: a second station on `OO_SOURCE=synthetic` with its own
+  `OO_DATA_DIR` and port. **Pass criterion, fixed before the run:** one stream of
+  ≥ 3600 s with `stream_restarts` 0, `estimated_missing_frames` 0,
+  `gaps_with_loss` 0, `discontinuities` 0, `continuity_ratio` ≥ 0.9999,
+  `|rate_offset_ppm|` ≤ 1 (a generated clock has no crystal to drift), and
+  evidence that the path actually ran — windows analysed and detections emitted
+  both non-zero. **Attempted 2026-08-29 and stopped at 35.6 of the 60 minutes**:
+  the synthetic station was clean on every criterion it could reach, but running
+  it beside the live station cost the live station a 2.2 s overrun, so it must be
+  run with capture stopped, on a second Pi, or inside a declared pause
+  ([[DRIFT_GATE_C_2026-08-29]]). The `rate_offset_ppm` criterion above was also
+  found unmeasurable — a synthetic source reports `null`, having no crystal;
 - **Milestone 6's alert engine**, environmental telemetry ingestion and HMAC
   webhooks;
 - **Milestone 7 entirely** — MCP tools, export bundles, backup/restore, setup
-  wizard, vulnerability scan;
+  wizard, vulnerability scan. **The backup item is the sharp one**: this milestone
+  owns the tooling, and until it exists the operational instruction to "back up the
+  database first" has no method that works on a capturing station — `sqlite3`'s
+  backup API was measured on 2026-08-29 not converging (~8 MB/min, abandoned), and a
+  file copy of a live WAL database is not a consistent snapshot;
 - **what remains of the capture-gap investigation** — see
   [[OPEN_INVESTIGATION_CAPTURE_GAPS]]. ~~The deficit-step estimator over-credits,
   so `capture.gap lost_audio=True` means "the read was late".~~ **That is fixed,
@@ -571,9 +644,9 @@ deleted, so the record of what was outstanding when survives:
   file and [[HANDOVER]] both said it had never been run; both were wrong for a
   fortnight. What *is* outstanding is the reverse: **`oo detections
   reconcile-plausibility --apply` must not be run again until [[ADR-070 - Threshold retune is not a defect|ADR-070]] is
-  deployed** (**2026-08-29: the deployed build is at or after `debba2d`, which
-  carried that fix — indirect evidence, so confirm the revision on the station
-  first; see [[HANDOVER]] §6.3 item 0**) — as it stands it would withdraw about a third of the bird record
+  deployed** (**2026-08-30: settled — the fix is
+  deployed, proven by commit ancestry against an endpoint the station serves, so
+  this prohibition no longer applies; see [[HANDOVER]] §6.3 item 0**) — as it stands it would withdraw about a third of the bird record
   (32,660 findings on 2026-08-23, led by Common Woodpigeon ×9,168 and European
   Robin ×7,434), irreversibly. Note also that `GET /api/v1/taxa/activity` caps
   `hours` at 168, so it **cannot** be used to verify anything older than seven

@@ -341,5 +341,58 @@ the bank correct, affordable and safe to enable.
   the denominator becomes *detections worth keeping*, not *all detections*. It
   cannot be measured until this lands.
 
+### Reviewed 2026-08-30: the policy has never run, the lists are in real use, and the suggestion endpoint costs the station audio
+
+**The policy is still off and has never been on.** The station reports
+`evidence_value_enabled: false`, `bank_size_now: 0`, `promoted_last_sweep: 0`.
+[[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]] rule 5
+is being honoured — the backfill dry-run has still not been run — so none of
+this ADR's savings, and none of its archive, exists on disk. Every figure in the
+"Expected effect" table remains an intention.
+
+**The two operator lists are the part of this ADR in genuine service.**
+`evidence_common_species` has grown from the six names pre-populated above to
+**17**, and `evidence_implausible_species` from five to **15**, on the live
+station. Somebody has been curating them, which is the strongest evidence this
+ADR has that "a list a person edits" was the right call — even though nothing
+yet reads either list for a deletion decision.
+
+**`GET /api/v1/retention/suggestions` took 19.9 s and cost the station 41.4 s of
+recorded audio.** Measured 2026-08-30, and recorded here because the measurement
+was destructive and the cause is this ADR's own suggestion mechanism. Two calls
+to that endpoint from a reviewer's laptop, ~35 s of query time between them,
+took the station from `overruns: 0`, `audio_lost_seconds: 0.0`,
+`gaps_with_loss: 0` (19:49:19Z) to `overruns: 46`, `audio_lost_seconds: 41.4233`,
+`gaps_with_loss: 49`, `late_reads: 16`, `loop_lag_max_s: 3.1665` (20:08:52Z),
+where the counters then stopped. Continuity for the run fell from 0.999947 to
+0.998518.
+
+`compute_suggestions` issues two aggregates and the second has **no
+`taxonomic_group` filter at all** (`src/open_observatory/evidence_suggestions.py`,
+`total_bytes`): it joins `detection` -> `detection_media` -> `media_asset` across
+every detection in the window. `WINDOW_DAYS = 30` bounds nothing, because the
+station's whole archive is 25 days old, so "the trailing 30 days" is the entire
+database — about a million detections. This is precisely the shape
+[[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]]
+measured at 5.9754 s the day before and deleted for it, with its own conclusion
+attached: *"SQLite scans `detection_media` whole regardless of a time bound on
+the far side of the join. Bounding the window is not the fix; not joining is."*
+The module's docstring asserts the opposite — "an index range scan per group, not
+a table scan" — as reasoning rather than as a measurement, which is the error
+[[ADR-061 - Operator keep flag|ADR-061]]'s addenda state the rule against:
+produce `EXPLAIN QUERY PLAN` against a station-sized database, or claim nothing.
+
+It is worse than a slow endpoint. `SettingsPanel.tsx:122` fetches it **on
+mount**, so opening the settings page in a browser destroys captured audio; the
+call is not gated on `evidence_value_enabled`, so a feature that ships off still
+costs this every time; and it is an unbounded, unpaced query inside the capture
+process, which [[ADR-021 - Clips on their own device|ADR-021]],
+[[ADR-033 - Retention is paced|ADR-033]],
+[[ADR-059 - Clip archive measured off-loop|ADR-059]],
+[[ADR-061 - Operator keep flag|ADR-061]] and
+[[ADR-062 - Retention walks live assets|ADR-062]] were each written to forbid.
+Nothing about it is bounded by `retention_batch_budget_s`, because it is not in
+the sweep.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

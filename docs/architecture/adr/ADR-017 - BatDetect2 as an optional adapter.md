@@ -110,5 +110,54 @@ measurements: a re-run on 2026-08-25, same library and the same two threads, mea
 than the audio, against 36-40x for the detectors that run live — but 0.52x should not be
 read as settled.
 
+**Closed 2026-08-29, the licence disclosure:** the Decision's claim that the
+weights arrive "through the same documented, attributable operator step as BirdNET
+(`oo models fetch`)" was never true and is not made true now — the acquisition step
+is `pip install batdetect2==1.3.1`. What has changed is the disclosure the claim was
+really about: BatDetect2 is listed as a package-acquired model with its
+CC-BY-NC-4.0 terms in `/api/v1/models`, in `oo models status`, and in the web UI at
+diagnose depth (see [[ADR-006 - Model install and licensing|ADR-006]]) — **in the
+repository. It is not on the station**: that work is uncommitted and undeployed, and
+the running build still returns the three BirdNET assets alone. This paragraph said
+"is now listed" without that distinction when it was written on 2026-08-29, which is
+the same overstatement it exists to correct. The sentence above it stands as written.
+
+**Reviewed 2026-08-29, second correction to the timings.** The 0.52× headline is
+sound and is now the reproducible figure: the benchmark was run three times on the
+target that day — unfenced, fenced to cores 2–3 at `nice 19` as the refiner really
+runs, and with recording paused so no detector competed — and all three land at
+0.38–0.51× p95, the unfenced run reproducing 2026-08-05 to within about 1%. The
+faster 2026-08-25 artefact could not be reproduced under any condition, so the
+correction added above ("one of two measurements") now has an answer: keep both
+recorded, quote 0.52×, and do not average them. Detail and the negative results in
+[[BATDETECT2_EVALUATION]].
+
+**Reviewed 2026-08-30: the licence disclosure is in the working tree and not on
+the station.** The note above says BatDetect2 "is now listed" with its
+CC-BY-NC-4.0 terms in `/api/v1/models`, in `oo models status` and in the web UI.
+That is true of this checkout — `PACKAGE_MODELS` in
+`src/open_observatory/models.py`, the `kind`-aware `list_models` route, the
+package table in `oo models status`, `web/src/components/ModelsPanel.tsx` — and
+none of it is committed: three of those files are modified but unstaged and the
+panel, its test and `tests/test_models.py` are untracked. `GET /api/v1/models`
+on the live station, queried on 2026-08-30, returned the three BirdNET assets,
+no BatDetect2 entry, and the pre-change `note` string. So the disclosure this
+ADR now claims is not yet anywhere a person can read it. `deploy/deploy.sh`
+rsyncs the working tree rather than a git ref, so a deploy would carry the
+change as it stands; what is outstanding is the commit and the deploy, not the
+code. The sentence above stands; this is the correction beneath it.
+
+**Reviewed 2026-08-30: the artefact still quotes the withdrawn number.**
+`results/batdetect2-pi5.json` is the 2026-08-25 run and is the only benchmark
+JSON in `results/`. It carries `"realtime_factor_p95": 0.96` and
+`"verdict": "NOT SUSTAINABLE"`, with nothing inside the file recording that it
+is the run nothing could reproduce — a reader who opens the artefact instead of
+[[BATDETECT2_EVALUATION]] gets the number this ADR withdrew. Its three
+`matched_expected_species` flags do bear out the fixture reading above: one of
+the three clips ranked the labelled species first (*Rhinolophus ferrumequinum*,
+det_prob 0.759), and the other two both topped out as *Pipistrellus
+pipistrellus* at 0.78 and 0.777 — including the *Eptesicus serotinus* clip,
+where the correct species was present in the detections but not first.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

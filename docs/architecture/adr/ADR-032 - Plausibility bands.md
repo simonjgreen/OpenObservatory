@@ -146,7 +146,11 @@ check this ADR asked for had been done; a later dry run showed it had been
 passing only the floor and judging every row against its own default band
 thresholds instead of the station's, which [[ADR-070 - Threshold retune is not a defect|ADR-070]] fixed — the operational
 state, and the standing instruction not to run `--apply` again until [[ADR-070 - Threshold retune is not a defect|ADR-070]]
-is deployed, are in [[HANDOVER]] section 6.3 item 0. And the `"Engine" 4e-06`
+is deployed, are in [[HANDOVER]] section 6.3 item 0. **That instruction was lifted on
+2026-08-30:** the fix is deployed, proven by commit ancestry against an endpoint the
+station serves, and the 2026-08-23 dry run's 32,660 findings would not be proposed
+today because the station runs `birdnet_threshold_in_range = 0.35`, so those rows
+clear their own admitting bar. And the `"Engine" 4e-06`
 reading quoted under **Reason** is not a statement about engines being absent:
 [[ADR-049 - Sound categories are not species|ADR-049]] exempts the non-taxonomic classes from the floor entirely, so that
 number is no longer usable as evidence that the range model is working.

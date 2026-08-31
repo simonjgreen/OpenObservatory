@@ -166,5 +166,50 @@ that deploy, not something decided here.
 > `sweep()` still never walks the clip tree, and `find_orphans()` is still
 > excluded from it.
 
+> **Reviewed again 2026-08-30.** Four corrections, from the station and from the
+> code, none of which change the decision.
+>
+> **The 30-day tier has never had a candidate.** `GET /api/v1/retention/status`
+> puts all 238,017 live assets inside the two age buckets (94,764 under 7 days,
+> 143,253 between 7 and 30) and `eligible_for_deletion` at **0 clips, 0 bytes**;
+> `oo_retention_files_deleted_total{tier="unkept"}` reads **0**. No asset on this
+> station is yet 30 days old, so `_strip_unkept` has run thousands of times and
+> deleted nothing, ever. The whole disk is currently governed by the 7-day native
+> tier and by [[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s tier.
+> When the archive does cross 30 days the backlog arrives as a step, not a ramp,
+> into a sweep whose budget is already spent — that is a dated, checkable
+> prediction, not a fault yet.
+>
+> **`find_orphans()` has no CLI command.** The I/O-discipline section above says
+> it "exists only for the CLI's manual diagnostic use". It is called from
+> `tests/test_retention.py:1413` and from nowhere else; `oo clips` offers
+> `purge-human-audio`, `reconcile-missing`, `retention` and `bank-backfill`
+> (`src/open_observatory/cli.py`) and no orphan scan. This matters because the
+> two figures it would reconcile disagree: the station reports **245,713 `.wav`
+> files** under the clip directory against **238,017 live `media_asset` rows**.
+> [[ADR-057 - Evidence rows must be checkable|ADR-057]]'s audit only checks the
+> other direction — rows whose file is gone — so nothing on this station can
+> currently account for the ~7,700 difference.
+>
+> **`clip_max_total_gb` is still published as a budget and enforces nothing.**
+> The "why the operator's own thresholds" section above cites it as the knob the
+> watermark replaced, and that is right; what is not recorded anywhere is that it
+> is still live-tunable, still in the settings UI as "clip directory budget"
+> (`src/open_observatory/site_settings.py:737`), still pushed into `ClipManager`
+> (`src/open_observatory/station.py:265`), and still published in the station
+> snapshot as `clips.policy.max_total_gb`. Its only reader is
+> `ClipManager.enforce_retention` (`src/open_observatory/clips.py:280`), which
+> nothing outside `tests/test_pipeline.py:639` calls. The station is running it
+> at **300 GB** while holding **395.6 GB**, and reports `budget_deleted: 0` and
+> `bytes_reclaimed: 0` beside it. `clip_retention_days` is inert in the same way:
+> it sets `media_asset.expires_at` at write time and is otherwise read only by
+> that same dead method. Two settings an operator can change with no effect and
+> no warning.
+>
+> **Nothing sweeps `.partial` files or empty day directories any more, either.**
+> That cleanup lives in the same dead method
+> (`src/open_observatory/clips.py:292-300`); `RetentionSweeper` never walks the
+> tree, by design, so an abandoned partial write is now permanent.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

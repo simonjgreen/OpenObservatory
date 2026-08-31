@@ -10,9 +10,11 @@ Checked during preparation on 4 August 2026:
 ## Assumptions requiring target-device verification
 
 Every item below has since been checked on the real device. Resolutions added
-2026-08-09; the measurements themselves live in
-[[TARGET_DIAGNOSTICS]] and
-[[BATDETECT2_EVALUATION]].
+2026-08-09, revised 2026-08-29 for the 72-hour soak result, and reviewed
+2026-08-30; the measurements themselves live in
+[[TARGET_DIAGNOSTICS]],
+[[BATDETECT2_EVALUATION]] and
+[[SOAK_2026-08-22]].
 
 - ~~Exact AudioMoth USB firmware and switch configuration.~~ **RESOLVED.**
   `AudioMoth-USB-Microphone` 1.3.2, uid `2453800264933F8F`, shipped with the
@@ -31,6 +33,16 @@ Every item below has since been checked on the real device. Resolutions added
   ([[SOAK_2026-08-22]], [[MILESTONE_STATUS]] §Milestone 4.5). The capture-gap
   investigation stays open — [[ADR-072 - Accepted crystal drift|ADR-072]] accepts the crystal drift the soak
   exposed, and [[ADR-073 - Five capture SLOs|ADR-073]] replaces the single continuity number with five SLOs.
+  **Reviewed 2026-08-30:** [[ADR-073 - Five capture SLOs|ADR-073]] is accepted, but only part of it is
+  served. The station's health payload carries the SLO B split
+  (`capture_integrity_ratio`, `audio_lost_seconds`, `drift_seconds`); coverage
+  (A), prime-hours coverage (A2) and detection coverage (D) are computed and
+  tested in `src/open_observatory/slo.py` but reach no endpoint yet, which
+  [[2026-08-29-capture-slos]] records as a deliberate stopping point. The
+  capture clock is open in its own right: drift gate (b) has failed three
+  times, most recently at 3.7796 ms against a 0.5 ms linearity threshold and
+  refuting the thermal explanation ([[DRIFT_GATE_B_2026-08-29]]), and gate (c)
+  was aborted at 35.6 minutes ([[DRIFT_GATE_C_2026-08-29]]).
 - **Whether USB/host power and enclosure produce electrical or fan noise.**
   *Partly open.* A weak PSU was found to cause intermittent USB enumeration and
   was replaced. Enclosure and fan noise as such have not been characterised.
@@ -70,3 +82,9 @@ attribution is in `tests/fixtures/audio/ATTRIBUTION.md` with a checksummed
 
 A general "third-party notices" workflow beyond `/api/v1/models` and those
 attribution files does **not** exist and is still owed.
+
+**Reviewed 2026-08-30.** All of the above still holds. `models/` contains
+`manifest.tsv` and nothing else; the live station's `GET /api/v1/models`
+returns the three BirdNET assets, each labelled `CC-BY-NC-SA-4.0`, installed
+and checksum-verified, with the note that they are not bundled with the
+software. The third-party notices workflow is still owed.

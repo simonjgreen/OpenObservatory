@@ -469,5 +469,43 @@ The rollback and smoke-test commands here named the operator's host and
 username; replaced with this repository's `<station-host>` placeholder
 ([[ADR-047 - The repository ships no site|ADR-047]]).
 
+**Reviewed again 2026-08-30: two of the three pass criteria above no longer
+hold, and this ADR's own alarm is dead.**
+
+Read from the station 19:43Z-20:01Z. Criterion 1 still passes —
+`oo_retention_files_deleted_total{tier="native"}` reads 1,965 since the last
+restart. **Criterion 2 fails.** `last_sweep_duration_s` is **1.519 s** against a
+1.5 s budget and `last_sweep_complete` is **false** on every sweep, with
+`last_interrupted_tier: "acoustic_event"` and
+`last_tiers_skipped: ["acoustic_event", "watermark"]`. The preamble is not the
+cause and this ADR's instrument says so, which is what it was built for:
+`last_preamble_s` is **0.0094 s**. The cost is
+[[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s new tier, and its
+entry records the measurement.
+
+**`housekeeping.retention_never_reached_a_tier` can no longer fire, and fires
+falsely instead.** The third addendum above moved its gate from
+`len(tiers_skipped) == 4` to `== 3` when `_strip_expired` was removed.
+[[ADR-077 - Acoustic events keep no recordings|ADR-077]] added a fourth tier and
+did not move it back: `_TIER_ORDER` is
+`("native", "unkept", "acoustic_event", "watermark")`
+(`src/open_observatory/retention.py:116`) while the gate is still
+`if len(result.tiers_skipped) == 3` (`src/open_observatory/station.py:2034`),
+with a comment beside it still saying "all three tiers skipped together". So:
+
+- a sweep that genuinely reaches **no** tier now skips four, and the ERROR is
+  silent — the nine-day-failure alarm this ADR exists to raise;
+- a sweep that aborts in the `unkept` tier skips exactly three
+  (`unkept`, `acoustic_event`, `watermark`) and raises an ERROR saying no tier
+  was reached, when `native` ran normally.
+
+The three tests that cover the gate
+(`tests/test_pipeline.py:1178`, `:1198`, `:1216`) all pass, because each builds
+a `SimpleNamespace` with a hand-written `tiers_skipped` list rather than a real
+`RetentionReport`; the "fires when all three skipped" case asserts against
+`["native", "unkept", "watermark"]`, a list `_TIER_ORDER` can no longer produce.
+`tests/test_retention.py:1598` already asserts the real four-element list, from
+the other side of the same boundary, and the two were never compared.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

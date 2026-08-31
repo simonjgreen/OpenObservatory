@@ -151,5 +151,22 @@ rsync -a --delete --exclude __pycache__ ./src/ <user>@<station-host>:open-observ
 ssh <user>@<station-host> sudo systemctl restart open-observatory
 ```
 
+**Reviewed again 2026-08-30: still off the loop, and the staleness figure has
+moved.** On a **245,786-file** archive `snapshot_phase_s` gives `storage`
+**0.0001 s** and `housekeeping_blocking_s` **0.0055 s**, so the decision holds
+and the projection that prompted it — ~250,000 files, a 2.7 s walk every 30 s —
+is now the actual archive size with no walk on the loop at all. What has moved
+is the Consequences line "up to ~30 s stale": `clip_usage_age_s` read **60.5 s**
+against a refresh scheduled every third housekeeping tick. That is not a cache
+TTL any more, it is how long the chunked walk itself takes at this size, and it
+grows with the archive. The field is still honest — the age is published beside
+the figure, which is the whole point of it — but a reader taking "~30 s" as the
+bound would be out by a factor of two, and the same lengthening tick is why the
+retention sweep now lands every ~365 s on average rather than 300 s
+([[ADR-033 - Retention is paced|ADR-033]]).
+
+**Amended 2026-08-31:** "~365 s on average" above should read **~352 s**, the mean
+of five measured intervals rather than three ([[ADR-033 - Retention is paced|ADR-033]]).
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -11,22 +11,33 @@
 > [`GAP_REPORT.md`](GAP_REPORT.md) records what was uncertain before hardware
 > existed and how each item resolved.
 >
-> The largest divergences, as of 2026-08-29:
+> The largest divergences, as of 2026-08-30:
 >
 > | This spec says | What actually runs | Why |
 > |---|---|---|
-> | §3 Docker Compose, eleven services | **two** `systemd` units, two processes, one venv — the station, plus the nightly timer-driven refinement runner | [[ADR-008 - systemd, not Compose|ADR-008]], [[ADR-045 - Refinement runner|ADR-045]] |
-> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | [[ADR-007 - SQLite in developer mode|ADR-007]] |
-> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | [[ADR-009 - In-process event bus|ADR-009]], and an explicit permission in `CLAUDE.md` |
-> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime and not adopted | [[ADR-013 - ultrasonic-pass-v1|ADR-013]], [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]] |
-> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | [[ADR-012 - One writer per WebSocket|ADR-012]], [[ADR-019 - Chunked-WAV live playback|ADR-019]] |
+> | §3 Docker Compose, twelve services | **two** `systemd` units, two processes, one venv — the station, plus the nightly timer-driven refinement runner. `docker-compose.yml` is still in the repository and still unrunnable | [[ADR-008 - systemd, not Compose\|ADR-008]], [[ADR-045 - Refinement runner\|ADR-045]] |
+> | §3, §8 PostgreSQL 16 canonical | SQLite; PostgreSQL never exercised | [[ADR-007 - SQLite in developer mode\|ADR-007]] |
+> | §3, §15 Redis Streams job bus | in-process `EventBus` behind the same protocol | [[ADR-009 - In-process event bus\|ADR-009]], and an explicit permission in `CLAUDE.md` |
+> | §2 `bat-worker`: BatDetect2 | `ultrasonic-pass-v1`, a non-ML pass detector that claims no species. BatDetect2 measured at 0.52× realtime, so not adopted as a live detector — but it does run, off the capture loop, in the nightly refinement process, where it may only *propose*: nothing it writes reaches the API, MQTT, the UI or the display | [[ADR-013 - ultrasonic-pass-v1\|ADR-013]], [[ADR-017 - BatDetect2 as an optional adapter\|ADR-017]], [[ADR-045 - Refinement runner\|ADR-045]] |
+> | §2 `WebSocket/SSE` | WebSocket only; no SSE endpoint exists or is planned. Live listening additionally moved to a chunked-WAV HTTP stream | [[ADR-012 - One writer per WebSocket\|ADR-012]], [[ADR-019 - Chunked-WAV live playback\|ADR-019]] |
 > | §2 MCP server | not implemented; no MCP code exists in this repository | Milestone 7, not started |
-> | §9 anonymous read disabled by default | authentication exists but is **off by default**, with three deliberately credential-free paths | [[ADR-015 - Anonymous read, auth deferred|ADR-015]] → [[ADR-034 - Authentication foundation|ADR-034]] |
-> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | [[ADR-008 - systemd, not Compose|ADR-008]] |
+> | §9 anonymous read disabled by default | authentication exists but is **off by default**, so the LAN gets anonymous read *and* write. Turned on, six paths stay credential-free: three configurable and GET-only (`/api/v1/detections`, `/api/v1/display`, `/api/v1/firmware/image`) and three hardcoded (`/api/v1/health`, `/api/v1/auth/login`, `/api/v1/auth/logout`). `/metrics` and the static UI never reach the gate at all | [[ADR-015 - Anonymous read, auth deferred\|ADR-015]] → [[ADR-034 - Authentication foundation\|ADR-034]] |
+> | §13 dependency and image vulnerability scanning in CI | **there is no CI.** `.github/` holds `dependabot.yml` and no workflows, so nothing scans anything. Dependabot's dependency *updates* do run — 20+ commits — but that is not a vulnerability scan, and whether its security alerts are enabled on the repository is unrecorded | Milestone 0's CI deliverable was never built; see [[MILESTONE_STATUS]] |
+> | §6 orchestrator as a separate service | one process; the service boundaries are kept in code, communicating only through the bus and window references | [[ADR-008 - systemd, not Compose\|ADR-008]] |
 >
 > §14's performance budgets are engineering targets, not measurements. The
 > measurements are in
 > [`../operations/TARGET_DIAGNOSTICS.md`](../operations/TARGET_DIAGNOSTICS.md).
+>
+> **Reviewed 2026-08-30:** the §9 row in the table above covers only the first of that
+> section's bullets. The rest are unbuilt rather than deferred, and nothing in the
+> repository is working towards them. There are no token scopes — an API token is all-or-nothing
+> (`src/open_observatory/db/models.py:504`-`511`) — no CSRF tokens, with
+> `SameSite=Lax` on the session cookie the whole of the protection, and no
+> reverse-proxy trusted authentication anywhere in the codebase. §9's closing
+> sentence, about MCP write actions requiring a write-capable token, names two
+> things that do not exist. [[ADR-034 - Authentication foundation|ADR-034]] records each
+> gap in its own words.
 
 ## 1. Context
 

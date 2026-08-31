@@ -266,6 +266,38 @@ reason** (`RefinerUnavailable`), never a pass that silently found nothing.
   fields into `GET /api/v1/settings` and the settings page. Checked against the
   live station on 2026-08-29: category `refinement`, nine live-tier fields, all
   at their shipped defaults.
+
+  **Reviewed 2026-08-30: confirmed on the station, not only by grep.** A
+  detection fetched from `GET /api/v1/detections/{id}` on the live station
+  carries `review`, `withdrawal`, `kept_at` and `kept_by` and no refinement
+  field of any kind. Nothing under `src/open_observatory/api/`,
+  `src/open_observatory/mqtt/`, `display.py`, `display_channel.py` or
+  `web/src/` names the `refinement` table or the three `detection` columns; the
+  only hits outside `refinement/` are the settings above and the model
+  registry's "refinement runner only. Never in the live pipeline." string. The
+  nine `refinement_*` settings were re-read on 2026-08-30 and are still at
+  their shipped defaults, `refinement_enabled` true. Three things about the one
+  surface that does exist are worth writing down, because "`oo refine status`
+  is the surface" carries more weight in this ADR than it can bear:
+
+  - It lists the **20 most recent** unresolved proposals by default, newest
+    first (`--limit`). Against a table that held 16,586 rows on 2026-08-23
+    ([[MILESTONE_STATUS]]) that is a slice, not a queue: there is no paging, no
+    filter, and no way to walk the backlog except raising the limit.
+  - Nothing in this repository ever writes `refinement.resolved_at` or
+    `resolved_review_id`. `oo refine status`'s `resolved_at.is_(None)` filter
+    is the only code outside the ORM definition that names either column, and
+    it only reads. So the unresolved list can only grow — there is no act,
+    human or otherwise, that takes a proposal off it. That is the missing
+    review wiring named below, stated as its observable consequence.
+  - The property this section asserts — that nothing reaches the API, MQTT, the
+    UI or the display — is pinned by **no test**. `tests/test_refinement.py`
+    and `tests/test_refinement_integration.py` cover the propose-only ceiling,
+    the claim-column guard and the retention gap (59 passed, 3 skipped on
+    2026-08-30; the skips are `tests/test_batdetect2.py`'s `importorskip` on a
+    machine without the library). None of them asserts that a detection payload
+    omits `refined_at`. Adding those columns to the serializer would breach this
+    ADR's ceiling and break nothing.
 - **It does not add BatDetect2 as a dependency or an extra.** Its whole
   repository is CC-BY-NC-4.0 ([[ADR-006 - Model install and licensing|ADR-006]], [[ADR-017 - BatDetect2 as an optional adapter|ADR-017]]); the operator installs it
   (`pip install batdetect2==1.3.1` plus CPU torch, see
@@ -320,6 +352,34 @@ re-create an empty `refinement` table without its `detection` columns. That is
 recorded as a code defect in [[ADR-042 - Migrations run in deploy.sh|ADR-042]]'s 2026-08-29 note. Rolling this schema
 back is not a live-station operation any more; leaving the table in place costs
 nothing, since nothing but the refiner reads it.
+
+**Reviewed 2026-08-30: head has moved again, and the `create_all()` defect is
+still there.** `0012_detection_banked_at`
+([[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]]) was
+committed about four hours after the note above was written, so `downgrade 0004`
+would now additionally revert `detection.banked_at` and its partial index. The
+instruction not to run it stands, one revision stronger.
+
+`oo refine run` and `oo refine status` are still the only two entry points in
+`cli.py` that call `create_all()`; the other eight, and `api/app.py`, call
+`ensure_schema_at_head()`. The consequence is narrower and worse than "the
+refiner starts on a stale schema". `create_all()` issues `CREATE TABLE` for
+tables that do not exist and never `ALTER`s, so a missing **column** is not
+repaired and surfaces as a driver error at the first ORM query, while a missing
+**table** is silently re-created underneath an `alembic_version` row that no
+longer describes the database. Either way the run is unattended, and
+`write_health_event` is called by the CLI only *after* `RefinementRunner.run`
+returns — an exception on the way through writes no row at all, so
+`oo refine status` goes on reporting the previous run's timestamp. That is
+precisely how the numba sandbox failure of 2026-08-10 stayed invisible: the
+unit exited 1 in eleven seconds and `last_run` still read `None`
+([[HANDOVER]], "The refinement runner had never run"). The one process nobody
+watches is the one that does not check.
+
+The `path:line` references in the note above, and in the retention note earlier,
+were correct at the commit that wrote them and have since drifted with unrelated
+work in `cli.py` and `retention.py`. Follow the symbols — `create_all`,
+`ensure_schema_at_head`, `_strip_unkept`, `down_revision` — not the numbers.
 
 Target smoke test — run **on the Pi**, in this order, checking capture at each
 step:

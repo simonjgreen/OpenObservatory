@@ -135,6 +135,14 @@ Use cursor pagination for any of the above once built. Filters must be
 explicit and documented. OpenAPI is generated and checked into release
 artefacts.
 
+**Reviewed 2026-08-30:** all five are still unbuilt, and the live station's own
+schema confirms it — `GET /api/v1/openapi.json` lists 41 paths and none of them
+is `/telemetry`, `/alerts/rules` or `/exports`. The last sentence above is half
+true: OpenAPI *is* generated, and served live at `/api/v1/openapi.json`
+(`src/open_observatory/api/app.py:406`), but no schema file is checked in
+anywhere in this repository and there are no release artefacts to check it into.
+Read it as intent for the release process, not as a description of one.
+
 ### `GET /detections` query parameters — implemented
 
 | Parameter | Type | Notes |
@@ -288,6 +296,25 @@ alongside `withdrawn`.
 identified before (that is what `GET /taxa/search` searches), and
 `GET /api/v1/history` still aggregates on the *original* taxonomy — corrections
 are not yet folded into its `GROUP BY`.
+
+**Reviewed 2026-08-30: the `review` row above names three fields the payload does
+not have.** `_review_payload` (`src/open_observatory/api/app.py:2830`) emits `id`,
+`detection_id`, `status`, `note`, **`actor`**, `corrected_taxon_id`,
+`corrected_common_name`, `corrected_scientific_name` and **`created_at`**. There is
+no `reviewed_by` and no `reviewed_at` — those two names exist only as *CSV column
+headers* on the export, where the sentence below the table is correct — and
+`supersedes_review_id` is written on insert but is not returned by this endpoint,
+by `GET /detections/{id}/review`, or anywhere else. `web/src/types.ts`'s `Review`
+interface matches the code, not this table.
+
+**Reviewed 2026-08-30: there is a third limit, and it is the same one.**
+`GET /api/v1/taxa/activity` groups by the detection's own
+`common_name`/`scientific_name` with no `Review` join, exactly as
+`GET /api/v1/history`'s species list does, so a corrected detection still counts
+toward its original species there too. Two further gaps, recorded in full under
+[[ADR-043 - Taxon correction|ADR-043]]'s 2026-08-30 note: a `rejected` or `confirmed` review changes nothing on
+any surface at all, and no endpoint lists reviews, so "show me everything I have
+held or corrected" cannot be asked of this API.
 
 ### Refinement has no HTTP surface — deliberate, ADR-045
 

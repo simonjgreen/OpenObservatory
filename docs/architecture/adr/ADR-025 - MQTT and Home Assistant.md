@@ -105,8 +105,9 @@ remains the authoritative record regardless of what the HA sensor shows.
 
 **Reviewed 2026-08-29:** the decision holds. `mqtt/` is still nothing but an
 `EventBus` consumer — `api/app.py:75` is the only import of it anywhere in `src/` —
-`Settings.mqtt_enabled` still defaults to `False` (`src/open_observatory/config.py:601`),
-the subscription is still taken at `mqtt_queue_depth` and still reports the bus
+`Settings.mqtt_enabled` still defaults to `False`
+(`src/open_observatory/config.py:702`), the subscription is still taken at
+`mqtt_queue_depth` and still reports the bus
 subscription's own `.dropped` counter rather than a second one
 (`src/open_observatory/mqtt/publisher.py:177` and `:198`), and `SCHEMA_VERSION` is still
 `"1.1"` (`src/open_observatory/events.py:34`). Two things a reader of the paragraphs
@@ -119,10 +120,49 @@ above would otherwise get wrong:
 - The synthetic-source rule is no longer the only thing that withholds a detection.
   `_handle_detection` also withholds a withdrawn detection ([[ADR-044 - Withdrawn detections|ADR-044]], counted as
   `suppressed_withdrawn_total`) and, unless `mqtt_publish_unidentified` is set
-  (`src/open_observatory/config.py:653`, default false), a detection that names no
-  species and is not a bat pass (`suppressed_unidentified_total`). Both follow the rule
+  (`Settings.mqtt_publish_unidentified`, `src/open_observatory/config.py:754`,
+  default false), a detection that names no species and is not a bat pass
+  (`suppressed_unidentified_total`). Both follow the rule
   this ADR set for the synthetic case: the row is still written to the database, only
   the Home Assistant notification is withheld.
+
+**Reviewed 2026-08-30:** the publisher is live and the entity design is intact.
+`GET /api/v1/health`'s `mqtt` block read `connected: true`, `connect_attempts: 1`,
+`connect_successes: 1`, `published_total: 9573`, `publish_failures: 0`,
+`dropped_total: 0`, `queued: 0`, `suppressed_unidentified_total: 8740`, first
+connected 12:08:52Z and still publishing at 19:49:12Z. `discovery.py:build_entities`
+returns exactly the six entities named above and no more; no payload in that file
+carries a `device_class` of any kind, so the "never `device_class: probability`"
+rule is kept by there being no `device_class` at all, and the raw score rides as a
+plain `score` attribute (`src/open_observatory/mqtt/publisher.py:489`). 145 tests
+passed across `tests/test_mqtt_*.py`, `tests/test_display_*.py` and
+`tests/test_firmware.py`, none skipped, including the real-broker case in
+`tests/test_mqtt_integration.py` against a `eclipse-mosquitto:2` container. Three
+things a reader should not take on trust from the above:
+
+- **The reconnect path has never run on the station.** One connect attempt, one
+  success, `last_disconnected_utc: null`. The manual bounded-backoff loop this ADR
+  chose `aiomqtt` v2 for (`src/open_observatory/mqtt/publisher.py:288`) is covered by
+  unit tests and has not once been exercised against the operator's broker.
+- **`suppressed_withdrawn_total` and `suppressed_synthetic_total` are both 0**, so
+  neither withholding rule has fired here either. [[ADR-044 - Withdrawn detections|ADR-044]] predicted the first
+  ("expected to be dead code on a healthy station") and this confirms it rather than
+  contradicting it; the second means the station has stayed on the real microphone.
+  Only `suppressed_unidentified_total` has moved.
+- **That six entities render in Home Assistant remains an operator observation from
+  2026-08-08, not a re-verified fact.** What is checkable from this repository and
+  from the station is that the payloads are built correctly and that publication is
+  succeeding. Nothing here reads the broker back.
+
+**The broker settings are readable and writable by anything on the LAN.** With
+`auth_enabled` at its default `false`, `GET /api/v1/settings` returns `mqtt_host`
+and `mqtt_username` in the clear to an anonymous caller (`mqtt_password` is
+`secret: true` and comes back as `null` with `is_set: true`), and every `mqtt_*`
+field is `tier: live` with `restart_required: false` — so an unauthenticated
+`PUT /api/v1/settings` can point this publisher at a different broker, with
+different credentials, and have it take effect without a restart. That is
+[[ADR-034 - Authentication foundation|ADR-034]]'s stated trade rather than a new defect, but it is worth naming here
+because this ADR is the reason those fields exist.
 
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

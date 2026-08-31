@@ -232,5 +232,61 @@ print(db.execute(\"select count(*) from media_asset\").fetchone(),
 "'
 ```
 
+**Reviewed again 2026-08-30: `exact` is not "rarely true", it is unreachable at
+this write rate, and the arithmetic is worth writing down.**
+
+The 2026-08-29 note above put a full pass at "about four days" over 234k live
+rows. Two things make that optimistic. The sweep lands every **~365 s** on
+average, not 300 s ([[ADR-033 - Retention is paced|ADR-033]]), so the audit scans
+about **1,970 rows/hour**. And the cursor walks `created_at` ascending while new
+rows are appended at exactly that end: the station's clip count went from 245,713
+to 245,924 in 541 s, so it is adding roughly **1,400 live `media_asset`
+rows/hour**. The audit therefore closes on the end of the table at only
+**~570 rows/hour**, and a first pass over 238,017 live rows takes about
+**420 hours — 17 days**, not four. The cursor and both tallies are in memory
+(`src/open_observatory/retention.py:570`), so a restart returns them to zero.
+This station has not been up for 17 days.
+
+Read from it 2026-08-30 20:01Z, 7.8 h into a run: `passes_completed: 0`,
+`in_progress_scanned: 17,400`, `known_missing: 0`, `exact: false`. That is
+correctly labelled and it is a floor over the oldest 7% of the table. The last
+exact figure remains [[HANDOVER]]'s completed pass over 65,556 rows.
+
+**And the audit only checks one direction.** It finds rows whose file is gone.
+The station currently reports **245,713 `.wav` files** on disk against
+**238,017 live rows** — a ~7,700-file difference this ADR's audit cannot see and
+`RetentionSweeper.find_orphans()` could, except that it has no CLI command; see
+the 2026-08-30 note on [[ADR-026 - Tiered clip retention|ADR-026]]. The "what
+this ADR does not do" list is also now one item short: nothing sweeps `.partial`
+files or empty day directories either, because that cleanup lives in the same
+`ClipManager.enforce_retention` this ADR left in place and unreferenced.
+
+**Correction, 2026-08-31: the 17-day figure above is withdrawn; the 2026-08-29
+note's "about four days" was close and mine was not.** It inherited the same
+nine-minute window as the
+[[ADR-064 - Watermark tier first|ADR-064]] fill rate corrected the same day, so
+its denominator — "~1,400 new live rows/hour" — was about 4.5x too high. Measured
+over 24.75 hours instead: live `media_asset` rows went 238,017 to **245,883**,
+**318 rows/hour**. And the audit's own scan rate is now measured rather than
+derived: `in_progress_scanned` reached **15,600 in 7.0 h**, **2,229 rows/hour**.
+Net progress toward the end of the table is therefore ~1,911 rows/hour and a
+first pass over 245,883 live rows is about **5.4 days**.
+
+**The finding that survives is the one that was already in the 2026-08-29 note,
+and it is about uptime, not arithmetic.** A pass needs ~5 days; this station
+restarted twice inside 25 hours (2026-08-30 20:12:24Z, 2026-08-31 14:04:47Z), and
+the cursor and both tallies are in memory (`src/open_observatory/retention.py:570`),
+so each restart returns the pass to zero. `passes_completed` has read **0** at
+every reading taken, and `exact` has never been true. Persisting the cursor is a
+smaller change than making the audit faster, and it is the one that would make
+the figure exact.
+
+One number from that note does hold. The clip tree and the live rows still
+disagree by about the same amount a day later — **253,366 `.wav` files against
+245,883 live rows**, against 245,713 and 238,017 yesterday. The ~7,500 difference
+is **stable, not growing**, so it is a historical residue rather than an ongoing
+leak, and `find_orphans()` — still with no CLI command — is still the only thing
+that could identify it.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].
