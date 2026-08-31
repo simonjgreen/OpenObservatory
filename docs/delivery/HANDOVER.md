@@ -740,6 +740,124 @@ unless noted.
 
 ## 6. Immediate next steps, in the order I would do them
 
+### 6.0 The queue from the 2026-08-29/31 review
+
+Every ADR and every founding document was reviewed against the code and the
+station over those three days. The findings are recorded where they belong — in
+each ADR, in [[MILESTONE_STATUS]], in the run records — and this is the single
+list of **what is left to do about them**, because a finding filed in fifteen
+places is a finding nobody works. Detail stays at the pointer; this is the queue.
+
+Nothing here is documentation. Every item is code, config, a test, or a decision.
+
+**Time-boxed — do these first**
+
+1. **Run `oo clips bank-backfill` before the disk reaches 85%.** Measured over
+   24.75 h the net fill is 0.338 GB/h, so the watermark is roughly a day out from
+   2026-08-31 21:00Z. The valve has never run in this station's life, `banked_at`
+   protects nothing until the backfill is applied, `held` is not exempt from it,
+   and it reclaims oldest-first — so the first thing it destroys is the earliest
+   evidence this station recorded. See [[ADR-076 - The evidence bank is a column, not a recomputed set|ADR-076]] and §1a-urgent.
+2. **Make `ix_detection_group_start` partial, or give the acoustic-event tier a
+   partial live-asset path.** It reclaimed exactly one 200-asset batch and has
+   reclaimed nothing since, interrupting at 1.5 s every sweep, and each success
+   makes the next one slower. Until then [[ADR-077 - Acoustic events keep no recordings|ADR-077]]'s privacy
+   claim is false: the `Human vocal` recordings it exists to delete are on disk.
+   This is [[ADR-062 - Retention walks live assets|ADR-062]]'s failure recurring on a fourth index.
+
+**Rules the code does not enforce**
+
+3. **Add `ultrasonic-pass-v1` to `NON_TAXONOMIC_PLUGINS`** (`normaliser.py`), and
+   give `tests/test_pipeline.py`'s claim-violation test the detector its docstring
+   names — it passes `activity-v1` while claiming to cover the ultrasonic one.
+   [[ADR-013 - ultrasonic-pass-v1|ADR-013]] has asserted this enforcement since it was written.
+4. **`oo refine run` / `oo refine status`: `create_all()` → `ensure_schema_at_head()`**
+   (`cli.py`). They are the only production entry points that skip the head check,
+   and `oo refine run` is a nightly unattended `ExecStart` ([[ADR-042 - Migrations run in deploy.sh|ADR-042]]).
+5. **Fix the dead alarm at `station.py:2034`** — `len(tiers_skipped) == 3` against
+   a four-tier `_TIER_ORDER`, so a genuine no-tier sweep is silent and an abort in
+   `unkept` fires falsely. Its three tests pass by hand-building a list the code
+   can no longer produce.
+6. **Test the propose-only ceiling.** Nothing asserts that no API route reads
+   `refinement`/`refined_at`; adding it to the detection payload would breach
+   [[ADR-045 - Refinement runner|ADR-045]] and break no test.
+
+**Authentication — it has never been switched on, and turning it on today bites**
+
+7. **`config/example.env`: drop or complete `OO_AUTH_PUBLIC_READ_PATHS`.** As
+   shipped it overrides the three-path default with one, so an operator following
+   the documented copy-to-`runtime.env` procedure takes the display's push channel
+   and its OTA path dark the moment they enable auth.
+8. **Add `/api/v1/history` to the default exempt list**, or accept a degraded
+   fallback screen and say so in `config.py`. The firmware fetches it for the
+   species-today count and the station's UTC offset; it is exempt under no
+   configuration today.
+9. **Extend `test_esp32_counter_top_display_endpoints_stay_public`** to
+   `/api/v1/display` and `/api/v1/firmware/image`, and add one test asserting a
+   4401 close. The test named for this risk covers three of five paths, and all
+   three WebSocket gates have no coverage at all.
+10. **Give `scripts/*.py` an `OO_API_TOKEN` bearer option**, or enabling auth
+    disables the project's own measurement instruments.
+11. **Decide about unauthenticated firmware publish.** With auth off — the shipped
+    default — any LAN device can `POST /api/v1/firmware` a binary that passes a
+    mistake-check and `POST /rollout` it to every display. Enabling auth gates both
+    today; signing is the real fix and does not exist ([[ADR-050 - Display OTA slots|ADR-050]]).
+
+**A human correction does not yet mean anything**
+
+12. **`history.species_summary` and `GET /api/v1/taxa/activity` must join `Review`.**
+    Today a correction and a rejection both leave the machine's wrong name in the
+    night's list. Minimum: exclude `rejected`/`corrected` and report an
+    `excluded_reviewed_count`, mirroring [[ADR-044 - Withdrawn detections|ADR-044]].
+13. **Render `effective_common_name` in the UI.** It is declared in `types.ts` and
+    read nowhere; the machine's retraction is louder on screen than the human's
+    correction, which inverts the charter's priority 5.
+14. **Surface the hold**: emit `oo_retention_held_detections`, return
+    `held_detections` from `/api/v1/retention/status`, and add a `review_status`
+    filter to `GET /detections`. Nothing tells an operator what they have held.
+15. **`tests/test_plausibility_consumers.py`: seed `NIGHT` relative to now.** Its
+    fixed date has silently self-skipped since 2026-08-11 — nineteen days — and it
+    is the only automated check of one of ADR-044's eight surfaces.
+
+**Instruments that report the wrong thing**
+
+16. `api/metrics.py` omits the `acoustic_event` tier label, so the tier that
+    deletes the most is invisible to Prometheus. Derive the labels from `_TIER_ORDER`.
+17. The watermark's `freed` is unconditional, so rows whose files are already gone
+    let the valve declare itself satisfied having freed nothing.
+18. A failed refinement pass writes no `health_event` — `write_health_event` runs
+    only after `run()` returns — so `oo refine status` keeps reporting the previous
+    run. This is exactly how the 2026-08-10 numba failure hid for two days.
+19. `clip_max_total_gb` and `clip_retention_days` enforce nothing (`enforce_retention`
+    has no caller outside tests) and are still live-editable and shown as budgets.
+20. `find_orphans()` has no CLI command, so ~7,700 files with no live row are
+    unaccountable in either direction.
+21. `alembic/versions/…_0006_refinement.py`'s header says `Revises: 0004…` while
+    `down_revision` is `0005…`. That header is the origin of a rollback instruction
+    that would now drop `kept_at`, `kept_by` and `banked_at`.
+
+**Decisions only the operator can make**
+
+22. **Does SLO A's tick stand?** It is a per-month target ticked on 9.8 days, from
+    arithmetic the station does not serve, in a file that refuses to tick on
+    "believed met from ordinary use" — while A2, C and D stay unticked for exactly
+    that reason. Either A comes off, or their reasons need restating.
+23. **CI**: build a workflow, or move it to the plan's *Explicitly deferred* list
+    with a reason. It is a Milestone 0 deliverable that was ticked under a shorter
+    name, and [[TECHNICAL_SPEC]] §13's vulnerability scanning has nowhere to run.
+24. **Verify Dependabot security alerts are enabled** on the GitHub repository.
+    If they are off, there is no dependency-vulnerability signal of any kind.
+25. **Gate (c)** needs capture stopped, a second Pi, or a declared pause — it costs
+    audio otherwise ([[DRIFT_GATE_C_2026-08-29]]). **Gate (b)** needs an explanation
+    for ~4 ms of hourly structure that is neither temperature nor sampler noise; the
+    cheapest next step is a periodicity search on the committed CSV, which costs
+    nothing but analysis ([[DRIFT_GATE_B_2026-08-29]]).
+26. **Backup has no working method.** The operational instruction to back up the
+    database before a migration cannot be followed: `sqlite3`'s backup API was
+    measured not converging on the live database, and a file copy of a live WAL
+    database is not a consistent snapshot. Milestone 7 owns the tooling.
+27. Minor: a tracked zero-byte file named `=` sits in the repository root.
+
 ### 6.1 Close the Milestone 1–3 gates properly
 
 1. ~~**Run the 72-hour soak.**~~ **Run 2026-08-10 to 2026-08-13, and it
