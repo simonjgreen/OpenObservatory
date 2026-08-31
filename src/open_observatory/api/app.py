@@ -1554,12 +1554,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{API_PREFIX}/models")
     def list_models() -> dict[str, Any]:
+        """Every model this station can use, and the licence attached to each.
+
+        Two kinds, distinguished by `kind`, because they are acquired
+        differently. A `file` is downloaded and checksummed against
+        `models/manifest.tsv`. A `package` is a pip install that brings code
+        and weights down together — BatDetect2 is the only one — so it has no
+        digest, and `model_dir` says nothing about it. Both are listed because
+        ADR-006's disclosure rule is about the licence, not the file.
+        """
         return {
             "model_dir": str(model_registry.DEFAULT_MODEL_DIR),
             "assets": model_registry.licence_summary(),
             "note": (
-                "Model assets are not bundled with this software (ADR-006). Their "
-                "licences differ from the code's and are listed per asset."
+                "Models are not bundled with this software (ADR-006) and their licences "
+                "differ from the code's. A 'file' entry is downloaded and verified by "
+                "`oo models fetch`; a 'package' entry arrives through the pip install "
+                "shown, which has no digest to check."
             ),
         }
 

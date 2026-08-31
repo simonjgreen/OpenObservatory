@@ -1,10 +1,18 @@
-"""Checksummed model acquisition (ADR-006).
+"""Model acquisition and licence disclosure (ADR-006).
 
 Model assets are not in the repository and are not downloaded implicitly. The
 operator runs ``oo models fetch``, sees the licence of each asset, and the
 digests are verified before anything is installed. A mismatch is a hard failure:
 a silently-wrong classifier would produce confident nonsense that looks exactly
 like a working system.
+
+Not every model arrives that way. BatDetect2 is ``pip install batdetect2``:
+code and weights together, under one licence, with no single file to name and
+no digest to verify. ADR-006's rule is about *disclosure before acquisition*,
+not about file digests, so both routes are described here — separately, each
+tagged with its own ``kind``. Writing a manifest row for a pip install would
+claim a checksum this station never checks, which is the same shape of
+dishonesty as a confident score on a species that was never there.
 """
 
 from __future__ import annotations
@@ -16,6 +24,9 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
+from importlib.util import find_spec
 from pathlib import Path
 
 import structlog
@@ -34,6 +45,80 @@ class ModelAsset:
     sha256: str
     licence: str
     url: str
+
+
+@dataclass(frozen=True, slots=True)
+class PackageModel:
+    """A model acquired as a Python package, code and weights together.
+
+    There is nothing here for :func:`fetch` to download or verify — the
+    operator's ``pip install`` is the acquisition step, and the version pin is
+    the only integrity claim that can honestly be made about it.
+    """
+
+    #: Import name, which is also the distribution name for every entry here.
+    #: A package whose two names differ would need a second field rather than
+    #: a guess, since :attr:`installed` asks the import system.
+    name: str
+    #: The pinned version, which is what :attr:`used_for` and the licence were
+    #: checked against — not necessarily what is on this machine. See
+    #: :attr:`installed_version`.
+    version: str
+    licence: str
+    install_command: str
+    url: str
+    #: One line on what the station does with it, so a licence in the UI is
+    #: attached to a purpose rather than floating on its own.
+    used_for: str
+
+    @property
+    def installed(self) -> bool:
+        """Ask the import system, without importing.
+
+        These packages are heavy and optional — BatDetect2 pulls in PyTorch —
+        and this is read by a listing endpoint that must stay cheap on a Pi.
+        A half-removed install reads as absent rather than raising: absent is a
+        normal state of a working station (ADR-017), and a licence listing is
+        the wrong place to fail over a broken dependency.
+        """
+        try:
+            return find_spec(self.name) is not None
+        except (ImportError, ValueError):  # pragma: no cover - broken install
+            return False
+
+    @property
+    def installed_version(self) -> str | None:
+        """What is actually on this machine, or ``None`` if nothing is.
+
+        Reported next to :attr:`version` rather than instead of it, because
+        "1.3.1" and "installed" side by side would assert that 1.3.1 is what
+        is installed — which the finder cannot tell us, and which is wrong on
+        any station that pinned differently. Read from distribution metadata,
+        so this still does not import the package.
+        """
+        if not self.installed:
+            return None
+        try:
+            return distribution_version(self.name)
+        except PackageNotFoundError:  # pragma: no cover - importable, no metadata
+            return None
+
+
+#: Pinned to the version the evidence is about: ADR-017's cascade timings and
+#: the accuracy findings in :mod:`.refinement.batdetect2` were measured on 1.3.1.
+PACKAGE_MODELS: tuple[PackageModel, ...] = (
+    PackageModel(
+        name="batdetect2",
+        version="1.3.1",
+        licence="CC-BY-NC-4.0",
+        install_command="pip install batdetect2==1.3.1",
+        url="https://github.com/macaodha/batdetect2",
+        used_for=(
+            "Bat-call proposals over stored ultrasonic evidence clips, in the "
+            "ADR-045 refinement runner only. Never in the live pipeline."
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,9 +250,17 @@ def fetch(
 def licence_summary(
     model_dir: Path = DEFAULT_MODEL_DIR, manifest: Path = DEFAULT_MANIFEST
 ) -> list[dict[str, object]]:
-    """Licence and provenance for every installed asset, for the UI to display."""
-    return [
+    """Licence and provenance for every model, for the UI to display.
+
+    Two shapes, tagged by ``kind``, because the two acquisition routes support
+    different claims. A ``file`` was downloaded and checked against a digest, so
+    it can report ``verified``; a ``package`` was pip installed, so it can
+    report only that its module is importable. Flattening them into one shape
+    would mean either inventing a digest or dropping the one there is.
+    """
+    rows: list[dict[str, object]] = [
         {
+            "kind": "file",
             "filename": entry.asset.filename,
             "licence": entry.asset.licence,
             "source_url": entry.asset.url,
@@ -178,3 +271,18 @@ def licence_summary(
         }
         for entry in status(model_dir, manifest)
     ]
+    rows.extend(
+        {
+            "kind": "package",
+            "name": package.name,
+            "version": package.version,
+            "licence": package.licence,
+            "source_url": package.url,
+            "install_command": package.install_command,
+            "used_for": package.used_for,
+            "installed": package.installed,
+            "installed_version": package.installed_version,
+        }
+        for package in PACKAGE_MODELS
+    )
+    return rows

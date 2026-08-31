@@ -789,9 +789,34 @@ def models_status() -> None:
             f"{entry.size_bytes:,}" if entry.size_bytes else "—",
         )
     console.print(table)
+
+    # The API and the UI list package-acquired models beside the file ones
+    # (ADR-006/ADR-017); a CLI that showed only files would disclose less than
+    # the browser, which is the wrong way round for the surface an operator uses
+    # over SSH when something is wrong.
+    packages = Table(title="Model packages")
+    packages.add_column("package")
+    packages.add_column("licence")
+    packages.add_column("state")
+    packages.add_column("acquire with")
+    for package in model_registry.PACKAGE_MODELS:
+        if not package.installed:
+            state = "[yellow]not installed[/yellow]"
+        else:
+            found = package.installed_version
+            state = f"[green]installed[/green] {found}" if found else "[green]installed[/green]"
+        packages.add_row(
+            f"{package.name} (pinned {package.version})",
+            package.licence,
+            state,
+            package.install_command,
+        )
+    console.print(packages)
+
     console.print(
         "[dim]Model assets are not bundled with this software (ADR-006). "
-        "Their licences differ from the code's.[/dim]"
+        "Their licences differ from the code's. A package is not checksummed: "
+        "the station can see that it imports, not that it is the pinned version.[/dim]"
     )
 
 

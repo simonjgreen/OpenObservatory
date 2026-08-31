@@ -10,6 +10,7 @@ import { DetectionDrawer } from './components/DetectionDrawer'
 import { FirmwarePanel } from './components/FirmwarePanel'
 import { FirstRun } from './components/FirstRun'
 import { History } from './components/History'
+import { ModelsPanel } from './components/ModelsPanel'
 import { NearMissPanel } from './components/NearMissPanel'
 import { ChangePasswordGate, Login } from './components/Login'
 import { OperatorSummary } from './components/OperatorSummary'
@@ -391,6 +392,14 @@ export default function App() {
             </div>
             <div className="column right">
               <EventLog events={live.events} localTimeZone={timeZone} />
+              {/* ADR-006/ADR-017: a model's licence is not this code's
+                  licence, and both ADRs promise the terms are surfaced "in
+                  the UI" as well as in /api/v1/models. This is that. It sits
+                  in the diagnose depth because it is reference material an
+                  operator goes looking for — before fetching a model, or
+                  before publishing what the station heard — not something
+                  the ambient view needs to carry. */}
+              <ModelsPanel />
             </div>
           </>
         )}
