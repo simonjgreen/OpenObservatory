@@ -40,12 +40,19 @@ def _snapshot(
     missing_frames: int = 0,
     gaps_with_loss: int = 0,
     extra_deficit_frames: float = 0.0,
+    cumulative_ppm: float | None = None,
 ) -> dict:
     """A station whose crystal is `ppm` slow, sampled at uptime `t`.
 
     The block duration is one block of frames at the *actual* delivered rate, so
     `block_age_s` sweeps one block duration to two exactly as the real station's
     does -- which is the band the phase filter has to be written for.
+
+    `cumulative_ppm` is what the station *reports* as `rate_offset_ppm`, which
+    `AlsaSource` computes as an average since the stream anchored rather than
+    over the sampled window. Left unset it equals the window, which is the young
+    stream where the two coincide; set, it is the long-running stream where they
+    must not be assumed to.
     """
     actual_rate = RATE * (1.0 - ppm * 1e-6)
     duration = BLOCK_FRAMES / actual_rate
@@ -67,7 +74,7 @@ def _snapshot(
             "block_age_s": block_age,
             "estimated_missing_seconds": missing_frames / RATE,
             "estimated_missing_frames": missing_frames,
-            "rate_offset_ppm": -ppm,
+            "rate_offset_ppm": -(ppm if cumulative_ppm is None else cumulative_ppm),
             "continuity_ratio": 0.99995,
             "gaps_with_loss": gaps_with_loss,
             "gaps_without_loss": 0,
@@ -152,8 +159,9 @@ def test_recovers_a_known_drift_rate() -> None:
     # otherwise would be tuning the test to a rounding.
     assert low <= segment["drift_ppm_theil_sen"] <= high
     assert (high - low) < 1.0
-    assert segment["ppm_agreement"] <= 2.0
-    assert segment["checks"]["slope_agrees_with_rate_offset_ppm_within_2"]
+    assert segment["window_frame_rate_ppm"] == pytest.approx(-50.0, abs=0.5)
+    assert segment["window_ppm_agreement"] <= 2.0
+    assert segment["checks"]["slope_agrees_with_window_frame_rate_ppm_within_2"]
     assert result["gate_met"]
 
 
@@ -219,6 +227,89 @@ def test_confirmed_loss_fails_the_run() -> None:
     assert not segment["checks"]["no_confirmed_loss"]
     assert not segment["passed"]
     assert not result["gate_met"]
+    # And the agreement check fails with it, which is the one thing the
+    # agreement check still independently *sees* (ADR-075): the station side
+    # adds lost frames back, because they are frames the device presented and
+    # the crystal is what they measure, while the deficit slope charges them to
+    # drift. 19,200 frames inside the hour is 13.5 ppm of disagreement.
+    assert not segment["checks"]["slope_agrees_with_window_frame_rate_ppm_within_2"]
+    assert segment["window_ppm_agreement"] > 2.0
+
+
+# ---------------------------------------------------------------------------
+# ADR-075. The slope-agreement check used to compare the window's Theil-Sen
+# slope against `rate_offset_ppm`, which `AlsaSource` computes as a cumulative
+# average since the stream anchored. Drift gate (b) ran twice on 2026-08-25 and
+# the check reported stream age: it failed at 3.563 ppm on a 72-hour-old stream
+# whose window rate was in fact -47.96 against a -49.85 cumulative, then passed
+# at 0.145 ppm two hours later only because a deploy had restarted capture 25
+# minutes before the window, so the "cumulative average" barely outran the
+# window itself.
+# ---------------------------------------------------------------------------
+
+
+def test_the_slope_is_compared_against_this_window_not_the_streams_cumulative_average() -> None:
+    """The defect, as a test: nothing is wrong here and the check must say so.
+
+    The window runs at a clean 50 ppm. The station reports a 35 ppm cumulative
+    average, because the days of stream behind this hour ran cooler. Comparing
+    against that figure fails at 15 ppm and the failure is stream age; comparing
+    against the same window's own frame counter passes.
+    """
+    rows = _series(50.0, cumulative_ppm=35.0)
+    segment = drift.report(rows, "none", 3600.0)["per_segment"][0]
+
+    assert segment["drift_ppm_theil_sen"] == pytest.approx(50.0, abs=0.5)
+    # Recorded for the reader, and explicitly not what is judged.
+    assert segment["station_rate_offset_ppm"] == pytest.approx(-35.0)
+    assert segment["window_frame_rate_ppm"] == pytest.approx(-50.0, abs=0.5)
+    assert segment["window_ppm_agreement"] <= 2.0
+    assert segment["checks"]["slope_agrees_with_window_frame_rate_ppm_within_2"]
+    assert segment["passed"]
+
+
+def test_the_verdict_does_not_move_when_only_the_cumulative_figure_moves() -> None:
+    """Stream age must not be able to change a verdict, in either direction.
+
+    Same crystal, same window, same samples; only the number the station happens
+    to have averaged since it anchored differs. Every check must be identical --
+    that is what "no longer measures stream age" means, and it also closes the
+    vacuous direction, where a young stream's cumulative average agrees with the
+    slope by construction and the check passes without having tested anything.
+    """
+    young = drift.report(_series(50.0, cumulative_ppm=50.0), "none", 3600.0)["per_segment"][0]
+    old = drift.report(_series(50.0, cumulative_ppm=20.0), "none", 3600.0)["per_segment"][0]
+
+    assert young["station_rate_offset_ppm"] != old["station_rate_offset_ppm"]
+    assert young["checks"] == old["checks"]
+    assert young["window_ppm_agreement"] == old["window_ppm_agreement"]
+    assert young["passed"] and old["passed"]
+
+
+def test_a_window_too_short_to_derive_a_rate_declines_rather_than_dividing_by_zero() -> None:
+    """The degenerate case, guarded explicitly and failed rather than skipped.
+
+    `block_age_s` is rounded to milliseconds by the station, so two endpoints
+    put up to 1 ms of rounding into the elapsed time -- 1 ppm over 1000 s and
+    worse below it, against a 2 ppm bar. A window that cannot resolve the bar
+    reports no figure, and a check that could not be evaluated is not a pass.
+    """
+    short = drift.report(_series(50.0, seconds=6.0), "none", 3600.0)["per_segment"][0]
+    assert short["window_frame_rate_ppm"] is None
+    assert short["window_ppm_agreement"] is None
+    assert not short["checks"]["slope_agrees_with_window_frame_rate_ppm_within_2"]
+    assert not short["passed"]
+
+    # And the arithmetic case the guard is actually for: every sample at the
+    # same instant, so the elapsed time is exactly zero.
+    frozen = _series(50.0, seconds=6.0)
+    for row in frozen:
+        row["monotonic_s"] = frozen[0]["monotonic_s"]
+        row["expected_frames"] = frozen[0]["expected_frames"]
+        row["block_age_s"] = frozen[0]["block_age_s"]
+    stalled = drift.report(frozen, "none", 3600.0)["per_segment"][0]
+    assert stalled["window_frame_rate_ppm"] is None
+    assert not stalled["checks"]["slope_agrees_with_window_frame_rate_ppm_within_2"]
 
 
 def test_out_of_band_phase_samples_are_dropped_and_counted_not_hidden() -> None:

@@ -19,8 +19,11 @@ the *last block's start*:
     corrected = expected_frames - block_age_s x sample_rate - (frames - block_frames)
 
 That took ADR-046's scatter from ~100 ms to 0.3 ms. The slope of the corrected
-deficit against uptime is the crystal's rate, and it is compared against the
-station's own independently-derived `rate_offset_ppm`.
+deficit against uptime is the crystal's rate, and it is cross-checked against the
+same rate derived a second way from the frame counter over the same window
+(`station_ppm_over_window`). Not against the published `rate_offset_ppm`: that is
+a cumulative average since the stream anchored, and comparing an hour's slope
+against it measured stream age rather than drift (ADR-075).
 
 **Four things this script is careful about, each because it went wrong before:**
 
@@ -397,6 +400,89 @@ def thermal_correlation(residual: np.ndarray, temps: np.ndarray) -> float | None
     return None if math.isnan(value) else value
 
 
+#: `block_age_s` is rounded to milliseconds by the station, so two endpoints put
+#: at most 1 ms of rounding into the elapsed time below. That is 1e6/elapsed ppm,
+#: and the bar it is judged against is 2 ppm: at 1000 s the derivation's own
+#: resolution is half the bar, and below that it would be judging its rounding.
+#: The gate requires 3600 s in one segment anyway (0.28 ppm there), so this
+#: refuses only windows that have already failed on duration.
+STATION_PPM_MIN_WINDOW_S = 1000.0
+
+
+def station_ppm_over_window(segment: Segment) -> float | None:
+    """The station's own rate offset, derived over *this window*.
+
+    ADR-075. The published `rate_offset_ppm` cannot be used for this: `AlsaSource`
+    computes it as an average since the stream anchored, so on a young stream it
+    is nearly the slope by construction and on a 72-hour stream it cannot track
+    one hour's local rate. Comparing a window slope against it measures stream
+    age -- 0.001 ppm and 14.999 ppm from the same simulated crystal, and 3.563
+    then 0.145 ppm from the same real one two hours apart on 2026-08-25.
+
+    Derived instead from the same rows the slope is fitted through, in the form
+    `AlsaSource` itself uses:
+
+        observed_rate = (delta frames + delta missing) / delta elapsed
+        ppm           = (observed_rate / sample_rate - 1) * 1e6
+
+    Lost frames are added back because they are frames the device *presented*,
+    and the crystal is what they measure; that is also the one term the deficit
+    slope does not carry, and so the one thing this check still independently
+    sees.
+
+    **The elapsed time is the station's own, at the last block's start**, not the
+    sampler's `monotonic_s`, and both halves of that were measured rather than
+    assumed on the 2026-08-25 CSVs:
+
+    * `frames` advances a whole block at a time, so a raw
+      `delta frames / delta monotonic_s` carries up to one block of quantisation
+      at each end -- **25.65 ppm** over an hour at this station's 100 ms blocks,
+      against a 2 ppm bar. Measured, it read -44.12 and -54.89 ppm on two runs
+      whose crystals were -47.96 and -50.78.
+    * The sampler's clock is not a reference. The laptop's `CLOCK_MONOTONIC`
+      against the Pi's drifted **-2.4 ppm** across one run and **+4.1 ppm**
+      across the next, with request latency spanning 250 ms. A rate measured
+      against it fails a 2 ppm bar on the wrong machine's clock.
+
+    `expected_frames / sample_rate - block_age_s` is the station's elapsed time
+    at the block's start, and `frames - block_frames` is the frame count at that
+    same instant: both come from one `time.monotonic_ns()` reading inside one
+    snapshot, so the quantisation and the request latency cancel exactly. Across
+    the eight-by-eight grid of endpoint choices on both real runs that estimate
+    moved by 0.47 ppm; the `monotonic_s` form moved by 4.5 ppm.
+
+    None, never a number, when the window is too short to resolve the bar or the
+    columns are missing. A check that could not be evaluated must not pass.
+    """
+    used = [row for row in segment.rows if int(row["phase_in_band"]) == 1]
+    if len(used) < 2:
+        return None
+    first, last = used[0], used[-1]
+    try:
+        rate = float(last["sample_rate"] or 0.0)
+        if rate <= 0.0:
+            return None
+
+        def elapsed_at_block_start(row: dict[str, Any]) -> float:
+            return float(row["expected_frames"]) / rate - float(row["block_age_s"])
+
+        def frames_at_block_start(row: dict[str, Any]) -> float:
+            presented = float(row["frames"]) - float(row["block_frames"])
+            return presented + float(row["estimated_missing_frames"] or 0)
+
+        elapsed = elapsed_at_block_start(last) - elapsed_at_block_start(first)
+        delivered = frames_at_block_start(last) - frames_at_block_start(first)
+    except (KeyError, TypeError, ValueError):
+        return None
+    # Explicit, and before the division: a stalled or frozen station reports the
+    # same block at both ends, and `elapsed` is then exactly zero.
+    if not math.isfinite(elapsed) or elapsed < STATION_PPM_MIN_WINDOW_S:
+        return None
+    if not math.isfinite(delivered):
+        return None
+    return (delivered / elapsed / rate - 1.0) * 1e6
+
+
 def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
     x, y, dropped = per_minute_medians(segment)
     rate = float(segment.rows[-1]["sample_rate"])
@@ -424,8 +510,14 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
     finite_temps = temps[~np.isnan(temps)] if temps.size else np.zeros(0)
 
     first, last = segment.rows[0], segment.rows[-1]
-    station_ppm = float(last["rate_offset_ppm"] or 0.0)
-    agreement = abs(abs(ppm) - abs(station_ppm)) if not math.isnan(ppm) else float("nan")
+    # Reported for the reader and judged by nothing: this is the stream's
+    # cumulative average, which is a different quantity over a different
+    # interval (ADR-075).
+    station_cumulative_ppm = float(last["rate_offset_ppm"] or 0.0)
+    window_ppm = station_ppm_over_window(segment)
+    agreement = (
+        abs(abs(ppm) - abs(window_ppm)) if window_ppm is not None and not math.isnan(ppm) else float("nan")
+    )
 
     def delta(key: str) -> float:
         return float(last[key] or 0) - float(first[key] or 0)
@@ -436,7 +528,13 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
         # per-minute medians is the floor; ADR-046's shortest quoted window had
         # ten and it was already the weakest of its three.
         "at_least_10_minute_points": int(x.size) >= 10,
-        "slope_agrees_with_rate_offset_ppm_within_2": (not math.isnan(agreement) and agreement <= 2.0),
+        # ADR-075. A consistency cross-check, not independent confirmation:
+        # both sides are derived from the same frame counter over the same
+        # interval and agree algebraically, as ADR-069 already conceded. What it
+        # tests is that the robust fit, the per-minute bucketing, the phase-band
+        # filter and the loss accounting have not moved the answer -- and it no
+        # longer tests how old the stream is. Unevaluable is not a pass.
+        "slope_agrees_with_window_frame_rate_ppm_within_2": (not math.isnan(agreement) and agreement <= 2.0),
         "max_residual_within_0.5ms": bool(residual_ms) and max(map(abs, residual_ms)) <= 0.5,
         "no_step_over_0.5ms": step_ms <= 0.5,
         "no_confirmed_loss": delta("estimated_missing_frames") == 0 and delta("gaps_with_loss") == 0,
@@ -454,8 +552,9 @@ def summarise(segment: Segment, min_seconds: float) -> dict[str, Any]:
         "uptime_end_s": round(float(last["uptime_s"]), 1),
         "drift_ppm_theil_sen": round(ppm, 3),
         "drift_ppm_ci95": [round(ppm_ci[0], 3), round(ppm_ci[1], 3)],
-        "station_rate_offset_ppm": station_ppm,
-        "ppm_agreement": round(agreement, 3),
+        "station_rate_offset_ppm": station_cumulative_ppm,
+        "window_frame_rate_ppm": round(window_ppm, 3) if window_ppm is not None else None,
+        "window_ppm_agreement": round(agreement, 3) if not math.isnan(agreement) else None,
         "max_abs_residual_ms": round(max(map(abs, residual_ms)), 4) if residual_ms else None,
         "max_step_ms": round(step_ms, 4),
         # None, not 0.0: zero degrees is a reading and absent is not.
