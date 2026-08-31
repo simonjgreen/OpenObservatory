@@ -840,7 +840,7 @@ Expected: all pass, count one higher than before plus the new files.
 - [ ] **Step 5: Verify against the live station**
 
 ```bash
-curl -s http://192.168.1.195:8080/api/v1/health | python3 -c "
+curl -s http://<station-host>:8080/api/v1/health | python3 -c "
 import json,sys; c=json.load(sys.stdin)['capture']
 print('continuity      ', c['continuity_ratio'])
 print('integrity       ', c['capture_integrity_ratio'])
@@ -903,7 +903,7 @@ In `src/open_observatory/api/metrics.py`, immediately after the
 
 ```bash
 .venv/bin/python -m pytest tests/ -q -k metrics --deselect tests/test_api.py::TestLiveChannels
-curl -s http://192.168.1.195:8080/metrics | grep -E "oo_capture_(integrity|audio_lost|drift)"
+curl -s http://<station-host>:8080/metrics | grep -E "oo_capture_(integrity|audio_lost|drift)"
 ```
 
 Expected: three gauges present with sane values.

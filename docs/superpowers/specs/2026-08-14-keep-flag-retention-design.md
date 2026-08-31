@@ -46,7 +46,7 @@ of quiet dishonesty this project exists to avoid.
 
 ```
 detection.kept_at   TIMESTAMP(tz) NULL   -- indexed
-detection.kept_by   TEXT NULL            -- actor: "simon", or "exemplar-backfill"
+detection.kept_by   TEXT NULL            -- actor: the operator's username, or "exemplar-backfill"
 ```
 
 Mutable columns, deliberately. `Review` is append-only because a correction is a
