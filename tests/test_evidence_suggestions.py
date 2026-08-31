@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import sqlalchemy.event as sa_event
 
 from open_observatory.db import models as orm
 from open_observatory.db.session import create_all, init_engine, session_scope
@@ -330,3 +331,70 @@ def test_a_reclaimed_asset_costs_nothing_either_side_of_the_fraction(
             session, common_species=(), implausible_species=(), dismissed_species=(), now=NOW
         )
     assert suggestions == []
+
+
+class TestQueryPlans:
+    """The regression this module exists to fix: on the production schema,
+    both of the original two aggregates compiled to `SCAN detection_media`
+    on the *whole* table, every call, because their only time bound sat on
+    `detection`, the far side of the join -- `WINDOW_DAYS` bounded nothing on
+    a station younger than the window. Two calls from a settings page load
+    measured at ~35 s combined and cost the live station ~41 s of dropped
+    audio. A functional test cannot catch this: a small fixture makes a table
+    scan free, and the answers were correct throughout -- which is exactly
+    why the original suite passed.
+
+    This captures every statement `compute_suggestions` actually issues, on a
+    zero-row (no `ANALYZE` statistics) schema database -- reproducing the
+    station's own plans exactly -- and asserts none of them scans `detection`
+    or `detection_media`.
+    """
+
+    def test_no_query_scans_detection_or_detection_media(
+        self, db, station_and_detector
+    ) -> None:
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="European Greenfinch",
+                count=GREENFINCH_COUNT,
+                byte_length=GREENFINCH_BYTES // GREENFINCH_COUNT,
+            )
+
+        from open_observatory.db.session import _engine
+
+        statements: list[tuple[str, object]] = []
+
+        def capture(conn, cursor, statement, parameters, *_a):
+            if statement.strip().upper().startswith("SELECT"):
+                statements.append((statement, parameters))
+
+        sa_event.listen(_engine, "before_cursor_execute", capture)
+        try:
+            with session_scope() as session:
+                compute_suggestions(
+                    session,
+                    common_species=(),
+                    implausible_species=(),
+                    dismissed_species=(),
+                    now=NOW,
+                )
+        finally:
+            sa_event.remove(_engine, "before_cursor_execute", capture)
+
+        assert statements, "compute_suggestions issued no SELECT to check"
+
+        raw = _engine.raw_connection()
+        try:
+            for statement, parameters in statements:
+                cursor = raw.cursor()
+                cursor.execute(f"EXPLAIN QUERY PLAN {statement}", parameters)
+                plan = [row[-1] for row in cursor.fetchall()]
+                for detail in plan:
+                    assert "SCAN detection_media" not in detail, (statement, plan)
+                    assert not detail.startswith("SCAN detection"), (statement, plan)
+        finally:
+            raw.close()

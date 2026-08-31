@@ -30,7 +30,7 @@
  *  - Secrets are write-only: the server reports `is_set`, never the value.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiFetch } from '../api'
 import {
@@ -98,6 +98,11 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set())
   const [open, setOpen] = useState<string | null>(initialCategory ?? 'station')
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  // A ref, not state: it must not itself be an effect dependency. Setting it
+  // from inside the fetch effect while it were state would re-run the effect
+  // on the same render, firing its own cleanup (`cancelled = true`) before
+  // the in-flight fetch resolves and silently dropping the result.
+  const suggestionsFetchedRef = useRef(false)
   const [taxaSuggestions, setTaxaSuggestions] = useState<TaxaSuggestion[]>([])
 
   useEffect(() => {
@@ -119,7 +124,15 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
     }
   }, [])
 
+  // Two unbounded aggregates run in the capture process behind this
+  // endpoint (ADR-074/076). They are cheap once the underlying queries are
+  // index-served, but a query in the capture process still should not fire
+  // just because someone opened the settings page -- so this is gated on
+  // the operator actually expanding the Retention category, and fetched at
+  // most once per mount rather than on every expand/collapse.
   useEffect(() => {
+    if (open !== 'retention' || suggestionsFetchedRef.current) return
+    suggestionsFetchedRef.current = true
     let cancelled = false
     apiFetch('/api/v1/retention/suggestions')
       .then(async (response) => {
@@ -133,7 +146,7 @@ export function SettingsPanel({ onClose, onSaved, initialCategory }: Props) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [open])
 
   /** Autocomplete data for every `csv` field's chip editor, fetched once and
    *  shared -- there are three species-list fields on this page, and this

@@ -21,6 +21,40 @@ and shapes the result into JSON. Everything that decides *whether* a species
 qualifies lives here, tested directly against a database session, the same
 split `slo.py`, `evidence_value.py` and `plausibility.py` use to keep
 threshold logic out of FastAPI.
+
+This module used to join `detection -> detection_media -> media_asset` for
+both of its aggregates, on the theory that the `(taxonomic_group,
+event_start_utc)` bound on `detection` would give SQLite "an index range scan
+per group, not a table scan". Measured against the production schema, that
+was wrong in the identical way ADR-076 already found and fixed once:
+`EXPLAIN QUERY PLAN` showed `SCAN detection_media` on the whole table,
+every call, regardless of the bound -- because that bound sits on
+`detection`, the far side of the join, and SQLite has no way to push it
+through. `WINDOW_DAYS` bounded nothing either on a station whose archive is
+younger than the window: "the trailing 30 days" was the entire
+`detection_media` table, ~362,000 rows, scanned twice on every page load of
+the settings screen this feeds. Two such calls measured at ~35 s combined
+against the live station and cost it 41 s of dropped audio. Not joining is
+the fix, not bounding the window harder -- see ADR-076 and the commit that
+split this module's two aggregates and added a third, narrower one:
+
+1. per-species detection counts, straight off `detection` alone --
+   `taxonomic_group == 'bird'` plus an `event_start_utc` range is exactly the
+   `(taxonomic_group, event_start_utc)` shape `ix_detection_group_start`
+   covers, so this is an index range scan, no join at all.
+2. the denominator, straight off `media_asset` alone -- live (unreclaimed)
+   bytes created since the cutoff, served by `ix_media_asset_live_created`.
+   This is bytes of live evidence written in the window across every group,
+   not just birds: the denominator for "2% of evidence bytes" has to mean
+   the whole archive's evidence, or a station with a large non-bird share
+   (bats, acoustic events) would suggest species that are not actually 2% of
+   anything. It is also more honest than the old join-based version, which
+   silently dropped any asset whose detection fell outside the window.
+3. byte totals, joined, but only for the handful of species that already
+   passed the `> 500 detections` threshold in step 1 -- driven from
+   `ix_detection_group_start` via an `IN (...)` list, not a scan of anything.
+   Skipped entirely when no species passes step 1, which is the common case:
+   two cheap queries and stop.
 """
 
 from __future__ import annotations
@@ -28,7 +62,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import func, select
 
@@ -73,58 +107,67 @@ def compute_suggestions(
 ) -> list[Suggestion]:
     """Species that qualify for the common-list suggestion prompt right now.
 
-    Two aggregate queries, both bounded to the trailing `WINDOW_DAYS` window
-    and neither touching `native_result`:
+    Three queries, none of them a table scan (see the module docstring for
+    why the previous two-query, join-everywhere shape was not):
 
-    1. per-species detection count and byte total, `taxonomic_group == 'bird'`
-       plus an `event_start_utc` range -- exactly the `(taxonomic_group,
-       event_start_utc)` shape `ix_detection_group_start` covers, so this is
-       an index range scan per group, not a table scan.
-    2. the same window's total evidence bytes across every group, using the
-       plain index on `event_start_utc` -- the denominator for "2% of
-       evidence bytes" has to mean the whole archive's evidence, not just
-       what birds produced, or a station with a large non-bird share (bats,
-       acoustic events) would suggest species that are not actually 2% of
-       anything.
-
-    Both queries join `detection` -> `detection_media` -> `media_asset` and
-    filter `media_asset.reclaimed_at IS NULL`, so a clip retention has
-    already deleted does not count towards either the numerator or the
-    denominator -- it no longer costs any disk.
+    1. per-species detection counts, off `detection` alone.
+    2. the evidence-bytes denominator, off `media_asset` alone.
+    3. byte totals for the species that already passed the detection-count
+       threshold in step 1, joined -- skipped entirely when step 1 finds no
+       candidate.
     """
     cutoff = (now or datetime.now(UTC)) - timedelta(days=WINDOW_DAYS)
 
-    per_species = session.execute(
+    per_species_rows = session.execute(
         select(
             orm.Detection.common_name,
-            func.count(func.distinct(orm.Detection.id)),
-            func.coalesce(func.sum(orm.MediaAsset.byte_length), 0),
+            func.count(orm.Detection.id),
         )
-        .select_from(orm.Detection)
-        .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
-        .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
         .where(orm.Detection.taxonomic_group == _BIRD_GROUP)
         .where(orm.Detection.event_start_utc >= cutoff)
         .where(orm.Detection.common_name.is_not(None))
-        .where(orm.MediaAsset.reclaimed_at.is_(None))
         .group_by(orm.Detection.common_name)
     ).all()
+    # The `is_not(None)` filter above guarantees `common_name` is never NULL
+    # in this result set; the cast tells mypy what the `WHERE` already did.
+    per_species: list[tuple[str, int]] = [(cast(str, name), count) for name, count in per_species_rows]
+
+    candidates = [name for name, detection_count in per_species if detection_count > MIN_DETECTIONS]
 
     total_bytes = session.execute(
         select(func.coalesce(func.sum(orm.MediaAsset.byte_length), 0))
-        .select_from(orm.Detection)
-        .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
-        .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
-        .where(orm.Detection.event_start_utc >= cutoff)
         .where(orm.MediaAsset.reclaimed_at.is_(None))
+        .where(orm.MediaAsset.created_at >= cutoff)
     ).scalar_one()
+
+    byte_totals: dict[str, int] = {}
+    if candidates:
+        byte_total_rows = session.execute(
+            select(
+                orm.Detection.common_name,
+                func.coalesce(func.sum(orm.MediaAsset.byte_length), 0),
+            )
+            .select_from(orm.Detection)
+            .join(orm.DetectionMedia, orm.DetectionMedia.detection_id == orm.Detection.id)
+            .join(orm.MediaAsset, orm.MediaAsset.id == orm.DetectionMedia.media_asset_id)
+            .where(orm.Detection.taxonomic_group == _BIRD_GROUP)
+            .where(orm.Detection.event_start_utc >= cutoff)
+            .where(orm.Detection.common_name.in_(candidates))
+            .where(orm.MediaAsset.reclaimed_at.is_(None))
+            .group_by(orm.Detection.common_name)
+        ).all()
+        byte_totals = {cast(str, name): total for name, total in byte_total_rows}
 
     common = {n.casefold() for n in common_species}
     implausible = {n.casefold() for n in implausible_species}
     dismissed = {n.casefold() for n in dismissed_species}
 
+    detection_counts: dict[str, int] = dict(per_species)
+
     suggestions = []
-    for common_name, detection_count, byte_total in per_species:
+    for common_name in candidates:
+        detection_count = detection_counts[common_name]
+        byte_total = byte_totals.get(common_name, 0)
         if _qualifies(
             common_name,
             detection_count=detection_count,

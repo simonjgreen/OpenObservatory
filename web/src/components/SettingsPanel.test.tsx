@@ -451,6 +451,44 @@ describe('SettingsPanel evidence suggestions (ADR-074)', () => {
       expect(screen.queryByText(/European Greenfinch produced/)).not.toBeInTheDocument(),
     )
   })
+
+  it('does not call /retention/suggestions until Retention is expanded', async () => {
+    const fetchMock = stubGet()
+    render(<SettingsPanel onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Station')).toBeInTheDocument())
+
+    // Opening the settings page alone must not run the two unbounded
+    // aggregates behind this endpoint in the capture process -- that is
+    // the defect this test exists to catch.
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/retention/suggestions'))).toBe(
+      false,
+    )
+
+    await expand('Retention')
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((call) => String(call[0]).includes('/retention/suggestions')),
+      ).toBe(true),
+    )
+  })
+
+  it('fetches suggestions only once across repeated expand/collapse', async () => {
+    const fetchMock = stubGet()
+    render(<SettingsPanel onClose={() => {}} />)
+    await expand('Retention')
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter((call) => String(call[0]).includes('/retention/suggestions')),
+      ).toHaveLength(1),
+    )
+
+    await expand('Retention') // collapse
+    await expand('Retention') // re-expand
+
+    expect(
+      fetchMock.mock.calls.filter((call) => String(call[0]).includes('/retention/suggestions')),
+    ).toHaveLength(1)
+  })
 })
 
 describe('SettingsPanel csv chip editor', () => {
