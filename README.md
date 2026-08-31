@@ -31,18 +31,30 @@ setup traps that will otherwise cost you an hour.
 
 ## What it looks like
 
-All three are a real station running on real hardware, not mockups. The station
-name is the only thing edited.
+All of these are a real station running on real hardware, not mockups. The
+station name is the only thing edited, and the settings screenshot is taken with
+the *Station* section collapsed because the section under it holds the garden's
+coordinates.
 
 ### Live
 
-![The live view: an ultrasonic spectrogram above an audible one, ranked species
-suggestions below, and the storage budget below that](docs/screenshots/live.png)
+![The live view: an ultrasonic spectrogram above an audible one, bat passes
+labelled in place, ranked suggestions below, and the storage budget below
+that](docs/screenshots/live.jpg)
 
 Two spectrograms, stacked so their frequency axes form one continuous run from
-100 Hz to 150 kHz. Each panel states the parameters it is actually drawing with
-(`15 kHz–150 kHz`, `128 bins`, `24 ms/col`, `FFT 4096`), because a spectrogram
-with undeclared settings is a picture, not a measurement.
+80 Hz to 150 kHz. Each panel states the parameters it is actually drawing with
+(`15 kHz–150 kHz`, `128 bins`, `24 ms/col`, `FFT 4096` above; `80 Hz–15 kHz`,
+`192 bins`, `FFT 2048` below), because a spectrogram with undeclared settings is
+a picture, not a measurement.
+
+This one is half past ten on a night in late August, which is why the interesting
+half is the top panel: those vertical strokes between 20 and 50 kHz are bat
+passes, each labelled against the energy it describes rather than wherever the
+label happened to fall. Note what the labels claim — *noctule / serotine?*,
+*Myotis / barbastelle?*, and on one *(may be a bush-cricket)*. The ultrasonic
+detector reports a pass and a peak frequency; the name is a band hint, and the
+question mark is load-bearing.
 
 Below them, candidates carry the score **as a number**, the detector that said
 it, and the time. Note what the footer says: *levels are dBFS relative to
@@ -54,21 +66,68 @@ for why those two sentences are there.
 ### History
 
 ![The history view: a capture-coverage bar above a 24-hour timeline split into
-bat and bird detections, with a species table beneath](docs/screenshots/history.png)
+bat and bird detections, with a species table beneath](docs/screenshots/history.jpg)
 
-**Capture coverage sits above the timeline, not beside it.** `99.8% captured ·
-23h 56m from the microphone · 545 gaps · 22 streams` is the first thing you
+**Capture coverage sits above the timeline, not beside it.** `99.9% captured ·
+23h 59m from the microphone · 49 gaps · 6 streams` is the first thing you
 read, because an empty hour means something completely different depending on
 whether nothing called or nothing was recording. Distinguishing a quiet night
 from a dead microphone is a first-class requirement here, not a diagnostic
 nicety.
 
 The purple/green split is bats against birds, and it shows the thing you would
-hope to see: bats confined to the dark hours, birds bracketing them with a dawn
-peak. The caption under the chart (*counts of detections, not of animals*)
-exists because one woodpigeon calling repeatedly produces 2,467 of them.
-`Engine` appears in the species table as a non-taxonomic class, which is the
-system declining to call a passing car a bird.
+hope to see: bats bracketing the night at both ends, birds filling the day with
+a dawn ramp. The caption under the chart (*counts of detections, not of
+animals*) exists because one woodpigeon calling repeatedly produced 486 of them
+on this single day. Further down the same table `Engine` appears 175 times as a
+non-taxonomic class, which is the system declining to call a passing car a bird.
+
+### One detection, opened
+
+![The detection drawer: metadata, review buttons, and the evidence stack —
+playback, the authoritative 384 kHz recording as a download, and time-expanded
+and heterodyned renderings as players](docs/screenshots/detection-drawer.jpg)
+
+Clicking a row opens what the station actually kept. The **authoritative
+recording** is the 384 kHz clip, and rather than offer a player it says plainly
+that no browser will decode it — so underneath it are two derivations, each
+labelled `PROCESSED` and each explaining what it changed: a 5× time expansion (every
+frequency divided by 5, harmonics and pulse timing preserved, the clip five
+times longer than the event) and a heterodyne tuned to 21.3 kHz (real time
+preserved, everything outside ±5 kHz discarded). Every asset carries its
+checksum. The review row is the operator's half of the record: confirm, reject,
+hold, **keep forever** (which no retention tier may then delete), and correct
+the identification.
+
+### Settings
+
+![The settings panel: thirteen collapsed categories with a count against each,
+and an expanded list of the twenty settings the UI refuses to
+edit](docs/screenshots/settings.jpg)
+
+163 settings in three declared tiers: 106 that take effect live, 37 that are
+saved now and pinned until a restart, and 20 that are deliberately not editable
+from a browser at all. That last list is expanded here, and it is the
+interesting half: each excluded setting is named with the hazard that excludes
+it, rather than simply being absent. `bind_host` is a
+remote-hands lockout. `data_dir` orphans the database mid-write. `web_dist`
+would publish an arbitrary path to anyone on the LAN. Nothing here is hidden
+because it is advanced; it is excluded because a form submission is the wrong
+instrument for it.
+
+### Diagnostics
+
+![The diagnostics view: capture and derivation counters, per-detector realtime
+factors, the rejected-candidate ledger, and a live event
+stream](docs/screenshots/diagnostics.jpg)
+
+One toggle turns the operator surface into a diagnostic one. Capture continuity,
+clock offset and drift, hot-path CPU, resampler group delay and delivery
+latency, ring-buffer fill and extraction misses, per-detector throughput — and
+**rejected candidates**, which is the record of what BirdNET was refused
+(ADR-052): the bar each band had to clear, how many fell short, and by how
+little, per species. That panel is what lets a threshold be moved on evidence
+rather than on a hunch.
 
 ### The indoor display
 
@@ -99,8 +158,10 @@ because a stale list that looks fresh is the worst thing this surface can do.
 - **Runs three detectors:**
   - `activity-v1` — band-limited onset detection. No model, no downloads, no
     taxonomic claim. Works out of the box.
-  - `birdnet-v2.4` — BirdNET GLOBAL 6K V2.4, ~40× realtime on a Pi 5. Model assets
-    are *not* bundled. `oo models fetch` installs them with checksums and licences shown.
+  - `birdnet-v2.4` — BirdNET GLOBAL 6K V2.4, comfortably faster than realtime on a
+    Pi 5: the station reported **24× realtime** while all three detectors ran
+    (`GET /api/v1/detectors`, 2026-08-31). Model assets are *not* bundled.
+    `oo models fetch` installs them with checksums and licences shown.
   - `ultrasonic-pass-v1` — bat *pass* detection on the native stream. Pulse trains
     and peak frequency, explicitly not a species identification.
 - **Writes evidence clips** at the authoritative rate with a browser-playable
@@ -118,15 +179,16 @@ because a stale list that looks fresh is the worst thing this surface can do.
 - **Serves a real-time debug UI** with a scrolling spectrogram (audible and
   ultrasonic), live species/event list, low-latency listen button, and the pipeline's
   own internals.
-- **Configures itself from the browser.** 132 settings, in three declared tiers —
-  live, restart-pinned, and the twenty deliberately not editable from a browser,
+- **Configures itself from the browser.** 163 settings, in three declared tiers —
+  106 live, 37 restart-pinned, and 20 deliberately not editable from a browser,
   each listed with the hazard that excludes it (ADR-047/048). A first run offers a
   guided flow. The UI writes `config/runtime.env` on the device, atomically,
   preserving your comments, so a hand edit and a UI edit are one configuration.
 - **Refines the record overnight, and only ever proposes** (ADR-045). A second,
   CPU-fenced process on cores 2–3 runs a BatDetect2 cascade over stored bat clips
   at 01:00 UTC. It writes append-only `refinement` rows and can never rewrite a
-  detection's claim. Capture keeps cores 0–1 to itself.
+  detection's claim. The fence is one-way — `AllowedCPUs=2-3` keeps the refiner
+  off cores 0–1, where capture runs; capture itself is not pinned.
 - **Records what BirdNET refused, not just how many** (ADR-052) — per-species
   near misses with the score, the occurrence prior and the bar they fell short
   of, so a threshold can be moved on evidence. Metadata only: no audio is kept
@@ -210,8 +272,9 @@ would hide (ADR-011).
 
   **Capture coverage is shown above the timeline**, because an empty window means
   something completely different depending on whether nothing called or nothing was
-  recording. Aggregation happens in SQL: a night holds around 170,000 activity
-  detections, and the browser is sent a few hundred numbers rather than all of them.
+  recording. Aggregation happens in SQL: a day on this station holds 25,000–50,000
+  activity detections, and the browser is sent a few hundred numbers rather than
+  all of them.
 
 ## Commands
 
@@ -226,16 +289,32 @@ would hide (ADR-011).
 | `oo history reconcile-streams` | Repair stream rows whose claimed span the frame count contradicts (ADR-024). Dry-run by default |
 | `oo detections reconcile-plausibility` | Re-check stored BirdNET rows against the current range model (ADR-032). Dry-run by default |
 | `oo detections reconcile-taxonomy` | Stop stored sound categories claiming to be birds at species rank (ADR-049). Dry-run by default |
+| `oo clips reconcile-missing` | Mark `media_asset` rows reclaimed when the file they claim is not on disk (ADR-057). Dry-run by default |
 | `oo clips purge-human-audio` | Delete stored clips of human speech and mark the assets reclaimed (ADR-049). Dry-run by default |
 | `oo clips retention` | Run the tiered clip retention sweep by hand (ADR-026) |
+| `oo clips bank-backfill` | Fill the evidence bank from the whole archive in one pass, with no time budget (ADR-074/076). Dry-run by default |
+| `oo detections keep` | Mark one detection kept forever, or clear the flag (ADR-061) |
 | `oo refine run` / `status` | One overnight refinement pass, and what the refiner has and has not examined (ADR-045) |
 | `oo system-report` | Host facts worth recording with a diagnostic |
 | `oo serve` | Run the station |
 | `oo config` | Print effective configuration |
 
-The four repair commands (three `reconcile-*` and `purge-human-audio`) are
-dry-run by default and need both `--apply` and a confirmation. None has been run
-with `--apply` against the live station.
+The six repair commands (four `reconcile-*`, `purge-human-audio` and
+`bank-backfill`) write nothing without an explicit flag: the first five need
+`--apply` plus a confirmation, and `bank-backfill` rolls back unless given
+`--no-dry-run`. Four of them have been applied to the live station, and what
+they did is recorded rather than assumed:
+
+| Applied | When | What it changed |
+|---|---|---|
+| `clips purge-human-audio` | 2026-08-09T15:19Z | 48 assets of human sound deleted, 24 detection rows kept |
+| `detections reconcile-taxonomy` | 2026-08-09T15:19Z | BirdNET sound categories stripped of `rank`/`bird`, `taxonomy_review` written on each |
+| `detections reconcile-plausibility` | 2026-08-09T15:32Z | 61 rows carry a `plausibility_review`; see the trap recorded in [`HANDOVER.md`](docs/delivery/HANDOVER.md) before running it again |
+| `clips reconcile-missing` | 2026-08-10T14:28Z | 8,067 rows that claimed 20.59 GB of evidence the disk did not have |
+
+`oo history reconcile-streams` has not been applied — no `audio_stream` row
+carries a `detail.reconciliation`. The evidence bank has been filled: 3,386
+detections carry `banked_at`, all written in one batch on 2026-08-30T11:54Z.
 
 ## Architecture
 
@@ -393,7 +472,7 @@ anybody asks, and because a figure means more when you know what produced it.
 | | What | Notes |
 |---|---|---|
 | Computer | Raspberry Pi 5 Model B Rev 1.1, 8 GB | Ubuntu 24.04 LTS, `aarch64` |
-| Case | [Flirc Raspberry Pi 5 case](https://thepihut.com/products/flirc-raspberry-pi-5-case) | Passive; the aluminium body is the heatsink. No fan. Idles around 39 °C with capture and three detectors running |
+| Case | [Flirc Raspberry Pi 5 case](https://thepihut.com/products/flirc-raspberry-pi-5-case) | Passive; the aluminium body is the heatsink. No fan. 39 °C at idle; **~58 °C** sustained with capture and three detectors running, and `throttled=0x0` after nine days up |
 | Power | 5 V 3 A USB charger | An iPad charger, chosen as a known-good supply. **See the note below — this is under the Pi 5's rated 5 A** |
 | System storage | SanDisk 256 GB microSD | OS, application and the SQLite database |
 | Evidence storage | SanDisk Extreme Portable SSD, 500 GB (`0781:558c`) | USB, UAS. Mounted over `data/clips`; carries clips only, deliberately not the database (ADR-021) |
