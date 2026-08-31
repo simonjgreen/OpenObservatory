@@ -398,3 +398,53 @@ class TestQueryPlans:
                     assert not detail.startswith("SCAN detection"), (statement, plan)
         finally:
             raw.close()
+
+    def test_byte_query_is_not_issued_for_an_already_common_species(
+        self, db, station_and_detector
+    ) -> None:
+        """The byte-total query (step 3) joins `detection_media` and
+        `media_asset` -- the expensive one. A species that is already common,
+        dismissed or implausible can never be suggested (`_qualifies` always
+        rejects it), so step 3 must not be asked about it at all: pricing a
+        species whose answer is thrown away moments later is exactly the
+        waste this fix removes.
+
+        Seed only an already-common species, comfortably over both
+        thresholds, and assert no SELECT joins `detection_media`.
+        """
+        station_id, detector_id = station_and_detector
+        with session_scope() as session:
+            _seed(
+                session,
+                station_id=station_id,
+                detector_id=detector_id,
+                common_name="Common Woodpigeon",
+                count=GREENFINCH_COUNT,
+                byte_length=GREENFINCH_BYTES // GREENFINCH_COUNT,
+            )
+
+        from open_observatory.db.session import _engine
+
+        statements: list[str] = []
+
+        def capture(conn, cursor, statement, parameters, *_a):
+            if statement.strip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        sa_event.listen(_engine, "before_cursor_execute", capture)
+        try:
+            with session_scope() as session:
+                suggestions = compute_suggestions(
+                    session,
+                    common_species=("Common Woodpigeon",),
+                    implausible_species=(),
+                    dismissed_species=(),
+                    now=NOW,
+                )
+        finally:
+            sa_event.remove(_engine, "before_cursor_execute", capture)
+
+        assert suggestions == []
+        assert len(statements) == 2, statements
+        for statement in statements:
+            assert "detection_media" not in statement.lower(), statement

@@ -51,10 +51,11 @@ split this module's two aggregates and added a third, narrower one:
    anything. It is also more honest than the old join-based version, which
    silently dropped any asset whose detection fell outside the window.
 3. byte totals, joined, but only for the handful of species that already
-   passed the `> 500 detections` threshold in step 1 -- driven from
+   passed the `> 500 detections` threshold in step 1 *and* survive the
+   common/implausible/dismissed exclusions -- driven from
    `ix_detection_group_start` via an `IN (...)` list, not a scan of anything.
-   Skipped entirely when no species passes step 1, which is the common case:
-   two cheap queries and stop.
+   Skipped entirely when no species survives those exclusions either, which
+   is the common case: two cheap queries and stop.
 """
 
 from __future__ import annotations
@@ -112,9 +113,10 @@ def compute_suggestions(
 
     1. per-species detection counts, off `detection` alone.
     2. the evidence-bytes denominator, off `media_asset` alone.
-    3. byte totals for the species that already passed the detection-count
-       threshold in step 1, joined -- skipped entirely when step 1 finds no
-       candidate.
+    3. byte totals, joined, for the species that already passed the
+       detection-count threshold in step 1 *and* are not already common,
+       implausible or dismissed -- skipped entirely when no species survives
+       both.
     """
     cutoff = (now or datetime.now(UTC)) - timedelta(days=WINDOW_DAYS)
 
@@ -132,7 +134,21 @@ def compute_suggestions(
     # in this result set; the cast tells mypy what the `WHERE` already did.
     per_species: list[tuple[str, int]] = [(cast(str, name), count) for name, count in per_species_rows]
 
-    candidates = [name for name, detection_count in per_species if detection_count > MIN_DETECTIONS]
+    common = {n.casefold() for n in common_species}
+    implausible = {n.casefold() for n in implausible_species}
+    dismissed = {n.casefold() for n in dismissed_species}
+
+    # Exclude species that already can't qualify (common/implausible/dismissed)
+    # before the expensive byte query, so it is never asked about a species
+    # whose answer will be thrown away. This is an optimisation only:
+    # `_qualifies` below still checks the same three sets and remains the
+    # single place the rule lives, so a second caller (or a future refactor
+    # of this pre-filter) cannot bypass it.
+    candidates = [
+        name
+        for name, detection_count in per_species
+        if detection_count > MIN_DETECTIONS and name.casefold() not in common | implausible | dismissed
+    ]
 
     total_bytes = session.execute(
         select(func.coalesce(func.sum(orm.MediaAsset.byte_length), 0))
@@ -157,10 +173,6 @@ def compute_suggestions(
             .group_by(orm.Detection.common_name)
         ).all()
         byte_totals = {cast(str, name): total for name, total in byte_total_rows}
-
-    common = {n.casefold() for n in common_species}
-    implausible = {n.casefold() for n in implausible_species}
-    dismissed = {n.casefold() for n in dismissed_species}
 
     detection_counts: dict[str, int] = dict(per_species)
 
