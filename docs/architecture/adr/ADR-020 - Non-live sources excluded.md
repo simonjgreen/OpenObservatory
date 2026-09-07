@@ -86,5 +86,24 @@ microphone against 1450.5 s captured. That is the `coverage` block carrying the
 explanation — the reason it is exempt from this filter — rather than this ADR's
 count.
 
+**2026-09-07 amendment.** Two of the gaps above are now closed on the display's
+socket, and one sentence of the review was wrong about it. The socket does not
+only "filter in SQL": its *live* half — `_pump_display` — applies the suppression
+per detection as well, and it was doing so against the wrong predicate. It gated
+on the display channel's degraded/listening letter rather than on the source, so
+an 85% disk watermark suppressed six hours of genuine, microphone-borne
+detections while the glass showed a banner about disk space (issue #30, recorded
+in [[ADR-038 - Display push channel|ADR-038]]). The gate is now
+`display_channel.detections_are_observations`, which asks `is_live_hardware` —
+the same predicate the MQTT publisher uses, and for the same reason: a live
+notification is a claim about the station *now*, not about a stored row. And the
+channel does now have somewhere to report a count: `suppressed` per client, in
+`/api/v1/station`'s `display_channel` block.
+
+The constraint above should be read as having two halves, not one. Applying the
+predicate is not enough; a surface that suppresses silently is indistinguishable
+from a surface with nothing to show, and on a device whose normal state *is*
+silence that difference is the whole signal.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

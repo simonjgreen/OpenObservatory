@@ -528,6 +528,15 @@ While the station is not capturing from the real microphone, **no detections are
 sent at all** ([[ADR-020 - Non-live sources excluded|ADR-020]]). The `st`/`d` fields say why, and the display shows the
 banner. A test scene is not an observation of the garden.
 
+That test is `capture.is_live_hardware` and nothing else. It is **not** the `st`
+letter: a station can be degraded for a filling disk, a restarting detector or an
+operator pause, none of which makes what the microphone heard untrue. Gating on
+the letter cost six hours of feed on 2026-09-06 (issue #30) — the screen showed
+hours-old rows under a disk-usage banner while heartbeats kept arriving, so
+nothing looked stale. Suppressed detections are counted per client as
+`suppressed` in `/api/v1/station`, so a feed that has gone quiet on purpose can
+be told from one that has nothing to say.
+
 ### Back-pressure
 
 One bounded queue per client (`display_channel_queue_max`, default 64). When it
@@ -535,7 +544,7 @@ is full the **oldest detection frame** is shed — never a status frame, because
 losing the banner to a burst of woodpigeons would make a broken station look
 merely quiet, and never a `u` frame, for the same reason: a rollout that a burst
 of birdsong can silently cancel is not a rollout. Counters are reported in `/api/v1/station` under `display_channel`,
-including `mean_frame_bytes`.
+including `mean_frame_bytes` and `suppressed`.
 
 Capture always wins: nothing on this path can block or apply back-pressure to the
 capture loop.
