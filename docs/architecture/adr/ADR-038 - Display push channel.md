@@ -200,7 +200,12 @@ server-side by the same decision tree the firmware runs for the fallback (so the
 two transports cannot describe one station differently); **offline** is a fact
 only the device can know, so the station never sends it. Detections are **not**
 pushed at all while the station is not on the real microphone ([[ADR-020 - Non-live sources excluded|ADR-020]]): the
-banner explains why, and the feed does not quietly fill with a test scene.
+banner explains why, and the feed does not quietly fill with a test scene. That
+gate reads the **capture source** (`detections_are_observations`), never the
+state letter. The two answer different questions — "is this a record of the
+garden?" and "is anything wrong with the station?" — and a station can be
+degraded for a dozen reasons that say nothing about whether the microphone heard
+what it heard. See the 2026-09-07 note below for what conflating them cost.
 
 **A stale feed must look stale, not merely quiet**, and on this device silence is
 the normal state — the absence of detections proves nothing. Only the 10 s
@@ -292,6 +297,49 @@ read:
   operations note, nothing in `docs/operations/`. The firmware README's "A fallback
   nobody ever runs is not a fallback" (`firmware/inside-observer/README.md:417`) is
   an argument for the design, not evidence that this one ran.
+
+**2026-09-07, issue #30 — a degraded station stopped feeding the glass.** The
+display was found showing rows five and six hours old under the banner "disk
+usage 86% exceeds the 85%", with "1 species today" in the footer and no staleness
+mark; a power cycle repopulated it instantly with nineteen species and rows
+seconds old. Nothing was wrong with the display, the Wi-Fi or the socket.
+
+`_pump_display` gated the ADR-020 suppression above on `health_state()`'s letter
+being `L`. When the station crossed its 85% retention watermark, `health_state`
+correctly returned `D` — and the pump read that as "not on the microphone" and
+dropped **every** detection, for as long as the disk stayed over the line. The
+heartbeat carried the same `D` onward every ten seconds, so the firmware's own
+staleness clock (three missed beats) never fired and the screen had no reason to
+look anything but calm. `species_today` froze too, because the tracker is only
+advanced on the frames that were not being sent. A reconnect looked like a cure
+because `_display_snapshot` reads the database directly and has never consulted
+health at all — so the screen refilled, and then froze again.
+
+Reproduced against the running station on 2026-09-07 before changing anything:
+health reported `is_live_hardware: true`, `source_kind: alsa`, `state: capturing`
+and `status: degraded` with the two watermark problems; a probe socket held open
+for 150 s received one hello (6 rows, `sp: 27`) and 14 heartbeats and **zero**
+detection frames, while the database recorded a *Spotted Flycatcher* at 0.93 in
+the same window.
+
+Two changes. The gate is now `display_channel.detections_are_observations`,
+which asks only `capture.is_live_hardware` — ADR-020's actual predicate, and the
+one the MQTT publisher has used all along (`mqtt/publisher.py:395`). And a
+suppressed detection is now counted per client and reported as `suppressed` in
+`/api/v1/station`'s `display_channel` block, because the six hours were invisible
+on the station as well as on the glass: nothing kept a tally, so there was
+nothing to ask afterwards.
+
+One thing the old gate covered by accident and the new one does not need to: a
+paused station ([[ADR-055 - Timed recording pause|ADR-055]]) suppresses its
+detections *before the event bus*, in `station.py:1215`, so nothing reaches this
+pump to gate in the first place. That is the right place for it — a consumer
+added to the bus later is paused by construction — and it is covered where it
+belongs (`tests/test_api.py:1742`), not here.
+
+The general lesson, and the one worth carrying: a health *summary* is for a
+person to read, not for a machine to branch on. Every consumer that needs to make
+a decision should ask the specific question it actually cares about.
 
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

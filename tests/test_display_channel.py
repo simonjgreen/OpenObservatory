@@ -19,6 +19,7 @@ from open_observatory.display_channel import (
     DisplayFilter,
     SpeciesToday,
     detection_frame,
+    detections_are_observations,
     encode,
     health_state,
     hello_frame,
@@ -283,6 +284,58 @@ class TestHealthState:
         )
         assert state == "D"
         assert detail == "CAPTURE stopped"
+
+
+class TestDetectionsAreObservations:
+    """The gate on whether a detection may be pushed to the glass.
+
+    Deliberately *not* the degraded letter. Issue #30: the station crossed its
+    85% disk watermark, `health_state` correctly returned "D" for it, and the
+    pump -- which was gating on that letter -- stopped pushing every detection
+    for six hours while the heartbeat kept the screen looking calm. A disk that
+    is filling up says nothing at all about whether what the microphone heard
+    was real. ADR-020's predicate is the source, and only the source, which is
+    what the MQTT publisher has always used.
+    """
+
+    def test_a_live_microphone_is_an_observation(self):
+        assert detections_are_observations(
+            {
+                "status": "ok",
+                "problems": [],
+                "capture": {"state": "capturing", "source_kind": "alsa", "is_live_hardware": True},
+            }
+        )
+
+    def test_a_disk_watermark_does_not_stop_the_feed(self):
+        health = {
+            "status": "degraded",
+            "problems": [
+                "disk usage 86% exceeds the 85% watermark and the retention sweep is not keeping up"
+            ],
+            "capture": {"state": "capturing", "source_kind": "alsa", "is_live_hardware": True},
+        }
+        assert health_state(health)[0] == "D"  # the banner is still right
+        assert detections_are_observations(health)  # and the feed still flows
+
+    def test_a_synthetic_source_is_not_an_observation(self):
+        assert not detections_are_observations(
+            {
+                "status": "degraded",
+                "problems": [],
+                "capture": {
+                    "state": "capturing",
+                    "source_kind": "synthetic",
+                    "is_live_hardware": False,
+                },
+            }
+        )
+
+    def test_an_absent_capture_block_is_not_an_observation(self):
+        """Unknown is not the same as fine. A health payload that cannot say
+        where the audio came from must not be read as saying it came from the
+        microphone."""
+        assert not detections_are_observations({"status": "ok", "problems": []})
 
 
 class TestSpeciesToday:

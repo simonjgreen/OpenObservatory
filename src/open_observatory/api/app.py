@@ -2529,16 +2529,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #: asking independently would not, and neither would a future one that
     #: reconnects in a loop. Cached briefly and shared, so the cost is bounded by
     #: the clock rather than by the number of clients.
-    display_health_cache: dict[str, Any] = {"at": 0.0, "value": ("L", "")}
+    #:
+    #: The banner and the feed gate are read off the *same* payload, in one
+    #: place, because they are two different questions about one moment and
+    #: answering them from two reads is how they drift apart.
+    display_health_cache: dict[str, Any] = {"at": 0.0, "value": ("L", "", True)}
 
-    def _display_health() -> tuple[str, str]:
+    def _display_status() -> tuple[str, str, bool]:
+        """The state letter, its banner line, and whether detections made right
+        now count as observations of the garden (ADR-020)."""
         now = time.monotonic()
         if now - display_health_cache["at"] > 5.0:
-            display_health_cache["value"] = display_state.health_state(_health_payload())
+            payload = _health_payload()
+            state, detail = display_state.health_state(payload)
+            display_health_cache["value"] = (
+                state,
+                detail,
+                display_state.detections_are_observations(payload),
+            )
             display_health_cache["at"] = now
         value = display_health_cache["value"]
         assert isinstance(value, tuple)
         return value
+
+    def _display_health() -> tuple[str, str]:
+        state, detail, _ = _display_status()
+        return state, detail
 
     def _display_day_key(moment: datetime | None = None) -> str:
         """Today, in the station's configured zone. UTC internally; local only
@@ -2765,19 +2781,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if event is not None:
                 if event.get("event_type") == "_bus.closed":
                     return
-                state, _ = _display_health()
+                _, _, live = _display_status()
                 detection = event.get("data") or {}
                 # ADR-020: while the station is not on the real microphone its
                 # detections are records of a test scene, not observations of the
                 # garden. The banner already says so; the feed must not quietly
                 # keep filling with them.
-                if state == "L":
+                #
+                # The gate is the *source*, never the degraded letter. Those are
+                # different questions, and reading one for the other cost six
+                # hours of feed in issue #30: a disk watermark made the station
+                # degraded, this gate read that as "not listening", and every
+                # detection was dropped under a banner about disk space while the
+                # heartbeat kept the glass looking calm.
+                if live:
                     item = display_state.wire_item(detection, filt)
                     if item is not None:
                         tracker.observe(_display_day_key(), detection)
                         moved = tracker.count if tracker.count != last_sent_count else None
                         last_sent_count = tracker.count
                         client.offer(display_state.detection_frame(item, species_today=moved))
+                else:
+                    # Counted and logged, because the six hours above were
+                    # invisible on the station as well as on the glass: nothing
+                    # kept a tally, so there was nothing to ask afterwards. The
+                    # count rides out on `/api/v1/station` with the rest of this
+                    # client's numbers.
+                    client.suppressed += 1
+                    log.debug("display_channel.suppressed_non_live_detection")
             if time.monotonic() >= next_beat:
                 next_beat = time.monotonic() + heartbeat_s
                 state, detail = _display_health()

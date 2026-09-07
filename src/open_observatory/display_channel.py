@@ -354,6 +354,32 @@ def health_state(health: Mapping[str, Any]) -> tuple[str, str]:
     return "L", ""
 
 
+def detections_are_observations(health: Mapping[str, Any]) -> bool:
+    """Whether a detection made right now may be pushed to the glass.
+
+    ADR-020's predicate, and only ADR-020's predicate: is this station listening
+    to the microphone? A detection made against a synthetic scene or a replayed
+    fixture is a record of a test, not an observation of the garden, and must not
+    reach a surface a person reads as one. This is the same question the MQTT
+    publisher asks before it notifies Home Assistant, asked the same way.
+
+    It is deliberately *not* :func:`health_state`'s letter. Those answer
+    different questions and the difference cost six hours of feed on 2026-09-06:
+    the station crossed its 85% disk watermark, `health_state` correctly said
+    "D" for it, and the pump -- which was gating on that letter -- dropped every
+    detection while the heartbeat carried the same "D" onward, so the display
+    could not tell the silence from a quiet night. A filling disk, a restarting
+    detector and a paused station are all real faults worth a banner; none of
+    them makes what the microphone heard untrue.
+
+    Missing is not fine: a payload with no capture block cannot say where the
+    audio came from, and the safe reading of "unknown source" is the one that
+    does not present it as an observation.
+    """
+    capture = health.get("capture") or {}
+    return bool(capture.get("is_live_hardware", False))
+
+
 @dataclass
 class SpeciesToday:
     """The footer count, tracked incrementally instead of re-queried.
@@ -437,6 +463,11 @@ class DisplayClient:
         self.sent = 0
         self.dropped = 0
         self.bytes_sent = 0
+        #: Detections this client was not sent because the station was not on
+        #: the microphone (ADR-020). Distinct from `dropped`, which is a full
+        #: queue: this one is a deliberate refusal, and the number is the only
+        #: evidence a quiet feed was a decision rather than a quiet night.
+        self.suppressed = 0
 
     def offer(self, frame: Mapping[str, Any]) -> None:
         """Queue a frame. Never blocks, never raises, never awaits."""
@@ -483,6 +514,7 @@ class DisplayClient:
             "queued": self.queue_depth,
             "sent": self.sent,
             "dropped": self.dropped,
+            "suppressed": self.suppressed,
             "bytes_sent": self.bytes_sent,
             "mean_frame_bytes": round(self.bytes_sent / self.sent, 1) if self.sent else None,
             "firmware_version": self.firmware_version,

@@ -116,18 +116,82 @@ class TestConnect:
         assert display_client.get("/api/v1/station").json()["display_channel"]["clients"] == 0
 
 
-class TestLiveDeltas:
-    """With the station reporting healthy, detections must actually flow.
+class TestDegradedForSomethingElse:
+    """Issue #30. A station can be degraded for a reason that has nothing to do
+    with the microphone, and the feed must keep flowing while it says so.
 
-    `health_state` is patched rather than the hardware faked: the source really
-    is synthetic here, and pretending otherwise anywhere else in the app would be
-    exactly the dishonesty ADR-020 forbids. This narrows the pretence to the one
-    function whose output the pump consults.
+    What happened: disk crossed the 85% watermark, `health_state` returned "D"
+    with the watermark's own wording, and the pump -- gating on that letter --
+    dropped every detection for six hours. The heartbeat kept arriving carrying
+    the same "D", so the display's own staleness clock never fired and the glass
+    showed six-hour-old rows under a disk banner with nothing to say it had
+    stopped listening. A power cycle repopulated it instantly, because the
+    connect snapshot reads the database and has never consulted health at all.
+
+    The source really is synthetic in this fixture, so `detections_are_observations`
+    is the one function pretended at -- the same narrowing `TestLiveDeltas` makes,
+    and for the same reason.
     """
 
     @pytest.fixture(autouse=True)
-    def _healthy(self, monkeypatch):
-        monkeypatch.setattr(display_channel, "health_state", lambda _health: ("L", ""))
+    def _degraded_but_listening(self, monkeypatch):
+        monkeypatch.setattr(
+            display_channel,
+            "health_state",
+            lambda _health: ("D", "disk usage 86% exceeds the 85% watermark"),
+        )
+        monkeypatch.setattr(display_channel, "detections_are_observations", lambda _health: True)
+
+    def test_detections_still_reach_a_degraded_station_s_display(self, display_client) -> None:
+        with display_client.websocket_connect("/api/v1/display") as socket:
+            _receive(socket, "h")
+            frame, _ = _receive(socket, "d", tries=200)
+            assert frame["at"] > 1_600_000_000
+
+    def test_the_banner_still_says_what_is_wrong(self, display_client) -> None:
+        with display_client.websocket_connect("/api/v1/display") as socket:
+            frame, _ = _receive(socket, "h")
+            assert frame["st"] == "D"
+            assert frame["d"] == "disk usage 86% exceeds the 85% watermark"
+
+
+class TestSuppressionIsCounted:
+    """A detection dropped for ADR-020 must leave a trace.
+
+    The six hours in issue #30 were invisible everywhere, not just on the glass:
+    the pump dropped each detection with no counter and no log line, so nothing
+    on the station could be asked what had happened either. The fixture's source
+    is genuinely synthetic, so suppression here is the correct behaviour and the
+    count is the evidence of it.
+    """
+
+    def test_suppressed_detections_are_reported_on_the_station_snapshot(
+        self, display_client
+    ) -> None:
+        with display_client.websocket_connect("/api/v1/display") as socket:
+            _receive(socket, "h")
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                socket.receive_text()  # heartbeats; the deltas are being suppressed
+                stats = display_client.get("/api/v1/station").json()["display_channel"]
+                if stats["per_client"] and stats["per_client"][0]["suppressed"] > 0:
+                    return
+            raise AssertionError("nothing recorded that detections were being dropped")
+
+
+class TestLiveDeltas:
+    """With the station on the microphone, detections must actually flow.
+
+    `detections_are_observations` is patched rather than the hardware faked: the
+    source really is synthetic here, and pretending otherwise anywhere else in
+    the app would be exactly the dishonesty ADR-020 forbids. This narrows the
+    pretence to the one function whose output the pump's gate consults -- which
+    is the source predicate, not the state letter, since issue #30.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _on_the_microphone(self, monkeypatch):
+        monkeypatch.setattr(display_channel, "detections_are_observations", lambda _health: True)
 
     def test_a_bat_pass_arrives_as_a_delta_with_no_name_and_no_score(
         self, display_client

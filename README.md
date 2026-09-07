@@ -469,6 +469,10 @@ it is attached to and records what it actually negotiated (`oo audio probe`).
 It is listed because "what did you build it out of" is the first question
 anybody asks, and because a figure means more when you know what produced it.
 
+If you want to build one, [`BOM.md`](BOM.md) is the same list as a shopping
+list: quantities, rough prices, what is optional, what may be substituted, and
+the parts of this station you should *not* copy.
+
 | | What | Notes |
 |---|---|---|
 | Computer | Raspberry Pi 5 Model B Rev 1.1, 8 GB | Ubuntu 24.04 LTS, `aarch64` |
