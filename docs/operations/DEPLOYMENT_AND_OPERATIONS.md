@@ -448,6 +448,18 @@ copy of the live database without stopping the service first, so "back this up
 before you migrate" is currently an instruction with no verified method behind
 it.
 
+**Reviewed 2026-09-14:** there is now a method, and it has been run against the
+live station. `oo db copy DEST` uses SQLite's `VACUUM INTO`, which reads the whole
+database inside one read transaction and so yields a copy that is consistent as of
+the moment it started, however much the station writes meanwhile — it never
+restarts, which is the property the backup API lacked. `oo db check DEST`
+(`quick_check`; `--full` for `integrity_check`) then says whether the copy is sound
+and prints its row counts for comparison with `oo db status` on the original. Run
+the copy at idle priority on a capturing station: `nice -n 19 ionice -c3 oo db
+copy /path/to/copy.sqlite`. Timings from its first use are in
+[[ADR-078 - Database on the evidence SSD|ADR-078]]. What is still missing is a
+schedule and a restore drill; the method is no longer the gap.
+
 ## Database: SQLite by default, Alembic migrations exist
 
 Per [[ADR-007 - SQLite in developer mode|ADR-007]], the default and only database in the current deployment is
@@ -486,9 +498,11 @@ Two things still need a person:
   issues `CREATE TABLE` and will collide with what is there. The fuller
   creation/rollback workflow is in [[DATA_MODEL]]
   ("Migrations (Alembic, [[ADR-035 - Alembic environment|ADR-035]])").
-- **A backup, when the revision is one you have not run before.** Copy
-  `data/openobservatory.sqlite` and any `-wal`/`-shm` files next to it. No
-  automated backup tool exists (below).
+- **A backup, when the revision is one you have not run before.**
+  `nice -n 19 ionice -c3 oo db copy /some/path/before-migration.sqlite`, then
+  `oo db check` on it (see *Backups* above). Do not copy the `.sqlite`, `-wal`
+  and `-shm` files by hand while the station is running; that is not a
+  consistent snapshot.
 
 ## Production target (unrealised): Docker Compose, PostgreSQL, Redis
 
@@ -545,7 +559,8 @@ Do not deploy this Compose file. It will not run as checked in.
 
 Since 2026-08-08 ([[ADR-021 - Clips on their own device|ADR-021]]), evidence clips are written to a USB SSD mounted at
 `data/clips`, not the SD card — see [[TARGET_DIAGNOSTICS]] for the
-device details (partition, UUID, `fstab` line). The database stays on the SD card.
+device details (partition, UUID, `fstab` line). Since 2026-09-14 the database is on
+the same SSD, under `data/clips/database/` — see the next section.
 
 This has one operational consequence that is easy to get wrong: **the systemd unit
 runs in a mount namespace** (`ProtectHome=read-only` with
@@ -559,8 +574,83 @@ appearing in `mount`/`df` on the host is not sufficient.
 makes `/api/v1/health` report degraded, by name, when `data/clips` is not currently a
 mount point, instead of silently falling back to writing evidence onto the SD card.
 Set it once the SSD is commissioned on a given host. The service itself never
-refuses to start over a missing mount — capture always wins, per the existing
-synthetic-source fallback pattern — it only reports the problem loudly.
+refuses to start over a missing *clips* mount — capture always wins, per the existing
+synthetic-source fallback pattern — it only reports the problem loudly. The
+*database* is the exception, deliberately: see the next section.
+
+### Database on the evidence SSD
+
+Since 2026-09-14 ([[ADR-078 - Database on the evidence SSD|ADR-078]]) the SQLite
+file lives at `data/clips/database/openobservatory.sqlite`, on the SSD, and the SD
+card carries only the operating system and the code. Two lines in
+`config/runtime.env` do it:
+
+    OO_DATABASE_DSN=sqlite+pysqlite:////home/<user>/open-observatory/data/clips/database/openobservatory.sqlite
+    OO_DATABASE_REQUIRE_MOUNT=true
+
+The second line is what makes a boot without the SSD safe. Without it, the station
+would open a fresh, empty database on the SD card under the unmounted path and the
+record would fork in two. With it, `init_engine` refuses to open a database whose
+directory is on the root filesystem, the journal names the path and the mount point,
+and `Restart=always` retries every five seconds — each retry is a fresh mount
+namespace, so the station recovers by itself once the SSD is mounted. **Before the
+move a missing SSD cost new clips; after it, it costs the station until the SSD is
+back.** That trade is ADR-078's Decision 2, and the reasoning is there.
+
+Where it is, on any host, is one command:
+
+    oo db status --json | jq '{path, mount_point, on_system_disk, bytes, row_counts}'
+    curl -s http://127.0.0.1:8080/api/v1/health | jq '.database'
+
+`on_system_disk: true` on a station that has moved is the fork the setting exists to
+prevent; investigate the mount before anything else.
+
+**Moving it (the procedure as run on 2026-09-14).** Stop, copy, check, repoint,
+start — the shape the settings UI already describes for `database_dsn`. In this
+order, on the host:
+
+1. Deploy code that knows the setting first (`deploy.sh --no-web`), so the new
+   directory is created and the refusal exists.
+2. A first copy while the station is still running, so the stopped window is short:
+
+        mkdir -p ~/open-observatory/data/clips/database
+        cd ~/open-observatory && nice -n 19 ionice -c3 .venv/bin/oo db copy \
+            data/clips/database/openobservatory.sqlite
+        .venv/bin/oo db check --full data/clips/database/openobservatory.sqlite
+
+3. Stop both writers, then take the copy again against a quiet database — the
+   second `VACUUM INTO` is what carries the rows written since step 2:
+
+        sudo systemctl stop open-observatory-refine.timer open-observatory.service
+        .venv/bin/oo db status --json > /tmp/db-before.json
+        .venv/bin/oo db copy --force data/clips/database/openobservatory.sqlite
+        .venv/bin/oo db check data/clips/database/openobservatory.sqlite
+
+   `row_counts` from the check must equal `row_counts` in `/tmp/db-before.json`.
+4. Repoint and retire the original — rename, never delete, so rollback is a rename:
+
+        printf '%s\n' 'OO_DATABASE_DSN=sqlite+pysqlite:////home/<user>/open-observatory/data/clips/database/openobservatory.sqlite' \
+            'OO_DATABASE_REQUIRE_MOUNT=true' >> config/runtime.env
+        mv data/openobservatory.sqlite data/openobservatory.sqlite.moved-2026-09-14
+        # -wal/-shm are gone after a clean stop; if they are not, move them alongside.
+
+5. Start, and verify from both sides:
+
+        sudo systemctl start open-observatory.service open-observatory-refine.timer
+        .venv/bin/oo db status --json | jq '{path, on_system_disk, row_counts}'
+        curl -s http://127.0.0.1:8080/api/v1/health | jq '.status, .database'
+        curl -s 'http://127.0.0.1:8080/api/v1/history?window=last-hour' | jq '.coverage.seconds_captured'
+        journalctl -u open-observatory -n 30 --no-pager | grep db.engine_ready
+
+**Rollback.** Stop both units; delete the two lines from `config/runtime.env`;
+`mv data/openobservatory.sqlite.moved-2026-09-14 data/openobservatory.sqlite`;
+start. Rows recorded on the SSD copy in between are not merged back. The code can
+stay deployed: with the DSN empty and the flag off it behaves as before.
+
+**The refinement runner** (`open-observatory-refine.service`) reads
+`config/runtime.env` too and opens the same file; nothing else is needed for it.
+`tests/test_systemd_unit.py` pins that both units keep `data/clips/database` inside
+`ReadWritePaths`.
 
 ## Configuration
 

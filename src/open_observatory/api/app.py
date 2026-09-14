@@ -69,7 +69,13 @@ from ..audio.probe import enumerate_capture_devices, probe_supported_rates, syst
 from ..auth import AuthError, AuthService, Principal
 from ..config import Settings, get_settings
 from ..db import models as orm
-from ..db.session import ensure_schema_at_head, get_session, init_engine, session_scope
+from ..db.session import (
+    database_volume,
+    ensure_schema_at_head,
+    get_session,
+    init_engine,
+    session_scope,
+)
 from ..display import detection_flags, display_title
 from ..events import EventType
 from ..mqtt import MqttPublisher
@@ -1018,6 +1024,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"clip storage {settings.clip_dir} is not a mount point: evidence would "
                 "be written to the system disk, which competes with capture for I/O"
             )
+        # ADR-078. Ordinarily unreachable -- `init_engine` refuses to start
+        # in this state -- but health is what an operator reads, so it says
+        # so too rather than leaving the refusal to the journal alone.
+        db_volume = database_volume(settings)
+        if db_volume is not None and db_volume["require_mount"] and db_volume["on_system_disk"]:
+            problems.append(
+                f"database {db_volume['path']} is on the system disk (mount point "
+                f"{db_volume['mount_point']}) although database_require_mount is set"
+            )
         retention = snapshot["retention"]
         storage = snapshot["storage"]
         if (
@@ -1216,6 +1231,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             #: Read by `display_channel.health_state`, which is what puts the
             #: pause banner on the counter-top display.
             "pause": pause_state,
+            #: ADR-078: which volume the record is on. `on_system_disk` true
+            #: on a station that has moved it is the fork the ADR guards against.
+            "database": db_volume,
             "storage": {
                 "disk_used_ratio": storage["disk_used_ratio"],
                 "watermark_ratio": settings.retention_watermark_ratio,

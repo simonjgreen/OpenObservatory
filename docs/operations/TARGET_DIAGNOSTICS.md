@@ -24,7 +24,7 @@ mark it unverified instead.
 | Python | 3.12.3 (system interpreter) |
 | Memory | 7.8 GiB |
 | Cores | 4 |
-| Storage | 235 GB SD card (OS, database, application) plus a 465.8 GB USB SSD mounted at `data/clips` for evidence (see below) |
+| Storage | 235 GB SD card (OS, application) plus a 465.8 GB USB SSD mounted at `data/clips` for evidence and, since 2026-09-14, the database (see below) |
 | CPU temperature at idle | 39 °C, `throttled=0x0` |
 
 ## Evidence storage: USB SSD, mounted over `data/clips`
@@ -43,7 +43,7 @@ serving ALSA reads through the same shared thread pool.
 | Formatting | `-m 1` (1% reserved, not the ext4 default of 5%, since this volume holds no system files) |
 | Mount point | `/home/<user>/open-observatory/data/clips` |
 | `/etc/fstab` options | `defaults,noatime,nofail,x-systemd.device-timeout=10` |
-| Database | stays on the SD card — small, and the SD card is the system disk that is always present |
+| Database | `data/clips/database/openobservatory.sqlite`, on this SSD, since 2026-09-14 ([[ADR-078 - Database on the evidence SSD\|ADR-078]]). It stayed on the SD card from 2026-08-08 until then; the reasoning for each is in ADR-021 and ADR-078 |
 
 The disk previously held an unrelated Ubuntu amd64 installer and was wiped before
 use. 21 GB of existing clips were migrated across; the old directory, retained at
@@ -63,7 +63,11 @@ restarted, not just have the mount appear, for the SSD to take effect.
 `OO_CLIPS_REQUIRE_MOUNT=true` (`clips_require_mount` in `Settings`) makes
 `/api/v1/health` report the problem by name when `data/clips` is not a mount point,
 rather than silently falling back to writing evidence onto the SD card. See [[ADR-021 - Clips on their own device|ADR-021]]
-for the full reasoning, including why the database was deliberately left off the SSD.
+for the full reasoning. The database followed the clips onto the SSD on 2026-09-14
+([[ADR-078 - Database on the evidence SSD|ADR-078]]): `OO_DATABASE_REQUIRE_MOUNT=true`
+makes the station *refuse to start* when the database's directory is on the SD card,
+because the alternative is a second, empty record — see the runbook in
+[[DEPLOYMENT_AND_OPERATIONS]], *Database on the evidence SSD*.
 
 With the SSD in place the throttles imposed to protect the SD card were lifted in
 `config/runtime.env`: `OO_CLIP_MAX_PER_MINUTE` restored from 6 to 20,

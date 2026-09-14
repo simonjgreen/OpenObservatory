@@ -32,6 +32,7 @@ history_app = typer.Typer(help="Capture history and coverage diagnostics")
 clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 detections_app = typer.Typer(help="Detection review and repair")
 refine_app = typer.Typer(help="The refinement runner (charter item 5, ADR-045)")
+db_app = typer.Typer(help="The SQLite database: where it is, consistent copies, checks (ADR-078)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
@@ -39,6 +40,7 @@ app.add_typer(history_app, name="history")
 app.add_typer(clips_app, name="clips")
 app.add_typer(detections_app, name="detections")
 app.add_typer(refine_app, name="refine")
+app.add_typer(db_app, name="db")
 
 console = Console()
 console_err = Console(stderr=True)
@@ -1967,6 +1969,132 @@ def refine_status(
                 f"{row['score']:.2f}" if row["score"] else "-",
             )
         console.print(detail)
+
+
+# ---------------------------------------------------------------------------
+# db: the SQLite file itself (ADR-078)
+
+
+def _sqlite_path_or_exit() -> Path:
+    from .db.session import database_file
+
+    path = database_file(get_settings())
+    if path is None:
+        console_err.print(
+            "[red]the configured DSN is not a SQLite file; `oo db` only knows SQLite[/red]"
+        )
+        raise typer.Exit(code=2)
+    return path
+
+
+@db_app.command("status")
+def db_status(json_out: bool = typer.Option(False, "--json")) -> None:
+    """Where the database lives, on which mount, how big it is, and its row counts.
+
+    The mount point and `on_system_disk` are what ADR-078 turns on: a station
+    whose database is on the evidence SSD reports `on_system_disk: false`, and
+    `/api/v1/health` carries the same block so the two cannot disagree.
+    """
+    from .db.admin import sqlite_facts
+    from .db.session import database_volume
+
+    settings = get_settings()
+    volume = database_volume(settings)
+    if volume is None:
+        console_err.print(
+            "[red]the configured DSN is not a SQLite file; `oo db` only knows SQLite[/red]"
+        )
+        raise typer.Exit(code=2)
+    payload: dict[str, Any] = {"dsn": settings.resolved_database_dsn, **volume}
+    if volume["exists"]:
+        payload.update(sqlite_facts(Path(str(volume["path"]))))
+    if json_out:
+        emit_json(payload)
+        return
+    for key, value in payload.items():
+        console.print(f"[bold]{key}[/bold]: {value}")
+
+
+@db_app.command("copy")
+def db_copy(
+    destination: Path = typer.Argument(..., help="Path for the copy; must not exist"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing file at the destination"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Write a consistent copy of the database with `VACUUM INTO`.
+
+    Consistent even while the station is writing: `VACUUM INTO` reads one
+    snapshot inside a single read transaction and, unlike the online backup
+    API (measured never converging on this station, 2026-08-29), never
+    restarts. The copy holds the WAL open for the duration, so run it at idle
+    priority on a station that is capturing:
+
+        nice -n 19 ionice -c3 oo db copy /path/to/copy.sqlite
+
+    Then `oo db check /path/to/copy.sqlite` before trusting it.
+    """
+    from .db.admin import copy_database
+
+    source = _sqlite_path_or_exit()
+    if not source.exists():
+        console_err.print(f"[red]no database at {source}[/red]")
+        raise typer.Exit(code=2)
+    try:
+        result = copy_database(source, destination, force=force)
+    except (FileExistsError, ValueError) as exc:
+        console_err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    if json_out:
+        emit_json(result)
+        return
+    console.print(
+        f"copied {result['bytes']:,} bytes to [bold]{result['destination']}[/bold] "
+        f"in {result['elapsed_s']} s"
+    )
+    notice(f"[dim]now run:[/dim] oo db check {result['destination']}")
+
+
+@db_app.command("check")
+def db_check(
+    path: Path | None = typer.Argument(
+        None, help="A database file to check; default is the configured database"
+    ),
+    full: bool = typer.Option(
+        False, "--full", help="integrity_check rather than quick_check (slower, checks indexes)"
+    ),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Run SQLite's own consistency check and report the row counts.
+
+    Exit status 1 when the check does not come back `ok`, so a runbook can
+    stop on it.
+    """
+    from .db.admin import check_database
+
+    target = path or _sqlite_path_or_exit()
+    if not target.exists():
+        console_err.print(f"[red]no database at {target}[/red]")
+        raise typer.Exit(code=2)
+    result = check_database(target, full=full)
+    if json_out:
+        emit_json(result)
+    else:
+        verdict = "[green]ok[/green]" if result["ok"] else "[red]NOT ok[/red]"
+        console.print(
+            f"{result['check']} on [bold]{result['path']}[/bold]: {verdict} "
+            f"({result['elapsed_s']} s)"
+        )
+        for problem in result["problems"]:
+            console.print(f"  [red]{problem}[/red]")
+        console.print(
+            f"revision {result['alembic_revision']}, journal {result['journal_mode']}, "
+            f"{result['page_count']:,} pages of {result['page_size']} bytes "
+            f"({result['freelist_count']:,} free)"
+        )
+        for table, count in result["row_counts"].items():
+            console.print(f"  {table}: {count:,}")
+    if not result["ok"]:
+        raise typer.Exit(code=1)
 
 
 @app.command("system-report")

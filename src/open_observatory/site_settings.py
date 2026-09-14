@@ -279,6 +279,17 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
         "measured ALSA overruns; this makes a missing SSD visible instead of "
         "silent. Capture still wins -- the station keeps recording either way.",
     ),
+    _e(
+        "database_require_mount",
+        "station",
+        tier="restart",
+        label="database must be on its own mount",
+        help="Refuse to open a database whose directory is on the system disk "
+        "(ADR-078). With the database on the evidence SSD, a boot without the "
+        "SSD would otherwise start a second, empty database on the SD card and "
+        "fork the record. Checked at startup; the service retries every five "
+        "seconds until the volume is mounted.",
+    ),
     # ---- capture -------------------------------------------------------
     _e(
         "source",

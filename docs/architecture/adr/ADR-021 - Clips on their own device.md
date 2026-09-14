@@ -67,5 +67,15 @@ to both heterodyne and time expansion, and the budget raised from 20 GB to 300 G
 against 458 GB of storage. The full analysis view of every bat pass is available
 again.
 
+**Reviewed 2026-09-14:** the paragraph *Why the database stays on the SD card* is
+superseded by [[ADR-078 - Database on the evidence SSD|ADR-078]]. The availability
+argument it makes was sound and is given up knowingly: measured lock contention on
+the card was discarding 0.54% of detections ([[CAPTURE_RUN_2026-08-31]]), and a
+station that keeps capturing while its record silently loses rows is not the failure
+mode this paragraph thought it was protecting. The database now lives under the
+mount this ADR created, at `data/clips/database/`, and a boot without the SSD is a
+refusal to start rather than a fallback. Everything else here — the mount over the
+existing path, `clips_require_mount`, no `RequiresMountsFor`, `nofail` — stands.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -479,7 +479,7 @@ the parts of this station you should *not* copy.
 | Case | [Flirc Raspberry Pi 5 case](https://thepihut.com/products/flirc-raspberry-pi-5-case) | Passive; the aluminium body is the heatsink. No fan. 39 °C at idle; **~58 °C** sustained with capture and three detectors running, and `throttled=0x0` after nine days up |
 | Power | 5 V 3 A USB charger | An iPad charger, chosen as a known-good supply. **See the note below — this is under the Pi 5's rated 5 A** |
 | System storage | SanDisk 256 GB microSD | OS, application and the SQLite database |
-| Evidence storage | SanDisk Extreme Portable SSD, 500 GB (`0781:558c`) | USB, UAS. Mounted over `data/clips`; carries clips only, deliberately not the database (ADR-021) |
+| Evidence storage | SanDisk Extreme Portable SSD, 500 GB (`0781:558c`) | USB, UAS. Mounted over `data/clips`; carries the clips (ADR-021) and, since 2026-09-14, the SQLite database under `data/clips/database/` (ADR-078) |
 | Microphone | [AudioMoth USB Microphone](https://www.openacousticdevices.info/product-page/audiomoth-usb-microphone) (`16d0:06f3`) | A dedicated variant of the AudioMoth 1.2.0 design rather than a recorder running different firmware. Negotiates 384 kHz mono `S16_LE` here |
 | Microphone case | [Official AudioMoth USB Microphone case](https://www.openacousticdevices.info/product-page/audiomoth-usb-microphone-case) | |
 | Microphone cable | Anker 2 m micro-USB | Long enough to reach the eaves from indoors |
