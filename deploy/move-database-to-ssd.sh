@@ -46,8 +46,11 @@ echo "  alembic head: $HEAD"
 echo "==> stopping every writer, timers and the runs they may have started"
 # shellcheck disable=SC2086
 sudo systemctl stop $STATION_UNITS
+# A stopped unit reads "inactive", or "failed" when the process answered the
+# stop signal with a non-zero exit (the station does); both mean not running.
 for unit in open-observatory-analytics.service open-observatory-refine.service open-observatory.service; do
-    [ "$(systemctl is-active "$unit" || true)" = "inactive" ] || fail "$unit is still $(systemctl is-active "$unit")"
+    state=$(systemctl is-active "$unit" || true)
+    case "$state" in inactive|failed) ;; *) fail "$unit is still $state" ;; esac
 done
 STOPPED_AT=$(date +%s)
 

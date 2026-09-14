@@ -750,18 +750,19 @@ places is a finding nobody works. Detail stays at the pointer; this is the queue
 
 Nothing here is documentation. Every item is code, config, a test, or a decision.
 
-**Waiting on the operator, 2026-09-14** — two pieces of work are committed and
-tested but not on the station, because the deploy is the operator's to run:
+**Done 2026-09-14, afternoon:** both deployed. The database moved to the SSD at
+12:40 BST with `deploy/move-database-to-ssd.sh` (measurements in
+[[ADR-078 - Database on the evidence SSD|ADR-078]]); the analytics section is live
+and its first backfill has run. What to watch: `database is locked` per day in the
+journal over the following week, against 200–600 a day before the move.
 
-0a. **Deploy and move the database** per [[ADR-078 - Database on the evidence SSD|ADR-078]].
-    The runbook is in [[DEPLOYMENT_AND_OPERATIONS]] under *Database on the evidence
-    SSD*; step 2 (a live `VACUUM INTO` copy) has already been taken to
-    `data/clips/database/openobservatory.sqlite` and checked, and is stale by the
-    hours since — take it again at step 3 as the runbook says. Record the copy
-    timings in ADR-078's table.
-0b. **Deploy the analytics section** ([[ADR-079 - Analytics section|ADR-079]]) with
-    the web bundle (`deploy.sh` without `--no-web`), then run the first backfill
-    `oo analytics rebuild --all` at idle priority and open `?section=analytics`.
+**Found during the move, 2026-09-14** — the station does not honour `systemctl stop`
+while it is still starting up: a stop issued 22 s after a start hung for the full 90 s
+`TimeoutStopSec` and was SIGKILLed (`journalctl -u open-observatory`, 12:38:10–12:39:40
+BST). Every stop issued against a running station has been clean within a second.
+Find what in start-up (detector loading? the capture anchor?) blocks shutdown, and make
+a stop during start-up as clean as a stop during capture; a power cut or a quick
+redeploy can take that path.
 
 **Time-boxed — do these first**
 

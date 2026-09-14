@@ -113,8 +113,11 @@ Recorded on 2026-09-14, in the order the steps ran; see the runbook for the comm
 | `VACUUM INTO` against the live, writing station, at `nice -n 19 ionice -c3` (the exact statement `oo db copy` runs, before that command was deployed) | **2,471,563,264 bytes in 458.8 s** (source file 2,567,311,360 bytes: the copy is compact), 10:34–10:42 BST |
 | `PRAGMA quick_check` on that copy | `ok` in **150.1 s**; 1,826,349 detections, 600,479 media assets, 113 streams, 3,222 gaps, 68 reviews, 42,986 refinements; revision `0012_detection_banked_at` |
 | Capture during the copy | unaffected: `continuity_ratio` 0.999949 and `audio_lost_seconds` 0.0 on `GET /api/v1/station` afterwards, the same as before |
-| Second copy with the service stopped, and row counts against the original | **not yet run** — the deploy and the switch are the operator's to perform; see [[HANDOVER]] §6.0 item 0a |
-| Service downtime, stop to healthy | **not yet run** |
+| Second copy, service stopped, un-niced (`deploy/move-database-to-ssd.sh`, 12:40 BST) | **2,480,144,384 bytes in 377.4 s** (source 2,576,232,448 bytes; 6.6 MB/s, the USB 2.0 SSD's write rate); `quick_check` ok in **46.4 s**; row counts identical to the original in all six tables (1,834,596 detections); revision `0013_analytics_rollup` on both |
+| Service downtime | script's own stop-to-healthy **454 s**; the real outage was **12:38:10 → 12:47:30 BST, 560 s**, because the first attempt's stop hung for systemd's 90 s `TimeoutStopSec` and ended in SIGKILL (below), which made the script's guard refuse and the second attempt start from a stopped station |
+| First start on the SSD | `db.engine_ready` with the new DSN at 11:47:28Z, `db.schema_at_head revision=0013_analytics_rollup` 34 ms later; `GET /api/v1/health` `status: ok`, `database.on_system_disk: false` |
+
+**A finding the move surfaced, not caused.** The `systemctl stop` at 12:38:10, issued 22 s after the deploy's own restart had started the station, did not complete: the process ignored the stop signal for 90 s and systemd killed it (`Failed with result 'timeout'`). The deploy's own stop at 12:37:48 was clean within a second, as every recorded stop before it had been. The difference is that the second stop landed while the station was still starting — detectors loading, capture not yet anchored — and something in that window does not honour shutdown. Nothing was lost (the original's WAL was checkpointed by the next connection and the copy's counts match), but a stop during start-up is a real path a power cut or a quick redeploy can take, and it is now on the [[HANDOVER]] queue.
 
 ### Revisit when
 
