@@ -146,6 +146,8 @@ PINNED_AT_PROCESS_START: tuple[str, ...] = (
     "replay_speed",
     "synthetic_scene",
     "synthetic_sample_rate",
+    # ADR-078: read once, by `init_engine`, before the database is opened.
+    "database_require_mount",
 )
 
 #: Settings the running pipeline binds once and never re-reads, tracked in

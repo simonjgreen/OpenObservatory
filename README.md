@@ -82,6 +82,27 @@ animals*) exists because one woodpigeon calling repeatedly produced 486 of them
 on this single day. Further down the same table `Engine` appears 175 times as a
 non-taxonomic class, which is the system declining to call a passing car a bird.
 
+### Analytics
+
+![The analytics view answering "when do the bats fly?": a date-by-hour heat-map of
+bat passes over six weeks, with sunrise and sunset drawn as solid lines and civil
+dawn and dusk as dashed ones, the colour lying between the dusk and dawn lines and
+bending as the nights lengthen; beside it, the 24-hour profile peaking at 22:00](docs/screenshots/analytics-bats.jpg)
+
+![The analytics view answering "do the birds' hours shrink with the daylight?":
+one bar per day from the 5th to the 95th percentile bird detection, tracking the
+sunrise and sunset lines from August into September, and beneath it detections
+per captured daylight hour plotted against day length](docs/screenshots/analytics-birds-light.jpg)
+
+The long view (ADR-079): every day the station has recorded, rolled up hourly
+into local calendar days and drawn against the light. The questions down the left
+are demonstrators as much as reports — each says what a working station should
+show, so a chart that does not look like that is a reason to suspect the detector,
+the clock or the coordinates before the garden. Both pictures were rendered on
+2026-09-14 from a consistent copy of the station's record, on a laptop, before
+the section was deployed to the station itself: the "not live audio" banners
+above them were true of the laptop, and are cropped out here.
+
 ### One detection, opened
 
 ![The detection drawer: metadata, review buttons, and the evidence stack —

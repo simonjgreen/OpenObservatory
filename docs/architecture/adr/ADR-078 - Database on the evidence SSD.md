@@ -108,10 +108,11 @@ Recorded on 2026-09-14, in the order the steps ran; see the runbook for the comm
 
 | Step | Measurement |
 |---|---|
-| `oo db copy` against the live, writing station | *(filled in below, after the run)* |
-| `oo db check --full` on that copy | *(filled in below)* |
-| Second copy with the service stopped, and row counts against the original | *(filled in below)* |
-| Service downtime, stop to healthy | *(filled in below)* |
+| `VACUUM INTO` against the live, writing station, at `nice -n 19 ionice -c3` (the exact statement `oo db copy` runs, before that command was deployed) | **2,471,563,264 bytes in 458.8 s** (source file 2,567,311,360 bytes: the copy is compact), 10:34–10:42 BST |
+| `PRAGMA quick_check` on that copy | `ok` in **150.1 s**; 1,826,349 detections, 600,479 media assets, 113 streams, 3,222 gaps, 68 reviews, 42,986 refinements; revision `0012_detection_banked_at` |
+| Capture during the copy | unaffected: `continuity_ratio` 0.999949 and `audio_lost_seconds` 0.0 on `GET /api/v1/station` afterwards, the same as before |
+| Second copy with the service stopped, and row counts against the original | **not yet run** — the deploy and the switch are the operator's to perform; see [[HANDOVER]] §6.0 item 0a |
+| Service downtime, stop to healthy | **not yet run** |
 
 ### Revisit when
 

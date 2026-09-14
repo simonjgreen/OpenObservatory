@@ -705,16 +705,18 @@ def resolve_dates(
     moment = now or datetime.now(UTC)
     zone = _zone(timezone)
     today = moment.astimezone(zone).date()
+    # Nothing before the first detection is a hole in the roll-up; it is
+    # before the record. "The last 90 days" on a station six weeks old is six
+    # weeks, so the days-built figure means what its label says.
+    record_start = first_detection_date(session, zone) or today
     if name == "all":
-        first_key = session.execute(select(func.min(orm.AnalyticsDay.local_date))).scalar_one()
-        first = date.fromisoformat(first_key) if first_key else today
-        return DateRange(first, today, "everything recorded", "all")
+        return DateRange(record_start, today, "everything recorded", "all")
     resolved = history.resolve_range(name, timezone, now=moment)
     if resolved is None:
         resolved = history.resolve_range("last-30d", timezone, now=moment)
         assert resolved is not None
         name = "last-30d"
-    first = resolved.start.astimezone(zone).date()
+    first = max(resolved.start.astimezone(zone).date(), record_start)
     last_moment = resolved.end - timedelta(microseconds=1)
     last = min(last_moment.astimezone(zone).date(), today)
     if last < first:

@@ -519,8 +519,13 @@ def test_resolve_dates_falls_back_rather_than_failing(built: Settings) -> None:
     with session_scope() as session:
         unknown = analytics.resolve_dates(session, "not-a-window", LONDON, now=NOW)
         month = analytics.resolve_dates(session, "2026-08", LONDON, now=NOW)
+        ninety = analytics.resolve_dates(session, "last-90d", LONDON, now=NOW)
     assert unknown.name == "last-30d"
-    assert (month.first, month.last) == (date(2026, 8, 1), date(2026, 8, 6))
+    # The record began on the 4th: a month or ninety days that starts before
+    # it starts there instead, so the days-built figure is honest.
+    assert (month.first, month.last) == (date(2026, 8, 4), date(2026, 8, 6))
+    assert (ninety.first, ninety.last) == (date(2026, 8, 4), date(2026, 8, 6))
+    assert ninety.label == "last 90 days"
 
 
 def test_questions_are_well_formed() -> None:

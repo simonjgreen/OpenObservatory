@@ -1611,6 +1611,7 @@ code {
 .chart-tooltip-title { color: var(--text); font-weight: 600; margin-bottom: 2px; }
 .hours-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: var(--space-4); min-width: 0; }
 .span-chart .rate-chart { grid-column: 1 / -1; margin-top: var(--space-4); }
+.rate-chart .chart-caption { margin: 0 0 var(--space-3); }
 
 /* The grid is the one wide thing: it scrolls, the page does not (ADR-054). */
 .taxa-grid { min-width: 0; }
