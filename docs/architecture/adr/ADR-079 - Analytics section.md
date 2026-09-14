@@ -83,6 +83,10 @@ Eight shipped questions live in `analytics.QUESTIONS` and are served by `GET /ap
 - A second process writing the database under a five-second `busy_timeout`, in transactions of one day each: the same shape as the refinement runner, which has run nightly since 2026-08-10.
 - A fresh install answers "everything recorded" with holes for about an hour per forty days of history until the catch-up completes; the status line says how many days are missing.
 
+### Measured on the station, 2026-09-14
+
+The first backfill, `nice -n 19 ionice -c3 oo analytics rebuild --all` on the Pi with the database already on the SSD ([[ADR-078 - Database on the evidence SSD|ADR-078]]): **42 days in 34.0 s**, 0.09–0.8 s per day at 2,089–61,137 detections a day, 1,834,038 detections rolled up, `days_missing: 0`. The laptop had done the same 42 days in 8.2 s. `GET /api/v1/analytics/hours?range=last-30d&group=bat` answers with 31 of 31 days built and a profile that is zero from 07:00 to 19:00 local and peaks at 21:00–23:00 — the shape the *When do the bats fly?* question says a working station shows.
+
 ### Rollback
 
 Disable the timer (`systemctl disable --now open-observatory-analytics.timer`) and redeploy the previous web bundle; the tables are inert and can be dropped with `alembic downgrade 0012_detection_banked_at`. Nothing else reads them.
