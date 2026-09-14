@@ -106,3 +106,29 @@ def test_refine_unit_gives_numba_a_writable_cache() -> None:
         f"NUMBA_CACHE_DIR is {target!r}, which is not under any ReadWritePaths "
         f"entry ({sorted(writable)}) -- it would fail exactly as before"
     )
+
+
+@pytest.mark.parametrize(
+    ("unit", "name"),
+    [(UNIT, "open-observatory.service"), (REFINE_UNIT, "open-observatory-refine.service")],
+)
+def test_a_database_on_the_evidence_volume_is_writable_by_every_unit(unit: Path, name: str) -> None:
+    """ADR-078 puts the database under the evidence mount, in both units' paths.
+
+    Two processes open the database: the station and the nightly refinement
+    runner. The relocation target is documented as `data/clips/database/`, which
+    inherits `data`'s entry today -- this pins that nobody narrows either
+    unit's `ReadWritePaths` to `data/clips` alone, or to `data/transient`, and
+    quietly turns the refinement pass into a nightly EROFS.
+    """
+    target = "@DEPLOY_ROOT@/data/clips/database"
+    writable = {
+        entry
+        for line in unit.read_text().splitlines()
+        if line.startswith("ReadWritePaths=")
+        for entry in line.split("=", 1)[1].split()
+    }
+    assert any(target.startswith(path) for path in writable), (
+        f"{name}: the relocated database at {target!r} is not under any "
+        f"ReadWritePaths entry ({sorted(writable)})"
+    )

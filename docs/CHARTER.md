@@ -161,7 +161,7 @@ Weighed continuously, against every item above.
 
 | Constraint | Why it binds |
 |---|---|
-| **Storage endurance** | The database lives on an SD card with finite write cycles. Write amplification is a real cost, not an abstraction. |
+| **Storage endurance** | The operating system lives on an SD card with finite write cycles, and until 2026-09-14 so did the database ([[ADR-078 - Database on the evidence SSD\|ADR-078]] moved it to the SSD, for latency rather than wear). Write amplification is a real cost, not an abstraction, on either device. |
 | **Storage capacity** | Bounded, tiered, reclaimed automatically. The species log outlives the audio. |
 | **WiFi reliability** | Every remote surface degrades honestly when the network goes, and recovers without help. |
 | **Network efficiency** | Bytes on the wire are paid continuously. Send what is needed and nothing more. |

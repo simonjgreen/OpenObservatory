@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     #: silently would reintroduce that without anyone noticing. Capture still wins:
     #: the station keeps recording, it just reports itself degraded.
     clips_require_mount: bool = False
+    #: True when the database must live on a mounted volume, not the system
+    #: disk (ADR-078). Once the database is on the evidence SSD, a boot on which
+    #: the SSD failed to mount would otherwise open a fresh, empty database on
+    #: the SD card and fork the record in two. So the station refuses instead:
+    #: `init_engine` raises, `Restart=always` retries every five seconds, and
+    #: the station recovers by itself once the volume is mounted and the
+    #: service restarted. Off by default because a developer checkout has no
+    #: such volume.
+    database_require_mount: bool = False
 
     # ---- capture ----------------------------------------------------------
     source: SourceKind = "auto"

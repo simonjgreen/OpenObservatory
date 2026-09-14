@@ -9,6 +9,7 @@ shell all working the ordinary way.
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -49,6 +50,26 @@ def init_engine(settings: Settings, *, echo: bool = False) -> Engine:
     dsn = settings.resolved_database_dsn
     if dsn.startswith("sqlite"):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        path = database_file(settings)
+        if path is not None:
+            # ADR-078. Refuse before anything is created: the failure this
+            # guards against is a *second* database appearing on the system
+            # disk while the real one sits on an unmounted volume.
+            if settings.database_require_mount:
+                volume = database_volume(settings)
+                if volume is not None and volume["on_system_disk"]:
+                    raise RuntimeError(
+                        f"Refusing to open the database at {path}: its directory "
+                        f"resolves to the system disk (mount point "
+                        f"{volume['mount_point']}) and database_require_mount is "
+                        "set (ADR-078). Mount the data volume, then restart the "
+                        "service -- a mount that appears after start is not "
+                        "visible inside the unit's namespace."
+                    )
+            # The DSN's own directory, not just data_dir: a relocated database
+            # (ADR-078) lives in a directory data_dir knows nothing about, and
+            # SQLite's "unable to open database file" names no path.
+            path.parent.mkdir(parents=True, exist_ok=True)
         # Sessions are used from FastAPI's thread pool and from to_thread calls.
         _engine = create_engine(
             dsn, echo=echo, future=True, connect_args={"check_same_thread": False}
@@ -203,3 +224,42 @@ def database_file(settings: Settings) -> Path | None:
     if dsn.startswith("sqlite") and ":///" in dsn:
         return Path(dsn.split(":///", 1)[1])
     return None
+
+
+def _mount_point_of(path: Path) -> Path:
+    """The mount point of the nearest existing ancestor of `path`.
+
+    `path` itself need not exist yet -- before first start the database file
+    does not -- so the walk starts at the closest ancestor that does.
+    """
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    probe = probe.resolve()
+    while not os.path.ismount(probe) and probe.parent != probe:
+        probe = probe.parent
+    return probe
+
+
+def database_volume(settings: Settings) -> dict[str, object] | None:
+    """Where the SQLite file lives, and whether that is the system disk (ADR-078).
+
+    `None` for a non-SQLite DSN. ``on_system_disk`` is true when the file's
+    mount point is the root filesystem -- on the station, the SD card. The
+    figures are read straight off the filesystem so `/api/v1/health` and
+    `oo db status` cannot disagree about them.
+    """
+    path = database_file(settings)
+    if path is None:
+        return None
+    mount = _mount_point_of(path)
+    wal = path.with_name(path.name + "-wal")
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "bytes": path.stat().st_size if path.exists() else None,
+        "wal_bytes": wal.stat().st_size if wal.exists() else None,
+        "mount_point": str(mount),
+        "on_system_disk": str(mount) == os.path.abspath(os.sep),
+        "require_mount": settings.database_require_mount,
+    }

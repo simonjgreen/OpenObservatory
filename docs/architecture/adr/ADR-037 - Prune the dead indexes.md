@@ -737,5 +737,16 @@ triggers in the table above have since fired.
   SQLite chooses for that join is likewise unverified — the query is unchanged
   since 2026-08-09, but the table has grown fourteen-fold under it.
 
+**Reviewed 2026-09-14:** option **H** (move the database to the SSD) is taken
+after all, by [[ADR-078 - Database on the evidence SSD|ADR-078]] — and this table's
+reasoning for rejecting it is not overturned, it is beside the point. H was costed
+in bytes (0.3–0.7 GB/day of 6 GB/day, which still holds: the station service wrote
+0.84 GB/day to the card over 2.8 days in September) and the bytes never justified
+it. What justified it was latency: an `fdatasync` on the card measures 11.3 ms
+against 2.2 ms on the SSD, the card's mean write request sits 66 ms in the queue,
+and a WAL checkpoint inside a commit therefore holds the write lock for seconds —
+which `busy_timeout=5000` and a persist loop with no retry turn into discarded
+detections. The UUIDv7 key (option F) is still banked for the PostgreSQL move.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

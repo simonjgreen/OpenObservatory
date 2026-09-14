@@ -856,6 +856,12 @@ Nothing here is documentation. Every item is code, config, a test, or a decision
     database before a migration cannot be followed: `sqlite3`'s backup API was
     measured not converging on the live database, and a file copy of a live WAL
     database is not a consistent snapshot. Milestone 7 owns the tooling.
+    **2026-09-14:** partly closed by [[ADR-078 - Database on the evidence SSD|ADR-078]].
+    `oo db copy` (`VACUUM INTO`, one read transaction, never restarts) was run
+    against the live, writing station during the database's move to the SSD and
+    checked with `oo db check --full`; the runbook is in
+    [[DEPLOYMENT_AND_OPERATIONS]]. What is still owed to Milestone 7 is a
+    *schedule* for it and a restore procedure, not a method.
 27. Minor: a tracked zero-byte file named `=` sits in the repository root.
 
 ### 6.1 Close the Milestone 1–3 gates properly
