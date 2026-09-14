@@ -59,7 +59,7 @@ ADR-021 kept the database on the SD card so that *"if the SSD is unplugged the s
 
 The alternative — start anyway, and let SQLite create a fresh, empty `openobservatory.sqlite` on the SD card under the unmounted path — is worse than downtime. It produces two records that both look real, must be merged by hand, and would sit under the mount point invisible once the SSD returned. The charter's item 3 outranks its item 2 exactly here: an inaccurate permanent record is worse than a gap that is visible as a gap.
 
-So `database_require_mount=true` makes `init_engine` **raise** when the database's directory resolves to the root filesystem, before anything is created. The mechanism that recovers is the one already in the unit: `Restart=always`, `RestartSec=5`. Each retry is a fresh process with a fresh mount namespace, so a mount that arrived late — a slowly enumerating SSD, or an operator's `mount -a` — is seen on the next attempt without anyone restarting anything. The journal names the path and the mount point; `/api/v1/health` carries a `database` block (`path`, `mount_point`, `on_system_disk`, `require_mount`) so the same facts are one `curl` away; `oo db status` prints them on the host.
+So `database_require_mount=true` makes `init_engine` **raise** when the database's directory resolves to the root filesystem, before anything is created. The flag is deliberately not editable from the browser — it sits on the settings UI's excluded list beside `database_dsn` — so one click cannot switch the protection off. The mechanism that recovers is the one already in the unit: `Restart=always`, `RestartSec=5`. Each retry is a fresh process with a fresh mount namespace, so a mount that arrived late — a slowly enumerating SSD, or an operator's `mount -a` — is seen on the next attempt without anyone restarting anything. The journal names the path and the mount point; `/api/v1/health` carries a `database` block (`path`, `mount_point`, `on_system_disk`, `require_mount`) so the same facts are one `curl` away; `oo db status` prints them on the host.
 
 Why still no `RequiresMountsFor=` (ADR-021's reasoning, kept): a *dependency* failure does not retry, a crash loop does. And `nofail` stays in `/etc/fstab` so the host still boots to SSH without the SSD.
 
@@ -84,13 +84,15 @@ The copy was taken against the **live, writing** station as the first step of th
 
 ### The migration, as run
 
-The full runbook is in [[DEPLOYMENT_AND_OPERATIONS]] under *Database on the evidence SSD*. In outline, and in this order:
+The full runbook is in [[DEPLOYMENT_AND_OPERATIONS]] under *Database on the evidence SSD*, and `deploy/move-database-to-ssd.sh` is the same procedure as one script, run from the laptop with `HOST=` like `deploy.sh`. In outline, and in this order:
 
 1. Deploy this code (`deploy.sh --no-web`) so the station understands the new setting and creates the directory.
 2. `oo db copy` from the live database to `data/clips/database/openobservatory.sqlite`, at idle priority. `oo db check --full` on the copy.
-3. `systemctl stop open-observatory open-observatory-refine.timer`. A second `oo db copy --force`, now against a quiet database, so nothing written between step 2 and the stop is lost. `oo db check` again; compare `row_counts` with `oo db status` on the original.
+3. Stop the station, both timers **and** both oneshot services (a stopped timer does not stop a run in flight). A second `oo db copy --force`, now against a quiet database, so nothing written between step 2 and the stop is lost. `oo db check` again; compare `row_counts` and the Alembic revision with `oo db status` on the original; then `sync`, because `VACUUM INTO` never fsyncs its output and the check read it back through the page cache.
 4. Add the two lines to `config/runtime.env`; rename the original to `openobservatory.sqlite.moved-2026-09-14` (with its `-wal`/`-shm` if present) so the old path cannot be opened by accident.
-5. `systemctl start`; `oo db status` and `GET /api/v1/health` must both say `on_system_disk: false`; `GET /api/v1/history?window=last-hour` must return the last hour; the journal must show `db.engine_ready` with the new path.
+5. `systemctl start` the station; once healthy, start the timers; `oo db status` and `GET /api/v1/health` must both say `on_system_disk: false`; `GET /api/v1/history?window=last-hour` must return the last hour; the journal must show `db.engine_ready` with the new path.
+
+The sequence was reviewed before it ran by three independent, adversarial readers with one lens each — the systemd sandbox and mount namespace, SQLite and data integrity, configuration loading — each with read-only access to the station. None refuted it; the stop-list, the `sync` and the detached remote run in `deploy/move-database-to-ssd.sh` are their findings.
 
 ### Rollback
 

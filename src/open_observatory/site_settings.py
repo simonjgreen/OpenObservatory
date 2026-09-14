@@ -279,17 +279,6 @@ EDITABLE_SETTINGS: tuple[EditableSetting, ...] = (
         "measured ALSA overruns; this makes a missing SSD visible instead of "
         "silent. Capture still wins -- the station keeps recording either way.",
     ),
-    _e(
-        "database_require_mount",
-        "station",
-        tier="restart",
-        label="database must be on its own mount",
-        help="Refuse to open a database whose directory is on the system disk "
-        "(ADR-078). With the database on the evidence SSD, a boot without the "
-        "SSD would otherwise start a second, empty database on the SD card and "
-        "fork the record. Checked at startup; the service retries every five "
-        "seconds until the volume is mounted.",
-    ),
     # ---- capture -------------------------------------------------------
     _e(
         "source",
@@ -985,6 +974,11 @@ NON_EDITABLE: dict[str, str] = {
     "database_dsn": (
         "the same shutdown-and-migrate operation as data_dir, plus a DSN can "
         "carry credentials for a host this station has no business reaching."
+    ),
+    "database_require_mount": (
+        "the refusal that stops a boot without the SSD from forking the record "
+        "onto the SD card (ADR-078). One click here would switch it off; it is "
+        "set once, by hand, beside database_dsn in runtime.env."
     ),
     "runtime_env_path": (
         "this is the settings store itself. Repointing it makes the UI write "
