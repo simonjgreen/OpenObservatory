@@ -22,6 +22,9 @@ UNIT = Path(__file__).resolve().parents[1] / "deploy" / "open-observatory.servic
 REFINE_UNIT = (
     Path(__file__).resolve().parents[1] / "deploy" / "open-observatory-refine.service"
 )
+ANALYTICS_UNIT = (
+    Path(__file__).resolve().parents[1] / "deploy" / "open-observatory-analytics.service"
+)
 
 
 def _read_write_paths() -> set[str]:
@@ -110,16 +113,20 @@ def test_refine_unit_gives_numba_a_writable_cache() -> None:
 
 @pytest.mark.parametrize(
     ("unit", "name"),
-    [(UNIT, "open-observatory.service"), (REFINE_UNIT, "open-observatory-refine.service")],
+    [
+        (UNIT, "open-observatory.service"),
+        (REFINE_UNIT, "open-observatory-refine.service"),
+        (ANALYTICS_UNIT, "open-observatory-analytics.service"),
+    ],
 )
 def test_a_database_on_the_evidence_volume_is_writable_by_every_unit(unit: Path, name: str) -> None:
-    """ADR-078 puts the database under the evidence mount, in both units' paths.
+    """ADR-078 puts the database under the evidence mount, in every unit's paths.
 
-    Two processes open the database: the station and the nightly refinement
-    runner. The relocation target is documented as `data/clips/database/`, which
-    inherits `data`'s entry today -- this pins that nobody narrows either
-    unit's `ReadWritePaths` to `data/clips` alone, or to `data/transient`, and
-    quietly turns the refinement pass into a nightly EROFS.
+    Three processes open the database: the station, the nightly refinement
+    runner and the hourly analytics roll-up (ADR-079). The relocation target is
+    documented as `data/clips/database/`, which inherits `data`'s entry today
+    -- this pins that nobody narrows a unit's `ReadWritePaths` to `data/clips`
+    alone, or to `data/transient`, and quietly turns a timer into an EROFS.
     """
     target = "@DEPLOY_ROOT@/data/clips/database"
     writable = {
@@ -132,3 +139,12 @@ def test_a_database_on_the_evidence_volume_is_writable_by_every_unit(unit: Path,
         f"{name}: the relocated database at {target!r} is not under any "
         f"ReadWritePaths entry ({sorted(writable)})"
     )
+
+
+def test_analytics_unit_is_fenced_like_the_refinement_runner() -> None:
+    """ADR-079's roll-up reads the whole detection table for a day; it must
+    lose every contest with capture for CPU and disk, as ADR-045's runner does."""
+    text = ANALYTICS_UNIT.read_text()
+    for directive in ("AllowedCPUs=2-3", "Nice=19", "IOSchedulingClass=idle", "Type=oneshot"):
+        assert directive in text, f"{directive} missing from the analytics unit"
+    assert "ProtectHome=read-only" in text

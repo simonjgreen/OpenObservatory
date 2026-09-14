@@ -33,6 +33,11 @@ import numpy as np
 #: zenith angle of 96 degrees (90 + 6).
 _CIVIL_ZENITH_DEG = 96.0
 
+#: Sunrise and sunset: the sun's upper limb on the horizon, which with
+#: refraction puts its centre at -0.833 degrees. The same NOAA convention as
+#: every published sunrise table (ADR-079 uses it for the daylight axis).
+SUNRISE_SUNSET_ZENITH_DEG = 90.833
+
 ScheduleMode = Literal["always", "night"]
 
 
@@ -57,6 +62,39 @@ def _dawn_dusk_for_date(
 
     Longitude is degrees, positive east (so western Europe is negative), matching
     this project's ``Settings.longitude``.
+    """
+    return sun_crossings_for_date(d, latitude, longitude, zenith_deg=_CIVIL_ZENITH_DEG)
+
+
+@dataclass(frozen=True, slots=True)
+class SolarDay:
+    """The four solar moments of one calendar date, each ``None`` when the sun
+    does not reach that elevation on that date at that latitude."""
+
+    sunrise_utc: datetime | None
+    sunset_utc: datetime | None
+    civil_dawn_utc: datetime | None
+    civil_dusk_utc: datetime | None
+
+
+def solar_day(d: date, latitude: float, longitude: float) -> SolarDay:
+    """Sunrise, sunset, civil dawn and civil dusk for calendar date ``d``."""
+    sunrise, sunset = sun_crossings_for_date(
+        d, latitude, longitude, zenith_deg=SUNRISE_SUNSET_ZENITH_DEG
+    )
+    dawn, dusk = sun_crossings_for_date(d, latitude, longitude, zenith_deg=_CIVIL_ZENITH_DEG)
+    return SolarDay(sunrise_utc=sunrise, sunset_utc=sunset, civil_dawn_utc=dawn, civil_dusk_utc=dusk)
+
+
+def sun_crossings_for_date(
+    d: date, latitude: float, longitude: float, *, zenith_deg: float
+) -> tuple[datetime | None, datetime | None]:
+    """The morning and evening moments the sun's centre crosses ``zenith_deg``
+    on calendar date ``d``, as ``(morning_utc, evening_utc)``.
+
+    Times are relative to UTC midnight of ``d`` and so may fall on the
+    neighbouring UTC date for longitudes far from Greenwich; they are still
+    the crossings that belong to the *local* date ``d``.
     """
     # Fractional-year angle gamma, evaluated at local solar noon (hour = 12), per
     # the NOAA General Solar Position Calculations formulas.
@@ -85,7 +123,7 @@ def _dawn_dusk_for_date(
     )
 
     lat_rad = np.radians(latitude)
-    zenith_rad = np.radians(_CIVIL_ZENITH_DEG)
+    zenith_rad = np.radians(zenith_deg)
 
     denom = np.cos(lat_rad) * np.cos(decl)
     if denom == 0:

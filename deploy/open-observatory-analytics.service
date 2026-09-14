@@ -1,0 +1,52 @@
+# Template unit: @DEPLOY_USER@ and @DEPLOY_ROOT@ are substituted by
+# deploy/deploy.sh at install time. No committed default user or path.
+[Unit]
+Description=Open Observatory analytics roll-up (ADR-079)
+Documentation=file://@DEPLOY_ROOT@/docs/architecture/ADRS.md
+# Not Requires=open-observatory.service, for the refinement runner's reason:
+# this reads the database and never talks to the station process, and a day
+# the station was down is exactly a day the roll-up must still record.
+After=open-observatory.service
+
+[Service]
+Type=oneshot
+User=@DEPLOY_USER@
+Group=@DEPLOY_USER@
+WorkingDirectory=@DEPLOY_ROOT@
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-@DEPLOY_ROOT@/config/runtime.env
+ExecStart=@DEPLOY_ROOT@/.venv/bin/oo analytics rebuild
+
+# --- the fence -------------------------------------------------------------
+# The same fence as the refinement runner (ADR-045): capture always wins.
+# A day's roll-up is a few seconds of reading the detection table; it must
+# never share a core with the capture thread or the event loop, and it must
+# lose every contest for the disk.
+AllowedCPUs=2-3
+Nice=19
+MemoryMax=1G
+CPUWeight=1
+IOWeight=1
+IOSchedulingClass=idle
+
+# A run is bounded by CATCHUP_DAYS_PER_RUN and STALE_DAYS_PER_RUN in
+# src/open_observatory/analytics.py; this is the backstop.
+TimeoutStartSec=1800
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=open-observatory-analytics
+
+# Same privilege reduction as the refinement runner: nothing to do with
+# audio, and only the data directory (the database) writable. ADR-078 puts
+# the database under data/clips, which this entry covers.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@DEPLOY_ROOT@/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
