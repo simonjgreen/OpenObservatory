@@ -577,5 +577,15 @@ request-latency percentile, on `/metrics` or anywhere else. The single
 measurement above is past its line, and [[ADR-037 - Prune the dead indexes|ADR-037]]'s own 2026-08-29 review
 measured `window=this-year` at 12.6 s.
 
+**Reviewed 2026-09-14:** the roll-up is built, by [[ADR-079 - Analytics section|ADR-079]],
+in the shape finding 3 proposed and with three additions (local calendar days per
+finding 4, solar moments per day, and coverage per hour). It is read by a new
+ANALYTICS section rather than by the period and season views proposed here for
+HISTORY, which are therefore not built — and alternative **K** is superseded on the
+argument that a pattern is a different question from an event, with a different
+source, and the one fact both surfaces can state is pinned equal by a test. The
+range grammar, the honesty rules, the cost figures and the rejection of a
+per-insert trigger all stand and are what ADR-079 is built on.
+
 ---
 Part of the [[ADRS|Architecture Decision Record index]].

@@ -537,6 +537,23 @@ marker, not a rank. Genus grouping is free and exact; family is a real data
 dependency and the honest version needs a licensed, checksummed taxonomy.
 [[ADR-053 - Grouping above species|ADR-053]] records why the hardcoded corvid list is refused.
 
+## Analytics section and the database's move — **built and tested 2026-09-14; both awaiting the operator's deploy**
+
+Two pieces of work outside the milestone plan, asked for on 2026-09-14:
+
+- **[[ADR-078 - Database on the evidence SSD|ADR-078]].** The SQLite file moves
+  from the SD card to the evidence SSD, argued from measured `fdatasync` latency
+  (11.3 ms on the card, 2.2 ms on the SSD) and the lock contention that was
+  discarding detections. Code, tests, `oo db status/copy/check` and the runbook
+  are on `main`'s branch; the station-side stop/copy/repoint/start has **not been
+  run** — it restarts capture and is the operator's call. A live `VACUUM INTO`
+  copy was taken as the runbook's step 2 and verified.
+- **[[ADR-079 - Analytics section|ADR-079]].** The roll-up ADR-056 designed, an
+  hourly fenced builder, seven read endpoints, and an `ANALYTICS` section with
+  four views and eight shipped questions. 18 roll-up tests, 4 HTTP tests, and the
+  frontend suite at 348 passing. Not yet deployed; first backfill not yet run on
+  the station.
+
 ## Quality gates
 
 | Gate | State |

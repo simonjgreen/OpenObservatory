@@ -172,3 +172,17 @@ describe('the pause menu opens into the screen, not off it', () => {
   })
 })
 
+describe('the analytics section (ADR-079) follows the same rules', () => {
+  it('wraps its control row and its rail buttons rather than overflowing', () => {
+    expect(ruleBody('.analytics-controls')).toMatch(/flex-wrap:\s*wrap/)
+    expect(ruleBody('.analytics-controls')).toMatch(/min-width:\s*0/)
+    expect(ruleBody('.save-form')).toMatch(/flex-wrap:\s*wrap/)
+  })
+  it('scrolls the species grid inside its own box, never the page', () => {
+    expect(ruleBody('.taxa-scroll')).toMatch(/overflow-x:\s*auto/)
+  })
+  it('stacks the rail above the charts on a phone', () => {
+    const narrow = CSS.slice(CSS.indexOf('@media (max-width: 950px)', CSS.indexOf('analytics (ADR-079)')))
+    expect(narrow).toMatch(/\.analytics\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/)
+  })
+})

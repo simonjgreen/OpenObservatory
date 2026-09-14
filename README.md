@@ -527,6 +527,17 @@ see Milestone 9 in
 
 ### Notes worth knowing before you copy it
 
+- **ANALYTICS mode.** The long view (ADR-079): every day the station has
+  recorded, rolled up hourly into local calendar days, drawn against the light.
+  Species volumes by week or month, a date-by-hour heat-map with sunrise and
+  dusk drawn over it, a species-by-week grid, and each day's active span
+  against the solar curves with detections per captured hour of daylight or of
+  night. Eight shipped questions ("do the birds' hours shrink with the
+  daylight?", "when do the bats fly?") each say what a working station should
+  show, so they double as an instrument check; your own can be saved on the
+  station, and every chart is a URL. Coverage and the excluded counts travel
+  with every number, a day not yet built is a hole rather than a zero, and a
+  bat pass is a frequency band, never a species.
 - **The AudioMoth's three-position switch matters.** `DEFAULT` streams audio;
   `USB/OFF` is configuration only and produces no ALSA card at all. Setting it to
   `USB/OFF` is exactly what caused a 29-hour outage during commissioning.

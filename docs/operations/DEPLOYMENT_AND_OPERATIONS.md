@@ -56,7 +56,9 @@ server. There is no message broker; the event bus is in-process ([[ADR-009 - In-
    and prints recent `journalctl` output if the service does not come up
    healthy in that time.
 
-The three systemd units are committed as templates: `deploy.sh` substitutes the
+The five systemd units (the station, the refinement service and timer, and
+since [[ADR-079 - Analytics section|ADR-079]] the analytics service and timer)
+are committed as templates: `deploy.sh` substitutes the
 deploy user and install path at install time, so no station's paths are baked
 into the repository ([[ADR-047 - The repository ships no site|ADR-047]]).
 
@@ -180,6 +182,32 @@ The runner also refuses to start outside `01:00–03:00 UTC` on its own
 (`OO_REFINEMENT_WINDOW_START_HOUR_UTC` / `..._END_HOUR_UTC`), independently of
 the timer, so a manual `systemctl start` in daylight skips with a reason rather
 than classifying. `oo refine run --force` is the deliberate override.
+
+### The analytics unit and its timer (ADR-079)
+
+`deploy/open-observatory-analytics.service` + `.timer` are a **third** separate
+service, in the refinement runner's mould: `Type=oneshot`, the same fence
+(`AllowedCPUs=2-3`, `Nice=19`, `IOSchedulingClass=idle`, `MemoryMax=1G`), the
+same sandbox, only `data/` writable. The timer fires **hourly at seven minutes
+past**, and each run is `oo analytics rebuild`: today, yesterday, any day a new
+review touched, up to forty days never built (newest first) and up to six days
+built more than a week ago, one transaction per day. On this station a day is a
+few seconds; a fresh install catches up a month or two per hour and the
+`ANALYTICS` page says how many days are still missing until it has.
+
+```bash
+ssh <station-host> sudo systemctl list-timers open-observatory-analytics
+ssh <station-host> sudo journalctl -u open-observatory-analytics -n 50 --no-pager
+ssh <station-host> 'cd open-observatory && .venv/bin/oo analytics status'
+ssh <station-host> 'cd open-observatory && nice -n 19 ionice -c3 .venv/bin/oo analytics rebuild --all'   # first backfill, or after a version bump
+ssh <station-host> sudo systemctl disable --now open-observatory-analytics.timer   # rollback: the tables go inert
+```
+
+Two things it reads that are easy to forget it reads: the station's
+**timezone** (a day is a local day, and a changed timezone makes every built
+day stale, so the next runs rebuild them) and the station's **coordinates**
+(without them there is no sunrise, no sunset and no daylight axis; the page
+says so rather than drawing zero).
 
 ### Operating commands
 

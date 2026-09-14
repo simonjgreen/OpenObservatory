@@ -48,6 +48,15 @@ those merges and was missing seven routes.
 | `GET /taxa/activity` | |
 | `GET /history` | |
 | `GET /history/windows` | `last-hour`, `last-night`, `dawn-chorus`, `today`, `yesterday`, `last-24h`, `last-7d`. This is what the dashboard puts on screen, **not** the whole grammar `window` accepts — see below. |
+| `GET /analytics/status` | how much of the roll-up exists, how fresh it is, and how many local days are missing ([[ADR-079 - Analytics section\|ADR-079]]) |
+| `GET /analytics/questions` | the eight shipped questions: `id`, `title`, `question`, `expect` (what a working station shows), `view`, `params` |
+| `GET /analytics/series` | detections per `grain` (`day`, `night`, `week`, `month`) over `range`, with captured and paused seconds per bucket; `group` and `label` narrow it |
+| `GET /analytics/hours` | a date × hour matrix (`columns` `day` or `week`) with sunrise, sunset and civil twilight as local hours, plus the 24-hour profile |
+| `GET /analytics/taxa` | every label by `grain` (`day`, `week`, `month`): the phenology grid, most detections first, `limit` 1–400 |
+| `GET /analytics/span` | per day: a `group`'s first, last, 5th- and 95th-percentile moments as local hours, the solar moments, daylight and night lengths, and rates per captured hour of each |
+| `GET /analytics/reports` | questions the operator saved, on the station |
+| `POST /analytics/reports` | body `{name, question?, view, params}`; 422 on an unknown view |
+| `DELETE /analytics/reports/{id}` | 204, or 404 |
 | `GET /media/{asset_id}` | `410 Gone` when the file has been reclaimed by retention |
 | `GET /debug/pipeline` | |
 | `GET /debug/levels` | |
@@ -315,6 +324,35 @@ toward its original species there too. Two further gaps, recorded in full under
 [[ADR-043 - Taxon correction|ADR-043]]'s 2026-08-30 note: a `rejected` or `confirmed` review changes nothing on
 any surface at all, and no endpoint lists reviews, so "show me everything I have
 held or corrected" cannot be asked of this API.
+
+### Analytics — implemented, ADR-079
+
+Every `GET /analytics/*` endpoint reads the `analytics_*` roll-up tables and
+nothing else, so its cost is the size of `range` in *days*, never in
+detections: a year is milliseconds where `GET /history` over a week is seconds.
+`range` accepts the whole [[ADR-056 - Long-window history|ADR-056]] grammar
+(`last-30d`, `this-year`, `2026-08`, `2026-W32`, a date) plus `all`; an unknown
+name falls back to `last-30d` rather than a 500, and a bad `grain` is coerced.
+Every day is a **local calendar day** in the station's timezone, a `night` is
+noon to noon keyed by the evening's date, and hours are local wall-clock hours.
+
+Every response carries the same footer: `excluded_synthetic_count`,
+`excluded_withdrawn_count`, `excluded_rejected_count`, and `days_built` beside
+`range.days`. A day the hourly builder has not yet reached is reported as
+unbuilt (`days_unbuilt` on a series bucket, `built: false` on a span day,
+`days_built: 0` on a column), never as zero.
+
+What a named count contains, and does not: `label`-level counts (`taxa`, and
+`series`/`hours` with `label`) exclude withdrawn rows ([[ADR-044 - Withdrawn detections|ADR-044]])
+and rows whose latest human review is `rejected`, and use a `corrected`
+review's name ([[ADR-043 - Taxon correction|ADR-043]]) — **the first surface to
+honour a review**; `GET /history` and `GET /taxa/activity` still do not. A bat
+pass is its 5 kHz band (`45–50 kHz`), never a species. Group-level counts
+include withdrawn rows, as `history.timeline` does: they name nothing.
+
+The roll-up is rebuilt by `oo analytics rebuild` on
+`open-observatory-analytics.timer`, hourly, as a separate fenced process; the
+API never writes it. See [[DEPLOYMENT_AND_OPERATIONS]].
 
 ### Refinement has no HTTP surface — deliberate, ADR-045
 
