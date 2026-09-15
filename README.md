@@ -82,6 +82,35 @@ animals*) exists because one woodpigeon calling repeatedly produced 486 of them
 on this single day. Further down the same table `Engine` appears 175 times as a
 non-taxonomic class, which is the system declining to call a passing car a bird.
 
+### Analytics
+
+![The analytics view answering "when do the bats fly?": a date-by-hour heat-map of
+bat passes over six weeks, with sunrise and sunset drawn as solid lines and civil
+dawn and dusk as dashed ones, the colour lying between the dusk and dawn lines and
+bending as the nights lengthen; beside it, the 24-hour profile peaking at 22:00](docs/screenshots/analytics-bats.jpg)
+
+![The analytics view answering "do the birds' hours shrink with the daylight?":
+one bar per day from the 5th to the 95th percentile bird detection, tracking the
+sunrise and sunset lines from August into September, and beneath it detections
+per captured daylight hour plotted against day length](docs/screenshots/analytics-birds-light.jpg)
+
+![The analytics view answering "which birds are here at which times of year?":
+every species by week, most detections first, each cell shaded and carrying its
+count, European Robin at the top with 70,000](docs/screenshots/analytics-who-when.jpg)
+
+![The analytics view answering "when are there most robins?": European Robin
+detections per week this year, with the roll-up coverage and exclusion footer
+under the chart](docs/screenshots/analytics-robins.jpg)
+
+The long view (ADR-079): every day the station has recorded, rolled up hourly
+into local calendar days and drawn against the light. The questions down the left
+are demonstrators as much as reports — each says what a working station should
+show, so a chart that does not look like that is a reason to suspect the detector,
+the clock or the coordinates before the garden. Every chart is a URL, your own
+questions can be saved on the station, and every number travels with the coverage
+it rests on: a day not yet rolled up is a hole, never a zero. Captured from the
+station on 2026-09-14, six weeks into its record.
+
 ### One detection, opened
 
 ![The detection drawer: metadata, review buttons, and the evidence stack —
@@ -527,6 +556,17 @@ see Milestone 9 in
 
 ### Notes worth knowing before you copy it
 
+- **ANALYTICS mode.** The long view (ADR-079): every day the station has
+  recorded, rolled up hourly into local calendar days, drawn against the light.
+  Species volumes by week or month, a date-by-hour heat-map with sunrise and
+  dusk drawn over it, a species-by-week grid, and each day's active span
+  against the solar curves with detections per captured hour of daylight or of
+  night. Eight shipped questions ("do the birds' hours shrink with the
+  daylight?", "when do the bats fly?") each say what a working station should
+  show, so they double as an instrument check; your own can be saved on the
+  station, and every chart is a URL. Coverage and the excluded counts travel
+  with every number, a day not yet built is a hole rather than a zero, and a
+  bat pass is a frequency band, never a species.
 - **The AudioMoth's three-position switch matters.** `DEFAULT` streams audio;
   `USB/OFF` is configuration only and produces no ALSA card at all. Setting it to
   `USB/OFF` is exactly what caused a 29-hour outage during commissioning.

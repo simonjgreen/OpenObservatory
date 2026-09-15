@@ -59,7 +59,7 @@ ADR-021 kept the database on the SD card so that *"if the SSD is unplugged the s
 
 The alternative — start anyway, and let SQLite create a fresh, empty `openobservatory.sqlite` on the SD card under the unmounted path — is worse than downtime. It produces two records that both look real, must be merged by hand, and would sit under the mount point invisible once the SSD returned. The charter's item 3 outranks its item 2 exactly here: an inaccurate permanent record is worse than a gap that is visible as a gap.
 
-So `database_require_mount=true` makes `init_engine` **raise** when the database's directory resolves to the root filesystem, before anything is created. The mechanism that recovers is the one already in the unit: `Restart=always`, `RestartSec=5`. Each retry is a fresh process with a fresh mount namespace, so a mount that arrived late — a slowly enumerating SSD, or an operator's `mount -a` — is seen on the next attempt without anyone restarting anything. The journal names the path and the mount point; `/api/v1/health` carries a `database` block (`path`, `mount_point`, `on_system_disk`, `require_mount`) so the same facts are one `curl` away; `oo db status` prints them on the host.
+So `database_require_mount=true` makes `init_engine` **raise** when the database's directory resolves to the root filesystem, before anything is created. The flag is deliberately not editable from the browser — it sits on the settings UI's excluded list beside `database_dsn` — so one click cannot switch the protection off. The mechanism that recovers is the one already in the unit: `Restart=always`, `RestartSec=5`. Each retry is a fresh process with a fresh mount namespace, so a mount that arrived late — a slowly enumerating SSD, or an operator's `mount -a` — is seen on the next attempt without anyone restarting anything. The journal names the path and the mount point; `/api/v1/health` carries a `database` block (`path`, `mount_point`, `on_system_disk`, `require_mount`) so the same facts are one `curl` away; `oo db status` prints them on the host.
 
 Why still no `RequiresMountsFor=` (ADR-021's reasoning, kept): a *dependency* failure does not retry, a crash loop does. And `nofail` stays in `/etc/fstab` so the host still boots to SSH without the SSD.
 
@@ -84,13 +84,15 @@ The copy was taken against the **live, writing** station as the first step of th
 
 ### The migration, as run
 
-The full runbook is in [[DEPLOYMENT_AND_OPERATIONS]] under *Database on the evidence SSD*. In outline, and in this order:
+The full runbook is in [[DEPLOYMENT_AND_OPERATIONS]] under *Database on the evidence SSD*, and `deploy/move-database-to-ssd.sh` is the same procedure as one script, run from the laptop with `HOST=` like `deploy.sh`. In outline, and in this order:
 
 1. Deploy this code (`deploy.sh --no-web`) so the station understands the new setting and creates the directory.
 2. `oo db copy` from the live database to `data/clips/database/openobservatory.sqlite`, at idle priority. `oo db check --full` on the copy.
-3. `systemctl stop open-observatory open-observatory-refine.timer`. A second `oo db copy --force`, now against a quiet database, so nothing written between step 2 and the stop is lost. `oo db check` again; compare `row_counts` with `oo db status` on the original.
+3. Stop the station, both timers **and** both oneshot services (a stopped timer does not stop a run in flight). A second `oo db copy --force`, now against a quiet database, so nothing written between step 2 and the stop is lost. `oo db check` again; compare `row_counts` and the Alembic revision with `oo db status` on the original; then `sync`, because `VACUUM INTO` never fsyncs its output and the check read it back through the page cache.
 4. Add the two lines to `config/runtime.env`; rename the original to `openobservatory.sqlite.moved-2026-09-14` (with its `-wal`/`-shm` if present) so the old path cannot be opened by accident.
-5. `systemctl start`; `oo db status` and `GET /api/v1/health` must both say `on_system_disk: false`; `GET /api/v1/history?window=last-hour` must return the last hour; the journal must show `db.engine_ready` with the new path.
+5. `systemctl start` the station; once healthy, start the timers; `oo db status` and `GET /api/v1/health` must both say `on_system_disk: false`; `GET /api/v1/history?window=last-hour` must return the last hour; the journal must show `db.engine_ready` with the new path.
+
+The sequence was reviewed before it ran by three independent, adversarial readers with one lens each — the systemd sandbox and mount namespace, SQLite and data integrity, configuration loading — each with read-only access to the station. None refuted it; the stop-list, the `sync` and the detached remote run in `deploy/move-database-to-ssd.sh` are their findings.
 
 ### Rollback
 
@@ -108,10 +110,15 @@ Recorded on 2026-09-14, in the order the steps ran; see the runbook for the comm
 
 | Step | Measurement |
 |---|---|
-| `oo db copy` against the live, writing station | *(filled in below, after the run)* |
-| `oo db check --full` on that copy | *(filled in below)* |
-| Second copy with the service stopped, and row counts against the original | *(filled in below)* |
-| Service downtime, stop to healthy | *(filled in below)* |
+| `VACUUM INTO` against the live, writing station, at `nice -n 19 ionice -c3` (the exact statement `oo db copy` runs, before that command was deployed) | **2,471,563,264 bytes in 458.8 s** (source file 2,567,311,360 bytes: the copy is compact), 10:34–10:42 BST |
+| `PRAGMA quick_check` on that copy | `ok` in **150.1 s**; 1,826,349 detections, 600,479 media assets, 113 streams, 3,222 gaps, 68 reviews, 42,986 refinements; revision `0012_detection_banked_at` |
+| Capture during the copy | unaffected: `continuity_ratio` 0.999949 and `audio_lost_seconds` 0.0 on `GET /api/v1/station` afterwards, the same as before |
+| Second copy, service stopped, un-niced (`deploy/move-database-to-ssd.sh`, 12:40 BST) | **2,480,144,384 bytes in 377.4 s** (source 2,576,232,448 bytes; 6.6 MB/s, the USB 2.0 SSD's write rate); `quick_check` ok in **46.4 s**; row counts identical to the original in all six tables (1,834,596 detections); revision `0013_analytics_rollup` on both |
+| Service downtime | script's own stop-to-healthy **454 s**; the real outage was **12:38:10 → 12:47:30 BST, 560 s**, because the first attempt's stop hung for systemd's 90 s `TimeoutStopSec` and ended in SIGKILL (below), which made the script's guard refuse and the second attempt start from a stopped station |
+| `oo db check --full` on the live SSD file, station capturing, idle priority | `integrity_check` **ok in 30.1 s** (606,298 pages, 0 free) — against 275 s for the same check on the SD-card copy earlier in the day |
+| First start on the SSD | `db.engine_ready` with the new DSN at 11:47:28Z, `db.schema_at_head revision=0013_analytics_rollup` 34 ms later; `GET /api/v1/health` `status: ok`, `database.on_system_disk: false` |
+
+**A finding the move surfaced, not caused.** The `systemctl stop` at 12:38:10, issued 22 s after the deploy's own restart had started the station, did not complete: the process ignored the stop signal for 90 s and systemd killed it (`Failed with result 'timeout'`). The deploy's own stop at 12:37:48 was clean within a second, as every recorded stop before it had been. The difference is that the second stop landed while the station was still starting — detectors loading, capture not yet anchored — and something in that window does not honour shutdown. Nothing was lost (the original's WAL was checkpointed by the next connection and the copy's counts match), but a stop during start-up is a real path a power cut or a quick redeploy can take, and it is now on the [[HANDOVER]] queue.
 
 ### Revisit when
 

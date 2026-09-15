@@ -750,6 +750,20 @@ places is a finding nobody works. Detail stays at the pointer; this is the queue
 
 Nothing here is documentation. Every item is code, config, a test, or a decision.
 
+**Done 2026-09-14, afternoon:** both deployed. The database moved to the SSD at
+12:40 BST with `deploy/move-database-to-ssd.sh` (measurements in
+[[ADR-078 - Database on the evidence SSD|ADR-078]]); the analytics section is live
+and its first backfill has run. What to watch: `database is locked` per day in the
+journal over the following week, against 200–600 a day before the move.
+
+**Found during the move, 2026-09-14** — the station does not honour `systemctl stop`
+while it is still starting up: a stop issued 22 s after a start hung for the full 90 s
+`TimeoutStopSec` and was SIGKILLed (`journalctl -u open-observatory`, 12:38:10–12:39:40
+BST). Every stop issued against a running station has been clean within a second.
+Find what in start-up (detector loading? the capture anchor?) blocks shutdown, and make
+a stop during start-up as clean as a stop during capture; a power cut or a quick
+redeploy can take that path.
+
 **Time-boxed — do these first**
 
 1. **Run `oo clips bank-backfill` before the disk reaches 85%.** Measured over
@@ -809,6 +823,9 @@ Nothing here is documentation. Every item is code, config, a test, or a decision
     Today a correction and a rejection both leave the machine's wrong name in the
     night's list. Minimum: exclude `rejected`/`corrected` and report an
     `excluded_reviewed_count`, mirroring [[ADR-044 - Withdrawn detections|ADR-044]].
+    **2026-09-14:** done for the analytics roll-up only ([[ADR-079 - Analytics section|ADR-079]]:
+    `analytics_taxon_hour` uses the corrected name, drops rejected rows and reports
+    `excluded_rejected_count`). HISTORY and `/taxa/activity` are still as described.
 13. **Render `effective_common_name` in the UI.** It is declared in `types.ts` and
     read nowhere; the machine's retraction is louder on screen than the human's
     correction, which inverts the charter's priority 5.
@@ -940,6 +957,11 @@ rules out continuous native-rate archival (66 GB/day at 384 kHz). If a day-view
 spectrogram is wanted, the honest way is to persist the uint8 spectrogram columns —
 about 40 MB/day for both channels — rather than the audio. That would be a genuinely
 useful addition and is not currently planned.
+
+**2026-09-14:** what HISTORY still lacks at long windows is now answered elsewhere:
+the `ANALYTICS` section ([[ADR-079 - Analytics section|ADR-079]]) reads a roll-up
+of local days and offers every range up to "everything recorded", with time-of-day
+and species-by-week shapes. HISTORY itself is unchanged at seven days.
 
 ### 6.3 Fix the things I know are wrong or unfinished
 

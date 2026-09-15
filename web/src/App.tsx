@@ -9,6 +9,7 @@ import { CapturePanel, DetectorPanel, EventLog, StoragePanel } from './component
 import { DetectionDrawer } from './components/DetectionDrawer'
 import { FirmwarePanel } from './components/FirmwarePanel'
 import { FirstRun } from './components/FirstRun'
+import { Analytics } from './components/Analytics'
 import { History } from './components/History'
 import { ModelsPanel } from './components/ModelsPanel'
 import { NearMissPanel } from './components/NearMissPanel'
@@ -27,6 +28,7 @@ import { useLiveAudio } from './hooks/useLiveAudio'
 import { useLiveConnection } from './hooks/useLiveConnection'
 import { usePause } from './hooks/usePause'
 import { useSpectrogramControls } from './hooks/useSpectrogramControls'
+import { useAnalyticsRoute } from './hooks/useAnalyticsRoute'
 import { useViewMode } from './hooks/useViewMode'
 
 /** Top level of the station UI.
@@ -54,6 +56,9 @@ export default function App() {
   const history = useHistoryBrowser()
   const audio = useLiveAudio()
   const view = useViewMode()
+  // ADR-079. Its own URL state, not a third value of `history.mode`: an
+  // analytics chart has to be linkable, and the history mode never was.
+  const analytics = useAnalyticsRoute()
   const firstRun = useFirstRun()
   // ADR-055. Fed the live status frame so a pause set from another device
   // appears here within a tick, and `clock` so the countdown ticks without a
@@ -110,17 +115,30 @@ export default function App() {
         <PauseControl pause={pause} timeZone={timeZone} />
         <div className="segmented mode-switch">
           <button
-            className={history.mode === 'live' ? 'on' : ''}
-            onClick={() => history.setMode('live')}
+            className={!analytics.route.active && history.mode === 'live' ? 'on' : ''}
+            onClick={() => {
+              analytics.close()
+              history.setMode('live')
+            }}
           >
             LIVE
           </button>
           <button
-            className={history.mode === 'history' ? 'on' : ''}
-            onClick={() => history.setMode('history')}
+            className={!analytics.route.active && history.mode === 'history' ? 'on' : ''}
+            onClick={() => {
+              analytics.close()
+              history.setMode('history')
+            }}
             title="Browse persisted detections and evidence from earlier, including overnight"
           >
             HISTORY
+          </button>
+          <button
+            className={analytics.route.active ? 'on' : ''}
+            onClick={() => analytics.open()}
+            title="The long view: species by season, activity by time of day, and how both follow the light. Counts over every day the station has recorded, never single detections."
+          >
+            ANALYTICS
           </button>
         </div>
         <button
@@ -211,7 +229,9 @@ export default function App() {
 
       <OperatorSummary status={live.status} />
 
-      {history.mode === 'history' ? (
+      {analytics.route.active ? (
+        <Analytics route={analytics} timeZone={timeZone} />
+      ) : history.mode === 'history' ? (
         <History
           timeZone={timeZone}
           windowName={history.historyWindow}
@@ -357,6 +377,7 @@ export default function App() {
         </div>
       )}
 
+      {!analytics.route.active && (
       <main className={`columns ${diagnosing ? '' : 'columns-operate'}`}>
         <div className="column left">
           <Suggestions
@@ -404,6 +425,7 @@ export default function App() {
           </>
         )}
       </main>
+      )}
 
       <DetectionDrawer
         detection={selected}
