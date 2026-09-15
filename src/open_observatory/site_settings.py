@@ -986,6 +986,11 @@ NON_EDITABLE: dict[str, str] = {
         "the same shutdown-and-migrate operation as data_dir, plus a DSN can "
         "carry credentials for a host this station has no business reaching."
     ),
+    "database_require_mount": (
+        "the refusal that stops a boot without the SSD from forking the record "
+        "onto the SD card (ADR-078). One click here would switch it off; it is "
+        "set once, by hand, beside database_dsn in runtime.env."
+    ),
     "runtime_env_path": (
         "this is the settings store itself. Repointing it makes the UI write "
         "to a file the process does not read, which is exactly the "

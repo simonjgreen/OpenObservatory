@@ -44,6 +44,7 @@ import io
 import os
 import struct
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -60,6 +61,7 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import analytics as analytics_queries
 from .. import display_channel as display_state
 from .. import evidence_suggestions, firmware_store, plausibility
 from .. import history as history_queries
@@ -192,6 +194,15 @@ class PauseIn(BaseModel):
     """
 
     preset: str = Field(min_length=1, max_length=40)
+
+
+class SavedReportIn(BaseModel):
+    """A question worth keeping (ADR-079): a view and its parameters."""
+
+    name: str = Field(min_length=1, max_length=120)
+    question: str = Field(default="", max_length=2000)
+    view: str = Field(pattern="^(series|hours|taxa|span)$")
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class LoginIn(BaseModel):
@@ -2137,6 +2148,131 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else [],
             "coverage": history_queries.coverage(session, resolved),
         }
+
+    # ------------------------------------------------------------------
+    # Analytics (ADR-079): the roll-up, read only. Every endpoint here reads
+    # the analytics_* tables and nothing else, so its cost is the size of the
+    # range in *days*, never in detections. `oo analytics rebuild` on its
+    # timer is the only writer of those tables.
+
+    def _analytics_dates(session: Session, range_name: str) -> analytics_queries.DateRange:
+        return analytics_queries.resolve_dates(session, range_name, settings.timezone)
+
+    @app.get(f"{API_PREFIX}/analytics/status")
+    def get_analytics_status(session: Session = Depends(get_session)) -> dict[str, Any]:
+        """How much roll-up exists, how fresh it is, and what is missing.
+
+        `days_missing` counts local days between the first detection and today
+        with no roll-up row: a fresh install catches up forty a run, so a
+        non-zero figure here on a station that has run for months means the
+        timer is not firing, which is worth knowing before reading a chart
+        with holes in it.
+        """
+        facts = analytics_queries.status(session, timezone=settings.timezone)
+        facts["coordinates_set"] = settings.latitude is not None and settings.longitude is not None
+        return facts
+
+    @app.get(f"{API_PREFIX}/analytics/questions")
+    def get_analytics_questions() -> dict[str, Any]:
+        """The shipped questions: demonstrators that the instrument is working.
+
+        Each carries what a working station should show, so a chart that does
+        not look like that is a reason to suspect the detector, the clock or
+        the coordinates before the garden.
+        """
+        return {"questions": analytics_queries.questions()}
+
+    @app.get(f"{API_PREFIX}/analytics/series")
+    def get_analytics_series(
+        range: str = "last-90d",
+        grain: str = "day",
+        group: str | None = None,
+        label: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Detections per day, night, week or month, with the captured seconds
+        behind each bucket so a rate can be honest about coverage."""
+        dates = _analytics_dates(session, range)
+        return analytics_queries.series(session, dates, grain=grain, group=group, label=label)
+
+    @app.get(f"{API_PREFIX}/analytics/hours")
+    def get_analytics_hours(
+        range: str = "last-90d",
+        columns: str = "day",
+        group: str | None = None,
+        label: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Time-of-day matrix: one column per day or week, 24 cells each, plus
+        the day's sunrise, sunset and civil twilight as local hours."""
+        dates = _analytics_dates(session, range)
+        return analytics_queries.hours(
+            session, dates, columns=columns, group=group, label=label, timezone=settings.timezone
+        )
+
+    @app.get(f"{API_PREFIX}/analytics/taxa")
+    def get_analytics_taxa(
+        range: str = "all",
+        grain: str = "week",
+        group: str | None = "bird",
+        limit: int = Query(60, ge=1, le=400),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Every label by bucket: the phenology grid. Names a species, so
+        withdrawn and human-rejected rows are out and counted (ADR-044)."""
+        dates = _analytics_dates(session, range)
+        return analytics_queries.taxa(session, dates, group=group, grain=grain, limit=limit)
+
+    @app.get(f"{API_PREFIX}/analytics/span")
+    def get_analytics_span(
+        range: str = "all",
+        group: str = "bird",
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        """Per day: the group's active span against sunrise, sunset and
+        twilight, and its rate per captured hour of daylight and of night."""
+        dates = _analytics_dates(session, range)
+        return analytics_queries.span(
+            session,
+            dates,
+            group=group,
+            timezone=settings.timezone,
+            latitude=settings.latitude,
+            longitude=settings.longitude,
+        )
+
+    @app.get(f"{API_PREFIX}/analytics/reports")
+    def get_analytics_reports(session: Session = Depends(get_session)) -> dict[str, Any]:
+        """Questions the operator saved. On the station, not in a browser."""
+        return {"reports": analytics_queries.list_reports(session)}
+
+    @app.post(f"{API_PREFIX}/analytics/reports", status_code=201)
+    def post_analytics_report(
+        body: SavedReportIn,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        principal = getattr(request.state, "principal", None)
+        actor = getattr(principal, "username", None) or "operator"
+        try:
+            return analytics_queries.save_report(
+                session,
+                name=body.name,
+                question=body.question,
+                view=body.view,
+                params=body.params,
+                actor=actor,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete(f"{API_PREFIX}/analytics/reports/{{report_id}}", status_code=204)
+    def delete_analytics_report(
+        report_id: uuid.UUID, session: Session = Depends(get_session)
+    ) -> Response:
+        if not analytics_queries.delete_report(session, report_id):
+            raise HTTPException(status_code=404, detail="no such saved report")
+        return Response(status_code=204)
 
     @app.get(f"{API_PREFIX}/history/windows")
     def get_history_windows() -> dict[str, Any]:

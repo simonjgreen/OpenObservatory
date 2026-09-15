@@ -1480,3 +1480,159 @@ code {
   border-right: 1px solid var(--warn);
   pointer-events: auto;
 }
+
+/* ---------- analytics (ADR-079) ----------
+ * The long view. Built from the token scale (ADR-027): no raw pixel value
+ * below where a --space-* or --text-* token fits. Intrinsic first, then one
+ * breakpoint (ADR-054): the rail sits beside the charts when there is room
+ * and above them when there is not, and every control row wraps. Wide
+ * things -- the species grid -- scroll inside their own box; the page never
+ * scrolls sideways. */
+.analytics {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-4) var(--space-6);
+  min-width: 0;
+}
+.analytics-rail { min-width: 0; }
+.analytics-rail h2 {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.analytics-rail h2:first-child { margin-top: 0; }
+.question-list { list-style: none; margin: 0; padding: 0; }
+.question-list li { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.question-list li > button:first-child {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  line-height: var(--line-height-tight);
+  white-space: normal;
+  color: var(--text);
+}
+.question-list li > button:first-child:hover { background: var(--bg-raised); border-color: var(--line); }
+.question-list li > button:first-child.on { background: var(--bg-raised); border-color: var(--line-strong); color: var(--accent); }
+.question-list .remove { color: var(--text-faint); padding: var(--space-1) var(--space-2); }
+.question-list .remove:hover { color: var(--danger); }
+.view-switch { margin-top: var(--space-1); }
+.rollup-status { font-size: var(--text-2xs); margin: var(--space-4) 0 0; line-height: var(--line-height-base); }
+
+.analytics-main { min-width: 0; }
+.analytics-head h1 { font-size: var(--text-xl); font-weight: 600; margin: 0 0 var(--space-1); line-height: var(--line-height-tight); }
+.analytics-question { margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--text-md); }
+.analytics-expect {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--line-height-base);
+  border-left: 2px solid var(--line-strong);
+  padding-left: var(--space-3);
+  max-width: 72ch;
+}
+.analytics-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+  min-width: 0;
+}
+.analytics-controls .segmented { flex-wrap: wrap; }
+.label-picker { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.label-picker input { min-width: 12ch; max-width: 28ch; }
+.rate-toggle { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); }
+.save-form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.analytics-footer { margin-top: var(--space-3); font-size: var(--text-xs); line-height: var(--line-height-base); }
+.analytics-note { margin: var(--space-1) 0 0; font-size: var(--text-2xs); color: var(--text-faint); max-width: 80ch; }
+
+/* Charts: marks in a stretched SVG, text in HTML around it. */
+.chart { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--space-2); min-width: 0; }
+.chart-plot { position: relative; min-width: 0; }
+.chart-plot svg { display: block; width: 100%; height: 160px; background: var(--bg-panel); border-radius: var(--radius-sm); }
+.hours-heatmap .chart-plot svg, .span-chart > .chart-plot > svg { height: 240px; }
+.hour-profile .chart-plot svg { height: 100px; }
+.rate-chart .chart-plot svg { height: 120px; }
+.chart-y { position: relative; width: 4.5ch; font-size: var(--text-2xs); height: 160px; }
+.hours-heatmap .chart-y, .span-chart > .chart-y { height: 240px; }
+.rate-chart .chart-y { height: 120px; }
+.chart-y span { position: absolute; right: 0; transform: translateY(50%); }
+.chart-y.hours-y span { transform: translateY(-50%); }
+.chart-x { position: relative; height: var(--space-5); font-size: var(--text-2xs); }
+.chart-x span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.chart-x span.month { transform: none; padding-left: var(--space-1); border-left: 1px solid var(--line-strong); }
+.chart-x span.first { transform: none; }
+.chart-x span.last { transform: translateX(-100%); }
+.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .unbuilt { fill: url(#unbuilt-hatch); fill-opacity: 0.35; }
+.chart svg .unbuilt { fill: var(--line-strong); fill-opacity: 0.25; }
+.chart .solar { fill: none; stroke-width: 1.5px; }
+.chart .solar.sun { stroke: var(--warn); }
+.chart .solar.twilight { stroke: var(--accent); stroke-dasharray: 4 3; opacity: 0.8; }
+.chart .dot-mark { stroke: var(--bg-panel); stroke-width: 1.5px; }
+.chart-legend {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  margin-top: var(--space-1);
+}
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: var(--space-1); }
+.chart-legend i.key-line { height: 0; border-top: 2px solid var(--warn); border-radius: 0; vertical-align: 2px; }
+.chart-legend i.key-line.twilight { border-top-style: dashed; border-top-color: var(--accent); }
+.chart-caption { grid-column: 1 / -1; margin: var(--space-1) 0 0; font-size: var(--text-xs); }
+.coverage-strip { display: flex; height: var(--space-1); margin-top: 2px; gap: 1px; }
+.coverage-strip span { flex: 1; background: var(--ok); border-radius: 1px; }
+.coverage-strip span.low { background: var(--warn); }
+.chart-tooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  transform: translate(var(--space-3), calc(-100% - var(--space-2)));
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  line-height: var(--line-height-base);
+  white-space: nowrap;
+  max-width: 40ch;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.chart-tooltip.flip { transform: translate(calc(-100% - var(--space-3)), calc(-100% - var(--space-2))); }
+.chart-tooltip-title { color: var(--text); font-weight: 600; margin-bottom: 2px; }
+.hours-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: var(--space-4); min-width: 0; }
+.span-chart .rate-chart { grid-column: 1 / -1; margin-top: var(--space-4); }
+.rate-chart .chart-caption { margin: 0 0 var(--space-3); }
+
+/* The grid is the one wide thing: it scrolls, the page does not (ADR-054). */
+.taxa-grid { min-width: 0; }
+.taxa-sort { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-xs); margin-bottom: var(--space-2); }
+.taxa-scroll { overflow-x: auto; max-height: 70vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.taxa-scroll table { border-collapse: separate; border-spacing: 0; font-size: var(--text-xs); }
+.taxa-scroll th { position: sticky; top: 0; background: var(--bg-raised); color: var(--text-dim); font-weight: 500; text-align: left; padding: var(--space-1) var(--space-2); z-index: 2; }
+.taxa-scroll th.taxa-col span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); font-size: var(--text-2xs); white-space: nowrap; }
+.taxa-scroll th.unbuilt span { color: var(--text-faint); text-decoration: line-through; }
+.taxa-scroll td { padding: 0 var(--space-1); border-bottom: 1px solid var(--bg-panel); white-space: nowrap; }
+.taxa-scroll td.taxa-name, .taxa-scroll th.taxa-name { position: sticky; left: 0; background: var(--bg); z-index: 1; padding-right: var(--space-3); }
+.taxa-scroll th.taxa-name { z-index: 3; background: var(--bg-raised); }
+.taxa-scroll .sci { color: var(--text-faint); font-style: italic; }
+.taxa-scroll .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: var(--space-1); }
+.taxa-scroll td.taxa-cell { text-align: center; font-size: var(--text-2xs); color: var(--text); min-width: 2.4ch; height: var(--space-5); border-right: 1px solid var(--bg); }
+.taxa-scroll tbody tr { cursor: pointer; }
+.taxa-scroll tbody tr:hover td.taxa-name { color: var(--accent); }
+
+@media (max-width: 950px) {
+  .analytics { grid-template-columns: minmax(0, 1fr); }
+  .hours-layout { grid-template-columns: minmax(0, 1fr); }
+  .question-list { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+  .question-list li > button:first-child { border-color: var(--line); }
+}

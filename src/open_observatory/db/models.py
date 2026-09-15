@@ -618,3 +618,141 @@ class Review(Base):
         ForeignKey("review.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Analytics roll-up (ADR-079). Rebuildable summaries of the detection table,
+# one local calendar day at a time. Nothing here is a record of what happened
+# -- the detection table is -- so every row carries what built it and can be
+# thrown away and rebuilt. Deliberately not foreign-keyed to `analytics_day`:
+# the builder replaces a day's rows in one transaction and does not want the
+# schema deciding the order it may do that in.
+
+
+class AnalyticsDay(Base):
+    """One local calendar day, in the station's timezone, with its coverage
+    and solar facts. ``local_date`` is ``YYYY-MM-DD`` text so it sorts, ranges
+    and joins identically on every dialect."""
+
+    __tablename__ = "analytics_day"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    timezone: Mapped[str] = mapped_column(String(64))
+    day_start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    day_end_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    seconds_in_day: Mapped[int] = mapped_column(Integer)
+    seconds_captured: Mapped[float] = mapped_column(Float, default=0.0)
+    seconds_from_microphone: Mapped[float] = mapped_column(Float, default=0.0)
+    seconds_paused: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Live-source detections rolled into this day across every group,
+    #: withdrawn rows included (they happened; ADR-044 excludes them only from
+    #: the surfaces that name a species, which here is `analytics_taxon_hour`).
+    detections: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_synthetic: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_withdrawn: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    # Solar facts for the day, all NULL when the station has no coordinates or
+    # the sun does not cross the relevant elevation (polar day/night).
+    sunrise_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sunset_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    civil_dawn_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    civil_dusk_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Captured seconds inside three solar windows of this day, so a rate per
+    #: daylight hour or per night hour divides by what was actually listened
+    #: to, not by the clock. The night that *starts* on this day is
+    #: `dusk_to_midnight` here plus `midnight_to_dawn` on the next day.
+    daylight_captured_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    dusk_to_midnight_captured_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    midnight_to_dawn_captured_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    #: False while the day is still in progress when built; the UI hatches it.
+    complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    builder_version: Mapped[str] = mapped_column(String(16))
+    build_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class AnalyticsCoverageHour(Base):
+    """Captured and paused seconds per local hour of a day. Group-independent."""
+
+    __tablename__ = "analytics_coverage_hour"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    hour: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seconds_captured: Mapped[float] = mapped_column(Float, default=0.0)
+    seconds_from_microphone: Mapped[float] = mapped_column(Float, default=0.0)
+    seconds_paused: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class AnalyticsHour(Base):
+    """Detections per local hour per taxonomic group. Withdrawn rows included:
+    this names nothing (ADR-044's `timeline` rule)."""
+
+    __tablename__ = "analytics_hour"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    hour: Mapped[int] = mapped_column(Integer, primary_key=True)
+    taxonomic_group: Mapped[str] = mapped_column(String(48), primary_key=True)
+    detections: Mapped[int] = mapped_column(Integer, default=0)
+    best_score: Mapped[float] = mapped_column(Float, default=0.0)
+
+    __table_args__ = (Index("ix_analytics_hour_group_date", "taxonomic_group", "local_date"),)
+
+
+class AnalyticsGroupDay(Base):
+    """Per-group facts about a day that an hourly histogram cannot give: when
+    the first and last detection fell, and the 5th/95th percentile moments
+    that bound the day's *active span* without being dragged by one stray
+    call at 02:00. Plus counts inside the day's solar windows."""
+
+    __tablename__ = "analytics_group_day"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    taxonomic_group: Mapped[str] = mapped_column(String(48), primary_key=True)
+    detections: Mapped[int] = mapped_column(Integer, default=0)
+    best_score: Mapped[float] = mapped_column(Float, default=0.0)
+    first_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    p05_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    p95_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    daylight_detections: Mapped[int] = mapped_column(Integer, default=0)
+    dusk_to_midnight_detections: Mapped[int] = mapped_column(Integer, default=0)
+    midnight_to_dawn_detections: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AnalyticsTaxonHour(Base):
+    """Detections per local hour per *label*: a bird's common name (as
+    corrected by a human review, ADR-043), a bat pass's 5 kHz frequency band
+    (never a species -- a band is a hint, ADR-013), or a sound category. The
+    one roll-up surface that names things, so withdrawn (ADR-044) and
+    human-rejected rows are excluded and counted on `analytics_day`."""
+
+    __tablename__ = "analytics_taxon_hour"
+
+    local_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    hour: Mapped[int] = mapped_column(Integer, primary_key=True)
+    taxonomic_group: Mapped[str] = mapped_column(String(48), primary_key=True)
+    label: Mapped[str] = mapped_column(String(240), primary_key=True)
+    scientific_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    detections: Mapped[int] = mapped_column(Integer, default=0)
+    best_score: Mapped[float] = mapped_column(Float, default=0.0)
+
+    __table_args__ = (Index("ix_analytics_taxon_hour_label_date", "label", "local_date"),)
+
+
+class AnalyticsReport(Base):
+    """A question an operator saved (ADR-079): a view plus its parameters.
+
+    On the station rather than in a browser, for the reason ADR-048 gives for
+    `setup_completed`: a garden station is opened from a phone and a laptop,
+    and "the question I asked last month" belongs to the station.
+    """
+
+    __tablename__ = "analytics_report"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120))
+    question: Mapped[str] = mapped_column(Text, default="")
+    view: Mapped[str] = mapped_column(String(24))
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(80), default="operator")

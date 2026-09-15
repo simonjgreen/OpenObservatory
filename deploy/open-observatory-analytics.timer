@@ -1,0 +1,15 @@
+# Template unit: installed by deploy/deploy.sh alongside the station.
+[Unit]
+Description=Hourly Open Observatory analytics roll-up (ADR-079)
+Documentation=file://@DEPLOY_ROOT@/docs/architecture/ADRS.md
+
+[Timer]
+# Hourly, a few minutes past, so today's column on the analytics page is
+# never more than an hour behind. A run is seconds at idle priority.
+OnCalendar=*-*-* *:07:00
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

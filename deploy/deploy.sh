@@ -99,7 +99,10 @@ echo "==> installing systemd units"
 # without starting a pass, so deploying never puts BatDetect2 on the CPU. The
 # .service itself is Type=oneshot and is deliberately not enabled -- the timer
 # is what starts it.
-ssh "$HOST" "for unit in open-observatory.service open-observatory-refine.service open-observatory-refine.timer; do \
+# The analytics units (ADR-079) follow the same pattern: a oneshot service
+# the hourly timer starts, never enabled on its own.
+ssh "$HOST" "for unit in open-observatory.service open-observatory-refine.service open-observatory-refine.timer \
+        open-observatory-analytics.service open-observatory-analytics.timer; do \
         sed -e \"s|@DEPLOY_USER@|\$(id -un)|g\" -e \"s|@DEPLOY_ROOT@|\$HOME/$REMOTE_DIR|g\" \
             $REMOTE_DIR/deploy/\$unit | sudo tee /etc/systemd/system/\$unit >/dev/null; \
     done && \
@@ -109,7 +112,8 @@ ssh "$HOST" "for unit in open-observatory.service open-observatory-refine.servic
     sudo systemctl daemon-reload && \
     sudo systemctl enable --now open-observatory.service && \
     sudo systemctl restart open-observatory.service && \
-    sudo systemctl enable --now open-observatory-refine.timer"
+    sudo systemctl enable --now open-observatory-refine.timer && \
+    sudo systemctl enable --now open-observatory-analytics.timer"
 
 echo "==> waiting for health"
 for _ in $(seq 1 30); do

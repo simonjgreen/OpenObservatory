@@ -436,6 +436,39 @@ this is authentication, not authorisation, for a single-operator LAN appliance.
   creation and never again
 - created_at / last_used_at nullable / revoked_at nullable
 
+### analytics_day / analytics_coverage_hour / analytics_hour / analytics_group_day / analytics_taxon_hour — Implemented (ADR-079), rebuildable
+
+Not a record of anything: a roll-up of the detection table, one **local
+calendar day** per `analytics_day` row (`local_date` is `YYYY-MM-DD` text in
+the station's timezone, stored beside it), written only by `oo analytics
+rebuild` and thrown away and rebuilt whenever a review, a withdrawal or a
+`builder_version` bump changes what a day should say. Never foreign-keyed to
+each other on purpose: the builder replaces a day's rows across all five tables
+in one transaction.
+
+- `analytics_day` — timezone, UTC bounds, captured/microphone/paused seconds,
+  total live detections, the four exclusion counts (`synthetic`, `withdrawn`,
+  `rejected`), sunrise/sunset/civil dawn/civil dusk (NULL without coordinates
+  or crossings), captured seconds inside daylight, dusk→midnight and
+  midnight→dawn, `complete`, `built_at`, `builder_version`, `build_seconds`
+- `analytics_coverage_hour` — `(local_date, hour)`: captured, microphone and
+  paused seconds. 23 or 25 real hours on the days the clocks change
+- `analytics_hour` — `(local_date, hour, taxonomic_group)`: detections and best
+  score. Withdrawn rows **included**: this names nothing (ADR-044)
+- `analytics_group_day` — `(local_date, taxonomic_group)`: detections, first,
+  last, 5th- and 95th-percentile moments, and detections inside the three solar
+  windows
+- `analytics_taxon_hour` — `(local_date, hour, taxonomic_group, label)`: the
+  one table that names things. `label` is a corrected common name for a bird
+  (ADR-043), a 5 kHz band for a bat pass, a sound category otherwise.
+  Withdrawn and human-rejected rows excluded and counted on `analytics_day`
+
+### analytics_report — Implemented (ADR-079)
+
+A question the operator saved: `name`, `question`, `view` (`series`, `hours`,
+`taxa`, `span`), `params` JSON, `created_at`, `created_by`. On the station
+rather than in a browser, for the reason ADR-048 gives for `setup_completed`.
+
 ### alert_rule / alert_event — Planned, not implemented
 
 Neither table exists. Retained as design intent: rules are versioned JSON
@@ -467,6 +500,9 @@ Implemented:
 - `media_asset.reclaimed_at` — added by Alembic revision `0002`, because
   `ALTER TABLE ADD COLUMN` (how the column reached the live station) creates a
   column but never its index
+- `analytics_hour (taxonomic_group, local_date)` and
+  `analytics_taxon_hour (label, local_date)` — revision `0013` ([[ADR-079 - Analytics section|ADR-079]]);
+  the two shapes the analytics API asks for beyond the primary keys
 - `detection.refined_at` — added by Alembic revision `0006` ([[ADR-045 - Refinement runner|ADR-045]]), created
   explicitly and unconditionally there for the same reason `media_asset.reclaimed_at`
   needed revision `0002`: `ALTER TABLE ADD COLUMN` cannot create an index

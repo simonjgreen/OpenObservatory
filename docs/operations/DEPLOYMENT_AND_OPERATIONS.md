@@ -56,7 +56,9 @@ server. There is no message broker; the event bus is in-process ([[ADR-009 - In-
    and prints recent `journalctl` output if the service does not come up
    healthy in that time.
 
-The three systemd units are committed as templates: `deploy.sh` substitutes the
+The five systemd units (the station, the refinement service and timer, and
+since [[ADR-079 - Analytics section|ADR-079]] the analytics service and timer)
+are committed as templates: `deploy.sh` substitutes the
 deploy user and install path at install time, so no station's paths are baked
 into the repository ([[ADR-047 - The repository ships no site|ADR-047]]).
 
@@ -180,6 +182,32 @@ The runner also refuses to start outside `01:00–03:00 UTC` on its own
 (`OO_REFINEMENT_WINDOW_START_HOUR_UTC` / `..._END_HOUR_UTC`), independently of
 the timer, so a manual `systemctl start` in daylight skips with a reason rather
 than classifying. `oo refine run --force` is the deliberate override.
+
+### The analytics unit and its timer (ADR-079)
+
+`deploy/open-observatory-analytics.service` + `.timer` are a **third** separate
+service, in the refinement runner's mould: `Type=oneshot`, the same fence
+(`AllowedCPUs=2-3`, `Nice=19`, `IOSchedulingClass=idle`, `MemoryMax=1G`), the
+same sandbox, only `data/` writable. The timer fires **hourly at seven minutes
+past**, and each run is `oo analytics rebuild`: today, yesterday, any day a new
+review touched, up to forty days never built (newest first) and up to six days
+built more than a week ago, one transaction per day. On this station a day is a
+few seconds; a fresh install catches up a month or two per hour and the
+`ANALYTICS` page says how many days are still missing until it has.
+
+```bash
+ssh <station-host> sudo systemctl list-timers open-observatory-analytics
+ssh <station-host> sudo journalctl -u open-observatory-analytics -n 50 --no-pager
+ssh <station-host> 'cd open-observatory && .venv/bin/oo analytics status'
+ssh <station-host> 'cd open-observatory && nice -n 19 ionice -c3 .venv/bin/oo analytics rebuild --all'   # first backfill, or after a version bump
+ssh <station-host> sudo systemctl disable --now open-observatory-analytics.timer   # rollback: the tables go inert
+```
+
+Two things it reads that are easy to forget it reads: the station's
+**timezone** (a day is a local day, and a changed timezone makes every built
+day stale, so the next runs rebuild them) and the station's **coordinates**
+(without them there is no sunrise, no sunset and no daylight axis; the page
+says so rather than drawing zero).
 
 ### Operating commands
 
@@ -605,9 +633,13 @@ Where it is, on any host, is one command:
 `on_system_disk: true` on a station that has moved is the fork the setting exists to
 prevent; investigate the mount before anything else.
 
-**Moving it (the procedure as run on 2026-09-14).** Stop, copy, check, repoint,
-start — the shape the settings UI already describes for `database_dsn`. In this
-order, on the host:
+**Moving it.** Stop, copy, check, repoint, start — the shape the settings UI
+already describes for `database_dsn`. `deploy/move-database-to-ssd.sh` is the
+whole procedure as one script, run from the laptop like `deploy.sh`
+(`HOST=user@host ./deploy/move-database-to-ssd.sh`); it refuses to run if
+`runtime.env` already names a DSN, if the station's code predates `oo db`, or if
+`data/clips` is not a mount. What it does, step by step, so it can also be done
+by hand:
 
 1. Deploy code that knows the setting first (`deploy.sh --no-web`), so the new
    directory is created and the refusal exists.
@@ -618,15 +650,25 @@ order, on the host:
             data/clips/database/openobservatory.sqlite
         .venv/bin/oo db check --full data/clips/database/openobservatory.sqlite
 
-3. Stop both writers, then take the copy again against a quiet database — the
-   second `VACUUM INTO` is what carries the rows written since step 2:
+3. Stop every writer — the timers **and** the oneshot services they may have
+   already started, because stopping a timer does not stop a run in flight —
+   then take the copy again against a quiet database; the second
+   `VACUUM INTO` is what carries the rows written since step 2:
 
-        sudo systemctl stop open-observatory-refine.timer open-observatory.service
+        sudo systemctl stop open-observatory-refine.timer open-observatory-analytics.timer \
+            open-observatory-refine.service open-observatory-analytics.service open-observatory.service
         .venv/bin/oo db status --json > /tmp/db-before.json
         .venv/bin/oo db copy --force data/clips/database/openobservatory.sqlite
         .venv/bin/oo db check data/clips/database/openobservatory.sqlite
+        sync -f data/clips/database/openobservatory.sqlite
 
    `row_counts` from the check must equal `row_counts` in `/tmp/db-before.json`.
+   Two things that look alarming and are not: `oo db status` is the last
+   connection to close on the stopped WAL database, so it checkpoints the WAL
+   into the file and the `-wal`/`-shm` files vanish — expected; and `sync` is
+   there because `VACUUM INTO` never fsyncs what it wrote, so the check has
+   read the copy back through the page cache and the `sync` makes its verdict
+   true of the disk.
 4. Repoint and retire the original — rename, never delete, so rollback is a rename:
 
         printf '%s\n' 'OO_DATABASE_DSN=sqlite+pysqlite:////home/<user>/open-observatory/data/clips/database/openobservatory.sqlite' \
@@ -636,16 +678,30 @@ order, on the host:
 
 5. Start, and verify from both sides:
 
-        sudo systemctl start open-observatory.service open-observatory-refine.timer
+        sudo systemctl start open-observatory.service
+        # wait for /api/v1/health, then arm the timers again
+        sudo systemctl start open-observatory-refine.timer open-observatory-analytics.timer
         .venv/bin/oo db status --json | jq '{path, on_system_disk, row_counts}'
         curl -s http://127.0.0.1:8080/api/v1/health | jq '.status, .database'
         curl -s 'http://127.0.0.1:8080/api/v1/history?window=last-hour' | jq '.coverage.seconds_captured'
-        journalctl -u open-observatory -n 30 --no-pager | grep db.engine_ready
+        journalctl -u open-observatory --since '15 min ago' --no-pager | grep -E 'db.engine_ready|db.schema_at_head'
 
-**Rollback.** Stop both units; delete the two lines from `config/runtime.env`;
-`mv data/openobservatory.sqlite.moved-2026-09-14 data/openobservatory.sqlite`;
-start. Rows recorded on the SSD copy in between are not merged back. The code can
-stay deployed: with the DSN empty and the flag off it behaves as before.
+**If it stopped part-way.** The two changes in step 4 are independent, so
+look at which happened. `runtime.env` appended but the original still at
+`data/openobservatory.sqlite`: delete the three appended lines and start.
+Original renamed but `runtime.env` not appended: rename it back (all of
+`.sqlite`, `-wal` and `-shm` if they were renamed) and start. Both done:
+that is the finished state; start.
+
+**Rollback.** Stop the five units above; delete the three lines from
+`config/runtime.env`; rename back every file the move renamed:
+`for f in data/openobservatory.sqlite*.moved-2026-09-14; do mv "$f" "${f%.moved-2026-09-14}"; done`;
+start. Rows recorded on the SSD copy in between are not merged back. The code
+can stay deployed: with the DSN empty and the flag off it behaves as before.
+
+**The flag is not a browser setting.** `database_require_mount` is on the
+settings UI's excluded list beside `database_dsn`, so one click cannot switch
+the fork protection off; it is set once, by hand, in `runtime.env`.
 
 **The refinement runner** (`open-observatory-refine.service`) reads
 `config/runtime.env` too and opens the same file; nothing else is needed for it.

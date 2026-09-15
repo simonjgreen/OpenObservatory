@@ -33,6 +33,7 @@ clips_app = typer.Typer(help="Evidence clip storage and retention (ADR-026)")
 detections_app = typer.Typer(help="Detection review and repair")
 refine_app = typer.Typer(help="The refinement runner (charter item 5, ADR-045)")
 db_app = typer.Typer(help="The SQLite database: where it is, consistent copies, checks (ADR-078)")
+analytics_app = typer.Typer(help="The long-term analytics roll-up (ADR-079)")
 app.add_typer(audio_app, name="audio")
 app.add_typer(models_app, name="models")
 app.add_typer(moth_app, name="audiomoth")
@@ -41,6 +42,7 @@ app.add_typer(clips_app, name="clips")
 app.add_typer(detections_app, name="detections")
 app.add_typer(refine_app, name="refine")
 app.add_typer(db_app, name="db")
+app.add_typer(analytics_app, name="analytics")
 
 console = Console()
 console_err = Console(stderr=True)
@@ -1969,6 +1971,76 @@ def refine_status(
                 f"{row['score']:.2f}" if row["score"] else "-",
             )
         console.print(detail)
+
+
+# ---------------------------------------------------------------------------
+# analytics: the roll-up (ADR-079)
+
+
+@analytics_app.command("rebuild")
+def analytics_rebuild(
+    all_days: bool = typer.Option(
+        False, "--all", help="Every day from the first detection to today, newest first"
+    ),
+    since: str | None = typer.Option(None, help="Rebuild from this local date (YYYY-MM-DD)"),
+    until: str | None = typer.Option(None, help="...to this local date, inclusive"),
+    limit: int | None = typer.Option(None, help="At most this many days this run"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Build the roll-up days that need it, one transaction per day.
+
+    Without options this is what the hourly timer runs: today, yesterday,
+    any day a new review touched, up to forty days never built (newest
+    first) and up to six days built more than a week ago. Reads the
+    detection table, writes only the analytics_* tables, and is safe to run
+    while the station is capturing -- it holds no lock across a day.
+    """
+    from datetime import date
+
+    from .analytics import rebuild
+    from .db.session import ensure_schema_at_head, init_engine
+
+    settings = get_settings()
+    configure_logging(settings)
+    init_engine(settings)
+    ensure_schema_at_head()
+    report = rebuild(
+        timezone=settings.timezone,
+        latitude=settings.latitude,
+        longitude=settings.longitude,
+        all_days=all_days,
+        since=date.fromisoformat(since) if since else None,
+        until=date.fromisoformat(until) if until else None,
+        limit=limit,
+        progress=None
+        if json_out
+        else lambda day: console.print(
+            f"  {day.local_date}  {day.detections:>7,} detections  "
+            f"{day.seconds:5.2f} s{'' if day.complete else '  (in progress)'}"
+        ),
+    )
+    if json_out:
+        emit_json(report)
+        return
+    console.print(f"built {report['count']} day(s) in {report['seconds']} s")
+
+
+@analytics_app.command("status")
+def analytics_status(json_out: bool = typer.Option(False, "--json")) -> None:
+    """How much roll-up exists, how fresh it is, and how many days are missing."""
+    from .analytics import status
+    from .db.session import ensure_schema_at_head, init_engine, session_scope
+
+    settings = get_settings()
+    init_engine(settings)
+    ensure_schema_at_head()
+    with session_scope() as session:
+        facts = status(session, timezone=settings.timezone)
+    if json_out:
+        emit_json(facts)
+        return
+    for key, value in facts.items():
+        console.print(f"[bold]{key}[/bold]: {value}")
 
 
 # ---------------------------------------------------------------------------
