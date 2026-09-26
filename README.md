@@ -546,6 +546,13 @@ room, and why the microphone's exact position has a larger effect on the data
 than any setting in this repository. Moving it a few feet changed the noise
 floor materially.
 
+| AudioMoth microphone | Microphone placement | Indoor station |
+|---|---|---|
+| ![AudioMoth USB microphone in its green case, hanging against the timber wall](docs/photos/audiomoth-microphone.jpg) | ![Microphone under the summer-house eaves, with its USB cable running to the window](docs/photos/microphone-placement.jpg) | ![Raspberry Pi in its Flirc case beside the SanDisk external SSD](docs/photos/raspberry-pi-and-ssd.jpg) |
+
+Photos are resized to a maximum edge of 1,600 pixels with embedded metadata
+removed.
+
 ### Wanted later
 
 A lux sensor and a rain sensor, to say whether a detection happened in real
