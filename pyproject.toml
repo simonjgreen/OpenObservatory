@@ -6,10 +6,10 @@ requires-python = ">=3.12,<3.14"
 license = { text = "Apache-2.0" }
 
 dependencies = [
-  "fastapi==0.162.0",
+  "fastapi==0.162.5",
   "uvicorn[standard]==0.54.0",
-  "pydantic==2.14.2",
-  "pydantic-settings==2.16.2",
+  "pydantic==2.14.3",
+  "pydantic-settings==2.16.3",
   "SQLAlchemy==2.1.8",
   "alembic==1.20.1",
   # Capped below 2.5 by numba, which librosa needs and the refinement runner
@@ -22,14 +22,14 @@ dependencies = [
   # and the pin are the constraint.
   "numpy==2.4.6",
   "soundfile==0.14.0",
-  "typer==0.27.3",
+  "typer==0.29.1",
   # Pinned, not left to typer's own `click>=8.0.0` range. click 8.2 changed
   # `Parameter.make_metavar()` to require a `ctx` argument; typer 0.15.1 still
   # calls it with none, so any fresh install resolving click >=8.2 makes every
   # `oo ... --help` die with a TypeError before printing anything. Found on
   # 2026-08-08 with click 8.4.2 -- on this laptop AND on the live station, so
   # the operator CLI documented in HANDOVER.md was already broken there.
-  "click==8.5.0",
+  "click==8.5.1",
   "rich==15.0.0",
   "structlog==26.1.0",
   "prometheus-client==0.26.0",
@@ -52,19 +52,19 @@ alsa = ["pyalsaaudio==0.11.0"]
 resample = ["soxr==1.1.0", "scipy==1.18.1"]
 # TFLite inference for the BirdNET adapter. `tflite-runtime` has no cp312
 # aarch64 wheel; ai-edge-litert is its maintained successor and does.
-birdnet = ["ai-edge-litert==2.2.0"]
+birdnet = ["ai-edge-litert==2.3.0"]
 # PostgreSQL production profile (ADR-007).
-postgres = ["psycopg[binary]==3.3.8"]
+postgres = ["psycopg[binary]==3.3.9"]
 dev = [
   "pytest==9.2.0",
-  "pytest-asyncio==1.4.1.post1",
+  "pytest-asyncio==1.5.0",
   "httpx==0.28.1",
-  "ruff==0.17.3",
+  "ruff==0.17.5",
   "mypy==2.4.1",
   # Validates real emitted events against schemas/detection-event.schema.json
   # (tests/test_mqtt_schema.py) so the envelope cannot drift unnoticed again.
   "jsonschema==4.26.0",
-  "hypothesis==6.170.14",
+  "hypothesis==6.170.15",
   # Client for scripts/probe_display_channel.py, which measures what
   # /api/v1/display actually costs on the wire against a real station (ADR-038).
   # Not a runtime dependency: the server side is Starlette's own WebSocket.
