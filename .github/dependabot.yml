@@ -36,6 +36,11 @@ updates:
       # is an ADR-backed decision about Raspberry Pi ecosystem compatibility,
       # not something to bump because a newer release exists.
       - dependency-name: python
+      # The optional BatDetect2 refinement environment is installed separately;
+      # its target-device Numba has not been verified with NumPy 2.5 or newer.
+      # Keep this aligned with pyproject.toml until that compatibility is tested.
+      - dependency-name: numpy
+        versions: [">=2.5"]
     labels: ["dependencies", "python"]
     commit-message:
       prefix: "deps"

@@ -356,3 +356,66 @@ python3 -m venv ~/piovenv && ~/piovenv/bin/pip install -q platformio==6.1.19
 `~/piovenv` already exists on this laptop, running PlatformIO Core 6.1.19, and
 is the path the firmware documentation and smoke tests assume. An earlier
 version of this section said `/tmp/piovenv`, which does not survive a reboot.
+
+## Dependabot maintenance — 2026-11-16
+
+This is Milestone 9 dependency maintenance over the existing milestone slices.
+No service boundaries, capture ownership, model assets or deployment profile
+change, so no new architecture decision is required.
+
+The preflight review found six open Dependabot PRs and no matching issues.
+PR #45 contains the Vitest and Undici updates from #49 and #50; #48 contains
+the source-map-js update from #47. Their combined lockfile preserves both
+sets of changes. PR #51 crossed the documented NumPy ceiling and proposed a
+new BirdNET inference runtime without a target fixture result. The adjusted
+update retains NumPy 2.4.6 and ai-edge-litert 2.2.0. Dependabot now excludes
+NumPy >=2.5 until the separately installed refinement environment is verified.
+The remaining 16 Python updates are included.
+
+Newer Numba releases support NumPy 2.5, but an upstream compatibility table
+does not establish which Numba is installed in the station's optional
+BatDetect2 environment. Reconsider the ceiling only after testing that
+environment. Likewise, reconsider ai-edge-litert 2.3.0 after the BirdNET
+fixture passes on the Pi; the existing runtime pin remains authoritative.
+
+The pytest-asyncio update exposed an unset fixture-loop-scope warning under
+the repository's warnings-as-errors policy. Explicit function scope matches
+the existing async fixtures. The warning policy remains enabled.
+
+Maintenance checklist:
+
+- [x] Review each PR and reconcile overlapping package-lock changes.
+- [x] Preserve the NumPy and BirdNET runtime compatibility pins.
+- [x] Install the adjusted dependencies in an isolated Python 3.12 environment.
+- [x] Run frontend tests, the production build and npm audit: 348 tests pass,
+  the build succeeds, and the audit reports zero vulnerabilities on Node 24.22.1.
+- [x] Run Ruff, mypy, `pip check` and CLI help checks: all pass.
+- [x] Run the full Python unit/integration suite: 1,172 passed, 12 skipped,
+  one pre-existing failure in
+  `TestTheAuditIsComplete::test_every_settings_field_is_classified_exactly_once`.
+  The same test fails with the original dependencies because
+  `database_require_mount` is in both settings classifications. The application
+  code and test are unchanged from the base commit. The suite is not fully green.
+- [x] Run the host's 60-second 384-to-48 kHz resampling smoke check: zero group
+  delay, bounded delivery deficit, continuous seams; all checks pass with soxr.
+- [ ] Run the target deployment checks below before deploying to the Pi.
+
+Target smoke commands, from the station checkout and its own environment:
+
+```bash
+.venv/bin/oo audio probe --no-test-rates --json
+.venv/bin/oo audio resample-check --seconds 60 --json
+.venv/bin/python -m pytest -q tests/test_birdnet_fixture.py
+curl --fail http://127.0.0.1:8080/api/v1/health
+```
+
+The probe only enumerates devices; `--no-test-rates` avoids opening a second
+capture owner while the service runs. These commands have not been run on the
+Pi for this update. CPU, memory and dropped-audio measurements and a new soak
+are therefore unmeasured; no target acceptance or detector support is claimed.
+
+Rollback: restore the manifests and lockfile from pre-maintenance commit
+`5cac8e0e29dc6d3f853231809c992b198020269b`, reinstall the previous Python pins,
+and run `npm ci && npm run build` in `web/`. Use the normal deployment procedure
+to restart the station only during a maintenance window. There are no schema
+or data migrations in this update.
